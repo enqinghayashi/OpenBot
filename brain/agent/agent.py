@@ -350,3 +350,160 @@ class G1Agent:
         ]
         return self._fastpath_summary(call.name, call.arguments or {}, kind, reason)
 
+    def _fastpath_summary(
+        self, name: str, args: dict, kind: str, reason: Optional[str]
+    ) -> str:
+        """Delegation (v4-L1 extraction): the real summarizer lives in
+        ToolExecutor (brain/agent/tool_executor.py); the phrasing is
+        byte-identical."""
+        return self._get_executor()._fastpath_summary(name, args, kind, reason)
+
+    # ------------------------------------------------------------ the LLM lane
+
+    def _llm_loop(self) -> str:
+        """Qwen3 tool-calling loop with per-turn CURRENT SCENE injection."""
+        self._history = [
+            {"role": "user", "content": self._render_first_message()}
+        ]
+        while True:
+            if self._terminal_text is not None:
+                return self._terminal_text
+            if self._tool_call_count >= self.max_tool_calls:
+                return (
+                    COMPLETE_FAIL_PREFIX
+                    + f"reached the per-task tool-call limit ({self.max_tool_calls})"
+                )
+            self._history[0] = {
+                "role": "user",
+                "content": self._render_first_message(),
+            }
+            reply = self._chat_once()
+            if reply is None or reply.dropped:
+                return BUSY_LLM_TEXT if reply and reply.dropped else "The LLM produced no response."
+            if reply.tool_calls:
+                self._tool_call_count += len(reply.tool_calls)
+                self._history.append(
+                    {
+                        "role": "assistant",
+                        "content": reply.text or "",
+                        "tool_calls": [
+                            self._as_openai_call(c) for c in reply.tool_calls
+                        ],
+                    }
+                )
+                for call in reply.tool_calls:
+                    result = self._handle_tool_call(call)
+                    if self._terminal_text is not None:
+                        return self._terminal_text
+                    self._history.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call.id,
+                            "name": call.name,
+                            "content": self._truncate(result),
+                        }
+                    )
+                self._compact_history()
+                continue
+            final = (reply.text or "").strip()
+            return final if final else "The model returned an empty response."
+
+    def _chat_once(self) -> Optional[ChatResult]:
+        """One LLM call with timeout + repair attempts (max_llm_attempts).
+
+        Each attempt runs on its OWN single-worker executor: a decode
+        slower than ``llm_timeout_s`` abandons its worker (executor shut
+        down with ``wait=False``; the daemon thread keeps decoding until
+        the client call finishes) and the NEXT attempt starts on a fresh
+        worker instead of queueing behind the stuck one.  With the old
+        shared executor the abandoned future occupied the only worker, so
+        every retry queued behind it and double-timed-out — a slow decode
+        could permanently wedge retries.  Tradeoff: the abandoned decode
+        still holds the LLM client's single-flight lock, so a retry that
+        starts while it is still decoding is DROPPED by the client
+        (BUSY_LLM_TEXT) rather than queued — the wedge is never permanent,
+        and the retry runs whenever the first call finishes inside the
+        timeout window.  A fresh executor per attempt costs one thread
+        spawn per attempt (bounded by max_llm_attempts).
+
+        Backend exceptions NEVER escape run(): any exception raised by the
+        future (ModelLoadError on a missing/invalid model_path, transport
+        failures, anything else) is recorded and routed through the same
+        failure text, so the agent never raises backend exceptions to the
+        caller.
+        """
+        last_error: Optional[Exception] = None
+        for _attempt in range(1, self.max_llm_attempts + 1):
+            executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="agent-llm"
+            )
+            try:
+                future = executor.submit(
+                    self.llm.chat, self._history, self.tools.get_specs()
+                )
+                try:
+                    reply = future.result(timeout=self.llm_timeout_s)
+                except concurrent.futures.TimeoutError:
+                    last_error = TimeoutError(
+                        f"LLM chat timed out after {self.llm_timeout_s:g}s"
+                    )
+                    self._history.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"You did not respond within {self.llm_timeout_s:g}s. "
+                                "Continue the task now."
+                            ),
+                        }
+                    )
+                    continue
+                except ToolCallParseError as exc:
+                    last_error = exc
+                    self._history.append({"role": "user", "content": _JSON_REPAIR_MESSAGE})
+                except ChatTransportError as exc:
+                    last_error = exc  # transient, retry as-is
+                except Exception as exc:  # noqa: BLE001 — never crash run()
+                    last_error = exc  # blew up, retry, then fail text
+                else:
+                    # drop after an earlier failure = its
+                    # tail: abandoned decode still holds
+                    # the single-flight lock
+                    # 'busy' = symptom
+                    # surface the real last_error
+                    # busy text only for a first drop
+                    if reply is not None and reply.dropped and last_error is not None:
+                        return ChatResult(
+                            text=(
+                                f"LLM chat failed after "
+                                f"{self.max_llm_attempts} attempts: {last_error}"
+                            )
+                        )
+                    return reply
+            finally:
+                # wait=False: never block a hung handler
+                # daemon worker (3.9+) finishes the call
+                executor.shutdown(wait=False)
+        return ChatResult(
+            text=f"LLM chat failed after {self.max_llm_attempts} attempts: {last_error}"
+        )
+
+    @staticmethod
+    def _as_openai_call(call: ToolCall) -> dict:
+        return {
+            "id": call.id,
+            "type": "function",
+            "function": {
+                "name": call.name,
+                "arguments": json.dumps(call.arguments or {}),
+            },
+        }
+
+    def _compact_history(self) -> None:
+        """Drop middle turns; keep the scene-carrying first message."""
+        if len(self._history) <= MAX_KEPT_HISTORY_MESSAGES + 1:
+            return
+        self._history = [
+            self._history[0],
+            *self._history[-(MAX_KEPT_HISTORY_MESSAGES):],
+        ]
+
