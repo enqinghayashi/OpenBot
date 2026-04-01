@@ -1,0 +1,156 @@
+# OpenBot cloud profile — Plan-B R4 rung (off-robot cloud LLM).  Merged ON
+# TOP of config.yaml by brain/config_loader.load(profile='cloud'); the
+# stuart clamps (n_ctx 4096 / n_gpu_layers 0) do NOT apply here — this
+# profile never loads a GGUF and inherits the laptop n_ctx 4096.
+#
+# RATIONALE (Plan-B research result 2/3, ladder in docs/PLAN_B.md): the
+# on-robot CPU decode measures 3.5-4 tok/s (10-60 s per agent decision vs
+# the <=5 s target), and R0-R3 have no vision path.  R4 = cloud API via an
+# OpenAI-compatible endpoint: it buys LATENCY + VISION, NOT reliability
+# (BFCLv3 multi-turn: cloud frontier 42.5-54.75 <= our R2 fine-tune 56.5).
+# Recommended brain model: Claude Haiku 4.5 (~$0.005/decision, strict
+# tool-use schema conformance, TTFT ~0.6-0.9 s, 1000 RPM start tier,
+# Anthropic does NOT train on API data).  The OpenAI-compatible endpoint
+# is used on purpose: the shared response parser and tool-message shape
+# are OpenAI already (brain/agent/llm.py protocol), so no Anthropic
+# Messages-API translation is needed; stream:False + enable_thinking:false
+# avoid the think-block round-trip gotchas (Gemini thought_signature /
+# DeepSeek reasoning_content / Qwen3 think blocks).
+#
+# SECURITY (deploy-secret law): the API key is NEVER in this file or the
+# repo — llm.api_key_env names the environment variable (LLM_API_KEY) the
+# client reads at runtime.  Deploy the profile via the kit's env-export
+# pattern (STUART_PASS-style), never in a committed file.
+#
+# Run:  load(config.yaml, profile='cloud')  — brain runs anywhere (laptop
+# or the stuart box), the gateway transport points at the stuart box.
+
+# ---------------------------------------------------------------------------
+# v4 LAPTOP-SIDE CLOUD LANE (added 2026-09-01, gate C1)
+# ---------------------------------------------------------------------------
+# Everything ABOVE this block is the Plan-B R4 rung, kept verbatim: the
+# `llm:` segment still resolves for the legacy agent lane and the
+# config-seam suite still asserts it.  The sections BELOW add the v4 lane
+# so `voice/app.py --profile cloud` can run the REST brain FROM THE LAPTOP
+# against the gateway ON THE BOX.
+#
+# WHY THIS PROFILE AND NOT config.voice.yaml: config.voice.yaml pins
+# gateway.host 127.0.0.1 because it is meant to run ON the robot — and the
+# box currently has no internet egress (a dead eth0 default route shadows
+# the working wlan0; see docs/BUILD_LOG.md D1 finding 1).  This profile
+# already pinned gateway.host 192.168.123.164, i.e. laptop -> box, which
+# needs NO box egress at all: the laptop reaches the cloud, the box only
+# serves tools.
+#
+# LANE = transcript (REST /chat/completions), NOT realtime.  Decision
+# recorded in docs/BAKEOFF.md (2026-09-01 provider audit):
+#   - a realtime-only choice structurally EXCLUDES Anthropic (no audio API
+#     exists — verified by absence of any audio/speech/realtime endpoint);
+#   - OpenAI Realtime bills AUDIO rates ($10/$20 per 1M) on turns dominated
+#     by robot MOTION, not speech;
+#   - Gemini Live caps audio+video sessions at 2 MINUTES, shorter than one
+#     pick-and-place task.
+# Realtime is not abandoned — it stays a measured B5 column (latency and
+# barge-in), where it should genuinely win.
+#
+# MOCK AUDIO IS FREE HERE: under `--audio mock`, voice/app.py:941-948 swaps
+# the transcript lane's _submit/_tts for MockWhisper/MockPiper, so a C1 run
+# needs NO whisper.cpp server and NO piper binary on the laptop, while "the
+# cascade, brain, executor, hooks and gateway backend stay real".
+#
+# KEY: rest.api_key_env names the env var; the value is never in this file.
+# Export it from the chmod-600 laptop key file, e.g.
+#   export OPENAI_API_KEY="$(cat ~/.openbot/openai_key)"
+
+profile: cloud
+
+brain:
+  lane: transcript            # REST /chat/completions brain (the `rest:`
+                              # segment below).  'realtime' = wss lane,
+                              # 'offline' = the local regex brain.
+
+rest:
+  model: gpt-5.6-luna         # C1 pick, 2026-09-01: the cheapest CURRENT-GEN
+                              # vision-capable OpenAI model with tool support.
+                              # $0.20/$1.20 per 1M; a 424x240 frame is 135
+                              # image tokens under the live patch rule
+                              # (ceil(424/32)*ceil(240/32)*1.2 = 14*8*1.2),
+                              # so ~$0.000887 per decision -- 3.8x cheaper
+                              # than gpt-5.4-mini, the previous matrix pin.
+                              # NOT a bake-off verdict: B5 still ranks on
+                              # MEASURED usage across both lanes.
+  base_url: https://api.openai.com/v1
+  api_key_env: OPENAI_API_KEY   # env var NAME — never the key itself
+  tool_mode: skeleton         # plain-text JSON skeleton + deterministic parse
+  max_tokens: 1024            # B5 pin: MUST equal deploy/model_bakeoff.py
+                              # REST_MAX_TOKENS (the bench refuses a
+                              # mismatch).  #120: 256 truncated the tool
+                              # call on reasoning lanes (deepseek-vision
+                              # 16/20) — the re-run at 1024 is the ranked
+                              # result, and the app ships cfg.rest
+                              # max_tokens to the client, so bench == lane.
+  timeout_s: 120.0            # cloud TTFT + ~2.5k prompt over a demo network
+  prose_fallback: true        # a prose-only reply is SPOKEN, never the empty
+                              # result that would trip the failover signal
+
+vision:
+  enabled: true               # the gateway image verb feeds the brain a frame
+  topic: /camera/color/image_raw
+  max_age_s: 2.0              # older than this = not fresh; the brain is told
+                              # "no fresh image" rather than shown a stale one
+  min_interval_s: 1.0         # one frame per decision turn (camera runs ~12 Hz)
+  jpeg_quality: 80
+
+voice:
+  name: stewart               # spoken name (vocative strip)
+  whisper_url: http://127.0.0.1:8082/inference   # unused under --audio mock
+  whisper_model: tiny.en-q5_1                    # (MockWhisper replaces it)
+  piper_bin: voice/models/piper                  # unused under --audio mock
+  piper_voice: en_US-ryan-medium.onnx           # reuse-first: Stuart's own (MockPiper replaces it)
+  arrival_announce: false                       # gate: one async spoken "arriving" on nav arrival; OFF this run
+
+llm:
+  backend: cloud               # cloud branch of brain/agent/llm.py from_config
+                               # (CloudLLMClient: LlamaServerClient copy + one
+                               # Authorization: Bearer <env key> header)
+  model: claude-haiku-4-5-20251001
+                               # Plan-B R4 pinned brain model (Claude Haiku 4.5
+                               # via the OpenAI-compatible endpoint)
+  base_url: https://api.anthropic.com/v1
+                               # OpenAI-compatible endpoint (per the plan; the
+                               # deep Messages-API option is out of scope)
+  api_key_env: LLM_API_KEY     # env var NAME holding the key — NEVER the key itself
+  timeout_s: 120               # cloud TTFT + 2.5k-token prompt over a demo network;
+                               # agent.llm_timeout_s below raises the agent-side
+                               # ceiling (laptop default 12.0 s would abort early)
+  tool_mode: skeleton          # R4 rung: plain-text JSON skeleton + deterministic
+                               # parse (the R0' recommendation — grammar-constrained
+                               # json-mode is the wrong side of the Constraint Tax)
+  enable_thinking: false       # no think blocks (round-trip gotcha + cost)
+
+agent:                         # cloud round-trip budget.  G1Agent._chat_once wraps
+                               # every chat in future.result(timeout=self.llm_timeout_s)
+                               # (brain/agent/agent.py _chat_once) — the 12.0 s laptop
+                               # default inherited from config.yaml (agent.llm_timeout_s)
+                               # could abort a cloud call under a network stall, so the
+                               # cloud profile raises the ceiling instead of inheriting it.
+  llm_timeout_s: 120           # consumer: brain/agent/agent.py G1Agent._chat_once
+  max_llm_attempts: 2          # same as base (agent repair path owns the retry)
+
+embodiment:                    # #109 partial overlay: deep-merged over config.yaml,
+                               # so the OTHER perception keys flow from the base
+                               # unchanged (this profile only pins the floor).
+  perception:
+    det_conf_floor: 0.35       # BRAIN-ONLY detection-confidence floor: a
+                               # conf-0.234 phantom became a resolvable referent
+                               # on the B1 hardware probe.  consumer:
+                               # brain/scene_graph.py via voice/app.py
+                               # build_brain_stack.  The gateway keeps emitting
+                               # RAW detections (verifier false-success guard).
+
+gateway:
+  transport: real              # real = socket to the Stuart gateway; the brain can
+                               # live on the laptop while the robot is commanded
+  host: 192.168.123.164        # same box as stuart (G1 EDU eth0; loopback-
+                               # equivalent locally, reachable from the laptop)
+  port: 3900                   # same as stuart (pinned gateway TCP port)
