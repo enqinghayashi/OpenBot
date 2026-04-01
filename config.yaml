@@ -1,0 +1,251 @@
+# OpenBot v4 base config.  Profiles: laptop (dev) / cloud (REST brain
+# lane, config.cloud.yaml) / voice (cloud Realtime brain lane,
+# config.voice.yaml) / offline (local regex brain lane, config.offline.yaml).
+# Read by brain/config_loader.py (stdlib YAML-subset parser, NO PyYAML;
+# trailing inline comments on values are stripped by the loader).
+#
+# LANE SWITCH (v4, 2026-08-31): brain.lane selects the brain lane —
+# 'realtime' (OpenAI Realtime WebSocket), 'transcript' (REST
+# chat-completions), 'offline' (local regex, no network, no API key).
+# The voice/offline profiles set brain.lane in their own files; the
+# laptop/cloud profiles carry the legacy llm: backend path below.
+#
+# SUPERSEDED 2026-08-31 (OpenBot v4): the 'stuart' / 'stuart-cuda'
+# profiles and the local-LLM ladder are REMOVED from the v4 allowlist —
+# load(profile='stuart') raises a ValueError naming the replacement
+# (brain/config_loader.py).  config.stuart.yaml / config.stuart-cuda.yaml
+# stay in the repo as INERT ARCHIVES only; nothing loads them, and the v4
+# clamp pass (n_ctx -> 4096 / n_gpu_layers -> 0) is GONE with the
+# superseded stuart tier.  The old R0-R3 local-LLM ladder is superseded
+# by the voice/offline ladder (deploy/RUNBOOK-STUART.md §13 voice-staging).
+#
+# CONSUMER-SITE CONVENTION (round-5 config-steering): every key below is
+# annotated with its ACTUAL runtime consumer (module.function) — the
+# shipped launcher path ('openbot-agent' CLI -> brain/agent/agent.py
+# G1Agent.from_config) wires these values into the RUNNING hooks and
+# tools; a key without a consumer is dead and must not ship.  The `llm:`
+# section below is consumed by the laptop (dev mock) and cloud (REST)
+# profiles ONLY — the voice/offline lanes deliberately do not consume
+# LlmConfig (see config.voice.yaml header).
+
+profile: laptop
+
+llm:
+  backend: mock                # mock = in-process scripted (laptop dev); real = llama-cpp / llama-server
+                               # consumer: brain/agent/llm.py from_config
+  model_path: models/qwen3-4b-instruct-q4_k_m.gguf
+                               # consumer: brain/agent/llm.py from_config -> LlamaCppClient
+  n_ctx: 4096                  # laptop; (stuart tier superseded 2026-08-31 — the clamp pass is gone)
+                               # consumer: brain/agent/llm.py from_config
+  n_gpu_layers: all            # laptop RTX 4060; (stuart tier superseded 2026-08-31 — no profile clamps n_gpu_layers)
+                               # consumer: brain/agent/llm.py from_config
+  max_tokens: 256              # consumer: brain/agent/llm.py from_config
+  temperature: 0.2             # sampling temperature (LlamaCppClient kwarg)
+                               # consumer: brain/agent/llm.py from_config
+  # ── Plan-B keys (2026-08-30, R4 cloud rung) ───────────────────────────
+  # base_url / model / api_key_env feed ONLY the 'cloud' branch
+  # (CloudLLMClient, brain/agent/llm_cloud.py).  timeout_s / tool_mode /
+  # enable_thinking also reach the real + server branches.  config.stuart.yaml
+  # is an inert SUPERSEDED archive — nothing loads it, so no profile pins
+  # json-mode now (v4 allowlist: laptop/cloud/voice/offline); per-lane LLM
+  # settings ship in the profile YAMLs: config.voice.yaml / config.offline.yaml
+  # set brain.lane (realtime/offline) and config.cloud.yaml carries the cloud
+  # REST branch.  The laptop profile carries the defaults
+  # (empty/false/12.0/skeleton); config.cloud.yaml overrides them.
+  base_url: ""                 # OpenAI-compatible endpoint for llm.backend 'cloud'
+                               # (config.cloud.yaml: https://api.anthropic.com/v1)
+                               # consumer: brain/agent/llm.py from_config (cloud branch)
+  model: ""                    # cloud model id for llm.backend 'cloud'
+                               # (config.cloud.yaml: claude-haiku-4-5-20251001)
+                               # consumer: brain/agent/llm.py from_config (cloud branch)
+  api_key_env: ""              # NAME of the env var holding the API key — the key
+                               # itself NEVER lives in config files or the repo
+                               # consumer: brain/agent/llm.py from_config (cloud branch)
+  timeout_s: 12.0              # HTTP timeout for the cloud/sidecar clients
+                               # (config.cloud.yaml pins 120 for cloud round-trips)
+                               # consumer: brain/agent/llm.py from_config (server + cloud branches)
+  tool_mode: skeleton          # 'skeleton' = plain-text JSON skeleton + deterministic
+                               # parse (Plan-B R0' recommendation: measured 9-10/10 and
+                               # 2-4x faster than json-mode, which is the grammar-
+                               # constrained hard-schema side — Constraint Tax
+                               # 91.5->48.0% executable at 1.5B); 'json' = the D4
+                               # grammar-constrained json-mode.  Profile semantics:
+                               # laptop + cloud default to 'skeleton' (R0'/R4 rungs);
+                               # (config.stuart.yaml is an inert archive since
+                               # 2026-08-31 — nothing loads it, so no profile pins
+                               # json-mode now.)
+                               # consumer: brain/agent/llm.py from_config (real/server/cloud)
+  enable_thinking: false       # disable think blocks — all shipped profiles false
+                               # (Qwen3 think-block trap; Gemini thought_signature /
+                               # DeepSeek reasoning_content round-trip gotchas)
+                               # consumer: brain/agent/llm.py from_config (real/server/cloud)
+
+gateway:
+  transport: mock              # mock = in-process WorldObservation (laptop); real = socket to Stuart gateway
+                               # consumer: brain/agent/agent.py _backend_from_gateway_segment
+  host: 192.168.123.42         # dev placeholder (laptop default); the shipped profiles
+                               # config.voice.yaml + config.offline.yaml pin gateway.host
+                               # 127.0.0.1 (gateway on the robot = loopback for the app);
+                               # config.cloud.yaml pins 192.168.123.164 (laptop brain)
+                               # consumer: gateway/brain_client.py GatewayCallerBackend + brain/agent/agent.py _backend_from_gateway_segment
+  port: 3900                   # consumer: gateway/brain_client.py GatewayCallerBackend + gateway/gateway_node.py resolve_skill_endpoints
+
+skills:                        # protocol endpoints (verb grammar in skills/docs + README)
+                               # consumers: gateway/gateway_node.py resolve_skill_endpoints (-> GatewayNode)
+  writer_sock: /tmp/merged_writer.sock
+  grip_sock: /tmp/grip_server.sock
+  engine_sock: /tmp/pick_engine.sock
+                               # The engine's OWN listener (2026-09-13). Must MATCH the entrypoint's
+                               # SOCK_PATH or EngineBridge's connect-first silently degrades to
+                               # spawn-always — i.e. straight back to the arm-drop defect.
+  engine_cmd: env -i HOME=/home/unitree USER=unitree PICK_ARM_WRITER=on PYTHONPATH= RMW_IMPLEMENTATION=rmw_cyclonedds_cpp PATH=/home/unitree/miniconda3/envs/tv/bin:/home/unitree/miniconda3/bin:/usr/local/bin:/usr/bin:/bin LD_LIBRARY_PATH=/home/unitree/miniforge3/envs/pinocchio_env/lib:/home/unitree/miniconda3/envs/tv/lib python3 /home/unitree/leon/tabletop_pick_place_engine.py
+                               # 2026-09-21 RMW FIX — `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`
+                               # and `PYTHONPATH=` added so this env MATCHES the reference
+                               # DAEMON_ENV (skills/arm/pick_node_POINTCLOUD_version.py:77-91)
+                               # VAR FOR VAR.  `env -i` wipes everything, so a var this file
+                               # omits is ABSENT in the spawned engine, not inherited.  RMW was
+                               # omitted, and EVERY other working launch path sets it —
+                               # launch_pick_walk.sh:231, launch_merge_pick_v2b.sh:251,
+                               # setup_openbot.sh:8.  Without it the spawned engine dies
+                               # before printing READY (pick_engine_v3.py:3133
+                               # ChannelFactoryInitialize(0, iface)), and the gateway reports
+                               # only 'pick engine did not print READY (stderr tail: )'.
+                               # This path is the COLD-START FALLBACK, i.e. exactly the case
+                               # the voice-first lane hits: no resident engine to connect to.
+                               # DUAL-FORM: first token an engine verb (the loader-default verb form 'pick x y z nx ny nz orientation height_m', config_loader.py:578) = engine OFF (never exec'd); any other value = the live spawn — here the REAL #106 env-fix spawn ('env' first token).
+                               # 2026-09-13 STRUCTURAL FIX: this is now the FALLBACK path only. The
+                               # EngineBridge CONNECTS to engine_sock first and reuses the resident engine
+                               # (the one pick_node spawned), so a place no longer boots a second engine
+                               # that drives both arms to NEUTRAL. Spawning happens only on a cold start.
+                               # No profile overrides this key (deep-merge inherits it)
+                               # The entrypoint WRAPS pick_engine_v3 (which carries the place/place_left
+                               # verbs v2 lacks) — so the pick lane and the gateway now share ONE v3-based
+                               # engine instead of a v2 pick engine plus a second v3 gateway engine.
+                               # pick_engine_v3.py stays in place as the command body and must NOT be
+                               # renamed: tests/test_dex3_hand_presets.py:335 and
+                               # tests/test_grip_state_contract.py:185 read it by path.
+
+agent:                         # consumer: brain/agent/agent.py G1Agent.from_config -> G1Agent.__init__
+  max_tool_calls: 25           # consumer: brain/agent/agent.py G1Agent.__init__ (tool-call cap)
+  failure_budget: 3            # consumer: brain/agent/agent.py G1Agent.__init__ (failure-budget loop)
+  detection_freshness_s: 2.0   # consumer: brain/hooks.py safety_checks_hook (pre-motion freshness
+                               # budget) via brain/agent/agent.py G1Agent.from_config ->
+                               # default_hooks(freshness_s=...); parity with
+                               # embodiment.perception.freshness_s — the embodiment value is the
+                               # runtime fallback when THIS key is absent from the segment
+  llm_timeout_s: 12.0          # consumer: brain/agent/agent.py G1Agent._chat_once
+  max_llm_attempts: 2          # consumer: brain/agent/agent.py G1Agent._chat_once
+  max_tool_result_chars: 2000  # consumer: brain/agent/agent.py G1Agent._truncate
+
+embodiment:                    # capability payload (brain/embodiment.py schema);
+                               # consumer: brain/agent/agent.py G1Agent.from_config ->
+                               # EmbodimentConfig.from_section -> injected into hooks + tools
+  envelope:                    # operational envelope (STUART-verified where noted)
+    pick_min_height_m: -0.35   # TORSO-frame workspace floor (frame fix
+                               # 2026-09-06): z is height ABOVE THE TORSO LINK
+                               # (depth projector: camera 0.46268 m above torso,
+                               # 48 deg tilt; pick engine: ik_z = torso_z;
+                               # live tabletop detections z in [0.00,+0.07]).
+                               # A ground object reads ~-0.75 (G1 torso is
+                               # ~0.75-0.8 m above the floor).  TABLETOP-ONLY:
+                               # ground objects are a capability-block —
+                               # the brain must refuse.
+                               # consumers: brain/hooks.py safety_checks_hook (floor refusal) +
+                               # brain/agent/tools.py ToolRegistry._constrained_pick_point
+    pick_max_height_m: 1.20    # conservative upper bound (default; verify on robot)
+                               # consumers: brain/hooks.py safety_checks_hook (overhead refusal) +
+                               # brain/agent/tools.py ToolRegistry._constrained_pick_point
+    max_reach_m: 0.90          # conservative arm reach (default; verify)
+                               # consumer: brain/agent/tools.py ToolRegistry._constrained_pick_point
+    grip_center_standoff_m: 0.0   # 2026-09-06 FIX (was 0.37 "GRAIL grasp reach"): the
+                               # pick engines (pick_engine_v2 / pick daemon) treat stdin
+                               # x/y/z as the WRIST target and consume NO standoff —
+                               # 0.37 pushed the commanded x to 0.144+0.37=0.514 (E2
+                               # 22:49 air-close).  The grip-zone offset (17-69 mm) is
+                               # handled ENGINE-side (v5.0 forensics).  Keep 0.0 unless a
+                               # standoff-consuming engine (pick_engine_v3) exists.
+                               # consumer: brain/agent/tools.py ToolRegistry._constrained_pick_point
+    min_arm_dur_s: 1.5         # writer clamps arm <dur> to >= 1.5 s
+                               # consumers: gateway/gateway_node.py resolve_embodiment_config
+                               # -> GatewayNode._min_arm_dur_s -> _clamp_arm_dur (arm-dispatch
+                               # dur lower bound; effective floor = max(min_arm_dur_s, 1.5))
+    # ── low-workspace descent lane (plan §8) ────────────────────────────────
+    # ONE-LINE ROLLBACK: set low_workspace_lane: false (or delete this block)
+    # and every pick/place byte and refusal message is today's.  The five keys
+    # DEFAULT to exactly the values below, so an older config that omits them
+    # behaves identically.  Strict bool: the loader REFUSES a string "false" or
+    # a numeric 0/1 rather than guessing, so the lane can never arm itself on a
+    # typo.  Consumers: brain/descent_law.py::effective_pick_floor via
+    # brain/hooks.py safety_checks_hook + brain/agent/tools.py
+    # _constrained_pick_point; the four law inputs are threaded into the law by
+    # the gateway descent sequence (gateway/descent_lane.py).
+    low_workspace_lane: false  # DESCENT LANE MASTER SWITCH.  false = tabletop-only
+                               # (today).  true relaxes the brain's floor to the
+                               # derived rescue floor and permits the descend ->
+                               # pick/place -> verify -> retreat/hold sequence.
+                               # NOTE (D5): the writer ships its height band SHUT
+                               # (min == max == 0.74), so even with this true the
+                               # body physically cannot descend until the band is
+                               # widened as its own supervised step.
+    height_stand_m: 0.74       # nominal standing reference (writer height_stand).
+                               # Consent: SIMULATED (MuJoCo GR00T-Balance), NOT
+                               # hardware-measured.  Ascent is UNMEASURED.
+    height_min_m: 0.55         # writer height-command CLAMP floor.  The descent
+                               # budget is height_stand_m - height_min_m = 0.19 m
+                               # in command units.  Bring-up flips the derived
+                               # rescue floor by changing THIS value (no code
+                               # change): 0.55 -> -0.54 m, vs 0.5246 -> -0.5654 m
+                               # from the realised-coupling correction.
+    hold_tol_m: 0.05           # D2 same-height tolerance (m body height): the
+                               # low pick -> low place pair holds the descent iff
+                               # |h_need - h_cur| <= this, else it retreats first.
+    descend_confirm_timeout_s: 3.0  # status-poll budget (s) for a CONFIRMED
+                               # descent/retreat.  Confirmation is a writer
+                               # REFERENCE readback, never a body measurement.
+    lane_operation_budget_s: 30.0  # DECLARED lane operation budget (s) — the
+                               # config owner of the gate that used to be an
+                               # INVENTED guard constant in the gateway lane
+                               # (gateway/descent_lane.py LANE_OPERATION_BUDGET_S
+                               # = 30.0, which this value mirrors).  30.0 IS the
+                               # declared default, so setting it is a no-op on
+                               # today's behaviour: the line exists to DECLARE
+                               # the number and to be the one place an operator
+                               # edits it.  The loader REFUSES a value that is
+                               # not a finite positive number (ConfigError at
+                               # boot) rather than silently substituting 30.0 —
+                               # a budget that looks configured and never
+                               # expires, or one that refuses every descended
+                               # dispatch, is the failure this refusal prevents.
+                               # consumer: gateway/gateway_node.py
+                               # _descent_operation_budget -> _lane_law ->
+                               # gateway/descent_lane.py LaneLaw.operation_budget_s
+  perception:
+    freshness_s: 2.0           # detection freshness budget (agent parity)
+                               # consumer: brain/agent/agent.py G1Agent.from_config (runtime
+                               # fallback for detection_freshness_s when the agent segment is
+                               # silent) -> brain/hooks.py safety_checks_hook
+    silence_means_empty: true  # /object_detections_body is event-driven:
+                               # silence == empty scene, NOT no-data.
+                               # SAFETY-ADJACENT: MUST stay True for the
+                               # shipped profile (the loader rejects any
+                               # non-bool value for this key).
+                               # consumers: gateway/gateway_node.py resolve_embodiment_config
+                               # -> GatewayNode._silence_means_empty -> gateway/assemble.py
+                               # Assembler (silence == empty scene switch)
+    frame: torso               # x = lateral RIGHT, y = forward, z = up
+                               # consumer: gateway/gateway_node.py resolve_embodiment_config
+                               # -> GatewayNode._detections_frame (detections frame name;
+                               # documents the cmd_set omega sign mapping)
+    det_conf_floor: 0.35       # BRAIN-ONLY detection-confidence floor (#109):
+                               # a conf-0.234 phantom became a resolvable referent on
+                               # the B1 hardware probe.  consumer: brain/scene_graph.py
+                               # SceneGraph(conf_floor=...) via brain/agent/agent.py +
+                               # voice/app.py build_brain_stack.  The GATEWAY keeps
+                               # emitting RAW detections — moving this filter upstream
+                               # of the verifier's obs would certify a grasp that
+                               # never happened (target reads as 'gone').
+  base_relative:               # named positions relative to base/torso
+    key_positions:             # consumer: brain/agent/tools.py ToolRegistry.place_at_spot
+                               # (named-spot lookup; unknown spot -> honest tool error)
+      grip_center_m: [0.0, 0.37, 0.0]   # torso-frame offset of the grip center
+      camera_offset_m: [0.0, 0.0, 0.0]  # detections already torso-frame

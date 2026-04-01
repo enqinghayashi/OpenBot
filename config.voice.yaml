@@ -1,0 +1,150 @@
+# OpenBot v4 voice profile — the cloud Realtime brain lane (profile
+# 'voice'; config.voice.yaml).  Merged ON TOP of config.yaml by
+# brain/config_loader.load(profile='voice').
+#
+# BRAIN LANE (v4): brain.lane 'realtime' = the OpenAI Realtime WebSocket
+# brain (the `realtime:` segment); brain.lane 'transcript' = the REST
+# chat-completions brain (the `rest:` segment — the same client family
+# as brain/agent/llm_cloud.py, OpenAI-compatible /chat/completions).
+# Every realtime/rest value below is the SEALED marketplace default
+# until the bake-off pin (plan 6): the user pins BOTH model AND lane
+# after hardware testing.
+#
+# VOICE LANE (all local on the robot): Vosk KWS (wake words) ->
+# whisper.cpp (STT, local whisper server) -> brain -> Piper (TTS).
+# The `voice:` segment is the voice protocol's config; the `vision:`
+# segment is the camera capture lane (the image verb).
+#
+# The `llm:` section is DELIBERATELY ABSENT: the v4 realtime lane does
+# not consume brain/agent/llm.py's LlmConfig (that is the SUPERSEDED
+# local-LLM ladder).  Checked consumers: gateway/brain_client.py reads
+# only the `gateway:` segment; the RealtimeBrain consumes `brain:` /
+# `realtime:` / `voice:` / `vision:`.  The laptop config.yaml llm section
+# stays untouched for the laptop profile.
+#
+# SECURITY (deploy-secret law): the API key is NEVER in this file or the
+# repo — realtime.api_key_env names the env var (OPENAI_API_KEY) the
+# client reads at runtime.
+
+profile: voice
+
+brain:
+  lane: realtime              # 'realtime' (cloud Realtime WebSocket) /
+                              # 'transcript' (REST chat) / 'offline' (regex)
+  # CONFIRMATION GATE — OPERATOR DIRECTIVE 2026-09-26, verbatim: *"i want to
+  # remove the confirmation, it does not need to ask shall i proceed, it
+  # should just do it immediately, so is pick and place"*.
+  #   false = motion executes on the command, with NO spoken confirm round.
+  #   true  = the gate asks once and waits for a spoken yes (the default in
+  #           code, so anything that does not set this key still pauses).
+  # This disables the ASK only.  Everything else still runs: the safety
+  # pre-hooks (freshness / envelope / scene), the verifier post-hook, and
+  # STOP/CANCEL — which were never part of this gate.  The hook's own result
+  # text records "APPROVED UNASKED ... no human confirmed", so the audit
+  # trail never claims a consent that did not happen.  Flip this one line to
+  # get the pause back.
+  confirm_motion: false
+
+realtime:                     # default until the bake-off pin (plan 6):
+                              # user pins model AND lane after hardware testing
+  model: gpt-realtime-2.1-mini
+  base_url: wss://api.openai.com/v1/realtime
+  api_key_env: OPENAI_API_KEY   # env var NAME — never the key itself
+  voice: cedar
+  speed: 0.9
+  sample_rate: 24000
+  connect_timeout_s: 10.0
+  ready_timeout_s: 10.0
+  session_cap_min: 60
+  reconnect_backoffs: [1, 2, 4, 8, 8, 8, 8, 8]  # seconds; 8 retries max
+  # The identity the model speaks as (session.update `instructions`,
+  # sent once at connect; per-turn instructions still override).  An
+  # empty/missing value leaves the field absent entirely.  Mirrors
+  # OpenBot's DEFAULT_INSTRUCTIONS on the same channel.  (One line —
+  # the YAML-subset parser has no block scalars.)
+  # BREVITY (operator directive 2026-09-26: "he should not talk that much
+  # output ... just be short brief concised response").  The old text said
+  # only "keep spoken answers short unless the user asks for detail" — an
+  # adjective with an escape hatch, buried mid-paragraph, and the model
+  # talked at length anyway.  A realtime speech-to-speech model follows
+  # CONCRETE, COUNTABLE limits far more reliably than a tone word, so the
+  # rule is now a hard one-sentence budget stated up front.  The safety
+  # clause is deliberately UNCHANGED in strength: brevity must never become
+  # a reason to claim motion that no tool reported.
+  # DOUBLE-PROMPT FIX (operator report 2026-09-26: "it asked me 'shall i
+  # proceed' twice, even though i have already answered, and the second
+  # 'shall i proceed' was even louder").  The clause that used to stand here
+  # read "Ask for motion confirmation as briefly as possible: 'Shall I
+  # proceed?'." — added with the brevity edit, and WRONG.  The confirmation
+  # is not the model's to ask: brain/hooks.py gates every motion tool through
+  # voice/app.py make_voice_confirm, which speaks its own prompt.  Telling the
+  # model to say the same words made the human hear the phrase TWICE, once in
+  # the model's realtime voice and once in the gate's local piper voice —
+  # which is why the two differed in loudness rather than merely repeating.
+  # The model must CALL the tool and let the harness ask; the instruction is
+  # now the exact inverse of the one that caused the bug.
+  # PICK->PLACE MEMORY (2026-10-03, run19: the realtime lane never received brain/agent/prompts/system.txt:106-120): 4 sentences carrying its pick-then-place + 'never pick a second object with a full hand' rules; the self_state wording is shared with the BRAIN package.
+  # BATCH 2 v2 (2026-10-04, run20 R2/R3): confirmation clause -> "the system's job, never yours"; + navigate-when-unseen/OUT-OF-REACH, cancel-scope, right-arm-only (box merge: docs/BOX_MERGE_config_voice_instructions_v2.md).
+  instructions: "You are Stuwart, the voice of OpenBot, speaking through a Unitree G1 humanoid robot at the University of Western Australia. Sound like a helpful colleague — plain, warm, direct. BE BRIEF; your words are spoken aloud and every extra one costs the human time. One sentence is the norm, two when you truly need them, never a paragraph. No preamble, no restating the request, no reciting options nobody asked for, no narrating what you are about to do — do it, then say the result in a few words. ONE exception, and it is not yours to speak: while the robot sweeps for a target and walks to it, the harness narrates the progress itself (looking, spotted it, walking over, arrived). Never narrate a search or an approach yourself, and never repeat what the harness just said. NEVER ask the human to confirm a motion and NEVER say 'Shall I proceed' or anything like it: any confirmation is the system's job, never yours. When a motion is wanted, call the tool right away. If you did not catch part of the request, or part of it cannot be done, say which part in one short question and still do the rest — never silently do half the job. Give detail only when the human asks for detail. You have tools to see what the robot's camera sees and to drive the OpenBot harness (observe, pick, place, walk, open, close, and named arm poses: ready, tuck, neutral, home); use them when the question is about the real world around the robot. Report what the tools report — when a tool says it succeeded, say so plainly and go on to the next step. After a pick succeeds the object may be in your hand: the next step is place (or open_hand to let go), never pick it again. Never pick a second object while your hand is full. After a place succeeds the hand is empty. If a tool result carries a self_state line, trust it over your own memory of what you hold. If the object you are asked to handle is not in view, call navigate with its label: it searches the room and walks to it. If it is visible but its scene line says OUT-OF-REACH, call navigate first, then pick. Do this yourself; never ask permission to walk. A stop or cancel ends only the action that was running: the next request is a new instruction, so carry it out. Pick with the right arm only: the left hand is out of service, and a failed pick is never a reason to switch arms. NEVER claim that the robot moved, pointed, walked, touched, grasped, carried, or opened anything unless a tool result reported it. If a tool fails or the scene is empty, say exactly what happened. When the human greets you, greet back briefly and offer help."
+
+rest:                         # brain.lane 'transcript' — REST chat-completions
+                              # (OpenAI-compatible /chat/completions; the
+                              # same client family as brain/agent/llm_cloud.py)
+  model: gpt-5.4-mini         # placeholder default until the bake-off pin
+                              # (plan 6): the user pins model AND lane
+  base_url: https://api.openai.com/v1
+  api_key_env: OPENAI_API_KEY   # env var NAME — never the key itself
+  tool_mode: skeleton         # 'skeleton' (default) or 'json'
+  timeout_s: 120.0
+  prose_fallback: true        # skeleton/json: a prose-only reply returns
+                              # as ChatResult.text and is SPOKEN by the
+                              # transcript lane — never the empty result
+                              # that would trigger the failover signal
+
+voice:
+  name: stewart               # the robot's SPOKEN name (OfflineBrain vocative strip)
+  mic_mode: g1                # 'g1' = robot on-board mic; 'file' = audio file
+  multicast_group: 239.168.123.161
+  multicast_port: 5555
+  sample_rate: 16000
+  kws_model_dir: voice/models/vosk-model-small-en-us
+  # OPERATOR DIRECTIVE 2026-09-20: the operator says "hello stuwart"
+  # (their spelling, twice, verbatim).  The KWS can only hear phrases IN
+  # ITS GRAMMAR (kws.py:114-116 builds it from wake+sleep phrases), so
+  # the 'stuwart' spellings are added alongside the shipped 'stewart'
+  # ones.  Kept in step with config.offline.yaml.
+  # ONE LINE, deliberately: brain/config_loader.py parses line-oriented
+  # (no PyYAML), so a flow list wrapped across lines is truncated — the
+  # '[' is kept and the continuation line dropped (that parser now
+  # REFUSES that form).  Keep both spellings on this single line.
+  wake_phrases: [hey stewart, hi stewart, hello stewart, okay stewart, hey stuwart, hi stuwart, hello stuwart, okay stuwart]
+  kws_cooldown_s: 3.0
+  whisper_url: http://127.0.0.1:8082/inference
+  whisper_model: tiny.en-q5_1
+  piper_bin: voice/models/piper
+  piper_voice: en_US-ryan-medium.onnx  # reuse-first: Stuart's own voice (box)
+  speaker_app_name: uwa_csse_voice
+  speaker_cap_bytes: 96000
+  energy_min_peak: 1200
+  energy_floor_factor: 3.0
+  energy_hangover_s: 0.9
+  energy_prefix_s: 0.4
+  energy_cooldown_s: 3.0
+  echo_coupling: 1.5
+  arrival_announce: true    # gate: spoken WALK-PHASE narration (sweep / saw-it /
+                            # walking / arrived) from /navigate_status.  ON as
+                            # of 2026-09-28 (operator: "sound like human") —
+                            # with it OFF a 77 s search was silent and read as a
+                            # hang.  The harness speaks these, not the model.
+
+vision:
+  enabled: true
+  topic: /camera/color/image_raw
+  max_age_s: 2.0
+  min_interval_s: 1.0
+  jpeg_quality: 80
+
+gateway:
+  transport: real             # real = socket to the on-robot gateway
+  host: 127.0.0.1             # the gateway node lives on the robot (loopback)
+  port: 3900
