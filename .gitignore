@@ -1,0 +1,44 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+models/
+voice/models/
+logs/
+# deploy/results/ = bake-off driver output (deploy/bench_vision_models.sh) — recreated each run
+deploy/results/
+How_LLM_IMPLEMENTED_ON_G1_RUNNABLE_EXAMPLE/
+
+# generated simulation output (hundreds of MB; reproducible from the tools
+# that write it -- never commit, they exist on disk only)
+skills/writer/tools/out_*/
+
+# --- Unitree reorganisation (2026-10-09): data, build workspace and archives live OUTSIDE the repo
+# (~/Unitree/OpenBot_data, OpenBot_workspace, OpenBot_archive). Three relative symlinks stay here, compat links, not
+# content (a symlink is not matched by a trailing-slash rule): two because code reads/writes the old in-tree path, and
+# pipeline -> ../OpenBot_archive/OpenBot_v1/pipeline because frozen workspace copies read ~/Unitree/OpenBot/pipeline/arm:
+skills/writer/tools/out_height_sweep
+skills/perception/tools/vision_snapshots
+/pipeline
+
+# --- not part of the source repository (the files stay on disk) ----------------
+# this repo carries OpenBot source only: code, configs and the assets the code
+# needs to run. everything below is ignored on purpose.
+# delete the next line to track the test suite
+/tests/
+/docs/
+/_thesis_review/
+/format_work/
+/public_release/
+/.comment_backup/
+/.comment_backup2/
+COMMIT_MESSAGES*.tsv
+*.docx
+*.pdf
+*.zip
+*.tgz
+*.tar.gz
+*.log
+dump.log
+.wf-*.js
+/pytest.ini
