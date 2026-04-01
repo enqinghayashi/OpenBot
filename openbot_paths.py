@@ -25,3 +25,8 @@ _SONIC = os.path.join(_HOME, "sonic_kneel_video")                    # not under
 _SONIC_G1 = ("imports", "SONIC", "gear_sonic_deploy", "src", "g1")
 
 
+def _p(env, new, old):
+    v = os.environ.get(env)
+    if v:
+        return v                                # you asked for it, you get it - even if it's missing (NOT-RUN, no fallback)
+    return new if os.path.exists(new) else old  # mid-move: try the new spot first, fall back to the old one
