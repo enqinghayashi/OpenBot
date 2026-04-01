@@ -1,0 +1,80 @@
+# SUPERSEDED 2026-08-31 — the stuart/stuart-cuda profiles and the local-LLM
+# ladder are removed from the OpenBot v4 (cloud Realtime + voice + offline
+# regex) rebuild.  This file is an inert archive; load(profile="stuart") now
+# raises ValueError.  Replacement: config.voice.yaml / config.offline.yaml.
+
+# Stuart G1 robot profile — merged ON TOP of config.yaml by
+# brain/config_loader.load(profile='stuart') (deep merge; these keys
+# replace the base values, everything else is inherited).  The loader
+# additionally CLAMPS llm.n_ctx -> 4096 (D4 2026-08-29, was 2048) and
+# llm.n_gpu_layers -> 0 after the merge, so the robot can never silently
+# run laptop LLM settings.
+
+# ── D0 PREFLIGHT (REQUIRED before the stuart profile can run) ───────────────
+# The stuart profile runs the REAL socket transport, so load() needs
+# Stuart's reachable address BEFORE any launch.  While gateway.host was a
+# placeholder, brain/config_loader.load(profile='stuart') raised a
+# ConfigError naming gateway.host — that was the HONEST failure (a launch
+# against a TODO address can never connect), not a bug.  D0 steps:
+#   1. put the robot and the laptop on the same network (robot wifi /
+#      ethernet); the gateway node must reach /tmp/merged_writer.sock and
+#      /tmp/grip_server.sock on the robot itself (127.0.0.1 is valid),
+#   2. discover the address (`hostname -I` on the robot, or the lease on
+#      the router),
+#   3. replace the placeholder gateway.host value below with that address
+#      (e.g. 192.168.123.42),
+#   4. re-run the self-tests:  python3 tests/unit/repo/test_config_loader_consumers.py
+# With transport 'mock' a placeholder is fine (no socket to reach).
+#
+# DONE — D0 step 3 filled 2026-08-27: host = 192.168.123.164 (the eth0
+# address the deploy kit ssh's to; same box as the gateway, so it is
+# loopback-equivalent locally and reachable from the laptop for D4/D5).
+
+profile: stuart
+
+llm:
+  backend: real                # D4 fix 2026-08-29: the base config.yaml ships the dev
+                               # default `backend: mock` (scripted "I don't know."); the
+                               # deep merge used to keep it, so a stuart profile run would
+                               # measure a MockLLM and print a meaningless ~0.00 s. Real =
+                               # the in-process llama-cpp backend on Stuart (CPU). The D4
+                               # snippet also asserts this after load() (defense in depth
+                               # against an uncontrolled on-box config.yaml).
+  n_ctx: 4096                  # D4 2026-08-29: 2048 exceeded by the agent's own
+                               # system prompt (2274 request tokens -> hard
+                               # context-overflow failure); loader clamp now 4096,
+                               # measured 15 GB RAM fits it. CPU-only still.
+  n_gpu_layers: 0              # no GPU offload on Stuart (loader clamps to 0)
+  tool_mode: json              # 2026-08-30 PIN: the base config.yaml default is now
+                               # 'skeleton' (Plan-B R0' recommendation), so an unpinned
+                               # stuart profile would silently switch the D4 deployed
+                               # json-mode run to a different mode.  json-mode is the
+                               # grammar-constrained schema (the Constraint-Tax side
+                               # of the R0' research).  Flip this to 'skeleton' when
+                               # R0' lands — see the ladder in docs/PLAN_B.md (R0' =
+                               # plain-text JSON skeleton + deterministic parse,
+                               # 9-10/10 and 2-4x faster than json-mode).
+  enable_thinking: false       # no Qwen3 think tokens (a think block burns the CPU
+                               # generation budget and is a parse-failure source)
+
+agent:
+  llm_timeout_s: 120            # 2026-08-30 D4-run fix: the base config.yaml ships
+                                # 12.0 s (laptop-dev default) and _chat_once's
+                                # future.result(timeout=...) ABORTS on it — on the
+                                # box a decision decodes for tens of seconds, so an
+                                # unpinned profile made the first D4 measurement time
+                                # out at 12.01 s and single-flight-drop the retry
+                                # (DROPPED=2, busy-string reply).  Mirrors the cloud
+                                # profile rationale.  The D4 measurement driver
+                                # overrides 300 s for extra headroom.
+  max_llm_attempts: 2           # same as base (agent repair path owns the retry)
+
+gateway:
+  transport: real              # real = socket to Stuart gateway; the in-process
+                               # mock on the robot would be a false transport
+  port: 3900                   # pinned 2026-08-29: inherited from config.yaml:33 before;
+                               # a base-file change could silently leave the client dialing
+                               # 3900 while the TCP listener binds 0 (port 0 DISABLES it)
+  host: 192.168.123.164        # D0 step-3 FILLED 2026-08-27: eth0 addr the kit ssh's
+                               # to (same box as the gateway -> loopback equivalent;
+                               # also reachable from the laptop for D4/D5)

@@ -1,0 +1,73 @@
+# OpenBot v4 offline profile — the NO-NETWORK regex brain lane (profile
+# 'offline'; config.offline.yaml).  Merged ON TOP of config.yaml by
+# brain/config_loader.load(profile='offline').
+#
+# BRAIN LANE (v4): brain.lane 'offline' = the OfflineBrain regex brain
+# (brain/agent/offline_brain.py) — NO LLM, NO API key, NO network, ever.
+# The full offline voice loop: Vosk KWS (wake words) -> whisper.cpp (STT,
+# local) -> OfflineBrain (regex intent + tool calls) -> Piper (TTS).
+# The verifier stays ACTIVE in this lane (tool-call verification runs
+# locally; it never needs the network).
+#
+# There is deliberately NO internet-dependent field in this file: no
+# `realtime:` segment, no `rest:` segment, no api_key_env, no model id,
+# no cloud URL.  The only sockets are local ones — the whisper server
+# (127.0.0.1:8082) and the on-robot gateway (127.0.0.1:3900).
+#
+# The `llm:` section is DELIBERATELY ABSENT (see config.voice.yaml —
+# the v4 lanes do not consume the superseded local-LLM ladder).
+
+profile: offline
+
+brain:
+  lane: offline               # 'offline' = regex brain, no LLM, no network
+
+voice:
+  name: stewart               # the robot's SPOKEN name (OfflineBrain vocative strip)
+  mic_mode: g1                # 'g1' = robot on-board mic; 'file' = audio file
+  multicast_group: 239.168.123.161
+  multicast_port: 5555
+  sample_rate: 16000
+  kws_model_dir: voice/models/vosk-model-small-en-us
+  # OPERATOR DIRECTIVE 2026-09-20: the operator says "hello stuwart"
+  # (their spelling, twice, verbatim).  The KWS can only hear phrases IN
+  # ITS GRAMMAR (kws.py:114-116 builds it from wake+sleep phrases), so
+  # the 'stuwart' spellings are added alongside the shipped 'stewart'
+  # ones.  Both spellings diagnose to the same name, so a match on
+  # either wakes the lane and the wake-leak trim handles both (the name
+  # is derived from the phrases, not hard-coded).
+  # ONE LINE, deliberately: brain/config_loader.py parses line-oriented
+  # (no PyYAML), so a flow list wrapped across lines is truncated — the
+  # '[' is kept and the continuation line dropped (that parser now
+  # REFUSES that form).  Keep both spellings on this single line.
+  wake_phrases: [hey stewart, hi stewart, hello stewart, okay stewart, hey stuwart, hi stuwart, hello stuwart, okay stuwart]
+  kws_cooldown_s: 3.0
+  whisper_url: http://127.0.0.1:8082/inference
+  # B2 gate decision 2026-09-04 (recorded cell, RUNBOOK 13.4):
+  # small.en = 21.7 s/inference on this CPU (fails the 6 s gate AND the
+  # app's 15 s submit timeout); tiny.en-q5_1 = 1.52 s warm, transcript
+  # exact (measured via the app's own WhisperSubmit path on the box).
+  whisper_model: tiny.en-q5_1
+  piper_bin: voice/models/piper
+  piper_voice: en_US-ryan-medium.onnx  # reuse-first: Stuart's own voice (box)
+  speaker_app_name: uwa_csse_voice
+  speaker_cap_bytes: 96000
+  energy_min_peak: 2200
+  energy_floor_factor: 3.0
+  energy_hangover_s: 0.9
+  energy_prefix_s: 0.4
+  energy_cooldown_s: 3.0
+  echo_coupling: 1.5
+  arrival_announce: false   # gate: one async spoken "arriving" on nav arrival; OFF this run
+
+vision:
+  enabled: true
+  topic: /camera/color/image_raw
+  max_age_s: 2.0
+  min_interval_s: 1.0
+  jpeg_quality: 80
+
+gateway:
+  transport: real             # real = socket to the on-robot gateway
+  host: 127.0.0.1             # the gateway node lives on the robot (loopback)
+  port: 3900
