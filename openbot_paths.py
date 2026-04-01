@@ -30,3 +30,27 @@ def _p(env, new, old):
     if v:
         return v                                # you asked for it, you get it - even if it's missing (NOT-RUN, no fallback)
     return new if os.path.exists(new) else old  # mid-move: try the new spot first, fall back to the old one
+
+
+WF             = _p("OPENBOT_WF",             _WORKSPACE,                                         os.path.join(_UNITREE, ".wf"))
+STUART_RUN     = _p("OPENBOT_STUART_RUN",     os.path.join(_DATA, "robot_logs", "stuart_run"),    os.path.join(_UNITREE, "stuart_run"))
+PLANNER_MODELS = _p("OPENBOT_PLANNER_MODELS", os.path.join(_DATA, "models", "planner_models"),    os.path.join(_UNITREE, "planner_models"))
+SIM_EVIDENCE   = _p("OPENBOT_SIM_EVIDENCE",   _SONIC,                                             _SONIC)
+BM_GUARD       = _p("OPENBOT_BM_GUARD",       os.path.join(_WORKSPACE, "tools", "bm_guard.sh"),
+                    os.path.join(_UNITREE, ".wf", "tools", "bm_guard.sh"))
+BM_GUARD_SONIC = _p("OPENBOT_BM_GUARD_SONIC", os.path.join(_SONIC, "tools", "bm_guard.sh"),     os.path.join(_SONIC, "tools", "bm_guard.sh"))
+LEGACY         = _ARCHIVE                     # old OpenBot versions and their ancestors (that in-tree legacy/ dir never actually got created)
+BACKUPS        = os.path.join(_UNITREE, "backups")
+# old reference trees frozen out of the backups; tests still get their own env overrides
+B8_PRE         = os.path.join(WF, "b8", "pre")
+# the standoff-descent-pickup-node tree (the real grasp_geometry); the fallback dir is named "unknow scripts"
+STANDOFF_NODE  = _p("OPENBOT_STANDOFF_NODE",  os.path.join(_ARCHIVE, "standoff_pick_place_nodes", "standoff-descent-pickup-node"),
+                    os.path.join(_OLD_V2C, "unknow scripts", "standoff-descent-pickup-node"))
+# the TensorRT export venv stays inside the workspace - its shebangs literally name the .wf spelling,
+# which is still a symlink, so don't "fix" it
+TRT_ENV        = _p("OPENBOT_TRT_ENV",        os.path.join(WF, "b6", "trt", "env"),               os.path.join(_UNITREE, ".wf", "b6", "trt", "env"))
+
+# deps (third_party/ and research/, old spellings are compat symlinks)
+DEPS           = _p("OPENBOT_DEPS",           os.path.join(_THIRD, "Dependencies_Libraries"),     os.path.join(_UNITREE, "Dependencies_Libraries"))
+GRAIL_SONIC    = _p("OPENBOT_GRAIL_SONIC",    os.path.join(_THIRD, "GRAIL", *_SONIC_G1),          os.path.join(_UNITREE, "GRAIL", *_SONIC_G1))
+LEROBOT        = _p("OPENBOT_LEROBOT",        os.path.join(_RESEARCH, "Lerobot_Framework"),       os.path.join(_OLD_V2C, "Lerobot_Framework"))
