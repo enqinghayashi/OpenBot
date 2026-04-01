@@ -1,0 +1,42 @@
+# SUPERSEDED 2026-08-31 — the stuart/stuart-cuda profiles and the local-LLM
+# ladder are removed from the OpenBot v4 (cloud Realtime + voice + offline
+# regex) rebuild.  This file is an inert archive; load(profile="stuart-cuda")
+# now raises ValueError.  Replacement: config.voice.yaml / config.offline.yaml.
+
+# stuart-cuda profile — Plan-B R1 (on-robot CUDA offload on PC2, the Orin NX
+# 16 GB dev kit at 192.168.123.164).  Merged ON TOP of config.yaml by
+# brain/config_loader.load(profile='stuart-cuda') — the R1 variant of the
+# stuart profile for the CUDA-rebuilt llama-cpp-python (arch 87).
+#
+# The loader clamps (llm.n_ctx -> 4096, llm.n_gpu_layers -> 0) apply ONLY to
+# the exact 'stuart' profile (config_loader._apply_stuart_clamps, gated by
+# `active == "stuart"`).  THIS profile is NOT clamped: its n_gpu_layers pin
+# is HONORED — that is the point (llm.py maps "all" -> -1 at Llama()
+# construction).  The D0 placeholder-host runnability gate still applies
+# (_validate_runnable), and a missing file raises FileNotFoundError.
+#
+# The base config.yaml ships laptop-dev defaults (backend mock, n_gpu_layers
+# all, 12.0 s agent timeout) — every one of them is re-pinned here, exactly
+# like config.stuart.yaml does for its profile.
+
+profile: stuart-cuda
+
+llm:
+  backend: real                # base ships 'mock' (scripted "I don't know.") — pin real
+  n_ctx: 4096                  # same measured value the stuart clamp enforces (15 GiB fits)
+  n_gpu_layers: all            # R1 2026-08-30: CUDA offload HONORED (llm.py:549 maps
+                               # "all" -> -1); swap to the measured int once the X3
+                               # residency bench lands (docs/BUILD_LOG.md R1 row)
+  tool_mode: json              # mirror of the stuart pin (R0 parity); the R1 driver's
+                               # R0_PRIME override switches to 'skeleton' at measure time
+  enable_thinking: false       # no Qwen3 think tokens (burn the decode budget)
+
+agent:
+  llm_timeout_s: 120           # same pin as stuart; base 12.0 s aborts mid-decode on-box
+  max_llm_attempts: 2          # same as base (agent repair path owns the retry)
+
+gateway:
+  transport: real              # real socket lane to the on-box gateway
+  port: 3900                   # pinned gateway TCP port (same as stuart)
+  host: 192.168.123.164        # D0-filled, same box as stuart (PC2; loopback-equivalent
+                               # locally, reachable from the laptop for D4/D5)
