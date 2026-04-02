@@ -308,3 +308,33 @@ class G1Agent:
 
     # --------------------------------------------------------- the public API
 
+    def run(self, text: str) -> str:
+        """One task utterance. Single-flight: BUSY_TEXT while another runs."""
+        if self._busy:
+            return BUSY_TEXT
+        self._busy = True
+        try:
+            # fresh executor per utterance
+            # budget reset here, same spot as before
+            # built on first state touch
+            self._executor = None
+            self._task_text = (text or "").strip()
+            self._history = []
+            self._terminal_text = None
+            self._failure_budget_left = self.failure_budget
+            self._tool_call_count = 0
+            # one tool set for the whole run
+            # snapshot(), not get()
+            self._tools = self.tools.snapshot()
+            if not self._task_text:
+                return "I did not understand the request."
+            call = classify_tool_call(self._task_text)
+            if call is not None:
+                return self._run_fast_path(call)
+            return self._llm_loop()
+        finally:
+            self._busy = False
+            self.transcript = [dict(m) for m in self._history]
+
+    # --------------------------------------------------------- the fast lane
+
