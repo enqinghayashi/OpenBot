@@ -408,3 +408,82 @@ class G1Agent:
             final = (reply.text or "").strip()
             return final if final else "The model returned an empty response."
 
+    def _chat_once(self) -> Optional[ChatResult]:
+        """One LLM call with timeout + repair attempts (max_llm_attempts).
+
+        Each attempt runs on its OWN single-worker executor: a decode
+        slower than ``llm_timeout_s`` abandons its worker (executor shut
+        down with ``wait=False``; the daemon thread keeps decoding until
+        the client call finishes) and the NEXT attempt starts on a fresh
+        worker instead of queueing behind the stuck one.  With the old
+        shared executor the abandoned future occupied the only worker, so
+        every retry queued behind it and double-timed-out — a slow decode
+        could permanently wedge retries.  Tradeoff: the abandoned decode
+        still holds the LLM client's single-flight lock, so a retry that
+        starts while it is still decoding is DROPPED by the client
+        (BUSY_LLM_TEXT) rather than queued — the wedge is never permanent,
+        and the retry runs whenever the first call finishes inside the
+        timeout window.  A fresh executor per attempt costs one thread
+        spawn per attempt (bounded by max_llm_attempts).
+
+        Backend exceptions NEVER escape run(): any exception raised by the
+        future (ModelLoadError on a missing/invalid model_path, transport
+        failures, anything else) is recorded and routed through the same
+        failure text, so the agent never raises backend exceptions to the
+        caller.
+        """
+        last_error: Optional[Exception] = None
+        for _attempt in range(1, self.max_llm_attempts + 1):
+            executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="agent-llm"
+            )
+            try:
+                future = executor.submit(
+                    self.llm.chat, self._history, self.tools.get_specs()
+                )
+                try:
+                    reply = future.result(timeout=self.llm_timeout_s)
+                except concurrent.futures.TimeoutError:
+                    last_error = TimeoutError(
+                        f"LLM chat timed out after {self.llm_timeout_s:g}s"
+                    )
+                    self._history.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"You did not respond within {self.llm_timeout_s:g}s. "
+                                "Continue the task now."
+                            ),
+                        }
+                    )
+                    continue
+                except ToolCallParseError as exc:
+                    last_error = exc
+                    self._history.append({"role": "user", "content": _JSON_REPAIR_MESSAGE})
+                except ChatTransportError as exc:
+                    last_error = exc  # transient, retry as-is
+                except Exception as exc:  # noqa: BLE001 — never crash run()
+                    last_error = exc  # blew up, retry, then fail text
+                else:
+                    # drop after an earlier failure = its
+                    # tail: abandoned decode still holds
+                    # the single-flight lock
+                    # 'busy' = symptom
+                    # surface the real last_error
+                    # busy text only for a first drop
+                    if reply is not None and reply.dropped and last_error is not None:
+                        return ChatResult(
+                            text=(
+                                f"LLM chat failed after "
+                                f"{self.max_llm_attempts} attempts: {last_error}"
+                            )
+                        )
+                    return reply
+            finally:
+                # wait=False: never block a hung handler
+                # daemon worker (3.9+) finishes the call
+                executor.shutdown(wait=False)
+        return ChatResult(
+            text=f"LLM chat failed after {self.max_llm_attempts} attempts: {last_error}"
+        )
+
