@@ -557,3 +557,25 @@ class G1Agent:
     def _terminal_text(self, value: Optional[str]) -> None:
         self._get_executor()._terminal_text = value
 
+    @property
+    def _failure_budget_left(self) -> int:
+        """Per-run failure budget, proxied to the current ToolExecutor
+        (the agent-side surface the tests exercise; the real bookkeeping
+        lives on the executor's slot)."""
+        return self._get_executor()._failure_budget_left
+
+    @_failure_budget_left.setter
+    def _failure_budget_left(self, value: int) -> None:
+        self._get_executor()._failure_budget_left = value
+
+    @property
+    def _tools(self) -> Any:
+        """Per-run registry snapshot, proxied to the current ToolExecutor
+        (run()'s ``self._tools = self.tools.snapshot()`` feeds the
+        executor's execute())."""
+        return self._get_executor()._tools
+
+    @_tools.setter
+    def _tools(self, value: Any) -> None:
+        self._get_executor()._tools = value
+
