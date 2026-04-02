@@ -181,3 +181,7 @@ def _backend_from_gateway_segment(gateway_seg: Any) -> Any:
     )
 
 
+class G1Agent:
+    """One agent: LLM client + tool registry + hook pipeline (pre-gate and
+    the verifier post-hook, THE single verification path)."""
+
