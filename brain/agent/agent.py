@@ -350,3 +350,13 @@ class G1Agent:
         ]
         return self._fastpath_summary(call.name, call.arguments or {}, kind, reason)
 
+    def _fastpath_summary(
+        self, name: str, args: dict, kind: str, reason: Optional[str]
+    ) -> str:
+        """Delegation (v4-L1 extraction): the real summarizer lives in
+        ToolExecutor (brain/agent/tool_executor.py); the phrasing is
+        byte-identical."""
+        return self._get_executor()._fastpath_summary(name, args, kind, reason)
+
+    # ------------------------------------------------------------ the LLM lane
+
