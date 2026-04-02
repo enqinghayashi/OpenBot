@@ -487,3 +487,14 @@ class G1Agent:
             text=f"LLM chat failed after {self.max_llm_attempts} attempts: {last_error}"
         )
 
+    @staticmethod
+    def _as_openai_call(call: ToolCall) -> dict:
+        return {
+            "id": call.id,
+            "type": "function",
+            "function": {
+                "name": call.name,
+                "arguments": json.dumps(call.arguments or {}),
+            },
+        }
+
