@@ -627,3 +627,146 @@ class G1Agent:
             return False
         return True
 
+    def _scene_block(self) -> str:
+        """Per-turn CURRENT SCENE text (scene graph brief or raw detections)."""
+        obs = self._observe()
+        if obs is None:
+            return "SCENE: not available (no observation source)"
+        if obs.detections_ts <= 0 or not obs.fresh:
+            return (
+                f"SCENE: STALE detections (ts={obs.detections_ts:.1f}, "
+                f"fresh={obs.fresh}); do NOT plan motion on this"
+            )
+        if self.scene_graph is not None:
+            self.scene_graph.update(obs)
+            return self.scene_graph.scene_brief()
+        if not obs.detections:
+            return "SCENE: empty (detections are event-driven; silence == empty)"
+        lines = []
+        for d in obs.detections:
+            ref = f"[{d.ref}]" if d.ref else ""
+            lines.append(
+                f"- {d.label}{ref} at ({d.x:.2f}, {d.y:.2f}, {d.z:.2f}) "
+                f"conf={d.conf:.2f}"
+            )
+        return "\n".join(lines)
+
+    def _render_first_message(self) -> str:
+        scene = self._scene_block()
+        return f"{self._system_prompt}\n\nCURRENT SCENE:\n{scene}\n\n{self._task_text}"
+
+    # --------------------------------------------- bootstrapping from config
+
+    @classmethod
+    def from_config(
+        cls,
+        cfg: Dict[str, Any],
+        tool_registry: Optional[Any] = None,
+        backend: Any = None,
+        *,
+        scene_graph: Optional[SceneGraph] = None,
+        prompt_path: Optional[str] = None,
+        **overrides: Any,
+    ) -> "G1Agent":
+        """Build a G1Agent from a config_loader.load() dict — the ONE
+        bootstrap the 'openbot-agent' CLI uses.
+
+        Wiring (all from the parsed config dict):
+          ``llm:``      segment -> ``llm.from_config`` (backend 'mock' ->
+                        MockLLM on the laptop; 'server' ->
+                        LlamaServerClient; 'real' -> LlamaCppClient)
+          ``agent:``    segment -> max_tool_calls / failure_budget /
+                        detection_freshness_s / llm_timeout_s /
+                        max_llm_attempts / max_tool_result_chars
+          ``embodiment:`` segment -> the validated EmbodimentConfig
+                        (brain/config_loader.py) — the loader's OWN
+                        schema, ``EmbodimentConfig.from_section`` — which
+                        is INJECTED into the running hooks (safety
+                        envelope) and the tool registry (pick placeholder
+                        clamps/standoffs + place_at_spot key_positions).
+                        An absent segment -> EmbodimentConfig defaults
+                        (parity with brain/embodiment.py's defaults).
+                        detection_freshness_s falls back to the
+                        embodiment's perception.freshness_s when the
+                        agent segment is silent about it (the config.yaml
+                        parity convention: the embodiment value is the
+                        fallback authority, the agent value wins when
+                        present).
+          ``gateway:``  segment -> the backend, via
+                        ``_backend_from_gateway_segment`` (round-4):
+                        transport 'mock' -> _LaptopMockBackend: on-the-fly
+                        empty WorldObservation snapshots (silence ==
+                        empty) and an honest error envelope for every
+                        verb — the laptop can never claim a world action
+                        succeeded; transport 'real' ->
+                        GatewayCallerBackend(host, port) — the socket
+                        client to the gateway node's tools server (the
+                        production Stuart path, no longer a silent
+                        default); any OTHER transport value raises an
+                        honest ConfigError (never guess a transport).
+                        A 'real' host that is a placeholder ('TODO-IP' /
+                        'localhost-TODO' / '') raises ConfigError —
+                        the D0 preflight must fill it in.
+
+        Unknown/missing keys fall back to the G1Agent constructor defaults;
+        an explicitly passed `backend` wins over the gateway segment;
+        `tool_registry` is used as-is (and wired to `backend` and
+        `embodiment` via attach() when given); an explicitly passed
+        `embodiment` kwarg wins over the constructed one; extra kwargs
+        (confirm/hooks/...) pass through to __init__.
+        """
+        seg = cfg.get("agent") or {}
+        if not isinstance(seg, dict):
+            seg = {}
+        # loader's schema
+        # same dataclass for ConfigDict
+        # or hand-built dict
+        # absent -> defaults
+        embodiment = EmbodimentConfig.from_section(cfg.get("embodiment"))
+        if "detection_freshness_s" in seg:
+            detection_freshness_s = float(seg["detection_freshness_s"])
+        else:
+            detection_freshness_s = float(embodiment.perception.freshness_s)
+        llm_client = llm_from_config(cfg.get("llm") or {})
+        if backend is None:
+            backend = _backend_from_gateway_segment(cfg.get("gateway"))
+        if tool_registry is None:
+            registry = ToolRegistry(backend=backend, embodiment=embodiment,
+                                    switches=cfg.get("optional_tools"))
+        else:
+            registry = tool_registry
+            if backend is not None:
+                registry.attach(backend=backend)
+            registry.attach(embodiment=embodiment)
+        kwargs = dict(overrides)
+        kwargs.setdefault("embodiment", embodiment)
+        return cls(
+            llm=llm_client,
+            tool_registry=registry,
+            backend=backend,
+            scene_graph=scene_graph,
+            max_tool_calls=int(seg.get("max_tool_calls", 25)),
+            failure_budget=int(seg.get("failure_budget", 3)),
+            detection_freshness_s=detection_freshness_s,
+            llm_timeout_s=float(seg.get("llm_timeout_s", 12.0)),
+            max_llm_attempts=int(seg.get("max_llm_attempts", 2)),
+            max_tool_result_chars=int(
+                seg.get("max_tool_result_chars", MAX_TOOL_RESULT_CHARS)
+            ),
+            prompt_path=prompt_path,
+            **kwargs,
+        )
+
+
+class _LaptopMockBackend:
+    """Laptop-dev backend (the ``G1Agent.from_config`` default): on-the-fly
+    empty WorldObservation snapshots and honest refusal for every verb.
+
+    The agent loop reads the scene from ``observe()`` — detections are
+    event-driven, silence == empty, so an empty fresh observation is the
+    correct laptop scene (the SCENE block reads 'empty', never 'not
+    available').  Every motion/user/stop verb refuses with an honest error
+    envelope: the laptop has no robot, and nothing here may pretend a
+    world action succeeded.
+    """
+
