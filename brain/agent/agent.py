@@ -179,3 +179,5 @@ def _backend_from_gateway_segment(gateway_seg: Any) -> Any:
         "config error: gateway.transport must be 'mock' or 'real', got %r"
         % transport
     )
+
+
