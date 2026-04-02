@@ -289,3 +289,22 @@ class G1Agent:
 
     # --------------------------------------------------------- getting set up
 
+    @staticmethod
+    def _load_system_prompt(prompt_path: Optional[str]) -> tuple[str, bool]:
+        """Load prompts/system.txt (capped at SYSTEM_PROMPT_MAX_CHARS)."""
+        if prompt_path:
+            path = Path(prompt_path)
+        else:
+            path = Path(__file__).parent / "prompts" / "system.txt"
+        if not path.is_absolute():
+            path = Path(__file__).parent / path
+        if not path.is_file():
+            raise FileNotFoundError(f"system prompt not found: {path}")
+        text = path.read_text(encoding="utf-8").strip()
+        truncated = len(text) > SYSTEM_PROMPT_MAX_CHARS
+        if truncated:
+            text = text[:SYSTEM_PROMPT_MAX_CHARS]
+        return text, truncated
+
+    # --------------------------------------------------------- the public API
+
