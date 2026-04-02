@@ -338,3 +338,15 @@ class G1Agent:
 
     # --------------------------------------------------------- the fast lane
 
+    def _run_fast_path(self, call: ToolCall) -> str:
+        """Deterministic lane: no LLM involved; full hook/verifier pipeline."""
+        if call.name in ("pick", "place") and self._scene_is_empty():
+            return "I can't see any objects right now."
+        result = self._handle_tool_call(call)
+        kind, reason = self._classify_result(result)
+        self._history = [
+            {"role": "user", "content": self._task_text},
+            {"role": "assistant", "content": result},
+        ]
+        return self._fastpath_summary(call.name, call.arguments or {}, kind, reason)
+
