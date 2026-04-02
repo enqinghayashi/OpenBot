@@ -579,3 +579,51 @@ class G1Agent:
     def _tools(self, value: Any) -> None:
         self._get_executor()._tools = value
 
+    @staticmethod
+    def _hook_result_to_text(result: "HookResult") -> str:
+        """Delegation (v4-L1 extraction): the real renderer lives in
+        ToolExecutor; kept here because the test surface calls it on the
+        class."""
+        return ToolExecutor._hook_result_to_text(result)
+
+    @classmethod
+    def _classify_result(cls, text: str) -> tuple[str, Optional[str]]:
+        """Delegation (v4-L1 extraction): the real classifier lives in
+        ToolExecutor; kept here because the fast path and the tests call
+        it on the agent."""
+        return ToolExecutor._classify_result(text)
+
+    def _apply_budget(self, kind: str, reason: Optional[str]) -> None:
+        """Delegation (v4-L1 extraction): the real bookkeeping lives in
+        ToolExecutor, whose per-run budget state this agent proxies
+        (``_failure_budget_left`` / ``_terminal_text``)."""
+        self._get_executor()._apply_budget(kind, reason)
+
+    # ------------------------------------------------------- reading the world
+
+    def _observe(self) -> Optional[WorldObservation]:
+        """One guarded observation read (never raises; None = no source)."""
+        if self.backend is None:
+            return None
+        try:
+            obs = self.backend.observe()
+        except Exception:  # noqa: BLE001 — a gateway hiccup must not crash
+            return None
+        if obs is None or not isinstance(obs, WorldObservation):
+            return None
+        return obs
+
+    def _scene_is_empty(self) -> bool:
+        """True when no fresh detection and no persistent refs exist
+        (event-driven silence == empty scene, never 'no data')."""
+        obs = self._observe()
+        if obs is None:
+            return True
+        if not obs.fresh or obs.detections_ts <= 0:
+            return True
+        if obs.detections:
+            return False
+        if self.scene_graph is not None and self.scene_graph.refs:
+            return False
+        return True
+
