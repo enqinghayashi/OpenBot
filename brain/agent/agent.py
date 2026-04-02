@@ -770,3 +770,22 @@ class _LaptopMockBackend:
     world action succeeded.
     """
 
+    def observe(self) -> WorldObservation:
+        return default_world_observation(fresh=True, detections_ts=time.time())
+
+    @staticmethod
+    def _refuse(name: str) -> dict:
+        return fail(f"laptop mock backend — {name} refused (no robot connected)")
+
+    def pick(self, args: dict) -> dict:
+        return self._refuse("pick")
+
+    def place(self, args: dict) -> dict:
+        return self._refuse("place")
+
+    def navigate(self, args: dict) -> dict:
+        return self._refuse("navigate")
+
+    def open_hand(self, args: dict) -> dict:
+        return self._refuse("open_hand")
+
