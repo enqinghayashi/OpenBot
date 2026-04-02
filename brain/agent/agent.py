@@ -185,3 +185,107 @@ class G1Agent:
     """One agent: LLM client + tool registry + hook pipeline (pre-gate and
     the verifier post-hook, THE single verification path)."""
 
+    def __init__(
+        self,
+        llm: Any,
+        tool_registry: Any,
+        backend: Any = None,
+        *,
+        confirm: Optional[Callable[[Context], bool]] = None,
+        hooks: Optional[Hook] = None,
+        scene_graph: Optional[SceneGraph] = None,
+        embodiment: Optional[Any] = None,
+        max_tool_calls: int = 25,
+        failure_budget: int = 3,
+        detection_freshness_s: float = 2.0,
+        llm_timeout_s: float = 12.0,
+        max_llm_attempts: int = 2,
+        max_tool_result_chars: int = MAX_TOOL_RESULT_CHARS,
+        prompt_path: Optional[str] = None,
+    ) -> None:
+        if llm is None:
+            raise ValueError("G1Agent requires an LLMClient")
+        if tool_registry is None:
+            raise ValueError("G1Agent requires a ToolRegistry")
+        if max_tool_calls < 1:
+            raise ValueError("max_tool_calls must be >= 1")
+        if failure_budget < 0:
+            raise ValueError("failure_budget must be >= 0")
+        self.llm = llm
+        self.tools = tool_registry
+        self.backend = backend
+        # det-conf floor
+        # graph built here
+        # takes the injected
+        # perception.det_conf_floor
+        # explicit scene_graph keeps its own
+        # no embodiment -> 0.0
+        # filter off
+        # 0.35 from config
+        self.scene_graph = scene_graph if scene_graph is not None else SceneGraph(
+            conf_floor=getattr(
+                getattr(embodiment, "perception", None), "det_conf_floor", 0.0
+            ),
+            # optional_tools via the registry
+            # (from_config passes switches=...)
+            # absent = OFF
+            target_disambiguation=switch_on(
+                getattr(tool_registry, "_optional_switches", None),
+                "target_disambiguation"),
+        )
+        self.max_tool_calls = int(max_tool_calls)
+        self.failure_budget = int(failure_budget)
+        self.detection_freshness_s = float(detection_freshness_s)
+        self.llm_timeout_s = float(llm_timeout_s)
+        self.max_llm_attempts = int(max_llm_attempts)
+        self.max_tool_result_chars = int(max_tool_result_chars)
+        # injected embodiment
+        # config-seam: loader's EmbodimentConfig,
+        # or anything with .envelope/.perception/
+        # .base_relative
+        # None -> documented defaults
+        self.embodiment = embodiment
+        # default pipeline
+        # gate before motion
+        # verifier POST-hook after
+        # (run_post -> HookResult)
+        # pass hooks= to swap
+        # confirm= honoured when default_hooks
+        # takes it (scripted tests)
+        # safety hook gets the injected envelope
+        # (pick_min/max_height_m, freshness)
+        # + detection_freshness_s at runtime
+        # not Embodiment() defaults
+        self.hooks = (
+            hooks
+            if hooks is not None
+            else default_hooks(
+                observation_source=self._observe,
+                confirm=confirm,
+                envelope=self.embodiment,
+                freshness_s=self.detection_freshness_s,
+                # same switches as above
+                # absent = OFF = verbatim hint
+                hint_charset_refusal=switch_on(
+                    getattr(tool_registry, "_optional_switches", None),
+                    "hint_charset_refusal"),
+            )
+        )
+        self._system_prompt, self._prompt_truncated = self._load_system_prompt(prompt_path)
+
+        # state for one run
+        self._busy = False
+        self._history: List[dict] = []
+        self._task_text = ""
+        # per-run executor
+        # built lazily
+        # run() nulls it; each utterance
+        # gets a fresh one
+        self._executor: Optional[ToolExecutor] = None
+        self._terminal_text: Optional[str] = None
+        self._failure_budget_left = self.failure_budget
+        self._tool_call_count = 0
+        self.transcript: List[dict] = []
+
+    # --------------------------------------------------------- getting set up
+
