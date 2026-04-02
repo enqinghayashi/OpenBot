@@ -117,3 +117,65 @@ _JSON_REPAIR_MESSAGE = (
 )
 
 
+def _backend_from_gateway_segment(gateway_seg: Any) -> Any:
+    """Build the gateway backend the ``gateway:`` config segment demands
+    (round-4: G1Agent.from_config's ONE bootstrap wires the real client).
+
+    transport 'mock' -> _LaptopMockBackend (in-process; the laptop never
+    connects anywhere and refuses every verb honestly); transport 'real'
+    -> GatewayCallerBackend(host, port) — the socket client to the
+    gateway node's tools server (the production Stuart path); any OTHER
+    transport value raises an honest ConfigError — never guess a
+    transport.  A 'real' host that is a placeholder ('TODO-IP' /
+    'localhost-TODO' / '') raises ConfigError from the client BEFORE any
+    socket is opened ('gateway.host is a placeholder; fill it in
+    preflight (D0)').
+    """
+    # lazy on purpose
+    # brain_client -> tools -> __init__
+    # -> this module
+    # top-level import would circle back
+    from gateway.brain_client import (  # noqa: PLC0415
+        ConfigError,
+        DEFAULT_PORT,
+        GATEWAY_CALL_TIMEOUT_S,
+        GatewayCallerBackend,
+    )
+
+    if gateway_seg is None:
+        gateway_seg = {}
+    if not isinstance(gateway_seg, dict):
+        raise ConfigError(
+            "config error: 'gateway' must be a mapping, got %s"
+            % type(gateway_seg).__name__
+        )
+    transport = str(gateway_seg.get("transport") or "mock").strip().lower()
+    if transport == "mock":
+        return _LaptopMockBackend()
+    if transport == "real":
+        host = str(gateway_seg.get("host") or "").strip()
+        # falsy port = key absent
+        # 0/None/'' -> default port
+        # no port 0
+        port = gateway_seg.get("port") or DEFAULT_PORT
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            raise ConfigError(
+                "config error: gateway.port must be an int, got %r" % (port,)
+            ) from None
+        # placeholder host -> ConfigError
+        # no quiet connect
+        # timeout_s: SECOND constructor
+        # same client
+        # 30 s default would make
+        # the pick motion-wait INERT
+        # DONE ~3 s in, arm ~33 s
+        # imported, not repeated
+        # two bounds drift
+        return GatewayCallerBackend(host=host, port=port,
+                                    timeout_s=GATEWAY_CALL_TIMEOUT_S)
+    raise ConfigError(
+        "config error: gateway.transport must be 'mock' or 'real', got %r"
+        % transport
+    )
