@@ -360,3 +360,51 @@ class G1Agent:
 
     # ------------------------------------------------------------ the LLM lane
 
+    def _llm_loop(self) -> str:
+        """Qwen3 tool-calling loop with per-turn CURRENT SCENE injection."""
+        self._history = [
+            {"role": "user", "content": self._render_first_message()}
+        ]
+        while True:
+            if self._terminal_text is not None:
+                return self._terminal_text
+            if self._tool_call_count >= self.max_tool_calls:
+                return (
+                    COMPLETE_FAIL_PREFIX
+                    + f"reached the per-task tool-call limit ({self.max_tool_calls})"
+                )
+            self._history[0] = {
+                "role": "user",
+                "content": self._render_first_message(),
+            }
+            reply = self._chat_once()
+            if reply is None or reply.dropped:
+                return BUSY_LLM_TEXT if reply and reply.dropped else "The LLM produced no response."
+            if reply.tool_calls:
+                self._tool_call_count += len(reply.tool_calls)
+                self._history.append(
+                    {
+                        "role": "assistant",
+                        "content": reply.text or "",
+                        "tool_calls": [
+                            self._as_openai_call(c) for c in reply.tool_calls
+                        ],
+                    }
+                )
+                for call in reply.tool_calls:
+                    result = self._handle_tool_call(call)
+                    if self._terminal_text is not None:
+                        return self._terminal_text
+                    self._history.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call.id,
+                            "name": call.name,
+                            "content": self._truncate(result),
+                        }
+                    )
+                self._compact_history()
+                continue
+            final = (reply.text or "").strip()
+            return final if final else "The model returned an empty response."
+
