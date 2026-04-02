@@ -507,3 +507,53 @@ class G1Agent:
             *self._history[-(MAX_KEPT_HISTORY_MESSAGES):],
         ]
 
+    def _truncate(self, text: str) -> str:
+        if len(text) <= self.max_tool_result_chars:
+            return text
+        return text[: self.max_tool_result_chars] + "\n...[truncated]"
+
+    # -------------------------------------------------- handling the tool calls
+
+    def _handle_tool_call(self, call: ToolCall) -> str:
+        """One-line delegation (v4-L1 extraction): the whole PRE-hooks ->
+        tool -> POST pipeline lives in ToolExecutor
+        (brain/agent/tool_executor.py); the result text is byte-identical
+        by design."""
+        return self._get_executor().execute(call.name, dict(call.arguments or {})).text
+
+    # -- wiring up the ToolExecutor -------------------------------------------
+
+    def _get_executor(self) -> ToolExecutor:
+        """The per-run ToolExecutor, built lazily from self attributes
+        (run() resets ``_executor`` to None, so each utterance builds a
+        fresh one — the per-utterance failure-budget reset lives in the
+        executor at the same point in run()'s sequence as before).
+
+        NOTE: the executor-backed attribute proxies below
+        (``_terminal_text`` / ``_failure_budget_left`` / ``_tools``) route
+        through this getter, so touching one before the first run() builds
+        a THROWAWAY executor (one extra registry snapshot — harmless; no
+        production path touches them before run() sets its state)."""
+        if self._executor is None:
+            self._executor = ToolExecutor(
+                registry=self.tools.snapshot(),
+                hooks=self.hooks,
+                scene_graph=self.scene_graph,
+                backend=self.backend,
+                embodiment=self.embodiment,
+                failure_budget=self.failure_budget,
+            )
+        return self._executor
+
+    @property
+    def _terminal_text(self) -> Optional[str]:
+        """Per-run terminal text, proxied to the current ToolExecutor (the
+        executor owns the budget/terminal state after the v4-L1
+        extraction; run() and _llm_loop keep reading this attribute
+        unchanged)."""
+        return self._get_executor()._terminal_text
+
+    @_terminal_text.setter
+    def _terminal_text(self, value: Optional[str]) -> None:
+        self._get_executor()._terminal_text = value
+
