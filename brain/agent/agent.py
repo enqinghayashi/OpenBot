@@ -780,3 +780,6 @@ class _LaptopMockBackend:
     def pick(self, args: dict) -> dict:
         return self._refuse("pick")
 
+    def place(self, args: dict) -> dict:
+        return self._refuse("place")
+
