@@ -222,3 +222,113 @@ def _halt_intent(tokens: list) -> bool:
         if tokens[i] in HALT_WORDS and not _halt_word_negated(tokens, i):
             return True
     return False
+
+
+def _strip_heard_name(text: str) -> str:
+    """Strip a leading heard-name prefix ('stewart,', 'susan '), refusing
+    any token that starts an explicit halt phrase or heads a documented
+    single-action grammar.
+
+    ``NAME_PREFIX_RE`` matches any leading s-word + separator, which would
+    eat 'stop the robot' / 'stop now' / 'stop please' as if 'stop' were a
+    heard name.  A token in HALT_PHRASE_STARTS ('stop', 'halt', 'freeze',
+    'stand') is therefore never stripped — the halt lane pre-empts name
+    handling.  A token in S_VERB_HEADS ('set' — the head of the
+    PLACE_DOWN_RE / PLACE_INTO_RE place grammars) is never stripped
+    either: 'set the cup down' is a place, not 'set' being a name, and
+    'set' must not fall to the LLM path.  A token in TURN_AROUND_HEADS
+    ('spin' — the head of TURN_AROUND_RE) is never stripped for the same
+    reason: 'spin around' is the turn-around grammar, not 'spin' being a
+    name.  Returns the stripped text
+    (unchanged when no name prefix matches, or when the candidate is a
+    halt word or a verb head)."""
+    m = NAME_PREFIX_RE.match(text)
+    if not m:
+        return text
+    if m.group(1).lower() in HALT_PHRASE_STARTS:
+        return text
+    if m.group(1).lower() in S_VERB_HEADS:
+        return text
+    if m.group(1).lower() in TURN_AROUND_HEADS:
+        return text
+    return text[m.end():]
+
+# ---- turning number words into digits ----
+_WORD_UNITS = {'zero': 0, 'one': 1, 'two': 2, 'three': 3, 'four': 4,
+               'five': 5, 'six': 6, 'seven': 7, 'eight': 8, 'nine': 9}
+_WORD_TEENS = {'ten': 10, 'eleven': 11, 'twelve': 12, 'thirteen': 13,
+               'fourteen': 14, 'fifteen': 15, 'sixteen': 16,
+               'seventeen': 17, 'eighteen': 18, 'nineteen': 19}
+_WORD_TENS = {'twenty': 20, 'thirty': 30, 'forty': 40, 'fourty': 40,
+              'fifty': 50, 'sixty': 60, 'seventy': 70,
+              'eighty': 80, 'ninety': 90}
+_WORD_FRACS = {'half': 0.5, 'quarter': 0.25}
+
+
+def _normalize_word_numbers(text: str) -> str:
+    """Convert spoken numbers ('one', 'twenty five', 'half') into digits."""
+    tokens = text.split()
+    out = []
+    i = 0
+    while i < len(tokens):
+        raw = tokens[i]
+        m = re.match(r"^([A-Za-z']+)([,.!?;:]*)$", raw)
+        if not m:
+            out.append(raw); i += 1; continue
+        word, suffix = m.group(1).lower(), m.group(2)
+
+        if word in _WORD_TENS:
+            base = _WORD_TENS[word]
+            if i + 1 < len(tokens):
+                m2 = re.match(r"^([A-Za-z']+)([,.!?;:]*)$", tokens[i + 1])
+                if m2 and m2.group(1).lower() in _WORD_UNITS \
+                        and _WORD_UNITS[m2.group(1).lower()] != 0:
+                    base += _WORD_UNITS[m2.group(1).lower()]
+                    suffix = m2.group(2)
+                    i += 1
+            out.append(f'{base}{suffix}')
+        elif word in _WORD_TEENS:
+            out.append(f'{_WORD_TEENS[word]}{suffix}')
+        elif word in _WORD_UNITS:
+            out.append(f'{_WORD_UNITS[word]}{suffix}')
+        elif word in _WORD_FRACS:
+            out.append(f'{_WORD_FRACS[word]:g}{suffix}')
+        else:
+            out.append(raw)
+        i += 1
+    return ' '.join(out)
+
+
+# ---- pulling cardinal numbers out of LABEL candidates ----
+# digitize words BEFORE matching ('the 2 cups')
+# _strip_cardinals drops digit and word cardinals:
+# label is 'cup', never '2 cups'; count is a hint.
+_CARDINAL_WORDS = {
+    word: number
+    for table in (_WORD_UNITS, _WORD_TEENS, _WORD_TENS)
+    for word, number in table.items()
+}
+_DIGIT_TOKEN_RE = re.compile(r"^[0-9]+$")
+
+
+def _strip_cardinals(label: str) -> tuple[str, Optional[int]]:
+    """Remove standalone cardinal number words/digits from a label candidate.
+
+    Returns ``(cleaned_label, count_or_None)``.  Digit tokens ('2 cups')
+    and word cardinals ('two cups') are removed; digits inside words
+    ('bottle2') are kept.  The count (first cardinal found) is a
+    disambiguation hint — never part of the label.
+    """
+    count: Optional[int] = None
+    kept = []
+    for token in label.split():
+        bare = token.lower().strip(".,!?")
+        number = _CARDINAL_WORDS.get(bare)
+        if number is None and _DIGIT_TOKEN_RE.match(bare):
+            number = int(bare)
+        if number is not None:
+            if count is None:
+                count = number
+            continue
+        kept.append(token)
+    return " ".join(kept).strip(), count
