@@ -613,3 +613,17 @@ class G1Agent:
             return None
         return obs
 
+    def _scene_is_empty(self) -> bool:
+        """True when no fresh detection and no persistent refs exist
+        (event-driven silence == empty scene, never 'no data')."""
+        obs = self._observe()
+        if obs is None:
+            return True
+        if not obs.fresh or obs.detections_ts <= 0:
+            return True
+        if obs.detections:
+            return False
+        if self.scene_graph is not None and self.scene_graph.refs:
+            return False
+        return True
+
