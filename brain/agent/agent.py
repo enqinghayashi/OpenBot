@@ -568,3 +568,10 @@ class G1Agent:
     def _failure_budget_left(self, value: int) -> None:
         self._get_executor()._failure_budget_left = value
 
+    @property
+    def _tools(self) -> Any:
+        """Per-run registry snapshot, proxied to the current ToolExecutor
+        (run()'s ``self._tools = self.tools.snapshot()`` feeds the
+        executor's execute())."""
+        return self._get_executor()._tools
+
