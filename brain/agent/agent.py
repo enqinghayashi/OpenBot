@@ -545,3 +545,11 @@ class G1Agent:
             )
         return self._executor
 
+    @property
+    def _terminal_text(self) -> Optional[str]:
+        """Per-run terminal text, proxied to the current ToolExecutor (the
+        executor owns the budget/terminal state after the v4-L1
+        extraction; run() and _llm_loop keep reading this attribute
+        unchanged)."""
+        return self._get_executor()._terminal_text
+
