@@ -507,3 +507,10 @@ class G1Agent:
             *self._history[-(MAX_KEPT_HISTORY_MESSAGES):],
         ]
 
+    def _truncate(self, text: str) -> str:
+        if len(text) <= self.max_tool_result_chars:
+            return text
+        return text[: self.max_tool_result_chars] + "\n...[truncated]"
+
+    # -------------------------------------------------- handling the tool calls
+
