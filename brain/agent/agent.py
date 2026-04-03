@@ -627,3 +627,27 @@ class G1Agent:
             return False
         return True
 
+    def _scene_block(self) -> str:
+        """Per-turn CURRENT SCENE text (scene graph brief or raw detections)."""
+        obs = self._observe()
+        if obs is None:
+            return "SCENE: not available (no observation source)"
+        if obs.detections_ts <= 0 or not obs.fresh:
+            return (
+                f"SCENE: STALE detections (ts={obs.detections_ts:.1f}, "
+                f"fresh={obs.fresh}); do NOT plan motion on this"
+            )
+        if self.scene_graph is not None:
+            self.scene_graph.update(obs)
+            return self.scene_graph.scene_brief()
+        if not obs.detections:
+            return "SCENE: empty (detections are event-driven; silence == empty)"
+        lines = []
+        for d in obs.detections:
+            ref = f"[{d.ref}]" if d.ref else ""
+            lines.append(
+                f"- {d.label}{ref} at ({d.x:.2f}, {d.y:.2f}, {d.z:.2f}) "
+                f"conf={d.conf:.2f}"
+            )
+        return "\n".join(lines)
+
