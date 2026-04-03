@@ -109,3 +109,56 @@ class ToolCall:
     id: str
     name: str
     arguments: dict
+
+
+@dataclass
+class ChatResult:
+    """One LLM response: either plain text, a list of tool calls, or both.
+
+    A fully malformed response has both empty/None — the agent treats that
+    as a parse failure (repair path).  ``dropped`` marks a single-flight
+    drop (the input was discarded while another call was in flight).
+    """
+
+    text: Optional[str] = None
+    tool_calls: Optional[List[ToolCall]] = None
+    dropped: bool = False
+    #: truncated
+    #: finish_reason 'length' / 'max_tokens'
+    #: True = budget ran out
+    #: False = check the model class
+    truncated: bool = False
+
+
+@runtime_checkable
+class LLMClient(Protocol):
+    """Protocol the G1Agent loop calls.
+
+    ``messages`` are OpenAI-style dicts: system/user/assistant/tool roles,
+    assistant messages may carry ``tool_calls``, tool messages carry
+    ``tool_call_id`` (the Qwen3 chat template renders both).  ``tools`` is
+    ``ToolRegistry.get_specs()`` output.
+    """
+
+    def chat(self, messages: list, tools: list) -> ChatResult:
+        """Run one chat completion.  Never raises for recoverable output
+        problems; transport failures may raise (the agent wraps them)."""
+        ...
+
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+
+class ToolCallParseError(ValueError):
+    """A tool-call payload could not be parsed (bad arguments JSON etc.).
+
+    Raised internally by the parsers; the clients catch it and return an
+    empty ChatResult (the agent's repair path), incrementing
+    ``parse_failures``.
+    """
+
+
+class ModelLoadError(RuntimeError):
+    """The model file or the ``llama_cpp`` runtime could not be set up."""
