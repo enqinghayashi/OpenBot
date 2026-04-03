@@ -512,3 +512,72 @@ def simple_keyword_intent(text: str) -> Optional[dict]:
     if not obj or obj == verb or obj in TRAILING_FILLERS or obj in ("me", "us", "it", "up"):
         return None
     return {"action": _SIMPLE_ACTION_MAP[verb], "object": obj}
+
+
+def _strip_trailing_fillers(target: str) -> str:
+    target = target.strip().rstrip('.!?,').strip()
+    tokens = target.split()
+    while tokens and tokens[-1].lower().strip('.,!?') in TRAILING_FILLERS:
+        tokens.pop()
+    # re-strip: a filler may sit behind punctuation
+    # ('the tray, please'), and a label must not carry it.
+    return ' '.join(tokens).rstrip('.,!?').strip()
+
+
+def _normalize_pick_label(label: str) -> str:
+    """Strip 'up'/'it' filler tokens from a pick label candidate.
+
+    A LEADING 'up' and TRAILING 'it'/'up' tokens are filler, not objects:
+    'pick it up' -> nothing, 'grab up the cup' -> 'the cup'.  Returns ''
+    when nothing remains — the caller must treat an empty label as
+    NOT_DETECTED (honest refusal; never a pick call without a label)."""
+    tokens = label.split()
+    while tokens and tokens[0].lower().strip('.,!?') == 'up':
+        tokens.pop(0)
+    # trailing phrases are filler ("... for me")
+    # 'for my friend' keeps its tail - honest refusal.
+    while True:
+        if len(tokens) >= 2 and ' '.join(tokens[-2:]).lower().strip('.,!?') in (
+            "for me", "for us", "to me",
+        ):
+            tokens = tokens[:-2]
+            continue
+        if tokens and tokens[-1].lower().strip('.,!?') in ('it', 'up'):
+            tokens.pop()
+            continue
+        break
+    return ' '.join(tokens)
+
+
+# second clause: terminator, comma/semicolon,
+# 'and' or 'then'. filler-only tails never veto;
+# whisper run-ons ('Pick up the bottle. Let's see
+# what...') must not ride in.
+_MULTI_CLAUSE_SPLIT_RE = re.compile(
+    r'[.!?]+|[,;]+|\band\b|\bthen\b',
+    re.IGNORECASE,
+)
+
+
+def multi_clause_veto(capture_text: str) -> bool:
+    """True when a captured payload continues into a SECOND clause.
+
+    Operates on the RAW captured text — the label/object/destination
+    capture AFTER the action head (``m.group(1)`` / ``m.group(2)``), not
+    the whole utterance.  Splits on /[.!?]+|[,;]+|\band\b|\bthen\b/
+    (case-insensitive) and vetoes iff SOME part after the first contains
+    any token NOT in ``TRAILING_FILLERS`` (parts are tokenized with the
+    same punctuation-normalized split the halt lane uses).  Filler-only
+    continuations never veto: 'pick up the cup, please', 'put the cup on
+    the tray, please' (filler tail), a trailing 'and'/'then' with NO
+    continuation ('pick up the cup and'), and a sentence-terminal
+    period ('pick up the cup.' — second part is empty) all split to an
+    empty or filler-only second part.  A sentence-joined second sentence
+    ('pick up the cup. turn it off') vetoes — never a garbage label.
+    """
+    parts = _MULTI_CLAUSE_SPLIT_RE.split(capture_text)
+    for part in parts[1:]:
+        tokens = _normalize_for_halt(part)
+        if any(token not in TRAILING_FILLERS for token in tokens):
+            return True
+    return False
