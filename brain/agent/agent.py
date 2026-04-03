@@ -553,3 +553,7 @@ class G1Agent:
         unchanged)."""
         return self._get_executor()._terminal_text
 
+    @_terminal_text.setter
+    def _terminal_text(self, value: Optional[str]) -> None:
+        self._get_executor()._terminal_text = value
+
