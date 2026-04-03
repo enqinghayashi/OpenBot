@@ -579,3 +579,10 @@ class G1Agent:
     def _tools(self, value: Any) -> None:
         self._get_executor()._tools = value
 
+    @staticmethod
+    def _hook_result_to_text(result: "HookResult") -> str:
+        """Delegation (v4-L1 extraction): the real renderer lives in
+        ToolExecutor; kept here because the test surface calls it on the
+        class."""
+        return ToolExecutor._hook_result_to_text(result)
+
