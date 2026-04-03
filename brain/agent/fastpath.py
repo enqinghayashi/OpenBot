@@ -332,3 +332,183 @@ def _strip_cardinals(label: str) -> tuple[str, Optional[int]]:
             continue
         kept.append(token)
     return " ".join(kept).strip(), count
+
+
+# =============================================================================
+# OpenBot action patterns (single action; borrowed from the family)
+# =============================================================================
+
+# "put the bottle in the bin" / "set the mug down"
+# label is non-greedy: first in/into/on/onto
+PLACE_INTO_RE = re.compile(
+    rf'^{_NAV_POLITE}(?:put|place|set)\s+(?:the\s+)?(.+?)'
+    rf'\s+(?:in|into|on|onto)\s+(?:the\s+)?(.+)$',
+    re.IGNORECASE,
+)
+# "set the cup down" - release right there.
+PLACE_DOWN_RE = re.compile(
+    rf'^{_NAV_POLITE}(?:put|set)\s+(?:the\s+)?(.+?)\s+down\s*$',
+    re.IGNORECASE,
+)
+
+_HAND_PATTERN = (
+    rf'^{_NAV_POLITE}(?:open|close)\s+(?:your\s+)?(?:the\s+)?'
+    rf'(left|right|both)?\s*(?:hand|hands|gripper|grippers)?\s*$'
+)
+OPEN_HAND_RE = re.compile(_HAND_PATTERN.replace('open|close', 'open'), re.IGNORECASE)
+CLOSE_HAND_RE = re.compile(_HAND_PATTERN.replace('open|close', 'close'), re.IGNORECASE)
+
+# ---------------------------------------------------------------------------
+# named arm poses, matched before the simple-
+# keyword lane so 'go neutral' is not a marker
+# hunt. longest-first, word-boundary anchored.
+_POSE_TAIL = r"(?:\s+(?:pose|posture|position|up))?"
+# one shared lead-in, outside each branch:
+# inside, 'go ready pose' and 'get ready'
+# would not both match.
+_POSE_LEAD = (
+    r"(?:(?:go|get|be|stand|assume|return|back)(?:\s+(?:to|into))?\s+)?"
+)
+# 'tuck' has no engine verb; both word orders
+# sound natural. every part optional.
+_POSE_TUCK = (
+    r"tuck(?:\s+(?:"
+    r"(?:your\s+|the\s+|my\s+)?(?:arms?|hands?)(?:\s+(?:in|up|back))?"
+    r"|(?:in|up|back)(?:\s+(?:your\s+|the\s+|my\s+)?(?:arms?|hands?))?"
+    r"))?"
+)
+# 'arms down' ("i want the home posture ... by
+# having the arms down") names a pose by
+# DESCRIBING it - pose_from_text can't see it.
+#
+# leads stay inside: they need a body part, so
+# no collision with the 'go'->navigate lane.
+#
+# SAFETY: tokens[0] halt words swallow commands
+# ('Stand back up.'). nothing here starts with
+# one: arms/hands/put/lower/drop/relax/let.
+# 'stand' IS a halt word, so 'stand arms down' is out.
+_ARM = r"(?:arms?|hands?)"
+_POS = r"(?:\s+(?:your\s+|the\s+|my\s+)?)?"          # optional possessive
+_DIR = (
+    r"(?:down"
+    r"|by\s+(?:your\s+|the\s+|my\s+)?sides?"
+    r"|to\s+(?:your\s+|the\s+|my\s+)?sides?"
+    r"|at\s+(?:your\s+|the\s+|my\s+)?sides?"
+    r")"
+)
+_POSE_DOWN = (
+    # explicit '+' everywhere: a bare literal after
+    # a "+ name" chain is a syntax error.
+    # lower/drop/relax carry direction - particle optional.
+    r"(?:(?:lower|drop|relax)" + _POS + _ARM + r"(?:\s+" + _DIR + r")?"
+    # put/let imply no direction - particle required.
+    + r"|(?:put|let)" + _POS + _ARM + r"\s+" + _DIR
+    # no verb: noun + particle stands alone.
+    + r"|" + _ARM + r"\s+" + _DIR
+    + r")"
+)
+#: same source POSE_RE embeds, compiled again
+#: so pose_from_text resolves it without a copy.
+_POSE_DOWN_RE = re.compile(_POSE_DOWN, re.IGNORECASE)
+POSE_RE = re.compile(
+    rf"^{_NAV_POLITE}{_POSE_LEAD}(?:"
+    rf"{_POSE_TUCK}"
+    rf"|{_POSE_DOWN}"
+    rf"|(?:the\s+)?ready{_POSE_TAIL}"
+    rf"|(?:the\s+)?neutral{_POSE_TAIL}"
+    rf"|(?:the\s+)?home{_POSE_TAIL}"
+    rf")\s*$",
+    re.IGNORECASE,
+)
+
+
+def pose_from_text(text: str) -> Optional[str]:
+    """The pose name a phrase names, or None.
+
+    Returns one of 'tuck' | 'ready' | 'neutral' | 'home' — the brain's pose
+    vocabulary, NOT the engine's verbs (the backend owns that mapping).
+    """
+    m = POSE_RE.match(text or "")
+    if m is None:
+        return None
+    said = m.group(0).lower()
+    # key off the matched TEXT, not the pattern
+    for name in ("tuck", "ready", "neutral", "home"):
+        if re.search(rf"\b{name}\b", said):
+            return name
+    # 'put your arms down' = home, via _POSE_DOWN
+    if _POSE_DOWN_RE.search(said):
+        return "home"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# turn-around: "just the simple turn around
+# sweep". the SWEEP is the walk FSM's; the
+# brain just names it, no LLM.
+#
+# before NAV_PATTERNS: specific grammar first
+#
+# CLOSED alias set, never a free capture -
+# resolved via ``known_labels.resolve_alias``.
+# a stray tail is refused HERE, so no noun
+# becomes a person to hunt.
+#
+# the extra 'please' allows 'could you please
+# turn around'; widening _NAV_POLITE hits all lanes.
+_TURN_AROUND_TARGET = r"(?:me|myself|i|us|human|operator|person|someone|somebody)"
+TURN_AROUND_RE = re.compile(
+    rf"^{_NAV_POLITE}(?:please[\s,]+)?"
+    # 'turn around' / 'turnaround' / 'turn-around' /
+    # 'turn round' / 'spin around' / 'look around'.
+    r"(?:turn(?:\s*-\s*|\s+)?around|turn\s+round|spin\s+around|look\s+around)"
+    # optional '... to/and look/find for <target>' tail.
+    rf"(?:\s+(?:and\s+|to\s+)?(?:look|search|hunt|find)?\s*(?:for)?\s*"
+    rf"(?:the\s+|a\s+)?({_TURN_AROUND_TARGET}))?"
+    r"\s*[.!?,;]*\s*$",
+    re.IGNORECASE,
+)
+
+
+# ---------------------------------------------------------------------------
+# simple keyword + LAST-WORD model:
+# only these verbs, OBJECT = last word, rest
+# stripped. deliberately DUMB: put/place ->
+# place at 'here', never containment inference.
+# ---------------------------------------------------------------------------
+_SIMPLE_ACTION_MAP = {
+    'pick': 'pick', 'grab': 'pick',
+    'put': 'place', 'place': 'place',
+    'walk': 'navigate', 'go': 'navigate', 'find': 'navigate',
+}
+_SIMPLE_TRAILING_PHRASES = frozenset({"for me", "for us", "to me"})
+
+
+def simple_keyword_intent(text: str) -> Optional[dict]:
+    if not text:
+        return None
+    toks = [t for t in re.split(r"[^0-9A-Za-z']+", text) if t]
+    while toks:
+        tail2 = " ".join(toks[-2:]).lower()
+        if tail2 in _SIMPLE_TRAILING_PHRASES:
+            toks = toks[:-2]
+            continue
+        if toks[-1].lower() in TRAILING_FILLERS or toks[-1].lower() in ("me", "us"):
+            toks.pop()
+            continue
+        break
+    if not toks:
+        return None
+    verb = None
+    for t in toks:
+        low = t.lower()
+        if low in _SIMPLE_ACTION_MAP:
+            verb = low
+            break
+    if verb is None:
+        return None
+    obj = toks[-1].lower().strip("'")
+    if not obj or obj == verb or obj in TRAILING_FILLERS or obj in ("me", "us", "it", "up"):
+        return None
+    return {"action": _SIMPLE_ACTION_MAP[verb], "object": obj}
