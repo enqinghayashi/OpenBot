@@ -162,3 +162,128 @@ class ToolCallParseError(ValueError):
 
 class ModelLoadError(RuntimeError):
     """The model file or the ``llama_cpp`` runtime could not be set up."""
+
+
+class ChatTransportError(RuntimeError):
+    """Transport-level failure (HTTP errors, backend kwargs rejected, ...)."""
+
+
+# ---------------------------------------------------------------------------
+# dealing with think blocks (Qwen3 emits <|thinking|> ... <|/thinking|>)
+# ---------------------------------------------------------------------------
+
+_THINK_BLOCK_RES = [
+    re.compile(r"<\|thinking\|>.*?(?:\|/thinking\|>|$)", re.DOTALL),
+    re.compile(r"<think>.*?(?:</think>|$)", re.DOTALL),
+]
+
+# no think block
+# Qwen3's template turns thinking on by default; this line shuts it off
+# a think block eats the CPU generation budget and breaks parsing
+_NO_THINK_DIRECTIVE = (
+    "\n\nIMPORTANT: You are in direct-answer mode. Do NOT emit a <think> "
+    "block — answer immediately in plain text."
+)
+
+_INLINE_TOOL_CALL_RE = re.compile(
+    r"<\|tool_call\|>(.*?)<\|/tool_call\|>", re.DOTALL
+)
+
+# skeleton retry
+# one auto-retry, then the empty-ChatResult repair path
+_SKELETON_RETRY_MESSAGE = (
+    'Your previous output was not a valid tool call. Respond with exactly '
+    'one JSON object of the form {"tool": "<tool name>", "args": {<arguments>}} '
+    "and nothing else."
+)
+
+
+def _skeleton_placeholder(name: str, ptype: Any) -> Any:
+    """A literal placeholder value for one parameter (never real content —
+    output-injection priming, the Escapement finding)."""
+    if ptype in ("number", "integer"):
+        return "<number>"
+    if ptype == "boolean":
+        return "<true|false>"
+    return f"<{name}>"  # use the param name
+
+
+def _build_skeleton_prompt(tools: List[dict]) -> str:
+    """Serialize the tool specs into a literal-JSON skeleton instruction.
+
+    One skeleton per tool with PLACEHOLDER values only (``<label>``,
+    ``<number>``, ...) — never real example content.  The model answers in
+    plain text; the deterministic parser (``_parse_skeleton_tool_call``)
+    validates the tool name against the provided specs and the args shape
+    code-side.  No grammar constraints anywhere (Plan-B R0': the hard-schema
+    json-mode Constraint Tax).  Empty tool list -> empty string (the caller
+    falls back to the native text path).
+    """
+    lines: List[str] = []
+    for spec in tools:
+        fn = spec.get("function")
+        name = fn.get("name") if isinstance(fn, dict) else None
+        if not isinstance(name, str) or not name:
+            continue
+        params = fn.get("parameters") if isinstance(fn, dict) else None
+        properties = params.get("properties") if isinstance(params, dict) else None
+        args: Dict[str, Any] = {}
+        if isinstance(properties, dict):
+            for pname, pmeta in properties.items():
+                ptype = pmeta.get("type") if isinstance(pmeta, dict) else None
+                args[pname] = _skeleton_placeholder(pname, ptype)
+        lines.append(json.dumps({"tool": name, "args": args}, sort_keys=True))
+    if not lines:
+        return ""
+    header = (
+        "Choose exactly ONE tool for this turn. Respond with exactly one "
+        'JSON object of the form {"tool": "<tool name>", "args": {<arguments>}} '
+        "and NOTHING ELSE — no explanations, no markdown, no text before or "
+        "after. The skeletons below show the SHAPE of the arguments only; "
+        "fill each placeholder with the real value from CURRENT SCENE. "
+        "Tool skeletons:"
+    )
+    return header + "\n" + "\n".join(f"- {s}" for s in lines)
+
+
+def _parse_skeleton_tool_call(
+    raw: str,
+    valid_names: set,
+    next_call_id: Optional[Callable[[str], str]] = None,
+) -> Optional[ToolCall]:
+    """Deterministically extract one skeleton-mode tool call from plain text.
+
+    Detection runs on the RAW content BEFORE think stripping (the Qwen3
+    think-block finding: tool calls can be emitted INSIDE a think block,
+    and stripping first would destroy them); when the raw pass yields
+    nothing, the think-stripped text is tried so reasoning braces cannot
+    hijack the balanced-JSON scan.  Validates the tool name against the
+    provided specs and the args shape (a dict).  Returns None on any
+    failure — the caller's exactly-one-retry then the empty-ChatResult
+    repair path takes over.
+
+    ``next_call_id`` (optional) is the caller's id mint — a per-client
+    :class:`_CallIdFactory` or the :func:`_module_call_id` default.  The
+    parsed call's id is minted HERE, at parse time, never a compile-time
+    constant: the C1 400 root cause was every parsed call being stamped
+    ``skeleton_1``, which collided the moment a conversation carried two
+    distinct tool calls.
+    """
+    mint = next_call_id if next_call_id is not None else _module_call_id
+    for text in (raw, _strip_think(raw)):
+        if not text:
+            continue
+        maybe = _extract_first_balanced_json(text)
+        if maybe is None:
+            continue
+        try:
+            data = json.loads(maybe)
+        except ValueError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        name = data.get("tool")
+        args = data.get("args")
+        if isinstance(name, str) and name in valid_names and isinstance(args, dict):
+            return ToolCall(id=mint("skeleton"), name=name, arguments=args)
+    return None
