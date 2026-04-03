@@ -575,3 +575,7 @@ class G1Agent:
         executor's execute())."""
         return self._get_executor()._tools
 
+    @_tools.setter
+    def _tools(self, value: Any) -> None:
+        self._get_executor()._tools = value
+
