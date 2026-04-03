@@ -564,3 +564,7 @@ class G1Agent:
         lives on the executor's slot)."""
         return self._get_executor()._failure_budget_left
 
+    @_failure_budget_left.setter
+    def _failure_budget_left(self, value: int) -> None:
+        self._get_executor()._failure_budget_left = value
+
