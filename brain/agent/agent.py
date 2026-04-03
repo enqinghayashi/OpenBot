@@ -770,3 +770,6 @@ class _LaptopMockBackend:
     world action succeeded.
     """
 
+    def observe(self) -> WorldObservation:
+        return default_world_observation(fresh=True, detections_ts=time.time())
+
