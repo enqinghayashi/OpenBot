@@ -783,3 +783,6 @@ class _LaptopMockBackend:
     def place(self, args: dict) -> dict:
         return self._refuse("place")
 
+    def navigate(self, args: dict) -> dict:
+        return self._refuse("navigate")
+
