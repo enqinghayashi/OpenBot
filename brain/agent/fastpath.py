@@ -581,3 +581,178 @@ def multi_clause_veto(capture_text: str) -> bool:
         if any(token not in TRAILING_FILLERS for token in tokens):
             return True
     return False
+
+
+def classify_intent(text: str) -> Optional[dict]:
+    """Returns an intent dict if a deterministic single action matches, else None.
+
+    Action set (OpenBot adaptation): ``stop`` | ``navigate_to_marker`` |
+    ``pick_up`` | ``place`` | ``open_hand`` | ``close_hand`` | ``pose`` |
+    ``turn_around``.
+    Nav is checked before pick (source order) so "go to X" / "take me to X"
+    never classify as picks; "get" is deliberately excluded from pick verbs.
+    The POSE lane runs before nav for the opposite reason — 'go neutral' is a
+    posture, and nav would read it as a marker named 'neutral'.
+
+    Halt precedence: the explicit-halt lane runs on the NORMALIZED
+    utterance (punctuation -> spaces) BEFORE any heard-name stripping,
+    scanning the FIRST up-to-4 tokens for any halt word; it is re-checked
+    after stripping ('stewart, stop' -> 'stop'); the stripper additionally
+    refuses halt words, so 'stop the robot' can never be eaten as a name.
+    """
+    raw = text.strip()
+    # halt lane #1: normalized BEFORE anything else.
+    # a comma ('stop, please' / 'please, stop') must
+    # never break the match - halt comes FIRST.
+    # a negated halt ('don't stop') falls through.
+    if _halt_intent(_normalize_for_halt(raw)):
+        return {'action': 'stop'}
+
+    cleaned = _strip_heard_name(raw)
+    cleaned = _normalize_word_numbers(cleaned)
+    cleaned_l = cleaned.lower().rstrip('.!?,').strip()
+
+    tokens = cleaned_l.split()
+    while tokens and tokens[-1] in TRAILING_FILLERS:
+        tokens.pop()
+    cleaned_l = ' '.join(tokens)
+
+    # halt lane #2, after name stripping ('stewart,
+    # stop' -> 'stop'). a leading name can't conceal
+    # a halt. plain 'stop ...' already hit #1.
+    if _halt_intent(_normalize_for_halt(cleaned)):
+        return {'action': 'stop'}
+
+    # -- named arm poses ------------------------------------------------
+    # ahead of nav and place: 'go home' would be a
+    # marker hunt, 'put your arms down' a place.
+    if POSE_RE.match(cleaned_l):
+        return {'action': 'pose', 'name': pose_from_text(cleaned_l)}
+
+    # -- the turn-around lane (see TURN_AROUND_RE) -------------------------
+    # before nav, like the pose lane
+    m = TURN_AROUND_RE.match(cleaned_l)
+    if m:
+        return {'action': 'turn_around', 'target': m.group(1)}
+
+    for pat in NAV_PATTERNS:
+        m = pat.match(cleaned)
+        if m:
+            if multi_clause_veto(m.group(1)):
+                # two-step ('kitchen, then bathroom') - drop to LLM
+                continue
+            target = _strip_trailing_fillers(m.group(1))
+            if not target:
+                continue
+            if all(tok.lower() in _NAV_FILLERS for tok in target.split()):
+                # filler-only target ('go to') - skip
+                continue
+            return {'action': 'navigate_to_marker', 'target': target}
+
+    for pat in PICK_PATTERNS:
+        m = pat.match(cleaned)
+        if m:
+            if multi_clause_veto(m.group(1)):
+                # 'remote, put it in the green plate' = TWO steps
+                continue
+            raw_target = _strip_trailing_fillers(m.group(1))
+            # 'up'/'it' are never a label; empty = honest refusal
+            target, count = _strip_cardinals(_normalize_pick_label(raw_target))
+            if target:
+                intent = {'action': 'pick_up', 'target': target}
+                if count is not None:
+                    intent['count'] = count
+                return intent
+
+    m = PLACE_INTO_RE.match(cleaned)
+    if m and not (multi_clause_veto(m.group(1)) or multi_clause_veto(m.group(2))):
+        # two-step place - drop to the LLM. label group
+        # catches multi-object, destination the rest.
+        label, count = _strip_cardinals(_strip_trailing_fillers(m.group(1)))
+        label = re.sub(r'\s+down$', '', label).strip()
+        destination = _strip_trailing_fillers(m.group(2))
+        if label and destination:
+            intent = {'action': 'place', 'label': label, 'destination': destination}
+            if count is not None:
+                intent['count'] = count
+            return intent
+    m = PLACE_DOWN_RE.match(cleaned)
+    if m and not multi_clause_veto(m.group(1)):
+        # multi-object place-down is two-step - drop to LLM
+        label, count = _strip_cardinals(_strip_trailing_fillers(m.group(1)))
+        if label:
+            intent = {'action': 'place', 'label': label, 'destination': 'here'}
+            if count is not None:
+                intent['count'] = count
+            return intent
+
+    # no payload captured, so no multi-clause veto here
+    m = OPEN_HAND_RE.match(cleaned_l)
+    if m:
+        return {'action': 'open_hand', 'side': m.group(1) or 'right'}
+    m = CLOSE_HAND_RE.match(cleaned_l)
+    if m:
+        return {'action': 'close_hand', 'side': m.group(1) or 'right'}
+
+    return None
+
+
+# =============================================================================
+# intent -> ToolCall (still no LLM involved at all)
+# =============================================================================
+
+
+def classify_tool_call(text: str) -> Optional[ToolCall]:
+    """Map a matched intent to a ToolCall for the agent's tool registry.
+
+    Returns None when no deterministic intent matches (the LLM path handles
+    the utterance).  The arguments are the *unsolved* form (label/target,
+    no coordinates): the agent's PRE-hook phase resolves coordinates and
+    runs the confirm gate before any motion.
+    """
+    intent = classify_intent(text)
+    if intent is None:
+        return None
+    action = intent['action']
+    if action == 'stop':
+        return ToolCall(id='fastpath_1', name='stop', arguments={})
+    if action == 'pose':
+        # name is brain vocabulary; the backend owns
+        # the engine verbs (gateway POSE_ENGINE_VERBS).
+        return ToolCall(
+            id='fastpath_1', name='pose', arguments={'name': intent['name']}
+        )
+    if action == 'pick_up':
+        arguments: Dict[str, Any] = {'label': intent['target']}
+        if intent.get('count') is not None:
+            # hint only - the schema drops unknown keys
+            arguments['count'] = intent['count']
+        return ToolCall(id='fastpath_1', name='pick', arguments=arguments)
+    if action == 'place':
+        arguments = {
+            'label': intent['label'],
+            'destination': intent['destination'],
+        }
+        if intent.get('count') is not None:
+            arguments['count'] = intent['count']
+        return ToolCall(
+            id='fastpath_1',
+            name='place',
+            arguments=arguments,
+        )
+    if action == 'navigate_to_marker':
+        return ToolCall(
+            id='fastpath_1', name='navigate', arguments={'target': intent['target']}
+        )
+    if action == 'turn_around':
+        # no target -> send none: tool defaults to 'person'
+        # and resolves the alias (same law navigate follows).
+        arguments: Dict[str, Any] = {}
+        if intent.get('target'):
+            arguments['target'] = intent['target']
+        return ToolCall(id='fastpath_1', name='turn_around', arguments=arguments)
+    if action in ('open_hand', 'close_hand'):
+        return ToolCall(
+            id='fastpath_1', name=action, arguments={'side': intent['side']}
+        )
+    return None
