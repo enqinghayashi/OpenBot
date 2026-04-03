@@ -789,3 +789,6 @@ class _LaptopMockBackend:
     def open_hand(self, args: dict) -> dict:
         return self._refuse("open_hand")
 
+    def close_hand(self, args: dict) -> dict:
+        return self._refuse("close_hand")
+
