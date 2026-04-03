@@ -773,3 +773,7 @@ class _LaptopMockBackend:
     def observe(self) -> WorldObservation:
         return default_world_observation(fresh=True, detections_ts=time.time())
 
+    @staticmethod
+    def _refuse(name: str) -> dict:
+        return fail(f"laptop mock backend — {name} refused (no robot connected)")
+
