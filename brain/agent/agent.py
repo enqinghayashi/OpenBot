@@ -586,3 +586,10 @@ class G1Agent:
         class."""
         return ToolExecutor._hook_result_to_text(result)
 
+    @classmethod
+    def _classify_result(cls, text: str) -> tuple[str, Optional[str]]:
+        """Delegation (v4-L1 extraction): the real classifier lives in
+        ToolExecutor; kept here because the fast path and the tests call
+        it on the agent."""
+        return ToolExecutor._classify_result(text)
+
