@@ -758,3 +758,15 @@ class G1Agent:
         )
 
 
+class _LaptopMockBackend:
+    """Laptop-dev backend (the ``G1Agent.from_config`` default): on-the-fly
+    empty WorldObservation snapshots and honest refusal for every verb.
+
+    The agent loop reads the scene from ``observe()`` — detections are
+    event-driven, silence == empty, so an empty fresh observation is the
+    correct laptop scene (the SCENE block reads 'empty', never 'not
+    available').  Every motion/user/stop verb refuses with an honest error
+    envelope: the laptop has no robot, and nothing here may pretend a
+    world action succeeded.
+    """
+
