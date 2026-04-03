@@ -80,3 +80,32 @@ def _module_call_id(prefix: str) -> str:
     is the safe default for stateless parser call sites.
     """
     return f"{prefix}_{next(_MODULE_CALL_ID_SEQ)}"
+
+
+class _CallIdFactory:
+    """Per-client monotonic tool-call-id mint (the C1 fix).
+
+    ``__call__(prefix)`` returns ``prefix_N`` where N never repeats for
+    this client's lifetime, so every tool call a client parses in one
+    conversation carries a distinct id and the outgoing history always
+    has exactly one tool message per assistant tool_call_id.
+    """
+
+    def __init__(self) -> None:
+        self._seq = itertools.count(1)
+
+    def __call__(self, prefix: str) -> str:
+        return f"{prefix}_{next(self._seq)}"
+
+# ---------------------------------------------------------------------------
+# Protocol
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ToolCall:
+    """A single tool call proposed by the LLM (or the fast path)."""
+
+    id: str
+    name: str
+    arguments: dict
