@@ -514,3 +514,12 @@ class G1Agent:
 
     # -------------------------------------------------- handling the tool calls
 
+    def _handle_tool_call(self, call: ToolCall) -> str:
+        """One-line delegation (v4-L1 extraction): the whole PRE-hooks ->
+        tool -> POST pipeline lives in ToolExecutor
+        (brain/agent/tool_executor.py); the result text is byte-identical
+        by design."""
+        return self._get_executor().execute(call.name, dict(call.arguments or {})).text
+
+    # -- wiring up the ToolExecutor -------------------------------------------
+
