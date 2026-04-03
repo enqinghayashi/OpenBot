@@ -777,3 +777,6 @@ class _LaptopMockBackend:
     def _refuse(name: str) -> dict:
         return fail(f"laptop mock backend — {name} refused (no robot connected)")
 
+    def pick(self, args: dict) -> dict:
+        return self._refuse("pick")
+
