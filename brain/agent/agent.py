@@ -498,3 +498,12 @@ class G1Agent:
             },
         }
 
+    def _compact_history(self) -> None:
+        """Drop middle turns; keep the scene-carrying first message."""
+        if len(self._history) <= MAX_KEPT_HISTORY_MESSAGES + 1:
+            return
+        self._history = [
+            self._history[0],
+            *self._history[-(MAX_KEPT_HISTORY_MESSAGES):],
+        ]
+
