@@ -601,3 +601,15 @@ class G1Agent:
 
     # ------------------------------------------------------- reading the world
 
+    def _observe(self) -> Optional[WorldObservation]:
+        """One guarded observation read (never raises; None = no source)."""
+        if self.backend is None:
+            return None
+        try:
+            obs = self.backend.observe()
+        except Exception:  # noqa: BLE001 — a gateway hiccup must not crash
+            return None
+        if obs is None or not isinstance(obs, WorldObservation):
+            return None
+        return obs
+
