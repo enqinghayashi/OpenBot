@@ -651,3 +651,9 @@ class G1Agent:
             )
         return "\n".join(lines)
 
+    def _render_first_message(self) -> str:
+        scene = self._scene_block()
+        return f"{self._system_prompt}\n\nCURRENT SCENE:\n{scene}\n\n{self._task_text}"
+
+    # --------------------------------------------- bootstrapping from config
+
