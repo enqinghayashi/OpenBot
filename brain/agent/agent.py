@@ -593,3 +593,11 @@ class G1Agent:
         it on the agent."""
         return ToolExecutor._classify_result(text)
 
+    def _apply_budget(self, kind: str, reason: Optional[str]) -> None:
+        """Delegation (v4-L1 extraction): the real bookkeeping lives in
+        ToolExecutor, whose per-run budget state this agent proxies
+        (``_failure_budget_left`` / ``_terminal_text``)."""
+        self._get_executor()._apply_budget(kind, reason)
+
+    # ------------------------------------------------------- reading the world
+
