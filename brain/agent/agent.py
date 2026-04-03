@@ -792,3 +792,6 @@ class _LaptopMockBackend:
     def close_hand(self, args: dict) -> dict:
         return self._refuse("close_hand")
 
+    def query_user(self, args: dict) -> dict:
+        return self._refuse("query_user")
+
