@@ -798,3 +798,5 @@ class _LaptopMockBackend:
     def notify_user(self, args: dict) -> dict:
         return self._refuse("notify_user")
 
+    def stop(self, args: dict) -> dict:
+        return self._refuse("stop")
