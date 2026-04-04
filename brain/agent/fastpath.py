@@ -181,3 +181,11 @@ HALT_PHRASES_RE = re.compile(r"\b(?:never\s*mind|forget\s+(?:it|about\s+it))\b")
 _HALT_NEGATIONS = frozenset({"don't", "dont", "never"})
 
 
+def _normalize_for_halt(text: str) -> list:
+    """Punctuation -> spaces, lowercased, whitespace collapsed; returns the
+    token list the halt lane scans.  Normalizing BEFORE any matching is
+    what makes comma-punctuated halt phrasings ('stop, please', 'please,
+    stop', 'stand still, please') halt — the comma no longer separates the
+    halt verb from the rest of the utterance."""
+    norm = re.sub(r"[.,!?]+", " ", text).lower()
+    return re.sub(r"\s+", " ", norm).strip().split()
