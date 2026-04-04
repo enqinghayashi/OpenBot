@@ -265,3 +265,35 @@ _WORD_TENS = {'twenty': 20, 'thirty': 30, 'forty': 40, 'fourty': 40,
 _WORD_FRACS = {'half': 0.5, 'quarter': 0.25}
 
 
+def _normalize_word_numbers(text: str) -> str:
+    """Convert spoken numbers ('one', 'twenty five', 'half') into digits."""
+    tokens = text.split()
+    out = []
+    i = 0
+    while i < len(tokens):
+        raw = tokens[i]
+        m = re.match(r"^([A-Za-z']+)([,.!?;:]*)$", raw)
+        if not m:
+            out.append(raw); i += 1; continue
+        word, suffix = m.group(1).lower(), m.group(2)
+
+        if word in _WORD_TENS:
+            base = _WORD_TENS[word]
+            if i + 1 < len(tokens):
+                m2 = re.match(r"^([A-Za-z']+)([,.!?;:]*)$", tokens[i + 1])
+                if m2 and m2.group(1).lower() in _WORD_UNITS \
+                        and _WORD_UNITS[m2.group(1).lower()] != 0:
+                    base += _WORD_UNITS[m2.group(1).lower()]
+                    suffix = m2.group(2)
+                    i += 1
+            out.append(f'{base}{suffix}')
+        elif word in _WORD_TEENS:
+            out.append(f'{_WORD_TEENS[word]}{suffix}')
+        elif word in _WORD_UNITS:
+            out.append(f'{_WORD_UNITS[word]}{suffix}')
+        elif word in _WORD_FRACS:
+            out.append(f'{_WORD_FRACS[word]:g}{suffix}')
+        else:
+            out.append(raw)
+        i += 1
+    return ' '.join(out)
