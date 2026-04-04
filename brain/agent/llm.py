@@ -287,3 +287,182 @@ def _parse_skeleton_tool_call(
         if isinstance(name, str) and name in valid_names and isinstance(args, dict):
             return ToolCall(id=mint("skeleton"), name=name, arguments=args)
     return None
+
+
+def _find_think_blocks(text: str) -> List[str]:
+    """Return every think-block match found in ``text`` (empty if none)."""
+    if not text:
+        return []
+    found: List[str] = []
+    for pattern in _THINK_BLOCK_RES:
+        found.extend(pattern.findall(text))
+    return found
+
+
+def _strip_think(text: str) -> str:
+    """Remove think blocks from ``text``."""
+    if not text:
+        return text
+    for pattern in _THINK_BLOCK_RES:
+        text = pattern.sub("", text)
+    return text.strip()
+
+
+def _extract_first_balanced_json(text: str) -> Optional[str]:
+    """Extract the first balanced ``{...}`` region from ``text``.
+
+    Returns the exact substring (including the outer braces) or None.
+    Braces inside string literals and escapes are respected; an unbalanced
+    region (truncated tail) returns None.
+    """
+    if not text:
+        return None
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start: i + 1]
+    return None
+
+
+def _parse_tool_calls_payload(
+    payload: Any,
+    next_call_id: Optional[Callable[[str], str]] = None,
+) -> List[ToolCall]:
+    """Normalize an OpenAI-style ``message["tool_calls"]`` list to ToolCall.
+
+    Accepts both the OpenAI shape (``{"id", "type", "function": {name,
+    arguments}}``) and the flatter llama.cpp shape (``{"id", "name",
+    "arguments"}``).  ``arguments`` may be a JSON string or a parsed dict.
+    Raises :class:`ToolCallParseError` on malformed payloads.  Provider-
+    supplied ids are kept verbatim; MISSING ids are synthesized through
+    the caller's mint (``next_call_id``, default :func:`_module_call_id`)
+    as process-unique ``call_<n>`` ids — never a per-payload restarting
+    counter, which would re-collide across id-less payloads in one
+    conversation (the C1 defect family).
+    """
+    mint = next_call_id if next_call_id is not None else _module_call_id
+    if not isinstance(payload, list):
+        raise ToolCallParseError(f"tool_calls is not a list: {type(payload).__name__}")
+    calls: List[ToolCall] = []
+    for n, item in enumerate(payload, start=1):
+        if not isinstance(item, dict):
+            raise ToolCallParseError(
+                f"tool_calls[{n}] is not an object: {type(item).__name__}"
+            )
+        name = item.get("name")
+        if name is None:
+            function = item.get("function")
+            if isinstance(function, dict):
+                name = function.get("name")
+        if not isinstance(name, str) or not name:
+            raise ToolCallParseError(f"tool_calls[{n}] missing a function name")
+        raw_args = item.get("arguments")
+        if raw_args is None and isinstance(item.get("function"), dict):
+            raw_args = item["function"].get("arguments")
+        if isinstance(raw_args, str):
+            try:
+                arguments = json.loads(raw_args)
+            except ValueError as exc:
+                raise ToolCallParseError(
+                    f"tool_calls[{n}] {name!r} arguments are not valid JSON: {exc}"
+                ) from exc
+        elif isinstance(raw_args, dict):
+            arguments = raw_args
+        else:
+            raise ToolCallParseError(
+                f"tool_calls[{n}] {name!r} arguments missing or malformed"
+            )
+        call_id = item.get("id")
+        if not isinstance(call_id, str) or not call_id:
+            call_id = mint("call")
+        calls.append(ToolCall(id=call_id, name=name, arguments=arguments))
+    return calls
+
+
+def _parse_inline_tool_calls(
+    content: str,
+    next_call_id: Optional[Callable[[str], str]] = None,
+) -> tuple[str, Optional[List[ToolCall]]]:
+    """Extract raw ``<|tool_call|>`` segments from text (non-native builds).
+
+    Returns ``(content_without_segments, calls_or_None)``.  Raises
+    :class:`ToolCallParseError` if a segment contains invalid JSON.  Ids
+    are minted through ``next_call_id`` (default :func:`_module_call_id`)
+    — never a per-parse restarting ``inline_<n>`` counter, which would
+    collide across two inline-only turns of one conversation (the C1
+    defect family).
+    """
+    if not content or "<|tool_call|>" not in content:
+        return content, None
+    mint = next_call_id if next_call_id is not None else _module_call_id
+    calls: List[ToolCall] = []
+    remaining: List[str] = []
+    cursor = 0
+    for match in _INLINE_TOOL_CALL_RE.finditer(content):
+        remaining.append(content[cursor: match.start()])
+        segment = match.group(1).strip()
+        try:
+            data = json.loads(segment)
+        except ValueError as exc:
+            raise ToolCallParseError(
+                f"inline tool_call segment is not valid JSON: {exc}"
+            ) from exc
+        if not isinstance(data, dict):
+            raise ToolCallParseError("inline tool_call segment is not an object")
+        name = data.get("name")
+        arguments = data.get("arguments", {})
+        if not isinstance(name, str) or not isinstance(arguments, dict):
+            raise ToolCallParseError(
+                "inline tool_call segment needs 'name' (str) and 'arguments' (dict)"
+            )
+        calls.append(ToolCall(id=mint("inline"), name=name, arguments=arguments))
+        cursor = match.end()
+    remaining.append(content[cursor:])
+    return "".join(remaining).strip(), calls or None
+
+
+def _parse_openai_chat_response(
+    body: dict,
+    next_call_id: Optional[Callable[[str], str]] = None,
+) -> ChatResult:
+    """Parse a chat-completion response body into a :class:`ChatResult`.
+
+    Handles the OpenAI shape ``{"choices": [{"message": {...}}]}``.  Strips
+    think blocks from any text.  Raises :class:`ToolCallParseError` for
+    malformed tool-call payloads (callers convert that to an empty result).
+    ``next_call_id`` passes the caller's id mint through to payload
+    parsing (synthesized ids only; provider ids are kept verbatim).
+    """
+    try:
+        choice = body["choices"][0]
+        message = choice.get("message") or {}
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ToolCallParseError(f"response body has no choices[0].message: {exc}") from exc
+    text: Optional[str] = None
+    raw_content = message.get("content")
+    if isinstance(raw_content, str):
+        text = _strip_think(raw_content)
+    calls: Optional[List[ToolCall]] = None
+    if message.get("tool_calls"):
+        calls = _parse_tool_calls_payload(message["tool_calls"], next_call_id)
+    return ChatResult(text=text, tool_calls=calls)
