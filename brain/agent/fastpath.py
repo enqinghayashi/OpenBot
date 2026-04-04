@@ -297,3 +297,17 @@ def _normalize_word_numbers(text: str) -> str:
             out.append(raw)
         i += 1
     return ' '.join(out)
+
+
+# ---- pulling cardinal numbers out of LABEL candidates ----
+# digitize words BEFORE matching ('the 2 cups')
+# _strip_cardinals drops digit and word cardinals:
+# label is 'cup', never '2 cups'; count is a hint.
+_CARDINAL_WORDS = {
+    word: number
+    for table in (_WORD_UNITS, _WORD_TEENS, _WORD_TENS)
+    for word, number in table.items()
+}
+_DIGIT_TOKEN_RE = re.compile(r"^[0-9]+$")
+
+
