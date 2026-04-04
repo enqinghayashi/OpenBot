@@ -466,3 +466,31 @@ def _parse_openai_chat_response(
     if message.get("tool_calls"):
         calls = _parse_tool_calls_payload(message["tool_calls"], next_call_id)
     return ChatResult(text=text, tool_calls=calls)
+
+
+# ---------------------------------------------------------------------------
+# single flight
+# ---------------------------------------------------------------------------
+
+
+class _SingleFlight:
+    """Non-blocking mutual exclusion: one chat in flight per client.
+
+    A ``chat()`` while one is decoding is DROPPED (empty ChatResult) and
+    counted in ``dropped_calls`` — llama.cpp is not thread-safe for
+    concurrent decodes and the agent's per-call timeout can abandon a
+    worker mid-decode, so the next call must never overlap it.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.dropped_calls: int = 0
+
+    def acquire(self) -> bool:
+        if not self._lock.acquire(blocking=False):
+            self.dropped_calls += 1
+            return False
+        return True
+
+    def release(self) -> None:
+        self._lock.release()
