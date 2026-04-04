@@ -224,3 +224,31 @@ def _halt_intent(tokens: list) -> bool:
     return False
 
 
+def _strip_heard_name(text: str) -> str:
+    """Strip a leading heard-name prefix ('stewart,', 'susan '), refusing
+    any token that starts an explicit halt phrase or heads a documented
+    single-action grammar.
+
+    ``NAME_PREFIX_RE`` matches any leading s-word + separator, which would
+    eat 'stop the robot' / 'stop now' / 'stop please' as if 'stop' were a
+    heard name.  A token in HALT_PHRASE_STARTS ('stop', 'halt', 'freeze',
+    'stand') is therefore never stripped — the halt lane pre-empts name
+    handling.  A token in S_VERB_HEADS ('set' — the head of the
+    PLACE_DOWN_RE / PLACE_INTO_RE place grammars) is never stripped
+    either: 'set the cup down' is a place, not 'set' being a name, and
+    'set' must not fall to the LLM path.  A token in TURN_AROUND_HEADS
+    ('spin' — the head of TURN_AROUND_RE) is never stripped for the same
+    reason: 'spin around' is the turn-around grammar, not 'spin' being a
+    name.  Returns the stripped text
+    (unchanged when no name prefix matches, or when the candidate is a
+    halt word or a verb head)."""
+    m = NAME_PREFIX_RE.match(text)
+    if not m:
+        return text
+    if m.group(1).lower() in HALT_PHRASE_STARTS:
+        return text
+    if m.group(1).lower() in S_VERB_HEADS:
+        return text
+    if m.group(1).lower() in TURN_AROUND_HEADS:
+        return text
+    return text[m.end():]
