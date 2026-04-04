@@ -252,3 +252,16 @@ def _strip_heard_name(text: str) -> str:
     if m.group(1).lower() in TURN_AROUND_HEADS:
         return text
     return text[m.end():]
+
+# ---- turning number words into digits ----
+_WORD_UNITS = {'zero': 0, 'one': 1, 'two': 2, 'three': 3, 'four': 4,
+               'five': 5, 'six': 6, 'seven': 7, 'eight': 8, 'nine': 9}
+_WORD_TEENS = {'ten': 10, 'eleven': 11, 'twelve': 12, 'thirteen': 13,
+               'fourteen': 14, 'fifteen': 15, 'sixteen': 16,
+               'seventeen': 17, 'eighteen': 18, 'nineteen': 19}
+_WORD_TENS = {'twenty': 20, 'thirty': 30, 'forty': 40, 'fourty': 40,
+              'fifty': 50, 'sixty': 60, 'seventy': 70,
+              'eighty': 80, 'ninety': 90}
+_WORD_FRACS = {'half': 0.5, 'quarter': 0.25}
+
+
