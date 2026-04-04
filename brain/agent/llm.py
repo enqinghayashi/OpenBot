@@ -748,3 +748,125 @@ class LlamaCppClient:
                 continue
         raise ChatTransportError(f"backend rejected completion kwargs: {last_exc}")
 
+    @staticmethod
+    def _translate_messages(messages: List[dict]) -> List[dict]:
+        """Deep-copy messages so the caller's list is never mutated."""
+        return [dict(m) for m in messages]
+
+    @staticmethod
+    def _raw_message_content(body: dict) -> Optional[str]:
+        try:
+            content = body["choices"][0]["message"].get("content")
+        except (KeyError, IndexError, TypeError):
+            return None
+        return content if isinstance(content, str) else None
+
+    # -- schema-in-prompt JSON path (fallback) ----------------------------------
+
+    def _chat_json(self, messages: List[dict], tools: List[dict]) -> ChatResult:
+        """Schema-in-prompt JSON mode: one auto-retry, then empty result."""
+        instruction = self._build_json_prompt(tools)
+        prompt_messages: List[dict] = []
+        inserted = False
+        for m in messages:
+            prompt_messages.append(dict(m))
+            if m.get("role") == "user" and not inserted:
+                prompt_messages[-1]["content"] = (
+                    f"{m.get('content') or ''}\n\n{instruction}"
+                )
+                inserted = True
+        if not inserted:
+            prompt_messages.append({"role": "user", "content": instruction})
+        for attempt in (0, 1):
+            body = self._backend_call(prompt_messages, [])
+            raw = self._raw_message_content(body)
+            if raw is None:
+                self.parse_failures += 1
+                return ChatResult()
+            self.think_blocks_seen += len(_find_think_blocks(raw))
+            cleaned = _strip_think(raw)
+            maybe = _extract_first_balanced_json(cleaned)
+            if maybe:
+                try:
+                    data = json.loads(maybe)
+                except ValueError as exc:
+                    logger.warning("json-mode parse failed: %s", exc)
+                    data = None
+                if isinstance(data, dict) and isinstance(data.get("name"), str):
+                    arguments = data.get("arguments")
+                    if isinstance(arguments, dict):
+                        return ChatResult(
+                            tool_calls=[
+                                ToolCall(
+                                    id=self._call_ids("json"),
+                                    name=data["name"],
+                                    arguments=arguments,
+                                )
+                            ],
+                        )
+            if attempt == 0:
+                prompt_messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Your previous output was not valid JSON. Respond with a "
+                            'single JSON object of the form {"name": "<tool>", '
+                            '"arguments": {<params>}} and nothing else.'
+                        ),
+                    }
+                )
+        self.parse_failures += 1
+        return ChatResult()
+
+    # -- plain-text skeleton path (the default) ----------------------------------
+
+    def _chat_skeleton(self, messages: List[dict], tools: List[dict]) -> ChatResult:
+        """Literal-JSON-skeleton mode: one auto-retry, then empty result.
+
+        The prompt teaches one skeleton per tool (placeholder values only —
+        never real content, the output-injection priming rule); the plain-
+        text reply is parsed deterministically with think-block detection on
+        the RAW content first (the Qwen3 finding), the tool name is
+        validated against the provided specs, and the args must be a dict.
+        Any failure -> exactly one retry (_SKELETON_RETRY_MESSAGE), then the
+        empty ChatResult the agent's repair path handles (and
+        ``parse_failures`` increments).  Empty tool list -> the native text
+        path (nothing to call anyway).
+        """
+        valid_names = {
+            spec["function"]["name"]
+            for spec in tools
+            if isinstance(spec.get("function"), dict)
+            and isinstance(spec["function"].get("name"), str)
+        }
+        if not valid_names:
+            return self._chat_native(messages, tools)
+        instruction = _build_skeleton_prompt(tools)
+        prompt_messages: List[dict] = []
+        inserted = False
+        for m in messages:
+            prompt_messages.append(dict(m))
+            if m.get("role") == "user" and not inserted:
+                prompt_messages[-1]["content"] = (
+                    f"{m.get('content') or ''}\n\n{instruction}"
+                )
+                inserted = True
+        if not inserted:
+            prompt_messages.append({"role": "user", "content": instruction})
+        for attempt in (0, 1):
+            body = self._backend_call(prompt_messages, [])
+            raw = self._raw_message_content(body)
+            if raw is None:
+                self.parse_failures += 1
+                return ChatResult()
+            self.think_blocks_seen += len(_find_think_blocks(raw))
+            call = _parse_skeleton_tool_call(raw, valid_names, self._call_ids)
+            if call is not None:
+                return ChatResult(tool_calls=[call])
+            if attempt == 0:
+                prompt_messages.append(
+                    {"role": "user", "content": _SKELETON_RETRY_MESSAGE}
+                )
+        self.parse_failures += 1
+        return ChatResult()
+
