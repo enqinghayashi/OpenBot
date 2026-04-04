@@ -802,3 +802,75 @@ class _LaptopMockBackend:
         return self._refuse("stop")
 
 
+def main(argv: Optional[List[str]] = None) -> int:
+    """'openbot-agent' entry: build a G1Agent from config_loader.load()
+    and run a stdin REPL (one utterance per line; blank lines skipped;
+    'quit'/'exit' ends).
+
+    Laptop default (profile 'laptop', gateway.transport 'mock'): MockLLM +
+    on-the-fly empty WorldObservation — nothing can move, every motion
+    verb refuses honestly.  With gateway.transport != 'mock' this entry
+    REFUSES to start: the real transport is the gateway node's socket,
+    owned by the gateway lane, and impersonating it from the brain lane
+    would violate the one-DDS-motor-owner rule.
+
+    ``--once TEXT`` runs a single utterance and exits (test-friendly).
+    """
+    import argparse
+    import os
+    import sys
+
+    from ..config_loader import load as load_config
+
+    parser = argparse.ArgumentParser(
+        prog="openbot-agent",
+        description="G1Agent REPL built from config.yaml (config_loader.load).",
+    )
+    parser.add_argument(
+        "--config",
+        default=os.path.join(os.path.dirname(__file__), "..", "..", "config.yaml"),
+        help="config file (default: OpenBot/config.yaml)",
+    )
+    parser.add_argument(
+        "--profile",
+        default=None,
+        help="config profile (default: the config's own 'profile' key)",
+    )
+    parser.add_argument(
+        "--once",
+        default=None,
+        metavar="TEXT",
+        help="run one utterance and exit (test-friendly)",
+    )
+    args = parser.parse_args(argv)
+
+    cfg = load_config(args.config, profile=args.profile)
+    gateway_seg = cfg.get("gateway") or {}
+    transport = str(gateway_seg.get("transport") or "mock").strip().lower()
+    if transport != "mock":
+        sys.stderr.write(
+            "openbot-agent: gateway.transport=%r is not 'mock' — the real "
+            "transport is the gateway node's socket, owned by the gateway "
+            "lane. This brain-lane entry only supports the mock transport; "
+            "nothing was started.\n" % transport
+        )
+        return 1
+    backend = _LaptopMockBackend()
+    registry = ToolRegistry(backend=backend)
+    agent = G1Agent.from_config(cfg, tool_registry=registry, backend=backend)
+    print(
+        "openbot-agent ready (profile=%s, llm=%s)"
+        % (cfg.get("profile"), type(agent.llm).__name__)
+    )
+    if args.once is not None:
+        print(agent.run(args.once))
+        return 0
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        if line.lower() in ("quit", "exit"):
+            break
+        print(agent.run(line))
+        sys.stdout.flush()
+    return 0
