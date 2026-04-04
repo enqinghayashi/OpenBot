@@ -578,3 +578,173 @@ class LlamaCppClient:
 
     # -- lifecycle ------------------------------------------------------------
 
+    def load(self) -> None:
+        """Construct the backend; idempotent.  Lazy-imports ``llama_cpp``.
+
+        Raises :class:`ModelLoadError` with an actionable message (never a
+        bare traceback).
+        """
+        if self._loaded:
+            return
+        if self._backend is None:
+            if not self.model_path:
+                raise ModelLoadError(
+                    "no model_path given and no backend injected; pass an "
+                    "explicit GGUF path (config llm.model_path)"
+                )
+            self._backend = self._build_llama(self.model_path)
+        if self._backend_injected:
+            self._resolved_chat_format = (
+                None if self.chat_format == "auto" else self.chat_format
+            )
+        if self.tool_mode == "auto":
+            self.tool_mode_actual = (
+                "native" if self._backend_injected else self._probe_tool_support()
+            )
+        else:
+            self.tool_mode_actual = self.tool_mode
+        logger.info(
+            "LLM loaded (n_ctx=%d, gpu_layers=%s, tool_mode=%s)",
+            self.n_ctx, self.n_gpu_layers, self.tool_mode_actual,
+        )
+        self._loaded = True
+
+    def close(self) -> None:
+        """Release the model (frees VRAM); idempotent."""
+        self._backend = None
+        self._loaded = False
+
+    def _build_llama(self, model_path: str) -> Any:
+        try:
+            import llama_cpp
+        except ImportError as exc:
+            raise ModelLoadError(
+                "llama-cpp-python is not installed. Install the build that "
+                "matches your device (CUDA on the laptop, CPU wheel on "
+                "Stuart): e.g. CMAKE_ARGS=\"-DGGML_CUDA=on "
+                "-DCMAKE_CUDA_ARCHITECTURES=89\" pip install llama-cpp-python"
+            ) from exc
+        kwargs: Dict[str, Any] = {
+            "model_path": model_path,
+            "n_ctx": self.n_ctx,
+            "n_gpu_layers": -1 if self.n_gpu_layers == "all" else int(self.n_gpu_layers),
+            # pin all the cores
+            # unset n_threads took the default:
+            # ~3.5-4 tok/s on 8 cores
+            # llama.cpp clamps it safely
+            # the box is ours during a decode
+            "n_threads": max(1, (os.cpu_count() or 4)),
+            "verbose": False,
+        }
+        if self.chat_format and self.chat_format != "auto":
+            kwargs["chat_format"] = self.chat_format
+        return llama_cpp.Llama(**kwargs)
+
+    # -- LLMClient ------------------------------------------------------------
+
+    def chat(self, messages: List[dict], tools: List[dict]) -> ChatResult:
+        """One completion; never raises on bad output.  Single-flight drop."""
+        if not self._flight.acquire():
+            logger.warning("LLM call dropped: a previous call is still decoding")
+            return ChatResult(dropped=True)
+        try:
+            self.load()
+            self.chat_calls += 1
+            if self.tool_mode_actual == "json":
+                return self._chat_json(messages, tools)
+            if self.tool_mode_actual == "skeleton":
+                return self._chat_skeleton(messages, tools)
+            return self._chat_native(messages, tools)
+        finally:
+            self._flight.release()
+
+    # -- native tool-calling path ----------------------------------------------
+
+    def _chat_native(self, messages: List[dict], tools: List[dict]) -> ChatResult:
+        """Structured tool calls via the Qwen3 chat template.
+
+        Parse chain: structured ``tool_calls`` -> inline ``<|tool_call|>``
+        segments -> balanced-JSON extraction -> plain text -> empty result
+        (repair).  Malformed payloads become an empty result and increment
+        ``parse_failures``.
+        """
+        body = self._backend_call(messages, tools)
+        raw_content = self._raw_message_content(body)
+        if raw_content:
+            self.think_blocks_seen += len(_find_think_blocks(raw_content))
+        try:
+            result = _parse_openai_chat_response(body, self._call_ids)
+        except ToolCallParseError as exc:
+            logger.warning("tool-call parse failed: %s", exc)
+            self.parse_failures += 1
+            return ChatResult()
+        if result.tool_calls:
+            return result
+        if raw_content:
+            cleaned, inline_calls = _parse_inline_tool_calls(
+                raw_content, self._call_ids
+            )
+            if inline_calls:
+                return ChatResult(text=result.text, tool_calls=inline_calls)
+            if result.text is None and cleaned:
+                maybe = _extract_first_balanced_json(cleaned)
+                if maybe:
+                    try:
+                        data = json.loads(maybe)
+                    except ValueError as exc:
+                        logger.warning("balanced-JSON extraction failed: %s", exc)
+                        self.parse_failures += 1
+                        return ChatResult()
+                    if isinstance(data, dict) and isinstance(data.get("name"), str):
+                        arguments = data.get("arguments")
+                        if isinstance(arguments, dict):
+                            return ChatResult(
+                                tool_calls=[
+                                    ToolCall(
+                                        id=self._call_ids("extracted"),
+                                        name=data["name"],
+                                        arguments=arguments,
+                                    )
+                                ],
+                            )
+        return result  # empty -> repair
+
+    def _backend_call(self, messages: List[dict], tools: List[dict]) -> dict:
+        """Call the backend, tolerating kwargs/format drift across versions.
+
+        Some llama-cpp-python builds reject ``enable_thinking`` (Qwen3
+        template input) or unknown chat-format values; each failure degrades
+        one notch: drop ``enable_thinking``, then the explicit
+        ``chat_format``.  Transport errors propagate (the agent wraps).
+        """
+        translated = self._translate_messages(messages)
+        base: Dict[str, Any] = {
+            "messages": translated,
+            "tools": tools,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "stream": False,
+        }
+        attempts: List[Dict[str, Any]] = [
+            {**base, "enable_thinking": self.enable_thinking},
+            base,
+        ]
+        last_exc: Optional[Exception] = None
+        for attempt in attempts:
+            try:
+                if self._resolved_chat_format:
+                    body = self._backend.create_chat_completion(
+                        chat_format=self._resolved_chat_format, **attempt
+                    )
+                else:
+                    body = self._backend.create_chat_completion(**attempt)
+                return body if isinstance(body, dict) else dict(body)
+            except TypeError as exc:
+                last_exc = exc
+                if self._resolved_chat_format:
+                    self._resolved_chat_format = None
+                    attempts.append(attempt)  # no chat_format
+                    continue
+                continue
+        raise ChatTransportError(f"backend rejected completion kwargs: {last_exc}")
+
