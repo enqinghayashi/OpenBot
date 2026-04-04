@@ -800,3 +800,5 @@ class _LaptopMockBackend:
 
     def stop(self, args: dict) -> dict:
         return self._refuse("stop")
+
+
