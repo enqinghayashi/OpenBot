@@ -874,3 +874,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(agent.run(line))
         sys.stdout.flush()
     return 0
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(main())
