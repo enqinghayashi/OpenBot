@@ -870,3 +870,73 @@ class LlamaCppClient:
         self.parse_failures += 1
         return ChatResult()
 
+    @staticmethod
+    def _build_json_prompt(tools: List[dict]) -> str:
+        """Serialize the tool specs into prompt text for json mode."""
+        lines = [
+            "Available tools. You MUST respond with exactly one JSON object of "
+            'the form {"name": "<tool name>", "arguments": {<params>}}. '
+            "Do not include any other text."
+        ]
+        for spec in tools:
+            fn = spec.get("function", {})
+            name = fn.get("name", "?")
+            desc = fn.get("description", "")
+            params = fn.get("parameters", {})
+            lines.append(f"- {name}: {desc} params={json.dumps(params)}")
+        return "\n".join(lines)
+
+    # -- capability probe --------------------------------------------------------
+
+    def _probe_tool_support(self) -> str:
+        """Decide native vs json mode with one toy tool call."""
+        toy_tool = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "ping",
+                    "description": "Probe tool. Returns OK.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                    },
+                },
+            }
+        ]
+        messages = [{"role": "user", "content": "What tools do you have?"}]
+        try:
+            body = self._backend_call(messages, toy_tool)
+            result = _parse_openai_chat_response(body)
+            if result.tool_calls:
+                return "native"
+            raw = self._raw_message_content(body)
+            if raw and _parse_inline_tool_calls(raw)[1]:
+                return "native"
+        except (ChatTransportError, ToolCallParseError) as exc:
+            logger.warning("probe failed (%s); falling back to json mode", exc)
+        return "json"
+
+    # -- token estimation --------------------------------------------------------
+
+    def estimate_tokens(self, text: str) -> int:
+        """Estimate ``text``'s token count via the real tokenizer when loaded.
+
+        Falls back to the chars/4 heuristic (+4 overhead) before load —
+        keeps the agent's compaction working even for a client that never
+        loaded (mock LLMs, offline tests).
+        """
+        if not self.loaded:
+            return max(1, len(text) // 4) + 4
+        try:
+            tokens = self._backend.tokenize(text.encode("utf-8"))
+            return max(1, len(tokens)) + 4
+        except Exception:  # noqa: BLE001 — tokenizer hiccups degrade to heuristic
+            return max(1, len(text) // 4) + 4
+
+
+# ---------------------------------------------------------------------------
+# sidecar client
+# ---------------------------------------------------------------------------
+
+
