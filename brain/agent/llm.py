@@ -999,3 +999,137 @@ class LlamaServerClient:
 
     # -- tool modes -----------------------------------------------------------
 
+    def _chat_native(self, messages: List[dict], tools: List[dict]) -> ChatResult:
+        """Structured ``tool_calls`` via the sidecar's OpenAI-compatible
+        endpoint (the sidecar applies its own chat template)."""
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "tools": tools,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "stream": False,
+        }
+        if self.enable_thinking:
+            payload["enable_thinking"] = True
+        body = self._post("/chat/completions", payload)
+        try:
+            result = _parse_openai_chat_response(body, self._call_ids)
+        except ToolCallParseError as exc:
+            logger.warning("server response parse failed: %s", exc)
+            self.parse_failures += 1
+            return ChatResult()
+        raw = self._raw_content(body)
+        if raw:
+            self.think_blocks_seen += len(_find_think_blocks(raw))
+        return result
+
+    def _chat_skeleton(self, messages: List[dict], tools: List[dict]) -> ChatResult:
+        """Literal-JSON-skeleton mode (same deterministic contract as
+        LlamaCppClient._chat_skeleton): one auto-retry, then the empty
+        ChatResult repair path."""
+        valid_names = {
+            spec["function"]["name"]
+            for spec in tools
+            if isinstance(spec.get("function"), dict)
+            and isinstance(spec["function"].get("name"), str)
+        }
+        if not valid_names:
+            return self._chat_native(messages, tools)
+        instruction = _build_skeleton_prompt(tools)
+        prompt_messages = self._inject_instruction(messages, instruction)
+        for attempt in (0, 1):
+            body = self._post("/chat/completions", self._payload(prompt_messages, []))
+            raw = self._raw_content(body)
+            if raw is None:
+                self.parse_failures += 1
+                return ChatResult()
+            self.think_blocks_seen += len(_find_think_blocks(raw))
+            call = _parse_skeleton_tool_call(raw, valid_names, self._call_ids)
+            if call is not None:
+                return ChatResult(tool_calls=[call])
+            if attempt == 0:
+                prompt_messages.append(
+                    {"role": "user", "content": _SKELETON_RETRY_MESSAGE}
+                )
+        self.parse_failures += 1
+        return ChatResult()
+
+    def _chat_json(self, messages: List[dict], tools: List[dict]) -> ChatResult:
+        """Schema-in-prompt JSON mode (name/arguments shape; mirrors
+        LlamaCppClient._chat_json): one auto-retry, then empty result."""
+        instruction = LlamaCppClient._build_json_prompt(tools)
+        prompt_messages = self._inject_instruction(messages, instruction)
+        for attempt in (0, 1):
+            body = self._post("/chat/completions", self._payload(prompt_messages, []))
+            raw = self._raw_content(body)
+            if raw is None:
+                self.parse_failures += 1
+                return ChatResult()
+            self.think_blocks_seen += len(_find_think_blocks(raw))
+            cleaned = _strip_think(raw)
+            maybe = _extract_first_balanced_json(cleaned)
+            if maybe:
+                try:
+                    data = json.loads(maybe)
+                except ValueError as exc:
+                    logger.warning("server json-mode parse failed: %s", exc)
+                    data = None
+                if isinstance(data, dict) and isinstance(data.get("name"), str):
+                    arguments = data.get("arguments")
+                    if isinstance(arguments, dict):
+                        return ChatResult(
+                            tool_calls=[
+                                ToolCall(
+                                    id=self._call_ids("json"), name=data["name"],
+                                    arguments=arguments,
+                                )
+                            ],
+                        )
+            if attempt == 0:
+                prompt_messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Your previous output was not valid JSON. Respond with a "
+                            'single JSON object of the form {"name": "<tool>", '
+                            '"arguments": {<params>}} and nothing else.'
+                        ),
+                    }
+                )
+        self.parse_failures += 1
+        return ChatResult()
+
+    @staticmethod
+    def _inject_instruction(messages: List[dict], instruction: str) -> List[dict]:
+        """Copy messages with the tool-mode instruction appended to the
+        first user message (or as a trailing user message when none)."""
+        prompt_messages: List[dict] = []
+        inserted = False
+        for m in messages:
+            prompt_messages.append(dict(m))
+            if m.get("role") == "user" and not inserted:
+                prompt_messages[-1]["content"] = (
+                    f"{m.get('content') or ''}\n\n{instruction}"
+                )
+                inserted = True
+        if not inserted:
+            prompt_messages.append({"role": "user", "content": instruction})
+        return prompt_messages
+
+    def _payload(self, messages: List[dict], tools: List[dict]) -> Dict[str, Any]:
+        """Base chat-completion payload (stream always off)."""
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "tools": tools,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "stream": False,
+        }
+        if self.enable_thinking:
+            payload["enable_thinking"] = True
+        return payload
+
+    # -- transport ------------------------------------------------------------
+
