@@ -191,3 +191,14 @@ def _normalize_for_halt(text: str) -> list:
     return re.sub(r"\s+", " ", norm).strip().split()
 
 
+def _halt_word_negated(tokens: list, i: int) -> bool:
+    """True when tokens[i] (a halt word) is negated by 'don't' / 'dont' /
+    'never' (within 2 tokens) or the 'do not' pair directly before it."""
+    if i >= 1 and tokens[i - 1] in _HALT_NEGATIONS:
+        return True
+    if i >= 2:
+        if tokens[i - 2] in _HALT_NEGATIONS:
+            return True
+        if tokens[i - 1] == "not" and tokens[i - 2] == "do":
+            return True
+    return False
