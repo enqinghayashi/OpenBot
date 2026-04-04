@@ -202,3 +202,5 @@ def _halt_word_negated(tokens: list, i: int) -> bool:
         if tokens[i - 1] == "not" and tokens[i - 2] == "do":
             return True
     return False
+
+
