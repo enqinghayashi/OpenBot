@@ -311,3 +311,24 @@ _CARDINAL_WORDS = {
 _DIGIT_TOKEN_RE = re.compile(r"^[0-9]+$")
 
 
+def _strip_cardinals(label: str) -> tuple[str, Optional[int]]:
+    """Remove standalone cardinal number words/digits from a label candidate.
+
+    Returns ``(cleaned_label, count_or_None)``.  Digit tokens ('2 cups')
+    and word cardinals ('two cups') are removed; digits inside words
+    ('bottle2') are kept.  The count (first cardinal found) is a
+    disambiguation hint — never part of the label.
+    """
+    count: Optional[int] = None
+    kept = []
+    for token in label.split():
+        bare = token.lower().strip(".,!?")
+        number = _CARDINAL_WORDS.get(bare)
+        if number is None and _DIGIT_TOKEN_RE.match(bare):
+            number = int(bare)
+        if number is not None:
+            if count is None:
+                count = number
+            continue
+        kept.append(token)
+    return " ".join(kept).strip(), count
