@@ -189,3 +189,5 @@ def _normalize_for_halt(text: str) -> list:
     halt verb from the rest of the utterance."""
     norm = re.sub(r"[.,!?]+", " ", text).lower()
     return re.sub(r"\s+", " ", norm).strip().split()
+
+
