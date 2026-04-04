@@ -204,3 +204,21 @@ def _halt_word_negated(tokens: list, i: int) -> bool:
     return False
 
 
+def _halt_intent(tokens: list) -> bool:
+    """Token-scan halt: a multi-word halt PHRASE anywhere in the utterance,
+    or any halt word among the FIRST UP-TO-4 tokens of the normalized
+    utterance, unless negated ('don't stop' is skipped and falls
+    through to the normal lanes instead of halting).
+
+    The phrase lane is position-independent on purpose.  The 4-token
+    window exists so that an incidental 'wait' deep inside a task
+    sentence ('pick the bottle and wait there') is not a halt; 'never
+    mind' / 'forget it' carry no such ambiguity — they are complete
+    retractions whenever they appear.
+    """
+    if HALT_PHRASES_RE.search(" ".join(tokens)):
+        return True
+    for i in range(min(4, len(tokens))):
+        if tokens[i] in HALT_WORDS and not _halt_word_negated(tokens, i):
+            return True
+    return False
