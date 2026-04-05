@@ -441,3 +441,47 @@ def pose_from_text(text: str) -> Optional[str]:
     if _POSE_DOWN_RE.search(said):
         return "home"
     return None
+
+
+# ---------------------------------------------------------------------------
+# turn-around: "just the simple turn around
+# sweep". the SWEEP is the walk FSM's; the
+# brain just names it, no LLM.
+#
+# before NAV_PATTERNS: specific grammar first
+#
+# CLOSED alias set, never a free capture -
+# resolved via ``known_labels.resolve_alias``.
+# a stray tail is refused HERE, so no noun
+# becomes a person to hunt.
+#
+# the extra 'please' allows 'could you please
+# turn around'; widening _NAV_POLITE hits all lanes.
+_TURN_AROUND_TARGET = r"(?:me|myself|i|us|human|operator|person|someone|somebody)"
+TURN_AROUND_RE = re.compile(
+    rf"^{_NAV_POLITE}(?:please[\s,]+)?"
+    # 'turn around' / 'turnaround' / 'turn-around' /
+    # 'turn round' / 'spin around' / 'look around'.
+    r"(?:turn(?:\s*-\s*|\s+)?around|turn\s+round|spin\s+around|look\s+around)"
+    # optional '... to/and look/find for <target>' tail.
+    rf"(?:\s+(?:and\s+|to\s+)?(?:look|search|hunt|find)?\s*(?:for)?\s*"
+    rf"(?:the\s+|a\s+)?({_TURN_AROUND_TARGET}))?"
+    r"\s*[.!?,;]*\s*$",
+    re.IGNORECASE,
+)
+
+
+# ---------------------------------------------------------------------------
+# simple keyword + LAST-WORD model:
+# only these verbs, OBJECT = last word, rest
+# stripped. deliberately DUMB: put/place ->
+# place at 'here', never containment inference.
+# ---------------------------------------------------------------------------
+_SIMPLE_ACTION_MAP = {
+    'pick': 'pick', 'grab': 'pick',
+    'put': 'place', 'place': 'place',
+    'walk': 'navigate', 'go': 'navigate', 'find': 'navigate',
+}
+_SIMPLE_TRAILING_PHRASES = frozenset({"for me", "for us", "to me"})
+
+
