@@ -581,3 +581,5 @@ def multi_clause_veto(capture_text: str) -> bool:
         if any(token not in TRAILING_FILLERS for token in tokens):
             return True
     return False
+
+
