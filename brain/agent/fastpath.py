@@ -485,3 +485,30 @@ _SIMPLE_ACTION_MAP = {
 _SIMPLE_TRAILING_PHRASES = frozenset({"for me", "for us", "to me"})
 
 
+def simple_keyword_intent(text: str) -> Optional[dict]:
+    if not text:
+        return None
+    toks = [t for t in re.split(r"[^0-9A-Za-z']+", text) if t]
+    while toks:
+        tail2 = " ".join(toks[-2:]).lower()
+        if tail2 in _SIMPLE_TRAILING_PHRASES:
+            toks = toks[:-2]
+            continue
+        if toks[-1].lower() in TRAILING_FILLERS or toks[-1].lower() in ("me", "us"):
+            toks.pop()
+            continue
+        break
+    if not toks:
+        return None
+    verb = None
+    for t in toks:
+        low = t.lower()
+        if low in _SIMPLE_ACTION_MAP:
+            verb = low
+            break
+    if verb is None:
+        return None
+    obj = toks[-1].lower().strip("'")
+    if not obj or obj == verb or obj in TRAILING_FILLERS or obj in ("me", "us", "it", "up"):
+        return None
+    return {"action": _SIMPLE_ACTION_MAP[verb], "object": obj}
