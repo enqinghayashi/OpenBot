@@ -91,3 +91,6 @@ class _CallIdFactory:
     has exactly one tool message per assistant tool_call_id.
     """
 
+    def __init__(self) -> None:
+        self._seq = itertools.count(1)
+
