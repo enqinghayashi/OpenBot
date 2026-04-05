@@ -82,3 +82,12 @@ def _module_call_id(prefix: str) -> str:
     return f"{prefix}_{next(_MODULE_CALL_ID_SEQ)}"
 
 
+class _CallIdFactory:
+    """Per-client monotonic tool-call-id mint (the C1 fix).
+
+    ``__call__(prefix)`` returns ``prefix_N`` where N never repeats for
+    this client's lifetime, so every tool call a client parses in one
+    conversation carries a distinct id and the outgoing history always
+    has exactly one tool message per assistant tool_call_id.
+    """
+
