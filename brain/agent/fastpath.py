@@ -547,3 +547,15 @@ def _normalize_pick_label(label: str) -> str:
             continue
         break
     return ' '.join(tokens)
+
+
+# second clause: terminator, comma/semicolon,
+# 'and' or 'then'. filler-only tails never veto;
+# whisper run-ons ('Pick up the bottle. Let's see
+# what...') must not ride in.
+_MULTI_CLAUSE_SPLIT_RE = re.compile(
+    r'[.!?]+|[,;]+|\band\b|\bthen\b',
+    re.IGNORECASE,
+)
+
+
