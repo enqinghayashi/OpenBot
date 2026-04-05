@@ -94,3 +94,5 @@ class _CallIdFactory:
     def __init__(self) -> None:
         self._seq = itertools.count(1)
 
+    def __call__(self, prefix: str) -> str:
+        return f"{prefix}_{next(self._seq)}"
