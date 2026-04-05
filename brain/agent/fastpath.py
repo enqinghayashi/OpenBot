@@ -559,3 +559,25 @@ _MULTI_CLAUSE_SPLIT_RE = re.compile(
 )
 
 
+def multi_clause_veto(capture_text: str) -> bool:
+    """True when a captured payload continues into a SECOND clause.
+
+    Operates on the RAW captured text — the label/object/destination
+    capture AFTER the action head (``m.group(1)`` / ``m.group(2)``), not
+    the whole utterance.  Splits on /[.!?]+|[,;]+|\band\b|\bthen\b/
+    (case-insensitive) and vetoes iff SOME part after the first contains
+    any token NOT in ``TRAILING_FILLERS`` (parts are tokenized with the
+    same punctuation-normalized split the halt lane uses).  Filler-only
+    continuations never veto: 'pick up the cup, please', 'put the cup on
+    the tray, please' (filler tail), a trailing 'and'/'then' with NO
+    continuation ('pick up the cup and'), and a sentence-terminal
+    period ('pick up the cup.' — second part is empty) all split to an
+    empty or filler-only second part.  A sentence-joined second sentence
+    ('pick up the cup. turn it off') vetoes — never a garbage label.
+    """
+    parts = _MULTI_CLAUSE_SPLIT_RE.split(capture_text)
+    for part in parts[1:]:
+        tokens = _normalize_for_halt(part)
+        if any(token not in TRAILING_FILLERS for token in tokens):
+            return True
+    return False
