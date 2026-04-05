@@ -522,3 +522,5 @@ def _strip_trailing_fillers(target: str) -> str:
     # re-strip: a filler may sit behind punctuation
     # ('the tray, please'), and a label must not carry it.
     return ' '.join(tokens).rstrip('.,!?').strip()
+
+
