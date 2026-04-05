@@ -514,3 +514,11 @@ def simple_keyword_intent(text: str) -> Optional[dict]:
     return {"action": _SIMPLE_ACTION_MAP[verb], "object": obj}
 
 
+def _strip_trailing_fillers(target: str) -> str:
+    target = target.strip().rstrip('.!?,').strip()
+    tokens = target.split()
+    while tokens and tokens[-1].lower().strip('.,!?') in TRAILING_FILLERS:
+        tokens.pop()
+    # re-strip: a filler may sit behind punctuation
+    # ('the tray, please'), and a label must not carry it.
+    return ' '.join(tokens).rstrip('.,!?').strip()
