@@ -64,3 +64,19 @@ logger = logging.getLogger(__name__)
 _MODULE_CALL_ID_SEQ = itertools.count(1)
 
 
+def _module_call_id(prefix: str) -> str:
+    """One process-unique tool-call id (stateless-parser fallback).
+
+    Root cause of the C1 400 (repo tasks #145/#149): a compile-time
+    constant id (``skeleton_1``) was stamped on EVERY parsed skeleton
+    call, so a conversation's SECOND DISTINCT call collided with the
+    first.  The session's ``_emitted_outputs`` dedup map is never
+    cleared and the transcript history is only length-trimmed — id
+    reuse can never be made safe by a mid-conversation reset, so any
+    minted id must stay unique for the whole process lifetime.  Clients
+    inject a per-client :class:`_CallIdFactory` (fresh client == fresh
+    sequence — client construction, i.e. process start in the shipped
+    entrypoints, is the only sound reset boundary); this module counter
+    is the safe default for stateless parser call sites.
+    """
+    return f"{prefix}_{next(_MODULE_CALL_ID_SEQ)}"
