@@ -524,3 +524,26 @@ def _strip_trailing_fillers(target: str) -> str:
     return ' '.join(tokens).rstrip('.,!?').strip()
 
 
+def _normalize_pick_label(label: str) -> str:
+    """Strip 'up'/'it' filler tokens from a pick label candidate.
+
+    A LEADING 'up' and TRAILING 'it'/'up' tokens are filler, not objects:
+    'pick it up' -> nothing, 'grab up the cup' -> 'the cup'.  Returns ''
+    when nothing remains — the caller must treat an empty label as
+    NOT_DETECTED (honest refusal; never a pick call without a label)."""
+    tokens = label.split()
+    while tokens and tokens[0].lower().strip('.,!?') == 'up':
+        tokens.pop(0)
+    # trailing phrases are filler ("... for me")
+    # 'for my friend' keeps its tail - honest refusal.
+    while True:
+        if len(tokens) >= 2 and ' '.join(tokens[-2:]).lower().strip('.,!?') in (
+            "for me", "for us", "to me",
+        ):
+            tokens = tokens[:-2]
+            continue
+        if tokens and tokens[-1].lower().strip('.,!?') in ('it', 'up'):
+            tokens.pop()
+            continue
+        break
+    return ' '.join(tokens)
