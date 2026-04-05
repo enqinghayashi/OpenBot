@@ -695,3 +695,10 @@ def classify_intent(text: str) -> Optional[dict]:
         return {'action': 'close_hand', 'side': m.group(1) or 'right'}
 
     return None
+
+
+# =============================================================================
+# intent -> ToolCall (still no LLM involved at all)
+# =============================================================================
+
+
