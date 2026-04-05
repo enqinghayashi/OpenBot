@@ -512,3 +512,5 @@ def simple_keyword_intent(text: str) -> Optional[dict]:
     if not obj or obj == verb or obj in TRAILING_FILLERS or obj in ("me", "us", "it", "up"):
         return None
     return {"action": _SIMPLE_ACTION_MAP[verb], "object": obj}
+
+
