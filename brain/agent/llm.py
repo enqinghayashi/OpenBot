@@ -80,3 +80,5 @@ def _module_call_id(prefix: str) -> str:
     is the safe default for stateless parser call sites.
     """
     return f"{prefix}_{next(_MODULE_CALL_ID_SEQ)}"
+
+
