@@ -702,3 +702,57 @@ def classify_intent(text: str) -> Optional[dict]:
 # =============================================================================
 
 
+def classify_tool_call(text: str) -> Optional[ToolCall]:
+    """Map a matched intent to a ToolCall for the agent's tool registry.
+
+    Returns None when no deterministic intent matches (the LLM path handles
+    the utterance).  The arguments are the *unsolved* form (label/target,
+    no coordinates): the agent's PRE-hook phase resolves coordinates and
+    runs the confirm gate before any motion.
+    """
+    intent = classify_intent(text)
+    if intent is None:
+        return None
+    action = intent['action']
+    if action == 'stop':
+        return ToolCall(id='fastpath_1', name='stop', arguments={})
+    if action == 'pose':
+        # name is brain vocabulary; the backend owns
+        # the engine verbs (gateway POSE_ENGINE_VERBS).
+        return ToolCall(
+            id='fastpath_1', name='pose', arguments={'name': intent['name']}
+        )
+    if action == 'pick_up':
+        arguments: Dict[str, Any] = {'label': intent['target']}
+        if intent.get('count') is not None:
+            # hint only - the schema drops unknown keys
+            arguments['count'] = intent['count']
+        return ToolCall(id='fastpath_1', name='pick', arguments=arguments)
+    if action == 'place':
+        arguments = {
+            'label': intent['label'],
+            'destination': intent['destination'],
+        }
+        if intent.get('count') is not None:
+            arguments['count'] = intent['count']
+        return ToolCall(
+            id='fastpath_1',
+            name='place',
+            arguments=arguments,
+        )
+    if action == 'navigate_to_marker':
+        return ToolCall(
+            id='fastpath_1', name='navigate', arguments={'target': intent['target']}
+        )
+    if action == 'turn_around':
+        # no target -> send none: tool defaults to 'person'
+        # and resolves the alias (same law navigate follows).
+        arguments: Dict[str, Any] = {}
+        if intent.get('target'):
+            arguments['target'] = intent['target']
+        return ToolCall(id='fastpath_1', name='turn_around', arguments=arguments)
+    if action in ('open_hand', 'close_hand'):
+        return ToolCall(
+            id='fastpath_1', name=action, arguments={'side': intent['side']}
+        )
+    return None
