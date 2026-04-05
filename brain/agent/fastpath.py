@@ -423,3 +423,21 @@ POSE_RE = re.compile(
 )
 
 
+def pose_from_text(text: str) -> Optional[str]:
+    """The pose name a phrase names, or None.
+
+    Returns one of 'tuck' | 'ready' | 'neutral' | 'home' — the brain's pose
+    vocabulary, NOT the engine's verbs (the backend owns that mapping).
+    """
+    m = POSE_RE.match(text or "")
+    if m is None:
+        return None
+    said = m.group(0).lower()
+    # key off the matched TEXT, not the pattern
+    for name in ("tuck", "ready", "neutral", "home"):
+        if re.search(rf"\b{name}\b", said):
+            return name
+    # 'put your arms down' = home, via _POSE_DOWN
+    if _POSE_DOWN_RE.search(said):
+        return "home"
+    return None
