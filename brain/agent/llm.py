@@ -198,3 +198,11 @@ _SKELETON_RETRY_MESSAGE = (
 )
 
 
+def _skeleton_placeholder(name: str, ptype: Any) -> Any:
+    """A literal placeholder value for one parameter (never real content —
+    output-injection priming, the Escapement finding)."""
+    if ptype in ("number", "integer"):
+        return "<number>"
+    if ptype == "boolean":
+        return "<true|false>"
+    return f"<{name}>"  # use the param name
