@@ -140,3 +140,7 @@ class LLMClient(Protocol):
     ``ToolRegistry.get_specs()`` output.
     """
 
+    def chat(self, messages: list, tools: list) -> ChatResult:
+        """Run one chat completion.  Never raises for recoverable output
+        problems; transport failures may raise (the agent wraps them)."""
+        ...
