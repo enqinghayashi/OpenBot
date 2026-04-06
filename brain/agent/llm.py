@@ -289,3 +289,11 @@ def _parse_skeleton_tool_call(
     return None
 
 
+def _find_think_blocks(text: str) -> List[str]:
+    """Return every think-block match found in ``text`` (empty if none)."""
+    if not text:
+        return []
+    found: List[str] = []
+    for pattern in _THINK_BLOCK_RES:
+        found.extend(pattern.findall(text))
+    return found
