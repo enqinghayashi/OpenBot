@@ -342,3 +342,5 @@ def _extract_first_balanced_json(text: str) -> Optional[str]:
             if depth == 0:
                 return text[start: i + 1]
     return None
+
+
