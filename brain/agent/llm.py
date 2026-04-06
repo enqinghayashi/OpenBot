@@ -208,3 +208,39 @@ def _skeleton_placeholder(name: str, ptype: Any) -> Any:
     return f"<{name}>"  # use the param name
 
 
+def _build_skeleton_prompt(tools: List[dict]) -> str:
+    """Serialize the tool specs into a literal-JSON skeleton instruction.
+
+    One skeleton per tool with PLACEHOLDER values only (``<label>``,
+    ``<number>``, ...) — never real example content.  The model answers in
+    plain text; the deterministic parser (``_parse_skeleton_tool_call``)
+    validates the tool name against the provided specs and the args shape
+    code-side.  No grammar constraints anywhere (Plan-B R0': the hard-schema
+    json-mode Constraint Tax).  Empty tool list -> empty string (the caller
+    falls back to the native text path).
+    """
+    lines: List[str] = []
+    for spec in tools:
+        fn = spec.get("function")
+        name = fn.get("name") if isinstance(fn, dict) else None
+        if not isinstance(name, str) or not name:
+            continue
+        params = fn.get("parameters") if isinstance(fn, dict) else None
+        properties = params.get("properties") if isinstance(params, dict) else None
+        args: Dict[str, Any] = {}
+        if isinstance(properties, dict):
+            for pname, pmeta in properties.items():
+                ptype = pmeta.get("type") if isinstance(pmeta, dict) else None
+                args[pname] = _skeleton_placeholder(pname, ptype)
+        lines.append(json.dumps({"tool": name, "args": args}, sort_keys=True))
+    if not lines:
+        return ""
+    header = (
+        "Choose exactly ONE tool for this turn. Respond with exactly one "
+        'JSON object of the form {"tool": "<tool name>", "args": {<arguments>}} '
+        "and NOTHING ELSE — no explanations, no markdown, no text before or "
+        "after. The skeletons below show the SHAPE of the arguments only; "
+        "fill each placeholder with the real value from CURRENT SCENE. "
+        "Tool skeletons:"
+    )
+    return header + "\n" + "\n".join(f"- {s}" for s in lines)
