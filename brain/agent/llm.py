@@ -162,3 +162,5 @@ class ToolCallParseError(ValueError):
 
 class ModelLoadError(RuntimeError):
     """The model file or the ``llama_cpp`` runtime could not be set up."""
+
+
