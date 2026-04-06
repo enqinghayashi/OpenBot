@@ -111,3 +111,20 @@ class ToolCall:
     arguments: dict
 
 
+@dataclass
+class ChatResult:
+    """One LLM response: either plain text, a list of tool calls, or both.
+
+    A fully malformed response has both empty/None — the agent treats that
+    as a parse failure (repair path).  ``dropped`` marks a single-flight
+    drop (the input was discarded while another call was in flight).
+    """
+
+    text: Optional[str] = None
+    tool_calls: Optional[List[ToolCall]] = None
+    dropped: bool = False
+    #: truncated
+    #: finish_reason 'length' / 'max_tokens'
+    #: True = budget ran out
+    #: False = check the model class
+    truncated: bool = False
