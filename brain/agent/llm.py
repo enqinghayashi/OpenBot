@@ -144,3 +144,10 @@ class LLMClient(Protocol):
         """Run one chat completion.  Never raises for recoverable output
         problems; transport failures may raise (the agent wraps them)."""
         ...
+
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+
