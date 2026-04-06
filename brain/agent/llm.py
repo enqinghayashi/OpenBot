@@ -297,3 +297,5 @@ def _find_think_blocks(text: str) -> List[str]:
     for pattern in _THINK_BLOCK_RES:
         found.extend(pattern.findall(text))
     return found
+
+
