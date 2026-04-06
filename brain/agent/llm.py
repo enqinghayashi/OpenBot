@@ -206,3 +206,5 @@ def _skeleton_placeholder(name: str, ptype: Any) -> Any:
     if ptype == "boolean":
         return "<true|false>"
     return f"<{name}>"  # use the param name
+
+
