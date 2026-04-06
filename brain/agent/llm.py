@@ -128,3 +128,5 @@ class ChatResult:
     #: True = budget ran out
     #: False = check the model class
     truncated: bool = False
+
+
