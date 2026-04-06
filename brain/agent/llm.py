@@ -306,3 +306,5 @@ def _strip_think(text: str) -> str:
     for pattern in _THINK_BLOCK_RES:
         text = pattern.sub("", text)
     return text.strip()
+
+
