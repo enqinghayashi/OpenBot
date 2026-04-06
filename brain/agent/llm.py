@@ -151,3 +151,10 @@ class LLMClient(Protocol):
 # ---------------------------------------------------------------------------
 
 
+class ToolCallParseError(ValueError):
+    """A tool-call payload could not be parsed (bad arguments JSON etc.).
+
+    Raised internally by the parsers; the clients catch it and return an
+    empty ChatResult (the agent's repair path), incrementing
+    ``parse_failures``.
+    """
