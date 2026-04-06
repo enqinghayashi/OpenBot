@@ -1133,3 +1133,70 @@ class LlamaServerClient:
 
     # -- transport ------------------------------------------------------------
 
+    def _post(self, path: str, payload: dict) -> dict:
+        """JSON POST via urllib; raises :class:`ChatTransportError`."""
+        request = urllib.request.Request(
+            self.base_url + path,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            if self._transport is not None:
+                body = self._transport(request, timeout=self.timeout_s)
+            else:
+                with urllib.request.urlopen(request, timeout=self.timeout_s) as resp:
+                    body = resp.read()
+        except urllib.error.URLError as exc:
+            raise ChatTransportError(
+                f"server request to {self.base_url}{path} failed: {exc}"
+            ) from exc
+        try:
+            return json.loads(body)
+        except ValueError as exc:
+            raise ChatTransportError(
+                f"server returned non-JSON body: {exc}"
+            ) from exc
+
+    @staticmethod
+    def _raw_content(body: dict) -> Optional[str]:
+        try:
+            content = body["choices"][0]["message"].get("content")
+        except (KeyError, IndexError, TypeError):
+            return None
+        return content if isinstance(content, str) else None
+
+
+# ---------------------------------------------------------------------------
+# MockLLM
+# ---------------------------------------------------------------------------
+
+
+class MockLLM:
+    """Scripted LLM: responses are popped from ``script`` per call.
+
+    Entries are :class:`ChatResult` instances or callables
+    ``(messages, tools) -> ChatResult``.  An empty script falls back to
+    ``default_response``.  Shares the clients' single-flight drop semantics
+    (``delay_s`` simulates an in-flight decode) so concurrency behavior is
+    testable offline.  Records every call for assertions
+    (``chat_calls``, ``messages_seen``, ``tools_seen``).
+    """
+
+    def __init__(
+        self,
+        script: Optional[List[Any]] = None,
+        *,
+        default_response: Optional[ChatResult] = None,
+        delay_s: float = 0.0,
+    ) -> None:
+        self.script: List[Any] = list(script) if script else []
+        self.default_response: ChatResult = default_response or ChatResult(
+            text="I don't know."
+        )
+        self.delay_s = float(delay_s)
+        self._flight = _SingleFlight()
+        self.chat_calls: int = 0
+        self.messages_seen: List[list] = []
+        self.tools_seen: List[list] = []
+
