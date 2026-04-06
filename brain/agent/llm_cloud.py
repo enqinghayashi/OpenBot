@@ -345,3 +345,138 @@ def _finish_reason(body: dict) -> Optional[str]:
         return body["choices"][0].get("finish_reason")
     except (KeyError, IndexError, TypeError):
         return None
+
+
+def _truncated(body: dict) -> bool:
+    """True when the provider stopped because the budget ran out.
+
+    LIVE-VERIFIED 2026-09-02 (deepseek-v4-flash-vision-exp, skeleton mode,
+    real billed calls): a reasoning model spends completion budget on
+    reasoning_tokens BEFORE emitting the answer, so at our shipped
+    ``max_tokens: 256`` a response can stop mid-JSON:
+
+        max_tokens=190 -> finish_reason "length", reasoning 136,
+          content '{"tool": "say", "args": {"text": "The image shows a solid,'
+        max_tokens=230 -> finish_reason "length", reasoning 174,
+          content '{"args": {"text": "I see a uniform, solid red square...'
+
+    That fragment does not parse as a tool call, so before this check it fell
+    through to the prose fallback and was SPOKEN to the operator as the final
+    answer — raw JSON read aloud, ``status: completed``, ``parse_failures``
+    never incremented, no execution, no confirm gate, no verifier.  A textbook
+    false success, on the deployed transcript lane.
+
+    A truncation is not a reply.  Callers must treat it as a failure.
+    """
+    return _finish_reason(body) == "length"
+
+
+def _count_image_parts(body: dict) -> int:
+    """Count image content parts in a response (vision-staging stub)."""
+    try:
+        content = body["choices"][0]["message"].get("content")
+    except (KeyError, IndexError, TypeError):
+        return 0
+    if not isinstance(content, list):
+        return 0
+    return sum(
+        1
+        for part in content
+        if isinstance(part, dict) and part.get("type") in ("image_url", "image")
+    )
+
+
+class CloudLLMClient:
+    """OpenAI-compatible cloud client (stdlib urllib; key from env).
+
+    Parameters:
+    - ``base_url``: the OpenAI-compatible endpoint root, e.g.
+      ``https://api.openai.com/v1`` (required — never guessed).
+    - ``model``: the deployed model name (required — never guessed).
+    - ``api_key_env``: the name of the env var holding the API key
+      (default ``LLM_API_KEY``).  The key is read per request; a
+      missing/empty var raises :class:`ChatTransportError` before
+      anything is sent.
+    - ``tool_mode``: ``"skeleton"`` (default; literal-JSON-skeleton prompt
+      + deterministic parse), ``"json"`` (schema-in-prompt fallback) or
+      ``"native"`` (structured ``tool_calls`` passthrough).
+    - ``enable_thinking``: forwarded to the endpoint only when True
+      (provider-specific; disabled by default — think tokens inflate
+      latency and are a parse-failure source).
+    - ``timeout_s``: per-request urllib timeout (default 120).
+    - ``_transport``: test seam — a callable ``(request, timeout) -> body``
+      replacing ``urllib.request.urlopen``.
+    - ``prose_fallback``: when True, the skeleton/json modes return the
+      model's plain text as ``ChatResult.text`` when no tool call parses
+      (the D4 prose fallback — INFO-logged) instead of the empty
+      repair-path result.  Default False: existing callers and the agent
+      REPL behave exactly as before.
+
+    ``chat(..., image_jpeg_b64=..., image_media_type=...)`` optionally
+    attaches ONE jpeg frame to the last user message as an OpenAI
+    ``image_url`` content part; with no image the payload is
+    byte-identical to the pre-L3 shape.
+
+    Counters mirror :class:`LlamaServerClient` for parity: ``chat_calls``,
+    ``parse_failures``, ``think_blocks_seen``, ``dropped_calls``, plus
+    ``images_seen`` (image parts counted on request response content).
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        api_key_env: str = "LLM_API_KEY",
+        temperature: float = 0.2,
+        max_tokens: int = 256,
+        enable_thinking: bool = False,
+        tool_mode: str = "skeleton",
+        timeout_s: float = 120.0,
+        _transport: Optional[Callable] = None,
+        prose_fallback: bool = False,
+    ) -> None:
+        if not base_url:
+            raise ValueError("CloudLLMClient requires base_url (llm.base_url)")
+        if not model:
+            raise ValueError("CloudLLMClient requires model (llm.model)")
+        if tool_mode not in ("native", "json", "skeleton"):
+            raise ValueError(
+                f"tool_mode {tool_mode!r} must be 'native', 'json' or 'skeleton'"
+            )
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        # an empty name falls back to the default env var, so
+        # configs may leave it blank.
+        self.api_key_env = api_key_env or "LLM_API_KEY"
+        self.temperature = float(temperature)
+        self.max_tokens = int(max_tokens)
+        # completion budget field is provider-specific: OpenAI
+        # reasoning models reject max_tokens, while DeepSeek and
+        # the Gemini compat endpoint take it. _post retries once.
+        self._token_param = _token_param_for(self.base_url, self.model)
+        # temperature is provider-specific too: reasoning-class
+        # ids reject anything but the default 1, so the field is
+        # omitted for them; other models keep the caller's value.
+        self.enable_thinking = bool(enable_thinking)
+        self.tool_mode = tool_mode
+        self.timeout_s = float(timeout_s)
+        self._transport = _transport  # test seam: overrides the HTTP call
+        self.prose_fallback = bool(prose_fallback)
+        self._flight = _SingleFlight()
+        #: per-client tool-call id mint: fixed ids collide
+        #: across turns and leave dangling tool_calls (HTTP 400
+        #: on the next payload), so ids stay unique per process.
+        self._call_ids = _CallIdFactory()
+        self.think_blocks_seen: int = 0
+        self.parse_failures: int = 0
+        self.chat_calls: int = 0
+        self.images_seen: int = 0
+        #: replies cut off by the completion budget (finish_reason
+        #: "length"; "max_tokens" on Anthropic), counted apart
+        #: from parse_failures.
+        self.truncations: int = 0
+
+    @property
+    def dropped_calls(self) -> int:
+        return self._flight.dropped_calls
+
