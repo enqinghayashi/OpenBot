@@ -287,3 +287,5 @@ def _parse_skeleton_tool_call(
         if isinstance(name, str) and name in valid_names and isinstance(args, dict):
             return ToolCall(id=mint("skeleton"), name=name, arguments=args)
     return None
+
+
