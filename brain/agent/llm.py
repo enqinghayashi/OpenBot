@@ -344,3 +344,56 @@ def _extract_first_balanced_json(text: str) -> Optional[str]:
     return None
 
 
+def _parse_tool_calls_payload(
+    payload: Any,
+    next_call_id: Optional[Callable[[str], str]] = None,
+) -> List[ToolCall]:
+    """Normalize an OpenAI-style ``message["tool_calls"]`` list to ToolCall.
+
+    Accepts both the OpenAI shape (``{"id", "type", "function": {name,
+    arguments}}``) and the flatter llama.cpp shape (``{"id", "name",
+    "arguments"}``).  ``arguments`` may be a JSON string or a parsed dict.
+    Raises :class:`ToolCallParseError` on malformed payloads.  Provider-
+    supplied ids are kept verbatim; MISSING ids are synthesized through
+    the caller's mint (``next_call_id``, default :func:`_module_call_id`)
+    as process-unique ``call_<n>`` ids — never a per-payload restarting
+    counter, which would re-collide across id-less payloads in one
+    conversation (the C1 defect family).
+    """
+    mint = next_call_id if next_call_id is not None else _module_call_id
+    if not isinstance(payload, list):
+        raise ToolCallParseError(f"tool_calls is not a list: {type(payload).__name__}")
+    calls: List[ToolCall] = []
+    for n, item in enumerate(payload, start=1):
+        if not isinstance(item, dict):
+            raise ToolCallParseError(
+                f"tool_calls[{n}] is not an object: {type(item).__name__}"
+            )
+        name = item.get("name")
+        if name is None:
+            function = item.get("function")
+            if isinstance(function, dict):
+                name = function.get("name")
+        if not isinstance(name, str) or not name:
+            raise ToolCallParseError(f"tool_calls[{n}] missing a function name")
+        raw_args = item.get("arguments")
+        if raw_args is None and isinstance(item.get("function"), dict):
+            raw_args = item["function"].get("arguments")
+        if isinstance(raw_args, str):
+            try:
+                arguments = json.loads(raw_args)
+            except ValueError as exc:
+                raise ToolCallParseError(
+                    f"tool_calls[{n}] {name!r} arguments are not valid JSON: {exc}"
+                ) from exc
+        elif isinstance(raw_args, dict):
+            arguments = raw_args
+        else:
+            raise ToolCallParseError(
+                f"tool_calls[{n}] {name!r} arguments missing or malformed"
+            )
+        call_id = item.get("id")
+        if not isinstance(call_id, str) or not call_id:
+            call_id = mint("call")
+        calls.append(ToolCall(id=call_id, name=name, arguments=arguments))
+    return calls
