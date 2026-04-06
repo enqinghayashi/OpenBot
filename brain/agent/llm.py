@@ -166,3 +166,35 @@ class ModelLoadError(RuntimeError):
 
 class ChatTransportError(RuntimeError):
     """Transport-level failure (HTTP errors, backend kwargs rejected, ...)."""
+
+
+# ---------------------------------------------------------------------------
+# dealing with think blocks (Qwen3 emits <|thinking|> ... <|/thinking|>)
+# ---------------------------------------------------------------------------
+
+_THINK_BLOCK_RES = [
+    re.compile(r"<\|thinking\|>.*?(?:\|/thinking\|>|$)", re.DOTALL),
+    re.compile(r"<think>.*?(?:</think>|$)", re.DOTALL),
+]
+
+# no think block
+# Qwen3's template turns thinking on by default; this line shuts it off
+# a think block eats the CPU generation budget and breaks parsing
+_NO_THINK_DIRECTIVE = (
+    "\n\nIMPORTANT: You are in direct-answer mode. Do NOT emit a <think> "
+    "block — answer immediately in plain text."
+)
+
+_INLINE_TOOL_CALL_RE = re.compile(
+    r"<\|tool_call\|>(.*?)<\|/tool_call\|>", re.DOTALL
+)
+
+# skeleton retry
+# one auto-retry, then the empty-ChatResult repair path
+_SKELETON_RETRY_MESSAGE = (
+    'Your previous output was not a valid tool call. Respond with exactly '
+    'one JSON object of the form {"tool": "<tool name>", "args": {<arguments>}} '
+    "and nothing else."
+)
+
+
