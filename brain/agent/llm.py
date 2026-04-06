@@ -102,3 +102,10 @@ class _CallIdFactory:
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class ToolCall:
+    """A single tool call proposed by the LLM (or the fast path)."""
+
+    id: str
+    name: str
+    arguments: dict
