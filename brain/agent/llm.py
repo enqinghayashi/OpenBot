@@ -130,3 +130,13 @@ class ChatResult:
     truncated: bool = False
 
 
+@runtime_checkable
+class LLMClient(Protocol):
+    """Protocol the G1Agent loop calls.
+
+    ``messages`` are OpenAI-style dicts: system/user/assistant/tool roles,
+    assistant messages may carry ``tool_calls``, tool messages carry
+    ``tool_call_id`` (the Qwen3 chat template renders both).  ``tools`` is
+    ``ToolRegistry.get_specs()`` output.
+    """
+
