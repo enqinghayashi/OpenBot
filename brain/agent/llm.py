@@ -244,3 +244,5 @@ def _build_skeleton_prompt(tools: List[dict]) -> str:
         "Tool skeletons:"
     )
     return header + "\n" + "\n".join(f"- {s}" for s in lines)
+
+
