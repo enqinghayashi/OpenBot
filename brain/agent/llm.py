@@ -308,3 +308,37 @@ def _strip_think(text: str) -> str:
     return text.strip()
 
 
+def _extract_first_balanced_json(text: str) -> Optional[str]:
+    """Extract the first balanced ``{...}`` region from ``text``.
+
+    Returns the exact substring (including the outer braces) or None.
+    Braces inside string literals and escapes are respected; an unbalanced
+    region (truncated tail) returns None.
+    """
+    if not text:
+        return None
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start: i + 1]
+    return None
