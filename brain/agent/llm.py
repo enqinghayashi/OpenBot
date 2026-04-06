@@ -299,3 +299,10 @@ def _find_think_blocks(text: str) -> List[str]:
     return found
 
 
+def _strip_think(text: str) -> str:
+    """Remove think blocks from ``text``."""
+    if not text:
+        return text
+    for pattern in _THINK_BLOCK_RES:
+        text = pattern.sub("", text)
+    return text.strip()
