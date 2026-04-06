@@ -246,3 +246,44 @@ def _build_skeleton_prompt(tools: List[dict]) -> str:
     return header + "\n" + "\n".join(f"- {s}" for s in lines)
 
 
+def _parse_skeleton_tool_call(
+    raw: str,
+    valid_names: set,
+    next_call_id: Optional[Callable[[str], str]] = None,
+) -> Optional[ToolCall]:
+    """Deterministically extract one skeleton-mode tool call from plain text.
+
+    Detection runs on the RAW content BEFORE think stripping (the Qwen3
+    think-block finding: tool calls can be emitted INSIDE a think block,
+    and stripping first would destroy them); when the raw pass yields
+    nothing, the think-stripped text is tried so reasoning braces cannot
+    hijack the balanced-JSON scan.  Validates the tool name against the
+    provided specs and the args shape (a dict).  Returns None on any
+    failure — the caller's exactly-one-retry then the empty-ChatResult
+    repair path takes over.
+
+    ``next_call_id`` (optional) is the caller's id mint — a per-client
+    :class:`_CallIdFactory` or the :func:`_module_call_id` default.  The
+    parsed call's id is minted HERE, at parse time, never a compile-time
+    constant: the C1 400 root cause was every parsed call being stamped
+    ``skeleton_1``, which collided the moment a conversation carried two
+    distinct tool calls.
+    """
+    mint = next_call_id if next_call_id is not None else _module_call_id
+    for text in (raw, _strip_think(raw)):
+        if not text:
+            continue
+        maybe = _extract_first_balanced_json(text)
+        if maybe is None:
+            continue
+        try:
+            data = json.loads(maybe)
+        except ValueError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        name = data.get("tool")
+        args = data.get("args")
+        if isinstance(name, str) and name in valid_names and isinstance(args, dict):
+            return ToolCall(id=mint("skeleton"), name=name, arguments=args)
+    return None
