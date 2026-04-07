@@ -753,3 +753,13 @@ class LlamaCppClient:
         """Deep-copy messages so the caller's list is never mutated."""
         return [dict(m) for m in messages]
 
+    @staticmethod
+    def _raw_message_content(body: dict) -> Optional[str]:
+        try:
+            content = body["choices"][0]["message"].get("content")
+        except (KeyError, IndexError, TypeError):
+            return None
+        return content if isinstance(content, str) else None
+
+    # -- schema-in-prompt JSON path (fallback) ----------------------------------
+
