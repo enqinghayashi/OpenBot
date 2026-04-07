@@ -486,3 +486,9 @@ class _SingleFlight:
         self._lock = threading.Lock()
         self.dropped_calls: int = 0
 
+    def acquire(self) -> bool:
+        if not self._lock.acquire(blocking=False):
+            self.dropped_calls += 1
+            return False
+        return True
+
