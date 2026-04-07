@@ -482,3 +482,7 @@ class _SingleFlight:
     worker mid-decode, so the next call must never overlap it.
     """
 
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.dropped_calls: int = 0
+
