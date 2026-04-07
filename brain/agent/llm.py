@@ -466,3 +466,10 @@ def _parse_openai_chat_response(
     if message.get("tool_calls"):
         calls = _parse_tool_calls_payload(message["tool_calls"], next_call_id)
     return ChatResult(text=text, tool_calls=calls)
+
+
+# ---------------------------------------------------------------------------
+# single flight
+# ---------------------------------------------------------------------------
+
+
