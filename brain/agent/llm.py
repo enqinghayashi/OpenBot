@@ -397,3 +397,5 @@ def _parse_tool_calls_payload(
             call_id = mint("call")
         calls.append(ToolCall(id=call_id, name=name, arguments=arguments))
     return calls
+
+
