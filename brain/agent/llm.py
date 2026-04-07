@@ -748,3 +748,8 @@ class LlamaCppClient:
                 continue
         raise ChatTransportError(f"backend rejected completion kwargs: {last_exc}")
 
+    @staticmethod
+    def _translate_messages(messages: List[dict]) -> List[dict]:
+        """Deep-copy messages so the caller's list is never mutated."""
+        return [dict(m) for m in messages]
+
