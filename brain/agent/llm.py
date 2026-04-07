@@ -763,3 +763,60 @@ class LlamaCppClient:
 
     # -- schema-in-prompt JSON path (fallback) ----------------------------------
 
+    def _chat_json(self, messages: List[dict], tools: List[dict]) -> ChatResult:
+        """Schema-in-prompt JSON mode: one auto-retry, then empty result."""
+        instruction = self._build_json_prompt(tools)
+        prompt_messages: List[dict] = []
+        inserted = False
+        for m in messages:
+            prompt_messages.append(dict(m))
+            if m.get("role") == "user" and not inserted:
+                prompt_messages[-1]["content"] = (
+                    f"{m.get('content') or ''}\n\n{instruction}"
+                )
+                inserted = True
+        if not inserted:
+            prompt_messages.append({"role": "user", "content": instruction})
+        for attempt in (0, 1):
+            body = self._backend_call(prompt_messages, [])
+            raw = self._raw_message_content(body)
+            if raw is None:
+                self.parse_failures += 1
+                return ChatResult()
+            self.think_blocks_seen += len(_find_think_blocks(raw))
+            cleaned = _strip_think(raw)
+            maybe = _extract_first_balanced_json(cleaned)
+            if maybe:
+                try:
+                    data = json.loads(maybe)
+                except ValueError as exc:
+                    logger.warning("json-mode parse failed: %s", exc)
+                    data = None
+                if isinstance(data, dict) and isinstance(data.get("name"), str):
+                    arguments = data.get("arguments")
+                    if isinstance(arguments, dict):
+                        return ChatResult(
+                            tool_calls=[
+                                ToolCall(
+                                    id=self._call_ids("json"),
+                                    name=data["name"],
+                                    arguments=arguments,
+                                )
+                            ],
+                        )
+            if attempt == 0:
+                prompt_messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Your previous output was not valid JSON. Respond with a "
+                            'single JSON object of the form {"name": "<tool>", '
+                            '"arguments": {<params>}} and nothing else.'
+                        ),
+                    }
+                )
+        self.parse_failures += 1
+        return ChatResult()
+
+    # -- plain-text skeleton path (the default) ----------------------------------
+
