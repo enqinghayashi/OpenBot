@@ -614,3 +614,31 @@ class LlamaCppClient:
         self._backend = None
         self._loaded = False
 
+    def _build_llama(self, model_path: str) -> Any:
+        try:
+            import llama_cpp
+        except ImportError as exc:
+            raise ModelLoadError(
+                "llama-cpp-python is not installed. Install the build that "
+                "matches your device (CUDA on the laptop, CPU wheel on "
+                "Stuart): e.g. CMAKE_ARGS=\"-DGGML_CUDA=on "
+                "-DCMAKE_CUDA_ARCHITECTURES=89\" pip install llama-cpp-python"
+            ) from exc
+        kwargs: Dict[str, Any] = {
+            "model_path": model_path,
+            "n_ctx": self.n_ctx,
+            "n_gpu_layers": -1 if self.n_gpu_layers == "all" else int(self.n_gpu_layers),
+            # pin all the cores
+            # unset n_threads took the default:
+            # ~3.5-4 tok/s on 8 cores
+            # llama.cpp clamps it safely
+            # the box is ours during a decode
+            "n_threads": max(1, (os.cpu_count() or 4)),
+            "verbose": False,
+        }
+        if self.chat_format and self.chat_format != "auto":
+            kwargs["chat_format"] = self.chat_format
+        return llama_cpp.Llama(**kwargs)
+
+    # -- LLMClient ------------------------------------------------------------
+
