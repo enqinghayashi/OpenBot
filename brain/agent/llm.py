@@ -660,3 +660,52 @@ class LlamaCppClient:
 
     # -- native tool-calling path ----------------------------------------------
 
+    def _chat_native(self, messages: List[dict], tools: List[dict]) -> ChatResult:
+        """Structured tool calls via the Qwen3 chat template.
+
+        Parse chain: structured ``tool_calls`` -> inline ``<|tool_call|>``
+        segments -> balanced-JSON extraction -> plain text -> empty result
+        (repair).  Malformed payloads become an empty result and increment
+        ``parse_failures``.
+        """
+        body = self._backend_call(messages, tools)
+        raw_content = self._raw_message_content(body)
+        if raw_content:
+            self.think_blocks_seen += len(_find_think_blocks(raw_content))
+        try:
+            result = _parse_openai_chat_response(body, self._call_ids)
+        except ToolCallParseError as exc:
+            logger.warning("tool-call parse failed: %s", exc)
+            self.parse_failures += 1
+            return ChatResult()
+        if result.tool_calls:
+            return result
+        if raw_content:
+            cleaned, inline_calls = _parse_inline_tool_calls(
+                raw_content, self._call_ids
+            )
+            if inline_calls:
+                return ChatResult(text=result.text, tool_calls=inline_calls)
+            if result.text is None and cleaned:
+                maybe = _extract_first_balanced_json(cleaned)
+                if maybe:
+                    try:
+                        data = json.loads(maybe)
+                    except ValueError as exc:
+                        logger.warning("balanced-JSON extraction failed: %s", exc)
+                        self.parse_failures += 1
+                        return ChatResult()
+                    if isinstance(data, dict) and isinstance(data.get("name"), str):
+                        arguments = data.get("arguments")
+                        if isinstance(arguments, dict):
+                            return ChatResult(
+                                tool_calls=[
+                                    ToolCall(
+                                        id=self._call_ids("extracted"),
+                                        name=data["name"],
+                                        arguments=arguments,
+                                    )
+                                ],
+                            )
+        return result  # empty -> repair
+
