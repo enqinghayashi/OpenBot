@@ -568,3 +568,7 @@ class LlamaCppClient:
         self.parse_failures: int = 0
         self.chat_calls: int = 0
 
+    @property
+    def loaded(self) -> bool:
+        return self._loaded
+
