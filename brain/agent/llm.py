@@ -439,3 +439,5 @@ def _parse_inline_tool_calls(
         cursor = match.end()
     remaining.append(content[cursor:])
     return "".join(remaining).strip(), calls or None
+
+
