@@ -572,3 +572,9 @@ class LlamaCppClient:
     def loaded(self) -> bool:
         return self._loaded
 
+    @property
+    def dropped_calls(self) -> int:
+        return self._flight.dropped_calls
+
+    # -- lifecycle ------------------------------------------------------------
+
