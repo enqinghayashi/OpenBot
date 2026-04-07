@@ -399,3 +399,43 @@ def _parse_tool_calls_payload(
     return calls
 
 
+def _parse_inline_tool_calls(
+    content: str,
+    next_call_id: Optional[Callable[[str], str]] = None,
+) -> tuple[str, Optional[List[ToolCall]]]:
+    """Extract raw ``<|tool_call|>`` segments from text (non-native builds).
+
+    Returns ``(content_without_segments, calls_or_None)``.  Raises
+    :class:`ToolCallParseError` if a segment contains invalid JSON.  Ids
+    are minted through ``next_call_id`` (default :func:`_module_call_id`)
+    — never a per-parse restarting ``inline_<n>`` counter, which would
+    collide across two inline-only turns of one conversation (the C1
+    defect family).
+    """
+    if not content or "<|tool_call|>" not in content:
+        return content, None
+    mint = next_call_id if next_call_id is not None else _module_call_id
+    calls: List[ToolCall] = []
+    remaining: List[str] = []
+    cursor = 0
+    for match in _INLINE_TOOL_CALL_RE.finditer(content):
+        remaining.append(content[cursor: match.start()])
+        segment = match.group(1).strip()
+        try:
+            data = json.loads(segment)
+        except ValueError as exc:
+            raise ToolCallParseError(
+                f"inline tool_call segment is not valid JSON: {exc}"
+            ) from exc
+        if not isinstance(data, dict):
+            raise ToolCallParseError("inline tool_call segment is not an object")
+        name = data.get("name")
+        arguments = data.get("arguments", {})
+        if not isinstance(name, str) or not isinstance(arguments, dict):
+            raise ToolCallParseError(
+                "inline tool_call segment needs 'name' (str) and 'arguments' (dict)"
+            )
+        calls.append(ToolCall(id=mint("inline"), name=name, arguments=arguments))
+        cursor = match.end()
+    remaining.append(content[cursor:])
+    return "".join(remaining).strip(), calls or None
