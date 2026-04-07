@@ -609,3 +609,8 @@ class LlamaCppClient:
         )
         self._loaded = True
 
+    def close(self) -> None:
+        """Release the model (frees VRAM); idempotent."""
+        self._backend = None
+        self._loaded = False
+
