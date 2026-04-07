@@ -642,3 +642,21 @@ class LlamaCppClient:
 
     # -- LLMClient ------------------------------------------------------------
 
+    def chat(self, messages: List[dict], tools: List[dict]) -> ChatResult:
+        """One completion; never raises on bad output.  Single-flight drop."""
+        if not self._flight.acquire():
+            logger.warning("LLM call dropped: a previous call is still decoding")
+            return ChatResult(dropped=True)
+        try:
+            self.load()
+            self.chat_calls += 1
+            if self.tool_mode_actual == "json":
+                return self._chat_json(messages, tools)
+            if self.tool_mode_actual == "skeleton":
+                return self._chat_skeleton(messages, tools)
+            return self._chat_native(messages, tools)
+        finally:
+            self._flight.release()
+
+    # -- native tool-calling path ----------------------------------------------
+
