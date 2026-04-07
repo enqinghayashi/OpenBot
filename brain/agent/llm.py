@@ -525,3 +525,46 @@ class LlamaCppClient:
     tool_calls yield an empty ChatResult and increment ``parse_failures``.
     """
 
+    def __init__(
+        self,
+        model_path: Optional[str] = None,
+        *,
+        n_ctx: int = 4096,
+        n_gpu_layers: int | str = "all",
+        temperature: float = 0.2,
+        max_tokens: int = 256,
+        tool_mode: str = "auto",
+        chat_format: str = "auto",
+        enable_thinking: bool = False,
+        timeout_s: float = 12.0,
+        _backend: Any = None,
+    ) -> None:
+        if tool_mode not in ("auto", "native", "json", "skeleton"):
+            raise ValueError(
+                f"tool_mode {tool_mode!r} must be 'auto', 'native', 'json' "
+                "or 'skeleton'"
+            )
+        self.model_path = model_path
+        self.n_ctx = int(n_ctx)
+        self.n_gpu_layers = n_gpu_layers
+        self.temperature = float(temperature)
+        self.max_tokens = int(max_tokens)
+        self.tool_mode = tool_mode
+        self.chat_format = chat_format
+        self.enable_thinking = bool(enable_thinking)
+        self.timeout_s = float(timeout_s)
+        self._backend = _backend  # test hook
+        self._backend_injected = _backend is not None
+
+        self._resolved_chat_format: Optional[str] = None
+        self._loaded = False
+        self.tool_mode_actual: Optional[str] = None  # probe writes this
+        self._flight = _SingleFlight()
+        #: per-client ids
+        #: never repeat here
+        #: a fresh client restarts
+        self._call_ids = _CallIdFactory()
+        self.think_blocks_seen: int = 0
+        self.parse_failures: int = 0
+        self.chat_calls: int = 0
+
