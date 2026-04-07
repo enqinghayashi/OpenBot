@@ -709,3 +709,42 @@ class LlamaCppClient:
                             )
         return result  # empty -> repair
 
+    def _backend_call(self, messages: List[dict], tools: List[dict]) -> dict:
+        """Call the backend, tolerating kwargs/format drift across versions.
+
+        Some llama-cpp-python builds reject ``enable_thinking`` (Qwen3
+        template input) or unknown chat-format values; each failure degrades
+        one notch: drop ``enable_thinking``, then the explicit
+        ``chat_format``.  Transport errors propagate (the agent wraps).
+        """
+        translated = self._translate_messages(messages)
+        base: Dict[str, Any] = {
+            "messages": translated,
+            "tools": tools,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "stream": False,
+        }
+        attempts: List[Dict[str, Any]] = [
+            {**base, "enable_thinking": self.enable_thinking},
+            base,
+        ]
+        last_exc: Optional[Exception] = None
+        for attempt in attempts:
+            try:
+                if self._resolved_chat_format:
+                    body = self._backend.create_chat_completion(
+                        chat_format=self._resolved_chat_format, **attempt
+                    )
+                else:
+                    body = self._backend.create_chat_completion(**attempt)
+                return body if isinstance(body, dict) else dict(body)
+            except TypeError as exc:
+                last_exc = exc
+                if self._resolved_chat_format:
+                    self._resolved_chat_format = None
+                    attempts.append(attempt)  # no chat_format
+                    continue
+                continue
+        raise ChatTransportError(f"backend rejected completion kwargs: {last_exc}")
+
