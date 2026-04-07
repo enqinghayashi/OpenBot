@@ -578,3 +578,34 @@ class LlamaCppClient:
 
     # -- lifecycle ------------------------------------------------------------
 
+    def load(self) -> None:
+        """Construct the backend; idempotent.  Lazy-imports ``llama_cpp``.
+
+        Raises :class:`ModelLoadError` with an actionable message (never a
+        bare traceback).
+        """
+        if self._loaded:
+            return
+        if self._backend is None:
+            if not self.model_path:
+                raise ModelLoadError(
+                    "no model_path given and no backend injected; pass an "
+                    "explicit GGUF path (config llm.model_path)"
+                )
+            self._backend = self._build_llama(self.model_path)
+        if self._backend_injected:
+            self._resolved_chat_format = (
+                None if self.chat_format == "auto" else self.chat_format
+            )
+        if self.tool_mode == "auto":
+            self.tool_mode_actual = (
+                "native" if self._backend_injected else self._probe_tool_support()
+            )
+        else:
+            self.tool_mode_actual = self.tool_mode
+        logger.info(
+            "LLM loaded (n_ctx=%d, gpu_layers=%s, tool_mode=%s)",
+            self.n_ctx, self.n_gpu_layers, self.tool_mode_actual,
+        )
+        self._loaded = True
+
