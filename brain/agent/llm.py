@@ -441,3 +441,28 @@ def _parse_inline_tool_calls(
     return "".join(remaining).strip(), calls or None
 
 
+def _parse_openai_chat_response(
+    body: dict,
+    next_call_id: Optional[Callable[[str], str]] = None,
+) -> ChatResult:
+    """Parse a chat-completion response body into a :class:`ChatResult`.
+
+    Handles the OpenAI shape ``{"choices": [{"message": {...}}]}``.  Strips
+    think blocks from any text.  Raises :class:`ToolCallParseError` for
+    malformed tool-call payloads (callers convert that to an empty result).
+    ``next_call_id`` passes the caller's id mint through to payload
+    parsing (synthesized ids only; provider ids are kept verbatim).
+    """
+    try:
+        choice = body["choices"][0]
+        message = choice.get("message") or {}
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ToolCallParseError(f"response body has no choices[0].message: {exc}") from exc
+    text: Optional[str] = None
+    raw_content = message.get("content")
+    if isinstance(raw_content, str):
+        text = _strip_think(raw_content)
+    calls: Optional[List[ToolCall]] = None
+    if message.get("tool_calls"):
+        calls = _parse_tool_calls_payload(message["tool_calls"], next_call_id)
+    return ChatResult(text=text, tool_calls=calls)
