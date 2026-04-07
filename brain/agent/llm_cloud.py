@@ -480,3 +480,237 @@ class CloudLLMClient:
     def dropped_calls(self) -> int:
         return self._flight.dropped_calls
 
+    def chat(
+        self,
+        messages: List[dict],
+        tools: List[dict],
+        *,
+        image_jpeg_b64: Optional[str] = None,
+        image_media_type: str = "image/jpeg",
+    ) -> ChatResult:
+        """POST /chat/completions (stream: False); parse per tool_mode.
+
+        ``image_jpeg_b64`` (optional): attach ONE jpeg frame to the LAST
+        user message as an OpenAI ``image_url`` content part (see
+        ``_attach_image``); ``image_media_type`` defaults to
+        ``image/jpeg``.  When no image is given the payload is
+        byte-identical to the pre-L3 shape.
+
+        Never raises for recoverable output problems; transport failures
+        (HTTP errors, missing API key) raise :class:`ChatTransportError`.
+        Single-flight drop while another call is in flight.
+        """
+        if not self._flight.acquire():
+            logger.warning("cloud chat dropped: a previous call is in flight")
+            return ChatResult(dropped=True)
+        try:
+            self.chat_calls += 1
+            if image_jpeg_b64:
+                messages = self._attach_image(
+                    messages, image_jpeg_b64, image_media_type
+                )
+            if self.tool_mode == "skeleton":
+                return self._chat_skeleton(messages, tools)
+            if self.tool_mode == "json":
+                return self._chat_json(messages, tools)
+            return self._chat_native(messages, tools)
+        finally:
+            self._flight.release()
+
+    # -- tool modes -----------------------------------------------------------
+
+    def _chat_native(self, messages: List[dict], tools: List[dict]) -> ChatResult:
+        """Structured ``tool_calls`` passthrough (cloud provider templates)."""
+        body = self._post("/chat/completions", self._payload(messages, tools))
+        try:
+            result = _parse_cloud_response(body, self._call_ids)
+        except ToolCallParseError as exc:
+            logger.warning("cloud response parse failed: %s", exc)
+            self.parse_failures += 1
+            return ChatResult()
+        self._count(body)
+        return result
+
+    def _chat_skeleton(self, messages: List[dict], tools: List[dict]) -> ChatResult:
+        """Literal-JSON-skeleton mode: one auto-retry, then empty result.
+
+        Same deterministic contract as LlamaCppClient._chat_skeleton:
+        think-block detection on the RAW content first (the Qwen3 finding),
+        tool name validated against the provided specs, args must be a
+        dict.  ``stream`` stays False (the DeepSeek streaming tool-call
+        corruption finding).
+        """
+        valid_names = {
+            spec["function"]["name"]
+            for spec in tools
+            if isinstance(spec.get("function"), dict)
+            and isinstance(spec["function"].get("name"), str)
+        }
+        if not valid_names:
+            return self._chat_native(messages, tools)
+        instruction = _build_skeleton_prompt(tools)
+        prompt_messages = self._inject_instruction(messages, instruction)
+        truncated = False
+        for attempt in (0, 1):
+            body = self._post(
+                "/chat/completions", self._payload(prompt_messages, [])
+            )
+            truncated = _truncated(body)
+            if truncated:
+                self.truncations += 1
+            content = self._message_content(body)
+            raw = self._content_text(content)
+            if raw is None:
+                self.parse_failures += 1
+                return ChatResult(truncated=truncated)
+            self.think_blocks_seen += len(_find_think_blocks(raw))
+            self.images_seen += _count_image_parts(body)
+            call = _parse_skeleton_tool_call(raw, valid_names, self._call_ids)
+            if call is not None:
+                if truncated:
+                    # budget ran out but a complete, validated
+                    # tool object parsed; one call per turn, so
+                    # that is the answer, unlike the no-call case.
+                    logger.warning(
+                        "cloud response truncated (finish_reason=length) but a "
+                        "complete tool call parsed; executing it. Raise "
+                        "llm.max_tokens (currently %d) if this recurs.",
+                        self.max_tokens,
+                    )
+                if self.prose_fallback:
+                    # return the call plus any prose around the
+                    # skeleton object, not the object itself,
+                    # which the transcript lane would speak.
+                    return ChatResult(
+                        tool_calls=[call], text=_prose_without_skeleton(raw),
+                        truncated=truncated,
+                    )
+                return ChatResult(tool_calls=[call], truncated=truncated)
+            if attempt == 0:
+                prompt_messages.append(
+                    {"role": "user", "content": _SKELETON_RETRY_MESSAGE}
+                )
+        if truncated:
+            # a budget-cut reply is not prose and must not reach
+            # the fallback below: the transcript lane speaks it and
+            # marks the turn completed, with no execution or check.
+            logger.error(
+                "cloud response truncated (finish_reason=length) with no "
+                "parseable tool call; refusing prose fallback on a partial "
+                "reply. Raise llm.max_tokens (currently %d) — reasoning "
+                "models spend this budget before they answer.",
+                self.max_tokens,
+            )
+            return ChatResult(truncated=True)
+        if self.prose_fallback:
+            # no tool call parsed, so fall back to plain text.
+            prose = self._prose_text(content)
+            if prose:
+                logger.info(
+                    "cloud prose fallback (no tool call parsed): %s", prose
+                )
+                return ChatResult(text=prose)
+        self.parse_failures += 1
+        return ChatResult()
+
+    def _chat_json(self, messages: List[dict], tools: List[dict]) -> ChatResult:
+        """Schema-in-prompt JSON mode (name/arguments shape): one auto-
+        retry, then the empty ChatResult repair path."""
+        instruction = LlamaCppClient._build_json_prompt(tools)
+        prompt_messages = self._inject_instruction(messages, instruction)
+        for attempt in (0, 1):
+            body = self._post(
+                "/chat/completions", self._payload(prompt_messages, [])
+            )
+            content = self._message_content(body)
+            raw = self._content_text(content)
+            if raw is None:
+                self.parse_failures += 1
+                return ChatResult()
+            self.think_blocks_seen += len(_find_think_blocks(raw))
+            self.images_seen += _count_image_parts(body)
+            cleaned = _strip_think(raw)
+            maybe = _extract_first_balanced_json(cleaned)
+            if maybe:
+                try:
+                    data = json.loads(maybe)
+                except ValueError as exc:
+                    logger.warning("cloud json-mode parse failed: %s", exc)
+                    data = None
+                if isinstance(data, dict) and isinstance(data.get("name"), str):
+                    arguments = data.get("arguments")
+                    if isinstance(arguments, dict):
+                        if self.prose_fallback:
+                            return ChatResult(
+                                tool_calls=[
+                                    ToolCall(
+                                        id=self._call_ids("json"),
+                                        name=data["name"],
+                                        arguments=arguments,
+                                    )
+                                ],
+                                text=self._prose_text(content),
+                            )
+                        return ChatResult(
+                            tool_calls=[
+                                ToolCall(
+                                    id=self._call_ids("json"),
+                                    name=data["name"],
+                                    arguments=arguments,
+                                )
+                            ],
+                        )
+            if attempt == 0:
+                prompt_messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Your previous output was not valid JSON. Respond with a "
+                            'single JSON object of the form {"name": "<tool>", '
+                            '"arguments": {<params>}} and nothing else.'
+                        ),
+                    }
+                )
+        if self.prose_fallback:
+            # no tool call parsed, so fall back to plain text.
+            prose = self._prose_text(content)
+            if prose:
+                logger.info(
+                    "cloud prose fallback (no tool call parsed): %s", prose
+                )
+                return ChatResult(text=prose)
+        self.parse_failures += 1
+        return ChatResult()
+
+    # -- helper methods -------------------------------------------------------
+
+    @staticmethod
+    def _inject_instruction(messages: List[dict], instruction: str) -> List[dict]:
+        """Copy messages with the tool-mode instruction appended to the
+        first user message (or as a trailing user message when none).
+
+        ``content`` may be a string or an OpenAI multimodal parts list
+        (the L3 image shape): a parts list gets the instruction appended
+        as an extra ``text`` part; a string keeps the historical
+        ``"<content>\\n\\n<instruction>"`` concat (byte-identical payloads
+        when no image is used).  The caller's list is never mutated.
+        """
+        prompt_messages: List[dict] = []
+        inserted = False
+        for m in messages:
+            prompt_messages.append(dict(m))
+            if m.get("role") == "user" and not inserted:
+                content = m.get("content")
+                if isinstance(content, list):
+                    prompt_messages[-1]["content"] = list(content) + [
+                        {"type": "text", "text": instruction}
+                    ]
+                else:
+                    prompt_messages[-1]["content"] = (
+                        f"{content or ''}\n\n{instruction}"
+                    )
+                inserted = True
+        if not inserted:
+            prompt_messages.append({"role": "user", "content": instruction})
+        return prompt_messages
+
