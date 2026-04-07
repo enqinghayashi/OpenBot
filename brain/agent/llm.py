@@ -501,3 +501,27 @@ class _SingleFlight:
 # ---------------------------------------------------------------------------
 
 
+class LlamaCppClient:
+    """In-process llama.cpp client (laptop GPU / Stuart CPU).
+
+    Parameters:
+    - ``model_path``: explicit GGUF path (required for the real backend).
+    - ``n_ctx``: context window (4096 laptop; Stuart 4096 via loader clamp —
+      2048 -> 4096 2026-08-29, D4 prompt-overflow fix).
+    - ``n_gpu_layers``: ``"all"`` (CUDA) or an int (0 on Stuart).
+    - ``temperature`` / ``max_tokens``: sampling.
+    - ``tool_mode``: ``"auto"`` (probe at load), ``"native"`` (structured
+      tool_calls), ``"json"`` (schema-in-prompt fallback), ``"skeleton"``
+      (literal-JSON-skeleton prompt + deterministic parse — the Plan-B R0'
+      default for new usage: no grammar constraints, 2-4x faster decode).
+    - ``chat_format``: ``"auto"`` (let the GGUF's embedded template win) or
+      an explicit value (e.g. ``"chatml"`` on builds without a qwen3
+      formatter).
+    - ``timeout_s``: informational per-call budget (the agent enforces it).
+    - ``_backend``: test seam — an object with ``create_chat_completion``
+      replacing the real ``llama_cpp.Llama`` (skips import/load).
+
+    ``chat()`` never raises for recoverable output problems; malformed
+    tool_calls yield an empty ChatResult and increment ``parse_failures``.
+    """
+
