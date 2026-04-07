@@ -492,3 +492,5 @@ class _SingleFlight:
             return False
         return True
 
+    def release(self) -> None:
+        self._lock.release()
