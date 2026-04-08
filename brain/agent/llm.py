@@ -978,3 +978,7 @@ class LlamaServerClient:
         self.parse_failures: int = 0
         self.chat_calls: int = 0
 
+    @property
+    def dropped_calls(self) -> int:
+        return self._flight.dropped_calls
+
