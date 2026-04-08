@@ -820,3 +820,157 @@ class CloudLLMClient:
 
     # -- transport layer ------------------------------------------------------
 
+    def _post(self, path: str, payload: dict) -> dict:
+        """JSON POST with the Bearer key; raises :class:`ChatTransportError`.
+
+        The key is read from ``os.environ[api_key_env]`` per request — a
+        missing/empty var raises BEFORE anything is sent (the key never
+        lives in config or the repo).
+
+        On an HTTP error the provider's RESPONSE BODY is included in the
+        raised message.  It used to be discarded, so a 400 surfaced only as
+        "HTTP Error 400: Bad Request" — which is what made #119 (the wrong
+        completion-budget field) take three manual probes to diagnose, and
+        would have been far worse to debug on the box.  The body is the part
+        that names the offending parameter.
+        """
+        key = os.environ.get(self.api_key_env)
+        if not key:
+            raise ChatTransportError(
+                f"cloud API key missing: env var {self.api_key_env!r} is "
+                "unset or empty (export it on the deploy host; the key "
+                "never lives in the repo)"
+            )
+        try:
+            return self._post_once(path, payload, key)
+        except _CloudHTTPError as exc:
+            retry = self._retry_payload_for(payload, exc)
+            if retry is None:
+                raise ChatTransportError(
+                    f"cloud request to {self.base_url}{path} failed: "
+                    f"{exc.status} {exc.reason}: {exc.detail}"
+                ) from exc.cause
+            logger.warning(
+                "cloud rejected %r for model %s; retrying once with %r "
+                "(provider said: %s)",
+                self._token_param, self.model, retry[0], exc.detail[:200],
+            )
+            self._token_param = retry[0]
+            try:
+                return self._post_once(path, retry[1], key)
+            except _CloudHTTPError as exc2:
+                raise ChatTransportError(
+                    f"cloud request to {self.base_url}{path} failed after "
+                    f"retrying with {retry[0]!r}: "
+                    f"{exc2.status} {exc2.reason}: {exc2.detail}"
+                ) from exc2.cause
+
+    def _retry_payload_for(self, payload: dict, exc: "_CloudHTTPError"):
+        """``(new_token_param, new_payload)`` if the provider told us the
+        completion-budget field is wrong, else None.
+
+        Self-healing so a model family we have not seen yet costs one extra
+        request, not every request.  Only ever fires on the provider's own
+        explicit complaint about the field we actually sent.
+        """
+        if exc.status != 400:
+            return None
+        detail = (exc.detail or "").lower()
+        sent = self._token_param
+        for wrong, right in (("max_tokens", "max_completion_tokens"),
+                             ("max_completion_tokens", "max_tokens")):
+            if sent == wrong and right in detail and wrong in detail:
+                new = dict(payload)
+                if wrong not in new:
+                    return None
+                new[right] = new.pop(wrong)
+                return right, new
+        return None
+
+    def _post_once(self, path: str, payload: dict, key: str) -> dict:
+        request = urllib.request.Request(
+            self.base_url + path,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + key,
+            },
+            method="POST",
+        )
+        try:
+            if self._transport is not None:
+                body = self._transport(request, timeout=self.timeout_s)
+            else:
+                with urllib.request.urlopen(request, timeout=self.timeout_s) as resp:
+                    body = resp.read()
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = exc.read().decode("utf-8", "replace").strip()
+            except Exception:  # pragma: no cover - body already consumed
+                detail = ""
+            raise _CloudHTTPError(
+                status=exc.code, reason=str(exc.reason),
+                detail=detail or "(empty response body)", cause=exc,
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise ChatTransportError(
+                f"cloud request to {self.base_url}{path} failed: {exc}"
+            ) from exc
+        try:
+            return json.loads(body)
+        except ValueError as exc:
+            raise ChatTransportError(
+                f"cloud returned non-JSON body: {exc}"
+            ) from exc
+
+    def probe(self, timeout_s: Optional[float] = None) -> bool:
+        """Synchronous, bounded network reachability check; no tokens spent.
+
+        GETs the provider's model-list endpoint and returns True iff the
+        response status is any 2xx.  Used by the transcript lane's
+        ``health_probe()`` (voice/transcript.py) and the app Director's
+        probe so a provider failover is recoverable instead of terminal.
+
+        NEVER raises: timeouts, connection refusals, HTTP errors and any
+        other failure return False (DEBUG-logged).  The ``_transport``
+        test seam is deliberately NOT used — the seam carries a body but
+        no status code; this is a live urllib GET.  The key env var,
+        when set, is attached as ``Authorization: Bearer`` (the same
+        header ``chat()`` uses); a missing key is NOT an error — the GET
+        goes out unauthenticated, and an auth rejection (401/403)
+        correctly reads as False (the endpoint cannot serve this
+        deployment as-is).
+
+        Endpoint shape per provider (``base_url`` is the OpenAI-compat
+        root this client was built for):
+          - OpenAI ......... GET ``{base_url}/models``
+          - Gemini compat .. GET ``{base_url}/models``
+          - Groq ........... GET ``{base_url}/models``
+          - Anthropic compat  GET ``{base_url}/models`` — with
+            ``base_url`` = ``https://api.anthropic.com/v1`` this is the
+            same path that serves Anthropic's native Models API
+            (GET /v1/models, verified 2026-08-31 against the Anthropic
+            Models API docs), so the probe hits a real Anthropic
+            endpoint either way.
+        (The OpenAI-compat ``/models`` convention is the common model-
+        list shape all four surfaces expose at their own base_url; the
+        Anthropic native endpoint was verified by direct docs check.)
+
+        ``timeout_s`` defaults to ``_PROBE_TIMEOUT_S`` (2.0 s), far
+        below the chat timeout.
+        """
+        timeout = _PROBE_TIMEOUT_S if timeout_s is None else float(timeout_s)
+        headers: Dict[str, str] = {"Accept": "application/json"}
+        key = os.environ.get(self.api_key_env)
+        if key:
+            headers["Authorization"] = "Bearer " + key
+        return _probe_http_get(self.base_url + "/models", headers, timeout)
+
+
+# ---------------------------------------------------------------------------
+# Anthropic Messages adapter: native Messages wire shape
+# ---------------------------------------------------------------------------
+
+_ANTHROPIC_VERSION = "2023-06-01"
+
+
