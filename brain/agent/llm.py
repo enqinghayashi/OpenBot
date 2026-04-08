@@ -933,3 +933,10 @@ class LlamaCppClient:
             return max(1, len(tokens)) + 4
         except Exception:  # noqa: BLE001 — tokenizer hiccups degrade to heuristic
             return max(1, len(text) // 4) + 4
+
+
+# ---------------------------------------------------------------------------
+# sidecar client
+# ---------------------------------------------------------------------------
+
+
