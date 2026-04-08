@@ -888,3 +888,34 @@ class LlamaCppClient:
 
     # -- capability probe --------------------------------------------------------
 
+    def _probe_tool_support(self) -> str:
+        """Decide native vs json mode with one toy tool call."""
+        toy_tool = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "ping",
+                    "description": "Probe tool. Returns OK.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                    },
+                },
+            }
+        ]
+        messages = [{"role": "user", "content": "What tools do you have?"}]
+        try:
+            body = self._backend_call(messages, toy_tool)
+            result = _parse_openai_chat_response(body)
+            if result.tool_calls:
+                return "native"
+            raw = self._raw_message_content(body)
+            if raw and _parse_inline_tool_calls(raw)[1]:
+                return "native"
+        except (ChatTransportError, ToolCallParseError) as exc:
+            logger.warning("probe failed (%s); falling back to json mode", exc)
+        return "json"
+
+    # -- token estimation --------------------------------------------------------
+
