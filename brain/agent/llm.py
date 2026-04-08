@@ -1024,3 +1024,34 @@ class LlamaServerClient:
             self.think_blocks_seen += len(_find_think_blocks(raw))
         return result
 
+    def _chat_skeleton(self, messages: List[dict], tools: List[dict]) -> ChatResult:
+        """Literal-JSON-skeleton mode (same deterministic contract as
+        LlamaCppClient._chat_skeleton): one auto-retry, then the empty
+        ChatResult repair path."""
+        valid_names = {
+            spec["function"]["name"]
+            for spec in tools
+            if isinstance(spec.get("function"), dict)
+            and isinstance(spec["function"].get("name"), str)
+        }
+        if not valid_names:
+            return self._chat_native(messages, tools)
+        instruction = _build_skeleton_prompt(tools)
+        prompt_messages = self._inject_instruction(messages, instruction)
+        for attempt in (0, 1):
+            body = self._post("/chat/completions", self._payload(prompt_messages, []))
+            raw = self._raw_content(body)
+            if raw is None:
+                self.parse_failures += 1
+                return ChatResult()
+            self.think_blocks_seen += len(_find_think_blocks(raw))
+            call = _parse_skeleton_tool_call(raw, valid_names, self._call_ids)
+            if call is not None:
+                return ChatResult(tool_calls=[call])
+            if attempt == 0:
+                prompt_messages.append(
+                    {"role": "user", "content": _SKELETON_RETRY_MESSAGE}
+                )
+        self.parse_failures += 1
+        return ChatResult()
+
