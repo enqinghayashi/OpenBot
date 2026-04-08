@@ -919,3 +919,17 @@ class LlamaCppClient:
 
     # -- token estimation --------------------------------------------------------
 
+    def estimate_tokens(self, text: str) -> int:
+        """Estimate ``text``'s token count via the real tokenizer when loaded.
+
+        Falls back to the chars/4 heuristic (+4 overhead) before load —
+        keeps the agent's compaction working even for a client that never
+        loaded (mock LLMs, offline tests).
+        """
+        if not self.loaded:
+            return max(1, len(text) // 4) + 4
+        try:
+            tokens = self._backend.tokenize(text.encode("utf-8"))
+            return max(1, len(tokens)) + 4
+        except Exception:  # noqa: BLE001 — tokenizer hiccups degrade to heuristic
+            return max(1, len(text) // 4) + 4
