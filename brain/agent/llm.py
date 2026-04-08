@@ -982,3 +982,20 @@ class LlamaServerClient:
     def dropped_calls(self) -> int:
         return self._flight.dropped_calls
 
+    def chat(self, messages: List[dict], tools: List[dict]) -> ChatResult:
+        """POST /chat/completions; parse deterministically per tool_mode."""
+        if not self._flight.acquire():
+            logger.warning("server chat dropped: a previous call is in flight")
+            return ChatResult(dropped=True)
+        try:
+            self.chat_calls += 1
+            if self.tool_mode == "skeleton":
+                return self._chat_skeleton(messages, tools)
+            if self.tool_mode == "json":
+                return self._chat_json(messages, tools)
+            return self._chat_native(messages, tools)
+        finally:
+            self._flight.release()
+
+    # -- tool modes -----------------------------------------------------------
+
