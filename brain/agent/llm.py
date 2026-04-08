@@ -948,3 +948,33 @@ class LlamaServerClient:
     cannot do in-process Qwen3 tool calls.
     """
 
+    def __init__(
+        self,
+        base_url: str = "http://127.0.0.1:8080/v1",
+        model: str = "qwen3-4b-instruct",
+        temperature: float = 0.2,
+        max_tokens: int = 256,
+        enable_thinking: bool = False,
+        tool_mode: str = "skeleton",
+        timeout_s: float = 12.0,
+        _transport: Optional[Callable] = None,
+    ) -> None:
+        if tool_mode not in ("native", "json", "skeleton"):
+            raise ValueError(
+                f"tool_mode {tool_mode!r} must be 'native', 'json' or 'skeleton'"
+            )
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.temperature = float(temperature)
+        self.max_tokens = int(max_tokens)
+        self.enable_thinking = bool(enable_thinking)
+        self.tool_mode = tool_mode
+        self.timeout_s = float(timeout_s)
+        self._transport = _transport  # test hook
+        self._flight = _SingleFlight()
+        #: per-client ids
+        self._call_ids = _CallIdFactory()
+        self.think_blocks_seen: int = 0
+        self.parse_failures: int = 0
+        self.chat_calls: int = 0
+
