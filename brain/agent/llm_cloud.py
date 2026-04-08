@@ -714,3 +714,109 @@ class CloudLLMClient:
             prompt_messages.append({"role": "user", "content": instruction})
         return prompt_messages
 
+    @staticmethod
+    def _attach_image(
+        messages: List[dict],
+        image_jpeg_b64: str,
+        image_media_type: str = "image/jpeg",
+    ) -> List[dict]:
+        """Copy messages with ONE jpeg frame attached to the LAST user
+        message as an OpenAI ``image_url`` content part.
+
+        The target message's content becomes a parts list (existing parts
+        kept, the image part appended; a string content becomes
+        ``[{"type": "text", ...}, <image part>]``).  When no user message
+        exists a new ``role: "user"`` message carrying only the image
+        part is appended.  The caller's list is never mutated.
+        ``image_jpeg_b64`` may be raw base64 or a full ``data:`` URI (the
+        prefix is stripped defensively).
+        """
+        data = image_jpeg_b64.split(",", 1)[-1]
+        part = {
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:{image_media_type};base64,{data}",
+            },
+        }
+        out = [dict(m) for m in messages]
+        for m in reversed(out):
+            if m.get("role") == "user":
+                content = m.get("content")
+                if isinstance(content, list):
+                    m["content"] = list(content) + [part]
+                elif content:
+                    m["content"] = [{"type": "text", "text": content}, part]
+                else:
+                    m["content"] = [part]
+                return out
+        out.append({"role": "user", "content": [part]})
+        return out
+
+    @staticmethod
+    def _prose_text(content: Any) -> Optional[str]:
+        """The stripped text of a message content (str or parts list), or
+        None when there is no usable prose (empty / whitespace-only)."""
+        raw = CloudLLMClient._content_text(content)
+        if raw is None:
+            return None
+        cleaned = _strip_think(raw).strip()
+        return cleaned or None
+
+    def _payload(self, messages: List[dict], tools: List[dict]) -> Dict[str, Any]:
+        """Base chat-completion payload; ``stream`` is ALWAYS False.
+
+        The completion-budget field is provider-dependent — see
+        ``_token_param_for`` and the dialect note in ``__init__``.
+        The temperature is likewise provider-dependent (``_temperature_for``):
+        OpenAI-hosted gpt-5/o-family ids reject anything but the default,
+        so the field is omitted there rather than sent (LIVE-VERIFIED
+        2026-09-02).  Omitting = API default 1.
+        """
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "tools": tools,
+            self._token_param: self.max_tokens,
+            "stream": False,
+        }
+        temperature = _temperature_for(
+            self.base_url, self.model, self.temperature
+        )
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if self.enable_thinking:
+            payload["enable_thinking"] = True
+        return payload
+
+    @staticmethod
+    def _message_content(body: dict) -> Any:
+        try:
+            return body["choices"][0]["message"].get("content")
+        except (KeyError, IndexError, TypeError):
+            return None
+
+    @staticmethod
+    def _content_text(content: Any) -> Optional[str]:
+        """Normalize str or OpenAI multimodal part-list content to text."""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = [
+                part.get("text")
+                for part in content
+                if isinstance(part, dict)
+                and part.get("type") == "text"
+                and isinstance(part.get("text"), str)
+            ]
+            return "\n".join(parts) if parts else None
+        return None
+
+    def _count(self, body: dict) -> None:
+        """Think blocks + image parts from a response (parity counters)."""
+        raw = self._content_text(self._message_content(body))
+        if raw:
+            self.think_blocks_seen += len(_find_think_blocks(raw))
+        self.images_seen += _count_image_parts(body)
+
+    # -- transport layer ------------------------------------------------------
+
