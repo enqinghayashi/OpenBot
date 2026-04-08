@@ -1158,3 +1158,10 @@ class LlamaServerClient:
                 f"server returned non-JSON body: {exc}"
             ) from exc
 
+    @staticmethod
+    def _raw_content(body: dict) -> Optional[str]:
+        try:
+            content = body["choices"][0]["message"].get("content")
+        except (KeyError, IndexError, TypeError):
+            return None
+        return content if isinstance(content, str) else None
