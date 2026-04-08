@@ -999,3 +999,28 @@ class LlamaServerClient:
 
     # -- tool modes -----------------------------------------------------------
 
+    def _chat_native(self, messages: List[dict], tools: List[dict]) -> ChatResult:
+        """Structured ``tool_calls`` via the sidecar's OpenAI-compatible
+        endpoint (the sidecar applies its own chat template)."""
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "tools": tools,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "stream": False,
+        }
+        if self.enable_thinking:
+            payload["enable_thinking"] = True
+        body = self._post("/chat/completions", payload)
+        try:
+            result = _parse_openai_chat_response(body, self._call_ids)
+        except ToolCallParseError as exc:
+            logger.warning("server response parse failed: %s", exc)
+            self.parse_failures += 1
+            return ChatResult()
+        raw = self._raw_content(body)
+        if raw:
+            self.think_blocks_seen += len(_find_think_blocks(raw))
+        return result
+
