@@ -1133,3 +1133,28 @@ class LlamaServerClient:
 
     # -- transport ------------------------------------------------------------
 
+    def _post(self, path: str, payload: dict) -> dict:
+        """JSON POST via urllib; raises :class:`ChatTransportError`."""
+        request = urllib.request.Request(
+            self.base_url + path,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            if self._transport is not None:
+                body = self._transport(request, timeout=self.timeout_s)
+            else:
+                with urllib.request.urlopen(request, timeout=self.timeout_s) as resp:
+                    body = resp.read()
+        except urllib.error.URLError as exc:
+            raise ChatTransportError(
+                f"server request to {self.base_url}{path} failed: {exc}"
+            ) from exc
+        try:
+            return json.loads(body)
+        except ValueError as exc:
+            raise ChatTransportError(
+                f"server returned non-JSON body: {exc}"
+            ) from exc
+
