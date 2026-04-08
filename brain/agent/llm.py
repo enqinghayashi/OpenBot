@@ -870,3 +870,21 @@ class LlamaCppClient:
         self.parse_failures += 1
         return ChatResult()
 
+    @staticmethod
+    def _build_json_prompt(tools: List[dict]) -> str:
+        """Serialize the tool specs into prompt text for json mode."""
+        lines = [
+            "Available tools. You MUST respond with exactly one JSON object of "
+            'the form {"name": "<tool name>", "arguments": {<params>}}. '
+            "Do not include any other text."
+        ]
+        for spec in tools:
+            fn = spec.get("function", {})
+            name = fn.get("name", "?")
+            desc = fn.get("description", "")
+            params = fn.get("parameters", {})
+            lines.append(f"- {name}: {desc} params={json.dumps(params)}")
+        return "\n".join(lines)
+
+    # -- capability probe --------------------------------------------------------
+
