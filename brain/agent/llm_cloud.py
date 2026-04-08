@@ -1116,3 +1116,140 @@ class AnthropicMessagesClient:
         #: from parse_failures.
         self.truncations: int = 0
 
+    @property
+    def dropped_calls(self) -> int:
+        return self._flight.dropped_calls
+
+    def chat(
+        self,
+        messages: List[dict],
+        tools: List[dict],
+        *,
+        image_jpeg_b64: Optional[str] = None,
+        image_media_type: str = "image/jpeg",
+    ) -> ChatResult:
+        """POST /v1/messages; parse the Anthropic content-block shape.
+
+        ``image_jpeg_b64`` (optional): attach ONE jpeg frame to the LAST
+        user message as an Anthropic ``image`` content block.  Never
+        raises for recoverable output problems; transport failures
+        (HTTP errors, missing API key) raise :class:`ChatTransportError`.
+        Single-flight drop while another call is in flight.
+        """
+        if not self._flight.acquire():
+            logger.warning("anthropic chat dropped: a previous call is in flight")
+            return ChatResult(dropped=True)
+        try:
+            self.chat_calls += 1
+            body = self._anthropic_body(
+                messages, tools, image_jpeg_b64, image_media_type
+            )
+            response = self._post("/v1/messages", body)
+            try:
+                result = _parse_anthropic_response(response)
+            except ToolCallParseError as exc:
+                logger.warning("anthropic response parse failed: %s", exc)
+                self.parse_failures += 1
+                return ChatResult()
+            raw = self._raw_text(response)
+            if raw:
+                self.think_blocks_seen += len(_find_think_blocks(raw))
+            self.images_seen += _count_anthropic_image_parts(response)
+            return result
+        finally:
+            self._flight.release()
+
+    # -- OpenAI-style history to the Anthropic wire shape ---------------------
+
+    @staticmethod
+    def _tools_to_anthropic(tools: List[dict]) -> List[dict]:
+        """OpenAI spec shape -> Anthropic ``{name, description,
+        input_schema}`` tools."""
+        out: List[dict] = []
+        for spec in tools:
+            fn = spec.get("function") if isinstance(spec, dict) else None
+            if not isinstance(fn, dict):
+                continue
+            name = fn.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            params = fn.get("parameters")
+            out.append(
+                {
+                    "name": name,
+                    "description": fn.get("description", ""),
+                    "input_schema": params
+                    if isinstance(params, dict)
+                    else {"type": "object", "properties": {}},
+                }
+            )
+        return out
+
+    @staticmethod
+    def _content_blocks(content: Any) -> List[dict]:
+        """OpenAI content (str or parts list) -> Anthropic content blocks.
+
+        Text stays text; ``image_url`` parts become base64 ``image``
+        blocks; an already-Anthropic ``image`` part passes through.  Non-
+        representable parts (bare URLs) are dropped.
+        """
+        blocks: List[dict] = []
+        if isinstance(content, str):
+            if content:
+                blocks.append({"type": "text", "text": content})
+            return blocks
+        if not isinstance(content, list):
+            return blocks
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            ptype = part.get("type")
+            if ptype == "text" and isinstance(part.get("text"), str):
+                blocks.append({"type": "text", "text": part["text"]})
+            elif ptype == "image_url":
+                url = part.get("image_url")
+                block = (
+                    _image_block_from_data_uri(url.get("url"))
+                    if isinstance(url, dict)
+                    else None
+                )
+                if block is not None:
+                    blocks.append(block)
+            elif ptype == "image":
+                blocks.append(part)
+        return blocks
+
+    @staticmethod
+    def _tool_calls_blocks(tool_calls: Any) -> List[dict]:
+        """OpenAI-style ``message["tool_calls"]`` -> ``tool_use`` blocks."""
+        if not isinstance(tool_calls, list):
+            return []
+        blocks: List[dict] = []
+        for item in tool_calls:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            if name is None:
+                function = item.get("function")
+                if isinstance(function, dict):
+                    name = function.get("name")
+            arguments = item.get("arguments")
+            if arguments is None and isinstance(item.get("function"), dict):
+                arguments = item["function"].get("arguments")
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments)
+                except ValueError:
+                    continue  # arguments string is not JSON; drop the call
+            if not isinstance(name, str) or not isinstance(arguments, dict):
+                continue
+            call_id = item.get("id")
+            if not isinstance(call_id, str) or not call_id:
+                # process-unique mint: a hardcoded id would
+                # collide on the wire.
+                call_id = _module_call_id("toolu")
+            blocks.append(
+                {"type": "tool_use", "id": call_id, "name": name, "input": arguments}
+            )
+        return blocks
+
