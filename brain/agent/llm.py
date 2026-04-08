@@ -1100,3 +1100,20 @@ class LlamaServerClient:
         self.parse_failures += 1
         return ChatResult()
 
+    @staticmethod
+    def _inject_instruction(messages: List[dict], instruction: str) -> List[dict]:
+        """Copy messages with the tool-mode instruction appended to the
+        first user message (or as a trailing user message when none)."""
+        prompt_messages: List[dict] = []
+        inserted = False
+        for m in messages:
+            prompt_messages.append(dict(m))
+            if m.get("role") == "user" and not inserted:
+                prompt_messages[-1]["content"] = (
+                    f"{m.get('content') or ''}\n\n{instruction}"
+                )
+                inserted = True
+        if not inserted:
+            prompt_messages.append({"role": "user", "content": instruction})
+        return prompt_messages
+
