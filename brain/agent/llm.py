@@ -940,3 +940,11 @@ class LlamaCppClient:
 # ---------------------------------------------------------------------------
 
 
+class LlamaServerClient:
+    """Alternative client for a llama.cpp / llama-server OpenAI-compatible
+    HTTP sidecar.  ``base_url`` defaults to ``http://127.0.0.1:8080/v1``
+    (llama-server default).  Implemented with stdlib ``urllib.request`` —
+    no extra dependency; the fallback path for Stuart if the CPU wheel
+    cannot do in-process Qwen3 tool calls.
+    """
+
