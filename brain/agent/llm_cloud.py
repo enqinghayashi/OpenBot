@@ -1408,3 +1408,29 @@ class AnthropicMessagesClient:
                 f"anthropic returned non-JSON body: {exc}"
             ) from exc
 
+    def probe(self, timeout_s: Optional[float] = None) -> bool:
+        """Synchronous, bounded reachability probe for the native root.
+
+        GETs ``{base_url}/v1/models`` — Anthropic's native Models API
+        (verified 2026-08-31 against the Anthropic Models API docs:
+        GET /v1/models, ``x-api-key`` + ``anthropic-version:
+        2023-06-01`` headers; the same path is served at the
+        OpenAI-compat base_url ``https://api.anthropic.com/v1``) — using
+        this client's own auth style, and returns True iff the status is
+        any 2xx.  Same contract as :meth:`CloudLLMClient.probe`: never
+        raises (timeouts / connection refusals / HTTP errors / any other
+        failure -> False, DEBUG-logged), no model tokens consumed, the
+        ``_transport`` seam is not used (it carries no status code), and
+        a missing key is not an error — the GET goes out unauthenticated
+        and an auth rejection (401/403) reads as False.
+
+        ``timeout_s`` defaults to ``_PROBE_TIMEOUT_S`` (2.0 s), far
+        below the chat timeout.
+        """
+        timeout = _PROBE_TIMEOUT_S if timeout_s is None else float(timeout_s)
+        headers: Dict[str, str] = {"Accept": "application/json"}
+        key = os.environ.get(self.api_key_env)
+        if key:
+            headers["x-api-key"] = key
+            headers["anthropic-version"] = _ANTHROPIC_VERSION
+        return _probe_http_get(self.base_url + "/v1/models", headers, timeout)
