@@ -820,3 +820,53 @@ class LlamaCppClient:
 
     # -- plain-text skeleton path (the default) ----------------------------------
 
+    def _chat_skeleton(self, messages: List[dict], tools: List[dict]) -> ChatResult:
+        """Literal-JSON-skeleton mode: one auto-retry, then empty result.
+
+        The prompt teaches one skeleton per tool (placeholder values only —
+        never real content, the output-injection priming rule); the plain-
+        text reply is parsed deterministically with think-block detection on
+        the RAW content first (the Qwen3 finding), the tool name is
+        validated against the provided specs, and the args must be a dict.
+        Any failure -> exactly one retry (_SKELETON_RETRY_MESSAGE), then the
+        empty ChatResult the agent's repair path handles (and
+        ``parse_failures`` increments).  Empty tool list -> the native text
+        path (nothing to call anyway).
+        """
+        valid_names = {
+            spec["function"]["name"]
+            for spec in tools
+            if isinstance(spec.get("function"), dict)
+            and isinstance(spec["function"].get("name"), str)
+        }
+        if not valid_names:
+            return self._chat_native(messages, tools)
+        instruction = _build_skeleton_prompt(tools)
+        prompt_messages: List[dict] = []
+        inserted = False
+        for m in messages:
+            prompt_messages.append(dict(m))
+            if m.get("role") == "user" and not inserted:
+                prompt_messages[-1]["content"] = (
+                    f"{m.get('content') or ''}\n\n{instruction}"
+                )
+                inserted = True
+        if not inserted:
+            prompt_messages.append({"role": "user", "content": instruction})
+        for attempt in (0, 1):
+            body = self._backend_call(prompt_messages, [])
+            raw = self._raw_message_content(body)
+            if raw is None:
+                self.parse_failures += 1
+                return ChatResult()
+            self.think_blocks_seen += len(_find_think_blocks(raw))
+            call = _parse_skeleton_tool_call(raw, valid_names, self._call_ids)
+            if call is not None:
+                return ChatResult(tool_calls=[call])
+            if attempt == 0:
+                prompt_messages.append(
+                    {"role": "user", "content": _SKELETON_RETRY_MESSAGE}
+                )
+        self.parse_failures += 1
+        return ChatResult()
+
