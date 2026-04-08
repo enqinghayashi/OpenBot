@@ -974,3 +974,145 @@ class CloudLLMClient:
 _ANTHROPIC_VERSION = "2023-06-01"
 
 
+def _image_block_from_data_uri(uri: Any) -> Optional[dict]:
+    """OpenAI ``image_url`` data URI -> an Anthropic image content block.
+
+    Returns None when ``uri`` is not a parseable ``data:`` URI (bare
+    http(s) URLs are not representable as base64 blocks).
+    """
+    if not isinstance(uri, str) or not uri.startswith("data:"):
+        return None
+    header, _, data = uri.partition(",")
+    if not data:
+        return None
+    media_type = header[5:].split(";", 1)[0] or "image/jpeg"
+    return {
+        "type": "image",
+        "source": {"type": "base64", "media_type": media_type, "data": data},
+    }
+
+
+def _parse_anthropic_response(body: dict) -> ChatResult:
+    """Parse an Anthropic Messages response into a :class:`ChatResult`.
+
+    ``content`` is a block list: ``text`` blocks are joined (think blocks
+    stripped); ``tool_use`` blocks (``id``/``name``/``input``) become
+    :class:`ToolCall` objects — ``input`` is already a dict, no JSON-string
+    parsing.  Raises :class:`ToolCallParseError` for malformed bodies
+    (callers convert that to an empty result).
+    """
+    content = body.get("content")
+    if not isinstance(content, list):
+        raise ToolCallParseError(
+            "Anthropic response body has no content list: "
+            f"{type(content).__name__}"
+        )
+    text_parts = [
+        block.get("text")
+        for block in content
+        if isinstance(block, dict)
+        and block.get("type") == "text"
+        and isinstance(block.get("text"), str)
+    ]
+    text = _strip_think("\n".join(text_parts)) if text_parts else None
+    calls: List[ToolCall] = []
+    for n, block in enumerate(content, start=1):
+        if not isinstance(block, dict) or block.get("type") != "tool_use":
+            continue
+        name = block.get("name")
+        arguments = block.get("input")
+        if not isinstance(name, str) or not isinstance(arguments, dict):
+            raise ToolCallParseError(
+                f"tool_use block {n} needs name (str) and input (dict)"
+            )
+        call_id = block.get("id")
+        if not isinstance(call_id, str) or not call_id:
+            # process-unique mint: a per-response counter would
+            # reuse ids across turns and collide.
+            call_id = _module_call_id("call")
+        calls.append(ToolCall(id=call_id, name=name, arguments=arguments))
+    return ChatResult(text=text, tool_calls=calls or None)
+
+
+def _count_anthropic_image_parts(body: dict) -> int:
+    """Count image content blocks in an Anthropic response."""
+    content = body.get("content")
+    if not isinstance(content, list):
+        return 0
+    return sum(
+        1
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "image"
+    )
+
+
+class AnthropicMessagesClient:
+    """Anthropic Messages API adapter — the same ``chat()`` interface as
+    :class:`CloudLLMClient` but speaking the NATIVE Anthropic wire shape
+    (the production-grade surface; Anthropic's separate OpenAI-compat
+    layer needs no adapter — CloudLLMClient already speaks it, see the
+    module docstring "REST endpoint compatibility (d)").
+
+    Deviations from CloudLLMClient (all measured against the docs):
+    - auth: ``x-api-key`` + ``anthropic-version: 2023-06-01`` headers
+      (never Bearer); the key is read per request from
+      ``os.environ[api_key_env]`` (default ``ANTHROPIC_API_KEY``) — a
+      missing/empty var raises :class:`ChatTransportError` before
+      anything is sent (the key never lives in config or the repo).
+    - endpoint: POST ``{base_url}/messages`` — ``base_url`` is the API
+      ROOT (default ``https://api.anthropic.com``), the client appends
+      ``/v1/messages``.
+    - body: ``system`` messages hoisted to the top-level ``system``
+      string; tools translated from the OpenAI spec shape to ``{"name",
+      "description", "input_schema"}``; assistant ``tool_calls`` ->
+      ``tool_use`` content blocks; ``role: "tool"`` messages ->
+      ``role: "user"`` messages with ``tool_result`` blocks; ``image_url``
+      parts and ``chat(..., image_jpeg_b64=...)`` -> ``{"type": "image",
+      "source": {"type": "base64", ...}}`` blocks.
+    - response: ``content`` block list — ``text`` blocks joined into
+      ``ChatResult.text``, ``tool_use`` blocks into ``ChatResult.tool_calls``
+      (input is already a dict).  Prose replies flow naturally in this
+      parse (no separate prose-fallback flag needed).
+    - native ``tool_use`` mode only (the structured-call shape the
+      transcript lane uses); the skeleton/json prompt modes are
+      CloudLLMClient-only.  ``enable_thinking`` is NOT forwarded
+      (Anthropic's thinking parameter has a different shape).
+
+    Counters mirror the other clients: ``chat_calls``, ``parse_failures``,
+    ``think_blocks_seen``, ``dropped_calls``, ``images_seen``.
+    """
+
+    def __init__(
+        self,
+        base_url: str = "https://api.anthropic.com",
+        model: str = "",
+        api_key_env: str = "ANTHROPIC_API_KEY",
+        temperature: float = 0.2,
+        max_tokens: int = 256,
+        timeout_s: float = 120.0,
+        _transport: Optional[Callable] = None,
+    ) -> None:
+        if not base_url:
+            raise ValueError(
+                "AnthropicMessagesClient requires base_url (the API root, "
+                "e.g. https://api.anthropic.com)"
+            )
+        if not model:
+            raise ValueError("AnthropicMessagesClient requires model")
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.api_key_env = api_key_env or "ANTHROPIC_API_KEY"
+        self.temperature = float(temperature)
+        self.max_tokens = int(max_tokens)
+        self.timeout_s = float(timeout_s)
+        self._transport = _transport  # test seam: overrides the HTTP call
+        self._flight = _SingleFlight()
+        self.think_blocks_seen: int = 0
+        self.parse_failures: int = 0
+        self.chat_calls: int = 0
+        self.images_seen: int = 0
+        #: replies cut off by the completion budget (finish_reason
+        #: "length"; "max_tokens" on Anthropic), counted apart
+        #: from parse_failures.
+        self.truncations: int = 0
+
