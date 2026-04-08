@@ -1117,3 +1117,19 @@ class LlamaServerClient:
             prompt_messages.append({"role": "user", "content": instruction})
         return prompt_messages
 
+    def _payload(self, messages: List[dict], tools: List[dict]) -> Dict[str, Any]:
+        """Base chat-completion payload (stream always off)."""
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "tools": tools,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "stream": False,
+        }
+        if self.enable_thinking:
+            payload["enable_thinking"] = True
+        return payload
+
+    # -- transport ------------------------------------------------------------
+
