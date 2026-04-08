@@ -1253,3 +1253,158 @@ class AnthropicMessagesClient:
             )
         return blocks
 
+    @staticmethod
+    def _blocks_text(content: Any) -> str:
+        """Plain text of str/parts content ("" when none) for system and
+        tool_result payloads."""
+        text = CloudLLMClient._content_text(content)
+        return text if text else ""
+
+    def _anthropic_messages(
+        self,
+        messages: List[dict],
+        image_jpeg_b64: Optional[str],
+        image_media_type: str,
+    ) -> tuple:
+        """OpenAI-style history -> Anthropic messages + hoisted system.
+
+        Returns ``(messages, system_text)``.  The caller's list is never
+        mutated.  Raises ValueError for unknown roles (never guessed).
+        """
+        system_parts: List[str] = []
+        out: List[dict] = []
+        for m in messages:
+            role = m.get("role")
+            if role == "system":
+                text = self._blocks_text(m.get("content"))
+                if text:
+                    system_parts.append(text)
+            elif role == "user":
+                blocks = self._content_blocks(m.get("content"))
+                out.append({"role": "user", "content": blocks})
+            elif role == "assistant":
+                blocks = self._content_blocks(m.get("content"))
+                blocks.extend(self._tool_calls_blocks(m.get("tool_calls")))
+                out.append({"role": "assistant", "content": blocks})
+            elif role == "tool":
+                out.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": m.get("tool_call_id"),
+                                "content": self._blocks_text(m.get("content")),
+                            }
+                        ],
+                    }
+                )
+            else:
+                raise ValueError(
+                    f"Anthropic translation: unknown message role {role!r}"
+                )
+        if image_jpeg_b64:
+            image = {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": image_media_type,
+                    "data": image_jpeg_b64.split(",", 1)[-1],
+                },
+            }
+            for m in reversed(out):
+                if m.get("role") != "user":
+                    continue
+                blocks = m.get("content") or []
+                # keep tool_result turns tool_result-only; the
+                # frame belongs to the real utterance, so skip.
+                if blocks and all(
+                    isinstance(b, dict) and b.get("type") == "tool_result"
+                    for b in blocks
+                ):
+                    continue
+                m["content"] = list(blocks) + [image]
+                break
+            else:
+                out.append({"role": "user", "content": [image]})
+        return out, "\n".join(system_parts)
+
+    def _anthropic_body(
+        self,
+        messages: List[dict],
+        tools: List[dict],
+        image_jpeg_b64: Optional[str],
+        image_media_type: str,
+    ) -> Dict[str, Any]:
+        """The /v1/messages request body (stream never used)."""
+        an_messages, system_text = self._anthropic_messages(
+            messages, image_jpeg_b64, image_media_type
+        )
+        body: Dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "messages": an_messages,
+        }
+        if system_text:
+            body["system"] = system_text
+        an_tools = self._tools_to_anthropic(tools)
+        if an_tools:
+            body["tools"] = an_tools
+        return body
+
+    @staticmethod
+    def _raw_text(body: dict) -> Optional[str]:
+        """Joined text blocks of an Anthropic response (None if none)."""
+        content = body.get("content")
+        if not isinstance(content, list):
+            return None
+        parts = [
+            block.get("text")
+            for block in content
+            if isinstance(block, dict)
+            and block.get("type") == "text"
+            and isinstance(block.get("text"), str)
+        ]
+        return "\n".join(parts) if parts else None
+
+    # -- transport layer ------------------------------------------------------
+
+    def _post(self, path: str, payload: dict) -> dict:
+        """JSON POST with ``x-api-key`` + ``anthropic-version`` headers;
+        raises :class:`ChatTransportError`.  The key is read from
+        ``os.environ[api_key_env]`` per request."""
+        key = os.environ.get(self.api_key_env)
+        if not key:
+            raise ChatTransportError(
+                f"anthropic API key missing: env var {self.api_key_env!r} is "
+                "unset or empty (export it on the deploy host; the key "
+                "never lives in the repo)"
+            )
+        request = urllib.request.Request(
+            self.base_url + path,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": key,
+                "anthropic-version": _ANTHROPIC_VERSION,
+            },
+            method="POST",
+        )
+        try:
+            if self._transport is not None:
+                body = self._transport(request, timeout=self.timeout_s)
+            else:
+                with urllib.request.urlopen(request, timeout=self.timeout_s) as resp:
+                    body = resp.read()
+        except urllib.error.URLError as exc:
+            raise ChatTransportError(
+                f"anthropic request to {self.base_url}{path} failed: {exc}"
+            ) from exc
+        try:
+            return json.loads(body)
+        except ValueError as exc:
+            raise ChatTransportError(
+                f"anthropic returned non-JSON body: {exc}"
+            ) from exc
+
