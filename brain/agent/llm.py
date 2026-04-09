@@ -1204,3 +1204,23 @@ class MockLLM:
     def dropped_calls(self) -> int:
         return self._flight.dropped_calls
 
+    def chat(self, messages: List[dict], tools: List[dict]) -> ChatResult:
+        """One scripted completion; single-flight drop while 'decoding'."""
+        if not self._flight.acquire():
+            logger.warning("MockLLM call dropped: a previous call is in flight")
+            return ChatResult(dropped=True)
+        try:
+            if self.delay_s:
+                time.sleep(self.delay_s)
+            self.chat_calls += 1
+            self.messages_seen.append(messages)
+            self.tools_seen.append(tools)
+            if self.script:
+                entry = self.script.pop(0)
+                if callable(entry):
+                    return entry(messages, tools)
+                return entry if isinstance(entry, ChatResult) else ChatResult(text=str(entry))
+            return self.default_response
+        finally:
+            self._flight.release()
+
