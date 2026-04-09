@@ -270,3 +270,13 @@ def _prose_without_skeleton(raw: Optional[str]) -> Optional[str]:
     return text or None
 
 
+class _CloudHTTPError(Exception):
+    """Internal: an HTTP error that still carries the provider's body.
+
+    ``urllib.error.HTTPError`` stringifies to just "HTTP Error 400: Bad
+    Request"; the body — the part naming the offending parameter — is only
+    available via ``.read()`` and is lost once the handler returns.  This
+    carries it so ``_post`` can both report it and act on it.  Never escapes
+    the client: ``_post`` converts it to ``ChatTransportError``.
+    """
+
