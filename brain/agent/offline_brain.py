@@ -764,3 +764,57 @@ class OfflineBrain:
 
     # ------------------------------------------------------------- motion lanes
 
+    def _motion(self, name: str, args: dict) -> OfflineOutcome:
+        """Run one motion lane through the executor and phrase the result
+        verdict-aware.
+
+        The spoken reply is ToolExecutor._fastpath_summary's — the exact
+        phrasing the online fast path emits, keyed on the executor's
+        classification of the tool result (VERDICT:success is the ONLY
+        success; everything else phrases in-progress/not-confirmed/
+        failure).  place_at_spot is the 'place' platform verb (engine
+        'drop', release-only — tool_executor._PLATFORM_VERB and
+        _describe_action say the same), so its phrasing is the place
+        phrasing, byte-identical.
+        """
+        outcome: ToolOutcome = self.executor.execute(name, args)
+        summary_name = "place" if name == "place_at_spot" else name
+        reply = self.executor._fastpath_summary(
+            summary_name, args, outcome.kind, outcome.reason
+        )
+        return OfflineOutcome(
+            reply=reply,
+            tool_call=ToolCall(OFFLINE_TOOL_CALL_ID, name, dict(args)),
+        )
+
+    # ------------------------------------------------- place_at_spot validation
+
+    @staticmethod
+    def _normalize_spot(name: str) -> str:
+        """Case/space normalization for spot names: lowercase + collapsed
+        whitespace ('THE  SHELF' -> 'the shelf').  Underscores are kept as
+        configured — normalization is case/space only, never a guess."""
+        return " ".join(str(name).lower().split())
+
+    def _resolve_spot(self, token: str) -> Optional[str]:
+        """Map a user spot token to a CONFIGURED key_positions name.
+
+        Exact case/space-normalized match against the stored key_positions;
+        None = unknown (the caller declines honestly — never a guessed
+        position).
+        """
+        return self._spot_lookup.get(self._normalize_spot(token))
+
+    def _unknown_spot_reply(self, token: str) -> str:
+        """Honest unknown-spot decline listing the configured spots."""
+        known = sorted(self._spot_lookup.values())
+        if not known:
+            return (
+                "I don't know any named spots to place at — no base-relative "
+                "key positions are configured, and I never guess a position."
+            )
+        return (
+            f"I don't know a spot called {token!r}. The configured "
+            f"base-relative spots are: {', '.join(known)}. I never guess a "
+            "position — tell me one of those names."
+        )
