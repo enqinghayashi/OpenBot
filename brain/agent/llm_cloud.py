@@ -178,3 +178,22 @@ logger = logging.getLogger(__name__)
 _PROBE_TIMEOUT_S = 2.0
 
 
+def _probe_http_get(url: str, headers: Dict[str, str], timeout: float) -> bool:
+    """GET ``url``; True iff the response status is any 2xx.
+
+    The probe contract is "never raise": timeouts, connection refusals,
+    HTTP errors (HTTPError is a URLError subclass) and any other
+    exception raised by the GET — including the ValueError a malformed
+    (scheme-less) base_url triggers — all return False and are logged
+    at DEBUG.  Request construction and urlopen both sit inside the
+    try, so the bare except covers every raise site.  The response
+    body is never read — the check costs no model tokens.
+    """
+    try:
+        request = urllib.request.Request(url, headers=headers, method="GET")
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            code = resp.getcode()
+    except Exception as exc:  # noqa: BLE001 — the probe contract is never-raise
+        logger.debug("probe GET %s failed: %s", url, exc)
+        return False
+    return code is not None and 200 <= code < 300
