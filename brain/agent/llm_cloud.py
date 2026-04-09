@@ -280,3 +280,10 @@ class _CloudHTTPError(Exception):
     the client: ``_post`` converts it to ``ChatTransportError``.
     """
 
+    def __init__(self, status: int, reason: str, detail: str,
+                 cause: Optional[BaseException] = None) -> None:
+        super().__init__(f"{status} {reason}: {detail}")
+        self.status = status
+        self.reason = reason
+        self.detail = detail
+        self.cause = cause
