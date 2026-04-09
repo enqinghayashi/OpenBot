@@ -199,3 +199,43 @@ def _probe_http_get(url: str, headers: Dict[str, str], timeout: float) -> bool:
     return code is not None and 200 <= code < 300
 
 
+def _parse_cloud_response(
+    body: dict,
+    next_call_id: Optional[Callable[[str], str]] = None,
+) -> ChatResult:
+    """OpenAI chat-completion parse with the multimodal content stub.
+
+    Mirrors ``brain.agent.llm._parse_openai_chat_response``; additionally
+    accepts ``content`` as a list of parts (the OpenAI multimodal shape):
+    text parts are joined, image parts are recognized-but-unused (the
+    client counts them in ``images_seen``).  Think blocks are stripped
+    from text.  Raises :class:`ToolCallParseError` for malformed bodies
+    (callers convert that to an empty result).  ``next_call_id`` passes
+    the caller's id mint through to payload parsing (synthesized ids
+    only; provider ids are kept verbatim).
+    """
+    try:
+        choice = body["choices"][0]
+        message = choice.get("message") or {}
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ToolCallParseError(
+            f"response body has no choices[0].message: {exc}"
+        ) from exc
+    text: Optional[str] = None
+    raw_content = message.get("content")
+    if isinstance(raw_content, str):
+        text = _strip_think(raw_content)
+    elif isinstance(raw_content, list):
+        parts = [
+            part.get("text")
+            for part in raw_content
+            if isinstance(part, dict)
+            and part.get("type") == "text"
+            and isinstance(part.get("text"), str)
+        ]
+        if parts:
+            text = _strip_think("\n".join(parts))
+    calls: Optional[List[ToolCall]] = None
+    if message.get("tool_calls"):
+        calls = _parse_tool_calls_payload(message["tool_calls"], next_call_id)
+    return ChatResult(text=text, tool_calls=calls)
