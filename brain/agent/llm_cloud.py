@@ -287,3 +287,11 @@ class _CloudHTTPError(Exception):
         self.reason = reason
         self.detail = detail
         self.cause = cause
+
+
+_OPENAI_HOSTS = ("api.openai.com",)
+#: OpenAI reasoning families (gpt-5.x, o1/o3/o4) reject
+#: ``max_tokens`` and require ``max_completion_tokens``.
+_MAX_COMPLETION_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+
+
