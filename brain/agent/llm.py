@@ -1234,3 +1234,122 @@ class MockLLM:
 # ---------------------------------------------------------------------------
 
 
+def from_config(cfg: Any) -> LLMClient:
+    """Build the LLM client from a parsed `llm:` config section (the CONFIG
+    SEAM consumer of brain/config_loader's LlmConfig).
+
+    Accepts either the read-only ``brain.config_loader.LlmConfig`` dataclass
+    (field ``temp``) or a raw parsed section dict (yaml key
+    ``temperature``; ``temp`` accepted as an alias).  ``backend`` selects
+    the client: 'mock' -> :class:`MockLLM` (laptop dev / tests, zero model
+    load), 'server'/'llama-server' -> :class:`LlamaServerClient` (OpenAI-
+    compatible sidecar; the GGUF basename is the model name, optional
+    ``base_url`` key overrides the endpoint), 'real' ->
+    :class:`LlamaCppClient` (the GGUF loads lazily on the first chat, so
+    building the client never blocks), 'cloud' -> :class:`CloudLLMClient`
+    (brain/agent/llm_cloud.py — OpenAI-compatible hosted endpoint; the API
+    key NEVER lives in config or the repo, it is read per request from
+    ``os.environ[api_key_env]``; ``llm.model`` and ``llm.base_url`` are
+    required for cloud).  Any other backend raises ValueError — never
+    guess.  None/missing section -> MockLLM (the documented laptop
+    default).
+
+    New Plan-B R0' keys (all optional; defaults per the CONFIG CONTRACT):
+    ``tool_mode`` ('json' | 'skeleton'; default 'skeleton' — the literal-
+    JSON-skeleton prompt + deterministic parse), ``enable_thinking`` (bool;
+    default False — Qwen3 think blocks inflate decode and are a parse-
+    failure source), ``timeout_s`` (float; default 120), ``base_url`` /
+    ``model`` / ``api_key_env`` (cloud keys).
+    """
+    if cfg is None:
+        return MockLLM()
+    if isinstance(cfg, Mapping):
+        backend = cfg.get("backend", "mock")
+        temp = cfg.get("temperature", cfg.get("temp", 0.2))
+        model_path = cfg.get("model_path")
+        n_ctx = cfg.get("n_ctx", 4096)
+        n_gpu_layers = cfg.get("n_gpu_layers", "all")
+        max_tokens = cfg.get("max_tokens", 256)
+        tool_mode = cfg.get("tool_mode", "skeleton")
+        enable_thinking = cfg.get("enable_thinking", False)
+        timeout_s = cfg.get("timeout_s", 12.0)
+        base_url = cfg.get("base_url")
+        model = cfg.get("model")
+        api_key_env = cfg.get("api_key_env", "LLM_API_KEY")
+        prose_fallback = cfg.get("prose_fallback", False)
+    else:
+        backend = getattr(cfg, "backend", "mock")
+        temp = getattr(cfg, "temp", getattr(cfg, "temperature", 0.2))
+        model_path = getattr(cfg, "model_path", None)
+        n_ctx = getattr(cfg, "n_ctx", 4096)
+        n_gpu_layers = getattr(cfg, "n_gpu_layers", "all")
+        max_tokens = getattr(cfg, "max_tokens", 256)
+        tool_mode = getattr(cfg, "tool_mode", "skeleton")
+        enable_thinking = getattr(cfg, "enable_thinking", False)
+        timeout_s = getattr(cfg, "timeout_s", 120.0)
+        base_url = getattr(cfg, "base_url", None)
+        model = getattr(cfg, "model", None)
+        api_key_env = getattr(cfg, "api_key_env", "LLM_API_KEY")
+        prose_fallback = getattr(cfg, "prose_fallback", False)
+    if backend == "mock":
+        return MockLLM()
+    if backend in ("server", "llama-server"):
+        # GGUF name = model name
+        # 'base_url' overrides the endpoint
+        model_name = (
+            os.path.basename(str(model_path)) if model_path else "qwen3-4b-instruct"
+        )
+        kwargs: Dict[str, Any] = {
+            "model": model_name,
+            "temperature": float(temp),
+            "max_tokens": max_tokens,
+            "tool_mode": tool_mode,
+            "enable_thinking": bool(enable_thinking),
+            "timeout_s": float(timeout_s),
+        }
+        if base_url:
+            kwargs["base_url"] = str(base_url)
+        return LlamaServerClient(**kwargs)
+    if backend == "real":
+        return LlamaCppClient(
+            model_path=model_path,
+            n_ctx=n_ctx,
+            n_gpu_layers=n_gpu_layers,
+            temperature=float(temp),
+            max_tokens=max_tokens,
+            tool_mode=tool_mode,
+            enable_thinking=bool(enable_thinking),
+            timeout_s=float(timeout_s),
+        )
+    if backend == "cloud":
+        # cloud endpoint
+        # blow up early on missing model/base_url
+        # never guess
+        # key per request from the env:
+        # os.environ[api_key_env], never config
+        if not model:
+            raise ValueError(
+                "llm.backend 'cloud' requires llm.model (the model name on "
+                "the OpenAI-compatible endpoint)"
+            )
+        if not base_url:
+            raise ValueError(
+                "llm.backend 'cloud' requires llm.base_url (the OpenAI-"
+                "compatible /v1 endpoint)"
+            )
+        from .llm_cloud import CloudLLMClient  # avoids a cycle
+
+        return CloudLLMClient(
+            base_url=str(base_url),
+            model=str(model),
+            api_key_env=str(api_key_env),
+            temperature=float(temp),
+            max_tokens=max_tokens,
+            enable_thinking=bool(enable_thinking),
+            tool_mode=tool_mode,
+            timeout_s=float(timeout_s),
+            prose_fallback=bool(prose_fallback),
+        )
+    raise ValueError(
+        f"llm.backend {backend!r} must be 'mock', 'server', 'real' or 'cloud'"
+    )
