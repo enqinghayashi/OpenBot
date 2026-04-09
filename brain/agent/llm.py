@@ -1200,3 +1200,7 @@ class MockLLM:
         self.messages_seen: List[list] = []
         self.tools_seen: List[list] = []
 
+    @property
+    def dropped_calls(self) -> int:
+        return self._flight.dropped_calls
+
