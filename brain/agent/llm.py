@@ -1165,3 +1165,10 @@ class LlamaServerClient:
         except (KeyError, IndexError, TypeError):
             return None
         return content if isinstance(content, str) else None
+
+
+# ---------------------------------------------------------------------------
+# MockLLM
+# ---------------------------------------------------------------------------
+
+
