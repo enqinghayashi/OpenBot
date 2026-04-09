@@ -1227,3 +1227,10 @@ class MockLLM:
     def estimate_tokens(self, text: str) -> int:
         """Chars/4 heuristic (+4 overhead) — the offline compaction path."""
         return max(1, len(text) // 4) + 4
+
+
+# ---------------------------------------------------------------------------
+# config seam
+# ---------------------------------------------------------------------------
+
+
