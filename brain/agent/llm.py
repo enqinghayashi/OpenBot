@@ -1172,3 +1172,14 @@ class LlamaServerClient:
 # ---------------------------------------------------------------------------
 
 
+class MockLLM:
+    """Scripted LLM: responses are popped from ``script`` per call.
+
+    Entries are :class:`ChatResult` instances or callables
+    ``(messages, tools) -> ChatResult``.  An empty script falls back to
+    ``default_response``.  Shares the clients' single-flight drop semantics
+    (``delay_s`` simulates an in-flight decode) so concurrency behavior is
+    testable offline.  Records every call for assertions
+    (``chat_calls``, ``messages_seen``, ``tools_seen``).
+    """
+
