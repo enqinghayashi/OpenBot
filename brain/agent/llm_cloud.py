@@ -241,3 +241,30 @@ def _parse_cloud_response(
     return ChatResult(text=text, tool_calls=calls)
 
 
+def _prose_without_skeleton(raw: Optional[str]) -> Optional[str]:
+    """Prose with the skeleton JSON removed, or None when nothing remains.
+
+    In skeleton mode the model is told to answer with a literal JSON object,
+    so on a SUCCESSFUL parse the message content usually *is* that object.
+    Handing it back as ``ChatResult.text`` made the transcript lane speak it:
+    ``voice/transcript.py:854-863`` runs ``if text: ... self._speak(text)``
+    unconditionally, independent of whether a tool call was also returned.
+    With the shipped ``prose_fallback: true`` (config.cloud.yaml:86,
+    config.voice.yaml:57) that means the operator hears
+
+        {"tool": "say", "args": {"text": "I see a uniform, flat crimson field...
+
+    read ALOUD on every good turn — LIVE-OBSERVED 2026-09-02 against
+    deepseek-v4-flash-vision-exp.  Stripping the object leaves only genuine
+    surrounding prose, and None when the reply was pure skeleton, so the
+    lane speaks nothing extra.  Reuses the parser's own balanced scanner so
+    the two cannot disagree about where the object ends.
+    """
+    if not raw:
+        return None
+    text = _strip_think(raw)
+    blob = _extract_first_balanced_json(text)
+    if blob:
+        text = text.replace(blob, " ", 1)
+    text = text.strip()
+    return text or None
