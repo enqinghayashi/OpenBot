@@ -1183,3 +1183,20 @@ class MockLLM:
     (``chat_calls``, ``messages_seen``, ``tools_seen``).
     """
 
+    def __init__(
+        self,
+        script: Optional[List[Any]] = None,
+        *,
+        default_response: Optional[ChatResult] = None,
+        delay_s: float = 0.0,
+    ) -> None:
+        self.script: List[Any] = list(script) if script else []
+        self.default_response: ChatResult = default_response or ChatResult(
+            text="I don't know."
+        )
+        self.delay_s = float(delay_s)
+        self._flight = _SingleFlight()
+        self.chat_calls: int = 0
+        self.messages_seen: List[list] = []
+        self.tools_seen: List[list] = []
+
