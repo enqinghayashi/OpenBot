@@ -375,3 +375,392 @@ _SIMPLE_NON_OBJECTS = frozenset({
 })
 
 
+def _simple_lane_payload(cleaned_l: str) -> Optional[str]:
+    """Text AFTER the simple lane's action verb, or None when the verb does
+    not HEAD a clause (see the guard note above)."""
+    toks = cleaned_l.split()
+    for i, tok in enumerate(toks):
+        if tok.lower().strip("'") in _SIMPLE_ACTION_MAP:
+            lead = " ".join(toks[:i])
+            if lead and not _SIMPLE_CLAUSE_BREAK_RE.search(lead):
+                return None
+            return " ".join(toks[i + 1:])
+    return None
+
+
+@dataclass
+class OfflineOutcome:
+    """One utterance's result: the spoken reply plus what (if anything) ran.
+
+    ``tool_call`` is the fastpath-family :class:`ToolCall` that was
+    executed (motion and scene_brief lanes) or None (declines); ``declined``
+    is True when the brain refused WITHOUT executing a tool.  The reply is
+    verdict-aware: only the post-hook verifier's VERDICT:success produces
+    success phrasing (see the module docstring).
+
+    ``silent`` marks the speech-stop lane ('stop talking'): the
+    requirement is NO SPEECH — the reply is dropped (never spoken, never
+    a decline, no tool ran), and the chain returns an empty-PCM outcome
+    the app's play path no-ops on.
+    """
+
+    reply: str
+    tool_call: Any = None
+    declined: bool = False
+    silent: bool = False
+
+
+class OfflineBrain:
+    """Deterministic regex utterance brain (no LLM anywhere).
+
+    ``executor`` is a :class:`brain.agent.tool_executor.ToolExecutor` — it
+    owns the registry/hooks/scene_graph/backend/embodiment/failure-budget
+    and runs the pre-hook confirm gate + post-hook verifier pipeline; this
+    brain never constructs hooks itself (the voice app does).  ``embodiment``
+    is anything with ``base_relative.key_positions`` (brain/embodiment.py
+    Embodiment, or the loader's EmbodimentConfig); the named-spot map is
+    stored for the place_at_spot lane's validation.  ``name`` is the
+    robot's spoken name provided by the voice app — the production
+    Embodiment carries no name attribute, so without it the
+    greeting-vocative strip degrades to the fastpath heard-name fallback.
+    """
+
+    def __init__(
+        self, executor: ToolExecutor, embodiment: Any, name: Optional[str] = None
+    ) -> None:
+        """Build the brain.
+
+        ``executor`` is a :class:`brain.agent.tool_executor.ToolExecutor`
+        — it owns the registry/hooks/scene_graph/backend/embodiment/
+        failure-budget and runs the pre-hook confirm gate + post-hook
+        verifier pipeline; this brain never constructs hooks itself (the
+        voice app does).  ``embodiment`` is anything with
+        ``base_relative.key_positions`` (brain/embodiment.py Embodiment,
+        or the loader's EmbodimentConfig); the named-spot map is stored
+        for the place_at_spot lane's validation.  ``name`` is the robot's
+        spoken name provided by the voice app — the production Embodiment
+        class carries no name attribute, so this constructor is the way
+        the name reaches the brain.  The effective vocative-strip name is
+        the explicit ``name`` when given (it wins), else the embodiment's
+        ``name`` if it has one, else None — without a name the
+        greeting-vocative strip degrades to the fastpath heard-name
+        fallback.
+        """
+        if executor is None:
+            raise ValueError("OfflineBrain requires a ToolExecutor")
+        self.executor = executor
+        self.embodiment = embodiment
+        br = getattr(embodiment, "base_relative", None)
+        key_positions = getattr(br, "key_positions", None) if br is not None else None
+        # what validation uses
+        # + name lookup
+        self.key_positions: Dict[str, List[float]] = dict(key_positions or {})
+        self._spot_lookup = {
+            self._normalize_spot(name): name for name in self.key_positions
+        }
+        # explicit param wins
+        # (production Embodiment
+        #  has no name attribute)
+        # else embodiment's
+        # none -> fastpath strip
+        self._name = (name or getattr(embodiment, "name", None) or "").strip() or None
+
+    # --------------------------------------------------- leading-vocative strip
+
+    def _strip_vocative(self, text: str) -> str:
+        """Strip a leading vocative from the RAW utterance, name-aware.
+
+        Gap 2 fix: the KWS wake phrase ('hey stewart') can survive into
+        the raw transcript, and fastpath's NAME_PREFIX_RE head only ever
+        matches a leading 's-word' — never 'hey ...'.  This brain strips
+        the EMBODIED name's leading vocative forms (hey/hi/hello <name>,
+        <name>, and <name>), then falls back to the fastpath heard-name
+        strip.  Two deliberate deviations from the fastpath strip:
+
+          - a greeting head ONLY strips the embodied name, never an
+            arbitrary word ('hey hey' / 'hello there' are untouched);
+          - a partial KWS 'he' is NOT a vocative: the fastpath '(he )?'
+            prefix allowance is dropped here, so 'he stewart ...' (a
+            braindead 'he' partial, not 'hey stewart ...') stays
+            unstripped and the utterance declines honestly.
+
+        Halt words and verb heads are refused exactly like fastpath
+        (HALT_PHRASE_STARTS / S_VERB_HEADS); the raw halt check and the
+        post-strip halt re-check in new_utterance are untouched.
+        """
+        name = self._name
+        if name:
+            # bare summon, terminal
+            # regexes want a separator
+            # but the wake word lands
+            # ('hey stewart.')
+            # else it answered itself
+            # its own wake word
+            # halt/verb heads guarded
+            # 'stop' / 'set' are commands
+            g = _GREETING_HEAD_RE.match(text)
+            if g and text[g.end():].strip().rstrip(".,!?").lower() == name.lower():
+                return ""
+            b = _BARE_NAME_HEAD_RE.match(text)
+            if b:
+                cand = b.group(1).rstrip(".,!?").lower()
+                if cand == name.lower():
+                    if cand in HALT_PHRASE_STARTS or cand in S_VERB_HEADS:
+                        return text
+                    return ""
+            m = _GREETING_VOCATIVE_RE.match(text)
+            if m and m.group(1).rstrip(".,!?").lower() == name.lower():
+                return text[m.end():]
+            m = _BARE_NAME_RE.match(text)
+            if m:
+                cand = m.group(1).rstrip(".,!?").lower()
+                if cand == name.lower():
+                    if cand in HALT_PHRASE_STARTS or cand in S_VERB_HEADS:
+                        return text
+                    return text[m.end():]
+        # fastpath fallback, minus '(he )?'
+        if re.match(r"^he\s+", text, re.IGNORECASE):
+            return text
+        return _strip_heard_name(text)
+
+    # ------------------------------------------------------------- decision tree
+
+    def new_utterance(self, text: str, *, typed: bool = False) -> OfflineOutcome:
+        """Classify one utterance through the decision tree and act on it.
+
+        ``typed`` marks keyboard/typed voice-sim input; behavior is
+        identical either way — it exists so tests/models can tell the input
+        provenance apart.
+        """
+        raw = (text or "").strip()
+        if not raw:
+            return OfflineOutcome(reply=EMPTY_REPLY, declined=True)
+        # 0. speech-stop, raw text
+        # kills speech, not motion
+        # 'stop' still halts below
+        if STOP_TALKING_RE.search(raw):
+            return OfflineOutcome(reply="", silent=True)
+        # 1. halt first, raw text
+        # ('stop the robot' is a halt,
+        #  not a heard name)
+        if _halt_intent(_normalize_for_halt(raw)):
+            return self._motion("stop", {})
+        # 2. name-aware strip
+        cleaned = self._strip_vocative(raw)
+        if not cleaned.strip():
+            # bare summon: no task
+            # silence, keep listening
+            return OfflineOutcome(reply="", silent=True)
+        # 2b. filler strip
+        # after vocative strip
+        #   bare greeting declines
+        # before the verbs, so 'hey hey,
+        # do it. pick up' works
+        cleaned = _strip_lead_fillers(cleaned, name=self._name)
+        cleaned = _normalize_word_numbers(cleaned)
+        cleaned_l = cleaned.lower().rstrip('.!?,').strip()
+        tokens = cleaned_l.split()
+        while tokens and tokens[-1] in TRAILING_FILLERS:
+            tokens.pop()
+        cleaned_l = ' '.join(tokens)
+        # 3. halt re-check
+        # ('stewart, stop')
+        if _halt_intent(_normalize_for_halt(cleaned)):
+            return self._motion("stop", {})
+
+        # -- named arm poses: check these first -------------------------------
+        # FIRST, before navigate
+        # and fallback — either turns
+        # 'go neutral' into a WALK
+        # before the fallback alone
+        # not enough; navigate is earlier
+        # test_pose_tool.py pins it
+        if POSE_RE.match(cleaned_l):
+            return self._motion("pose", {"name": pose_from_text(cleaned_l)})
+
+        # -- navigate (checked before pick — fastpath source order) -----------
+        for pat in NAV_PATTERNS:
+            m = pat.match(cleaned)
+            if m:
+                if multi_clause_veto(m.group(1)):
+                    # two tasks, not one
+                    continue
+                target = _strip_trailing_fillers(m.group(1))
+                if not target:
+                    continue
+                if all(tok.lower() in _NAV_FILLERS for tok in target.split()):
+                    # 'find the' -> filler only
+                    # never a marker 'the'
+                    # parity with fastpath
+                    # seek verbs reach this guard
+                    continue
+                return self._motion("navigate", {"target": target})
+
+        # -- pick -------------------------------------------------------------
+        for pat in PICK_PATTERNS:
+            m = pat.match(cleaned)
+            if m:
+                if multi_clause_veto(m.group(1)):
+                    # not a pick label
+                    continue
+                target, count = _strip_cardinals(
+                    _normalize_pick_label(_strip_trailing_fillers(m.group(1)))
+                )
+                if target:
+                    args: Dict[str, Any] = {"label": target}
+                    if count is not None:
+                        # hint only
+                        args["count"] = count
+                    return self._motion("pick", args)
+
+        # -- place into a CONTAINER (asks containment; a NEW lane, checked BEFORE
+        #    the legacy place lane, since the narrow verb/preposition set above
+        #    means it only claims phrasings the legacy lane's pinned matches
+        #    never touch) ------------------------------------------------------
+        m = PLACE_INTO_CONTAINER_RE.match(cleaned)
+        if m and not (multi_clause_veto(m.group(1)) or multi_clause_veto(m.group(2))):
+            label, count = _strip_cardinals(_strip_trailing_fillers(m.group(1)))
+            # drop trailing 'down'
+            label = re.sub(r'\s+down$', '', label).strip()
+            container = _strip_trailing_fillers(m.group(2))
+            if label and container:
+                # destination = container
+                # (legacy parity)
+                # into: asks for containment
+                # tool layer resolves it
+                # unknown -> NOT_DETECTED
+                args = {
+                    "label": label,
+                    "destination": container,
+                    "into": container,
+                }
+                if count is not None:
+                    args["count"] = count
+                return self._motion("place", args)
+
+        # -- place (into/down — fastpath patterns) ------------------------------
+        m = PLACE_INTO_RE.match(cleaned)
+        if m and not (multi_clause_veto(m.group(1)) or multi_clause_veto(m.group(2))):
+            label, count = _strip_cardinals(_strip_trailing_fillers(m.group(1)))
+            label = re.sub(r'\s+down$', '', label).strip()
+            destination = _strip_trailing_fillers(m.group(2))
+            if label and destination:
+                args = {"label": label, "destination": destination}
+                if count is not None:
+                    args["count"] = count
+                return self._motion("place", args)
+        m = PLACE_DOWN_RE.match(cleaned)
+        if m and not multi_clause_veto(m.group(1)):
+            label, count = _strip_cardinals(_strip_trailing_fillers(m.group(1)))
+            if label:
+                args = {"label": label, "destination": "here"}
+                if count is not None:
+                    args["count"] = count
+                return self._motion("place", args)
+
+        # -- place_at_spot (the NEW lane for 'put X at Y') ----------------------
+        m = PLACE_AT_SPOT_RE.match(cleaned)
+        if m and not (multi_clause_veto(m.group(1)) or multi_clause_veto(m.group(2))):
+            label, count = _strip_cardinals(_strip_trailing_fillers(m.group(1)))
+            # same down-strip
+            label = re.sub(r'\s+down$', '', label).strip()
+            spot = _strip_trailing_fillers(m.group(2))
+            if label and spot:
+                known = self._resolve_spot(spot)
+                if known is None:
+                    # unknown -> decline
+                    return OfflineOutcome(
+                        reply=self._unknown_spot_reply(spot), declined=True
+                    )
+                # configured name
+                # tool validates on it
+                args = {"spot": known, "label": label}
+                if count is not None:
+                    args["count"] = count
+                return self._motion("place_at_spot", args)
+
+        # -- simple keyword + last-word fallback --------------------------------
+        # after rich lanes
+        # parses win first
+        # catches the rest:
+        # short/odd tasks
+        # pick/grab -> pick
+        # put/place -> place
+        # walk/go/find -> nav
+        # object = LAST WORD
+        simp = simple_keyword_intent(cleaned_l)
+        payload = _simple_lane_payload(cleaned_l)
+        if (
+            simp is not None
+            and payload is not None
+            and not multi_clause_veto(payload)
+            and simp["object"] not in _SIMPLE_NON_OBJECTS
+            # never the object
+            # 'go find me' left 'find'
+            # -> marker named 'find'
+            # phantom marker,
+            # like _NAV_FILLERS
+            and simp["object"].lower() not in _SIMPLE_ACTION_MAP
+        ):
+            action, obj = simp["action"], simp["object"]
+            if action == "pick":
+                return self._motion("pick", {"label": obj})
+            if action == "place":
+                return self._motion("place", {"label": obj, "destination": "here"})
+            if action == "navigate":
+                return self._motion("navigate", {"target": obj})
+
+        # -- hands (anchored patterns capture no payload, so no veto: fastpath
+        #    parity — 'open the hand, then ...' never matches by itself) ------
+        m = OPEN_HAND_RE.match(cleaned_l)
+        if m:
+            return self._motion("open_hand", {"side": m.group(1) or "right"})
+        m = CLOSE_HAND_RE.match(cleaned_l)
+        if m:
+            return self._motion("close_hand", {"side": m.group(1) or "right"})
+
+        # -- see-question: the deterministic scene_brief ------------------------
+        # name-strip shadowing
+        # vocative fallback eats
+        # a leading 'see'
+        # ('see the bottle' -> 'the bottle')
+        # so scan the raw text
+        # motion lanes:
+        # stripped text only
+        # last, non-motion
+        # can't divert a motion one
+        # apostrophes stripped
+        if SEE_RE.search(cleaned.replace("'", "")) or SEE_RE.search(
+            raw.replace("'", "")
+        ):
+            outcome = self.executor.execute("scene_brief", {})
+            return OfflineOutcome(
+                # one sentence only
+                # not the raw ref lines
+                # (values unchanged)
+                reply=scene_brief_prose(outcome.text),
+                tool_call=ToolCall(OFFLINE_TOOL_CALL_ID, "scene_brief", {}),
+            )
+        # 'is the bottle on the table?'
+        # fronted question auxiliary
+        # two-part -> declined
+        # never half-answered
+        m = SEE_QUESTION_RE.match(cleaned)
+        if m and not (
+            multi_clause_veto(m.group(1)) or multi_clause_veto(m.group(2))
+        ):
+            outcome = self.executor.execute("scene_brief", {})
+            return OfflineOutcome(
+                reply=scene_brief_prose(outcome.text),
+                tool_call=ToolCall(OFFLINE_TOOL_CALL_ID, "scene_brief", {}),
+            )
+
+        # -- query-pattern decline (there's no model backstop) -----------------
+        if QUERY_PATTERN_RE.search(cleaned):
+            return OfflineOutcome(reply=QUERY_DECLINE, declined=True)
+
+        # -- nothing matched / ambiguous -> honest decline ---------------------
+        return OfflineOutcome(reply=DEFAULT_DECLINE, declined=True)
+
+    # ------------------------------------------------------------- motion lanes
+
