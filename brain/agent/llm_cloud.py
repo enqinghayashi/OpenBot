@@ -197,3 +197,5 @@ def _probe_http_get(url: str, headers: Dict[str, str], timeout: float) -> bool:
         logger.debug("probe GET %s failed: %s", url, exc)
         return False
     return code is not None and 200 <= code < 300
+
+
