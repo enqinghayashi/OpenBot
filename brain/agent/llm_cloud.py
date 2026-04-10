@@ -386,3 +386,39 @@ def _count_image_parts(body: dict) -> int:
     )
 
 
+class CloudLLMClient:
+    """OpenAI-compatible cloud client (stdlib urllib; key from env).
+
+    Parameters:
+    - ``base_url``: the OpenAI-compatible endpoint root, e.g.
+      ``https://api.openai.com/v1`` (required — never guessed).
+    - ``model``: the deployed model name (required — never guessed).
+    - ``api_key_env``: the name of the env var holding the API key
+      (default ``LLM_API_KEY``).  The key is read per request; a
+      missing/empty var raises :class:`ChatTransportError` before
+      anything is sent.
+    - ``tool_mode``: ``"skeleton"`` (default; literal-JSON-skeleton prompt
+      + deterministic parse), ``"json"`` (schema-in-prompt fallback) or
+      ``"native"`` (structured ``tool_calls`` passthrough).
+    - ``enable_thinking``: forwarded to the endpoint only when True
+      (provider-specific; disabled by default — think tokens inflate
+      latency and are a parse-failure source).
+    - ``timeout_s``: per-request urllib timeout (default 120).
+    - ``_transport``: test seam — a callable ``(request, timeout) -> body``
+      replacing ``urllib.request.urlopen``.
+    - ``prose_fallback``: when True, the skeleton/json modes return the
+      model's plain text as ``ChatResult.text`` when no tool call parses
+      (the D4 prose fallback — INFO-logged) instead of the empty
+      repair-path result.  Default False: existing callers and the agent
+      REPL behave exactly as before.
+
+    ``chat(..., image_jpeg_b64=..., image_media_type=...)`` optionally
+    attaches ONE jpeg frame to the last user message as an OpenAI
+    ``image_url`` content part; with no image the payload is
+    byte-identical to the pre-L3 shape.
+
+    Counters mirror :class:`LlamaServerClient` for parity: ``chat_calls``,
+    ``parse_failures``, ``think_blocks_seen``, ``dropped_calls``, plus
+    ``images_seen`` (image parts counted on request response content).
+    """
+
