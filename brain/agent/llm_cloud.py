@@ -762,3 +762,29 @@ class CloudLLMClient:
         cleaned = _strip_think(raw).strip()
         return cleaned or None
 
+    def _payload(self, messages: List[dict], tools: List[dict]) -> Dict[str, Any]:
+        """Base chat-completion payload; ``stream`` is ALWAYS False.
+
+        The completion-budget field is provider-dependent — see
+        ``_token_param_for`` and the dialect note in ``__init__``.
+        The temperature is likewise provider-dependent (``_temperature_for``):
+        OpenAI-hosted gpt-5/o-family ids reject anything but the default,
+        so the field is omitted there rather than sent (LIVE-VERIFIED
+        2026-09-02).  Omitting = API default 1.
+        """
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "tools": tools,
+            self._token_param: self.max_tokens,
+            "stream": False,
+        }
+        temperature = _temperature_for(
+            self.base_url, self.model, self.temperature
+        )
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if self.enable_thinking:
+            payload["enable_thinking"] = True
+        return payload
+
