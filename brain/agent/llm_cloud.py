@@ -531,3 +531,85 @@ class CloudLLMClient:
         self._count(body)
         return result
 
+    def _chat_skeleton(self, messages: List[dict], tools: List[dict]) -> ChatResult:
+        """Literal-JSON-skeleton mode: one auto-retry, then empty result.
+
+        Same deterministic contract as LlamaCppClient._chat_skeleton:
+        think-block detection on the RAW content first (the Qwen3 finding),
+        tool name validated against the provided specs, args must be a
+        dict.  ``stream`` stays False (the DeepSeek streaming tool-call
+        corruption finding).
+        """
+        valid_names = {
+            spec["function"]["name"]
+            for spec in tools
+            if isinstance(spec.get("function"), dict)
+            and isinstance(spec["function"].get("name"), str)
+        }
+        if not valid_names:
+            return self._chat_native(messages, tools)
+        instruction = _build_skeleton_prompt(tools)
+        prompt_messages = self._inject_instruction(messages, instruction)
+        truncated = False
+        for attempt in (0, 1):
+            body = self._post(
+                "/chat/completions", self._payload(prompt_messages, [])
+            )
+            truncated = _truncated(body)
+            if truncated:
+                self.truncations += 1
+            content = self._message_content(body)
+            raw = self._content_text(content)
+            if raw is None:
+                self.parse_failures += 1
+                return ChatResult(truncated=truncated)
+            self.think_blocks_seen += len(_find_think_blocks(raw))
+            self.images_seen += _count_image_parts(body)
+            call = _parse_skeleton_tool_call(raw, valid_names, self._call_ids)
+            if call is not None:
+                if truncated:
+                    # budget ran out but a complete, validated
+                    # tool object parsed; one call per turn, so
+                    # that is the answer, unlike the no-call case.
+                    logger.warning(
+                        "cloud response truncated (finish_reason=length) but a "
+                        "complete tool call parsed; executing it. Raise "
+                        "llm.max_tokens (currently %d) if this recurs.",
+                        self.max_tokens,
+                    )
+                if self.prose_fallback:
+                    # return the call plus any prose around the
+                    # skeleton object, not the object itself,
+                    # which the transcript lane would speak.
+                    return ChatResult(
+                        tool_calls=[call], text=_prose_without_skeleton(raw),
+                        truncated=truncated,
+                    )
+                return ChatResult(tool_calls=[call], truncated=truncated)
+            if attempt == 0:
+                prompt_messages.append(
+                    {"role": "user", "content": _SKELETON_RETRY_MESSAGE}
+                )
+        if truncated:
+            # a budget-cut reply is not prose and must not reach
+            # the fallback below: the transcript lane speaks it and
+            # marks the turn completed, with no execution or check.
+            logger.error(
+                "cloud response truncated (finish_reason=length) with no "
+                "parseable tool call; refusing prose fallback on a partial "
+                "reply. Raise llm.max_tokens (currently %d) — reasoning "
+                "models spend this budget before they answer.",
+                self.max_tokens,
+            )
+            return ChatResult(truncated=True)
+        if self.prose_fallback:
+            # no tool call parsed, so fall back to plain text.
+            prose = self._prose_text(content)
+            if prose:
+                logger.info(
+                    "cloud prose fallback (no tool call parsed): %s", prose
+                )
+                return ChatResult(text=prose)
+        self.parse_failures += 1
+        return ChatResult()
+
