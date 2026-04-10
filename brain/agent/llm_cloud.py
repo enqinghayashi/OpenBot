@@ -795,3 +795,19 @@ class CloudLLMClient:
         except (KeyError, IndexError, TypeError):
             return None
 
+    @staticmethod
+    def _content_text(content: Any) -> Optional[str]:
+        """Normalize str or OpenAI multimodal part-list content to text."""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = [
+                part.get("text")
+                for part in content
+                if isinstance(part, dict)
+                and part.get("type") == "text"
+                and isinstance(part.get("text"), str)
+            ]
+            return "\n".join(parts) if parts else None
+        return None
+
