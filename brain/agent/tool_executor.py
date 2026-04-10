@@ -523,3 +523,113 @@ class ToolExecutor:
             )
         return last_result
 
+    @staticmethod
+    def _reobserve_cap_reason(
+        last_reason: Optional[str], attempts: int, judged: int,
+        tool: str = "place",
+    ) -> str:
+        """The retry-cap in_progress evidence: the verifier's last honest
+        evidence plus the in-call re-observe context and the honest next
+        step — never silence, never a fabricated success.
+
+        B8h: a PICK gets its own text.  The place text ("post-drop ...
+        re-place ... the release") contradicted the pick verdicts' "do not
+        re-pick" (MEASURED, Stuart 2026-10-08): the pick may already be in the
+        hand, so the honest next step is to tell the operator, not to look
+        again, re-pick or navigate."""
+        base = (last_reason or "").rstrip()
+        if tool in ("pick", "pick_left"):
+            return (
+                "%s — the in-call re-observe loop ran %d attempt(s) (%d fresh "
+                "frame(s) judged) within this ONE tool execution and this "
+                "pick is not fully confirmed; the object may already be in "
+                "the hand: do NOT re-pick (a re-pick re-opens the hand and "
+                "would drop it), do NOT navigate, tell the operator what "
+                "is and is not confirmed, and place it only if the operator "
+                "asks" % (base, attempts, judged)
+            )
+        return (
+            "%s — the in-call post-drop re-observe loop ran %d attempt(s) "
+            "(%d fresh frame(s) judged) within this ONE tool execution and "
+            "the post-condition still could not be confirmed; the honest "
+            "next step is to re-observe on the next turn — NOT to re-place, "
+            "which re-executes the release (and on a bare place is refused "
+            "outright, the hold record having been cleared by that release)"
+            % (base, attempts, judged)
+        )
+
+    def _stop(self, args: dict) -> dict:
+        """Immediate halt — no confirm gate (stopping is always allowed)."""
+        if self.backend is None:
+            return fail("gateway not wired — cannot stop")
+        stop = getattr(self.backend, "stop", None)
+        if stop is None:
+            return fail("backend has no stop")
+        try:
+            env = stop(args)
+            if isinstance(env, dict) and "success" in env:
+                return env
+            return fail(f"stop returned a non-envelope result: {env!r}")
+        except Exception as exc:  # noqa: BLE001 — wrap it, never let it propagate
+            return fail(f"stop raised: {exc}")
+
+    # ------------------------------------------------------- reading the world
+
+    def _observe(self) -> Optional[WorldObservation]:
+        """One guarded observation read (never raises; None = no source)."""
+        if self.backend is None:
+            return None
+        try:
+            obs = self.backend.observe()
+        except Exception:  # noqa: BLE001 — a gateway hiccup must not crash us
+            return None
+        if obs is None or not isinstance(obs, WorldObservation):
+            return None
+        return obs
+
+    # ----------------------------------------------- failure-budget bookkeeping
+
+    @classmethod
+    def _classify_result(cls, text: str) -> tuple[str, Optional[str]]:
+        """Classify a tool result -> (kind, reason).
+
+        kinds: 'success'|'failure'|'in_progress'|'neutral'|'unknown'.
+        Verdict lines win; else envelope prefixes OK:/ERROR:.  An 'OK:'
+        envelope (utility-tool reply: query_user / scene_brief /
+        notify_user / the fast-path stop) is 'neutral' — the tool ran but
+        no WORLD-GOAL success was verified, so it must neither reset nor
+        increment the failure budget; only a genuine world-goal
+        VERDICT:success resets it.  Anything else is 'unknown' (no budget
+        movement — conservative).
+        """
+        text = text.split(SELF_STATE_MARK, 1)[0] if text else text
+        if not text:
+            return ("unknown", None)
+        m = _VERDICT_RE.search(text)
+        if m:
+            kind = m.group(1)
+            tail = m.group(2)
+            rm = _REASON_RE.search(tail)
+            reason = rm.group(1) if rm else None
+            return (kind, reason)
+        if text.startswith("OK:"):
+            return ("neutral", None)
+        if text.startswith("ERROR:"):
+            return ("failure", text[len("ERROR:"):].strip() or None)
+        return ("unknown", None)
+
+    def _apply_budget(self, kind: str, reason: Optional[str]) -> None:
+        """Failure decrements, success resets, in_progress/neutral never
+        move the budget; once exhausted, the NEXT failure terminates the
+        task."""
+        if kind == "success":
+            self._failure_budget_left = self.failure_budget
+        elif kind == "failure":
+            self._failure_budget_left -= 1
+            if self._failure_budget_left < 0:
+                self._terminal_text = COMPLETE_FAIL_PREFIX + (
+                    reason or "repeated failures"
+                )
+
+    # --------------------------------------------------------- the fast path
+
