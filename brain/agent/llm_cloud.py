@@ -820,3 +820,48 @@ class CloudLLMClient:
 
     # -- transport layer ------------------------------------------------------
 
+    def _post(self, path: str, payload: dict) -> dict:
+        """JSON POST with the Bearer key; raises :class:`ChatTransportError`.
+
+        The key is read from ``os.environ[api_key_env]`` per request — a
+        missing/empty var raises BEFORE anything is sent (the key never
+        lives in config or the repo).
+
+        On an HTTP error the provider's RESPONSE BODY is included in the
+        raised message.  It used to be discarded, so a 400 surfaced only as
+        "HTTP Error 400: Bad Request" — which is what made #119 (the wrong
+        completion-budget field) take three manual probes to diagnose, and
+        would have been far worse to debug on the box.  The body is the part
+        that names the offending parameter.
+        """
+        key = os.environ.get(self.api_key_env)
+        if not key:
+            raise ChatTransportError(
+                f"cloud API key missing: env var {self.api_key_env!r} is "
+                "unset or empty (export it on the deploy host; the key "
+                "never lives in the repo)"
+            )
+        try:
+            return self._post_once(path, payload, key)
+        except _CloudHTTPError as exc:
+            retry = self._retry_payload_for(payload, exc)
+            if retry is None:
+                raise ChatTransportError(
+                    f"cloud request to {self.base_url}{path} failed: "
+                    f"{exc.status} {exc.reason}: {exc.detail}"
+                ) from exc.cause
+            logger.warning(
+                "cloud rejected %r for model %s; retrying once with %r "
+                "(provider said: %s)",
+                self._token_param, self.model, retry[0], exc.detail[:200],
+            )
+            self._token_param = retry[0]
+            try:
+                return self._post_once(path, retry[1], key)
+            except _CloudHTTPError as exc2:
+                raise ChatTransportError(
+                    f"cloud request to {self.base_url}{path} failed after "
+                    f"retrying with {retry[0]!r}: "
+                    f"{exc2.status} {exc2.reason}: {exc2.detail}"
+                ) from exc2.cause
+
