@@ -480,3 +480,42 @@ class CloudLLMClient:
     def dropped_calls(self) -> int:
         return self._flight.dropped_calls
 
+    def chat(
+        self,
+        messages: List[dict],
+        tools: List[dict],
+        *,
+        image_jpeg_b64: Optional[str] = None,
+        image_media_type: str = "image/jpeg",
+    ) -> ChatResult:
+        """POST /chat/completions (stream: False); parse per tool_mode.
+
+        ``image_jpeg_b64`` (optional): attach ONE jpeg frame to the LAST
+        user message as an OpenAI ``image_url`` content part (see
+        ``_attach_image``); ``image_media_type`` defaults to
+        ``image/jpeg``.  When no image is given the payload is
+        byte-identical to the pre-L3 shape.
+
+        Never raises for recoverable output problems; transport failures
+        (HTTP errors, missing API key) raise :class:`ChatTransportError`.
+        Single-flight drop while another call is in flight.
+        """
+        if not self._flight.acquire():
+            logger.warning("cloud chat dropped: a previous call is in flight")
+            return ChatResult(dropped=True)
+        try:
+            self.chat_calls += 1
+            if image_jpeg_b64:
+                messages = self._attach_image(
+                    messages, image_jpeg_b64, image_media_type
+                )
+            if self.tool_mode == "skeleton":
+                return self._chat_skeleton(messages, tools)
+            if self.tool_mode == "json":
+                return self._chat_json(messages, tools)
+            return self._chat_native(messages, tools)
+        finally:
+            self._flight.release()
+
+    # -- tool modes -----------------------------------------------------------
+
