@@ -714,3 +714,41 @@ class CloudLLMClient:
             prompt_messages.append({"role": "user", "content": instruction})
         return prompt_messages
 
+    @staticmethod
+    def _attach_image(
+        messages: List[dict],
+        image_jpeg_b64: str,
+        image_media_type: str = "image/jpeg",
+    ) -> List[dict]:
+        """Copy messages with ONE jpeg frame attached to the LAST user
+        message as an OpenAI ``image_url`` content part.
+
+        The target message's content becomes a parts list (existing parts
+        kept, the image part appended; a string content becomes
+        ``[{"type": "text", ...}, <image part>]``).  When no user message
+        exists a new ``role: "user"`` message carrying only the image
+        part is appended.  The caller's list is never mutated.
+        ``image_jpeg_b64`` may be raw base64 or a full ``data:`` URI (the
+        prefix is stripped defensively).
+        """
+        data = image_jpeg_b64.split(",", 1)[-1]
+        part = {
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:{image_media_type};base64,{data}",
+            },
+        }
+        out = [dict(m) for m in messages]
+        for m in reversed(out):
+            if m.get("role") == "user":
+                content = m.get("content")
+                if isinstance(content, list):
+                    m["content"] = list(content) + [part]
+                elif content:
+                    m["content"] = [{"type": "text", "text": content}, part]
+                else:
+                    m["content"] = [part]
+                return out
+        out.append({"role": "user", "content": [part]})
+        return out
+
