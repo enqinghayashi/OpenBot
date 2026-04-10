@@ -369,3 +369,5 @@ def _truncated(body: dict) -> bool:
     A truncation is not a reply.  Callers must treat it as a failure.
     """
     return _finish_reason(body) == "length"
+
+
