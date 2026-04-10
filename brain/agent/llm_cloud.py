@@ -613,3 +613,74 @@ class CloudLLMClient:
         self.parse_failures += 1
         return ChatResult()
 
+    def _chat_json(self, messages: List[dict], tools: List[dict]) -> ChatResult:
+        """Schema-in-prompt JSON mode (name/arguments shape): one auto-
+        retry, then the empty ChatResult repair path."""
+        instruction = LlamaCppClient._build_json_prompt(tools)
+        prompt_messages = self._inject_instruction(messages, instruction)
+        for attempt in (0, 1):
+            body = self._post(
+                "/chat/completions", self._payload(prompt_messages, [])
+            )
+            content = self._message_content(body)
+            raw = self._content_text(content)
+            if raw is None:
+                self.parse_failures += 1
+                return ChatResult()
+            self.think_blocks_seen += len(_find_think_blocks(raw))
+            self.images_seen += _count_image_parts(body)
+            cleaned = _strip_think(raw)
+            maybe = _extract_first_balanced_json(cleaned)
+            if maybe:
+                try:
+                    data = json.loads(maybe)
+                except ValueError as exc:
+                    logger.warning("cloud json-mode parse failed: %s", exc)
+                    data = None
+                if isinstance(data, dict) and isinstance(data.get("name"), str):
+                    arguments = data.get("arguments")
+                    if isinstance(arguments, dict):
+                        if self.prose_fallback:
+                            return ChatResult(
+                                tool_calls=[
+                                    ToolCall(
+                                        id=self._call_ids("json"),
+                                        name=data["name"],
+                                        arguments=arguments,
+                                    )
+                                ],
+                                text=self._prose_text(content),
+                            )
+                        return ChatResult(
+                            tool_calls=[
+                                ToolCall(
+                                    id=self._call_ids("json"),
+                                    name=data["name"],
+                                    arguments=arguments,
+                                )
+                            ],
+                        )
+            if attempt == 0:
+                prompt_messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Your previous output was not valid JSON. Respond with a "
+                            'single JSON object of the form {"name": "<tool>", '
+                            '"arguments": {<params>}} and nothing else.'
+                        ),
+                    }
+                )
+        if self.prose_fallback:
+            # no tool call parsed, so fall back to plain text.
+            prose = self._prose_text(content)
+            if prose:
+                logger.info(
+                    "cloud prose fallback (no tool call parsed): %s", prose
+                )
+                return ChatResult(text=prose)
+        self.parse_failures += 1
+        return ChatResult()
+
+    # -- helper methods -------------------------------------------------------
+
