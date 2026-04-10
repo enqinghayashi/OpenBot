@@ -422,3 +422,57 @@ class CloudLLMClient:
     ``images_seen`` (image parts counted on request response content).
     """
 
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        api_key_env: str = "LLM_API_KEY",
+        temperature: float = 0.2,
+        max_tokens: int = 256,
+        enable_thinking: bool = False,
+        tool_mode: str = "skeleton",
+        timeout_s: float = 120.0,
+        _transport: Optional[Callable] = None,
+        prose_fallback: bool = False,
+    ) -> None:
+        if not base_url:
+            raise ValueError("CloudLLMClient requires base_url (llm.base_url)")
+        if not model:
+            raise ValueError("CloudLLMClient requires model (llm.model)")
+        if tool_mode not in ("native", "json", "skeleton"):
+            raise ValueError(
+                f"tool_mode {tool_mode!r} must be 'native', 'json' or 'skeleton'"
+            )
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        # an empty name falls back to the default env var, so
+        # configs may leave it blank.
+        self.api_key_env = api_key_env or "LLM_API_KEY"
+        self.temperature = float(temperature)
+        self.max_tokens = int(max_tokens)
+        # completion budget field is provider-specific: OpenAI
+        # reasoning models reject max_tokens, while DeepSeek and
+        # the Gemini compat endpoint take it. _post retries once.
+        self._token_param = _token_param_for(self.base_url, self.model)
+        # temperature is provider-specific too: reasoning-class
+        # ids reject anything but the default 1, so the field is
+        # omitted for them; other models keep the caller's value.
+        self.enable_thinking = bool(enable_thinking)
+        self.tool_mode = tool_mode
+        self.timeout_s = float(timeout_s)
+        self._transport = _transport  # test seam: overrides the HTTP call
+        self.prose_fallback = bool(prose_fallback)
+        self._flight = _SingleFlight()
+        #: per-client tool-call id mint: fixed ids collide
+        #: across turns and leave dangling tool_calls (HTTP 400
+        #: on the next payload), so ids stay unique per process.
+        self._call_ids = _CallIdFactory()
+        self.think_blocks_seen: int = 0
+        self.parse_failures: int = 0
+        self.chat_calls: int = 0
+        self.images_seen: int = 0
+        #: replies cut off by the completion budget (finish_reason
+        #: "length"; "max_tokens" on Anthropic), counted apart
+        #: from parse_failures.
+        self.truncations: int = 0
+
