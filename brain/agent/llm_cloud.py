@@ -887,3 +887,39 @@ class CloudLLMClient:
                 return right, new
         return None
 
+    def _post_once(self, path: str, payload: dict, key: str) -> dict:
+        request = urllib.request.Request(
+            self.base_url + path,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + key,
+            },
+            method="POST",
+        )
+        try:
+            if self._transport is not None:
+                body = self._transport(request, timeout=self.timeout_s)
+            else:
+                with urllib.request.urlopen(request, timeout=self.timeout_s) as resp:
+                    body = resp.read()
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = exc.read().decode("utf-8", "replace").strip()
+            except Exception:  # pragma: no cover - body already consumed
+                detail = ""
+            raise _CloudHTTPError(
+                status=exc.code, reason=str(exc.reason),
+                detail=detail or "(empty response body)", cause=exc,
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise ChatTransportError(
+                f"cloud request to {self.base_url}{path} failed: {exc}"
+            ) from exc
+        try:
+            return json.loads(body)
+        except ValueError as exc:
+            raise ChatTransportError(
+                f"cloud returned non-JSON body: {exc}"
+            ) from exc
+
