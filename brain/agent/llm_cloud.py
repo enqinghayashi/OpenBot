@@ -811,3 +811,12 @@ class CloudLLMClient:
             return "\n".join(parts) if parts else None
         return None
 
+    def _count(self, body: dict) -> None:
+        """Think blocks + image parts from a response (parity counters)."""
+        raw = self._content_text(self._message_content(body))
+        if raw:
+            self.think_blocks_seen += len(_find_think_blocks(raw))
+        self.images_seen += _count_image_parts(body)
+
+    # -- transport layer ------------------------------------------------------
+
