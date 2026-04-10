@@ -519,3 +519,15 @@ class CloudLLMClient:
 
     # -- tool modes -----------------------------------------------------------
 
+    def _chat_native(self, messages: List[dict], tools: List[dict]) -> ChatResult:
+        """Structured ``tool_calls`` passthrough (cloud provider templates)."""
+        body = self._post("/chat/completions", self._payload(messages, tools))
+        try:
+            result = _parse_cloud_response(body, self._call_ids)
+        except ToolCallParseError as exc:
+            logger.warning("cloud response parse failed: %s", exc)
+            self.parse_failures += 1
+            return ChatResult()
+        self._count(body)
+        return result
+
