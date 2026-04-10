@@ -923,3 +923,45 @@ class CloudLLMClient:
                 f"cloud returned non-JSON body: {exc}"
             ) from exc
 
+    def probe(self, timeout_s: Optional[float] = None) -> bool:
+        """Synchronous, bounded network reachability check; no tokens spent.
+
+        GETs the provider's model-list endpoint and returns True iff the
+        response status is any 2xx.  Used by the transcript lane's
+        ``health_probe()`` (voice/transcript.py) and the app Director's
+        probe so a provider failover is recoverable instead of terminal.
+
+        NEVER raises: timeouts, connection refusals, HTTP errors and any
+        other failure return False (DEBUG-logged).  The ``_transport``
+        test seam is deliberately NOT used — the seam carries a body but
+        no status code; this is a live urllib GET.  The key env var,
+        when set, is attached as ``Authorization: Bearer`` (the same
+        header ``chat()`` uses); a missing key is NOT an error — the GET
+        goes out unauthenticated, and an auth rejection (401/403)
+        correctly reads as False (the endpoint cannot serve this
+        deployment as-is).
+
+        Endpoint shape per provider (``base_url`` is the OpenAI-compat
+        root this client was built for):
+          - OpenAI ......... GET ``{base_url}/models``
+          - Gemini compat .. GET ``{base_url}/models``
+          - Groq ........... GET ``{base_url}/models``
+          - Anthropic compat  GET ``{base_url}/models`` — with
+            ``base_url`` = ``https://api.anthropic.com/v1`` this is the
+            same path that serves Anthropic's native Models API
+            (GET /v1/models, verified 2026-08-31 against the Anthropic
+            Models API docs), so the probe hits a real Anthropic
+            endpoint either way.
+        (The OpenAI-compat ``/models`` convention is the common model-
+        list shape all four surfaces expose at their own base_url; the
+        Anthropic native endpoint was verified by direct docs check.)
+
+        ``timeout_s`` defaults to ``_PROBE_TIMEOUT_S`` (2.0 s), far
+        below the chat timeout.
+        """
+        timeout = _PROBE_TIMEOUT_S if timeout_s is None else float(timeout_s)
+        headers: Dict[str, str] = {"Accept": "application/json"}
+        key = os.environ.get(self.api_key_env)
+        if key:
+            headers["Authorization"] = "Bearer " + key
+        return _probe_http_get(self.base_url + "/models", headers, timeout)
