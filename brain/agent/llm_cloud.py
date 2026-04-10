@@ -333,3 +333,5 @@ def _temperature_for(base_url: str, model: str, fallback: float) -> Optional[flo
     if any(name.startswith(p) for p in _MAX_COMPLETION_PREFIXES):
         return None
     return fallback
+
+
