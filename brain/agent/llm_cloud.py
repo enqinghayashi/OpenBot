@@ -314,3 +314,22 @@ def _token_param_for(base_url: str, model: str) -> str:
     return "max_tokens"
 
 
+def _temperature_for(base_url: str, model: str, fallback: float) -> Optional[float]:
+    """Temperature to send to this provider + model, or None to OMIT the field.
+
+    OpenAI-hosted reasoning-class ids (the same family as
+    ``_MAX_COMPLETION_PREFIXES``) reject ANY temperature but the default 1 —
+    LIVE-VERIFIED 2026-09-02 (bake-off, gpt-5.6-luna): HTTP 400
+    "Unsupported value: 'temperature' does not support 0.2 with this
+    model. Only the default (1) value is supported."  Omitting the field
+    is the API default (1).  Everything else keeps the caller's
+    temperature.  Same HOST-scoping rule as ``_token_param_for`` so a
+    non-OpenAI model sharing a name prefix is not misrouted.
+    """
+    host = (base_url or "").split("//")[-1].split("/")[0].lower()
+    if not any(host == h or host.endswith("." + h) for h in _OPENAI_HOSTS):
+        return fallback
+    name = (model or "").lower()
+    if any(name.startswith(p) for p in _MAX_COMPLETION_PREFIXES):
+        return None
+    return fallback
