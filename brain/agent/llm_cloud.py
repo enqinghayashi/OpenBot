@@ -990,3 +990,5 @@ def _image_block_from_data_uri(uri: Any) -> Optional[dict]:
         "type": "image",
         "source": {"type": "base64", "media_type": media_type, "data": data},
     }
+
+
