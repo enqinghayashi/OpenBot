@@ -752,3 +752,13 @@ class CloudLLMClient:
         out.append({"role": "user", "content": [part]})
         return out
 
+    @staticmethod
+    def _prose_text(content: Any) -> Optional[str]:
+        """The stripped text of a message content (str or parts list), or
+        None when there is no usable prose (empty / whitespace-only)."""
+        raw = CloudLLMClient._content_text(content)
+        if raw is None:
+            return None
+        cleaned = _strip_think(raw).strip()
+        return cleaned or None
+
