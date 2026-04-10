@@ -384,3 +384,5 @@ def _count_image_parts(body: dict) -> int:
         for part in content
         if isinstance(part, dict) and part.get("type") in ("image_url", "image")
     )
+
+
