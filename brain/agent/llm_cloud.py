@@ -295,3 +295,20 @@ _OPENAI_HOSTS = ("api.openai.com",)
 _MAX_COMPLETION_PREFIXES = ("gpt-5", "o1", "o3", "o4")
 
 
+def _token_param_for(base_url: str, model: str) -> str:
+    """Name of the completion-budget field for this provider + model.
+
+    OpenAI-hosted reasoning models require ``max_completion_tokens`` and
+    return HTTP 400 on ``max_tokens``.  Everything else — DeepSeek, the
+    Gemini OpenAI-compat endpoint, older OpenAI ids, and any other
+    OpenAI-shaped wire — still requires ``max_tokens``.  Scoped by HOST as
+    well as model id so that a DeepSeek/Gemini model whose name happens to
+    start with an OpenAI prefix is not misrouted.
+    """
+    host = (base_url or "").split("//")[-1].split("/")[0].lower()
+    if not any(host == h or host.endswith("." + h) for h in _OPENAI_HOSTS):
+        return "max_tokens"
+    name = (model or "").lower()
+    if any(name.startswith(p) for p in _MAX_COMPLETION_PREFIXES):
+        return "max_completion_tokens"
+    return "max_tokens"
