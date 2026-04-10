@@ -345,3 +345,5 @@ def _finish_reason(body: dict) -> Optional[str]:
         return body["choices"][0].get("finish_reason")
     except (KeyError, IndexError, TypeError):
         return None
+
+
