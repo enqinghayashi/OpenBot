@@ -371,3 +371,16 @@ def _truncated(body: dict) -> bool:
     return _finish_reason(body) == "length"
 
 
+def _count_image_parts(body: dict) -> int:
+    """Count image content parts in a response (vision-staging stub)."""
+    try:
+        content = body["choices"][0]["message"].get("content")
+    except (KeyError, IndexError, TypeError):
+        return 0
+    if not isinstance(content, list):
+        return 0
+    return sum(
+        1
+        for part in content
+        if isinstance(part, dict) and part.get("type") in ("image_url", "image")
+    )
