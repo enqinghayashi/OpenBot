@@ -325,3 +325,201 @@ class ToolExecutor:
     def _platform_verb(self, name: str) -> str:
         return _PLATFORM_VERB.get(name, name)
 
+    @staticmethod
+    def _describe_action(name: str, args: dict) -> str:
+        if name == "pick":
+            return f"pick up {(args.get('label') or '?')}"
+        if name == "place":
+            # an into:<container> place is a containment request:
+            # the gate must name the container ('place bottle into
+            # bin', never 'at bin').  no-into keeps the old wording
+            into = (args.get("into") or "").strip()
+            if into:
+                return f"place {(args.get('label') or '?')} into {into}"
+            return f"place {(args.get('label') or '?')} at {(args.get('destination') or '?')}"
+        if name == "place_at_spot":
+            return (
+                f"place {(args.get('label') or '?')} at spot "
+                f"{(args.get('spot') or '?')}"
+            )
+        if name == "navigate":
+            return f"navigate to {(args.get('target') or '?')}"
+        if name in ("open_hand", "close_hand"):
+            verb = "open" if name == "open_hand" else "close"
+            return f"{verb} {(args.get('side') or 'right')} hand"
+        return f"{name} {args}"
+
+    @staticmethod
+    def _tool_result_text(env: dict) -> str:
+        """The raw tool reply the verifier must judge — mirrors the
+        gateway's own lane (gateway_node feeds SkillVerifier the reply
+        string verbatim, annotations included).  Success envelopes carry
+        the raw slave reply in ``value`` ('DONE:contact', 'DONE pick
+        executed; grasp_verified=...', 'DONE walk triggered: ...;
+        NAV_EPOCH=...'); failure envelopes serialize to 'ERROR: <reason>'
+        — the verifier treats any ERROR: marker anywhere in the reply as
+        definitive failure.  NEVER 'OK: <value>': the verifier's reply
+        classifier only reads DONE:/ERROR:/Q:/STATE:-prefixed lines, so an
+        OK:-wrapped reply would classify as 'unknown' and can never
+        confirm success."""
+        if not isinstance(env, dict):
+            return ""
+        if env.get("success"):
+            value = env.get("value")
+            return "" if value is None else str(value)
+        return f"ERROR: {env.get('reason') or 'unknown error'}"
+
+    @staticmethod
+    def _hook_result_to_text(result: "HookResult") -> str:
+        """Render a post-hook HookResult back into the verdict-shaped line
+        the model and the budget classifier read.
+
+        Contract with brain.hooks (assignment agent-hook-wiring): post_ok ->
+        VERDICT:success with the hook's evidence; post_pending ->
+        VERDICT:in_progress with evidence 're-observe...' (conservative —
+        never success); post_fail -> VERDICT:failure with the failure
+        reason.  Any other/unknown state is rendered conservatively as
+        in_progress.  The agent NEVER self-grades: a success line exists
+        only when the post-hook's verifier produced it.
+
+        The verifier post-hook already passes ``verdict.to_string()``
+        (a complete 'VERDICT:...|Evidence:...|Reason:...' line) as the
+        HookResult reason; a reason that already parses as a complete
+        verdict is passed through VERBATIM — wrapping it in another
+        'VERDICT:...|Evidence:...' layer would corrupt the model and the
+        budget classifier's read of the line.
+        """
+        state = getattr(result, "state", None)
+        reason = (getattr(result, "reason", None) or "").strip()
+        if reason.startswith("VERDICT:") and _VERDICT_RE.match(reason):
+            return reason
+        if state == "post_ok":
+            return (
+                "VERDICT:success|Evidence:"
+                + (reason or "post-hook verified the action")
+            )
+        if state == "post_pending":
+            return "VERDICT:in_progress|Evidence:" + (reason or "re-observe")
+        if state == "post_fail":
+            fail_reason = reason or "post-hook failed"
+            return f"VERDICT:failure|Evidence:{fail_reason}|Reason:{fail_reason}"
+        return (
+            "VERDICT:in_progress|Evidence:re-observe; "
+            f"unexpected post-hook state {state!r}"
+        )
+
+    @staticmethod
+    def _hook_result_to_verdict(result: "HookResult") -> Optional[Verdict]:
+        """Map a post-hook HookResult to a Verdict for scene-graph updates
+        (apply_verdict mutates ref edges only on a confirmed success)."""
+        state = getattr(result, "state", None)
+        reason = (getattr(result, "reason", None) or "").strip()
+        if state == "post_ok":
+            return Verdict.success(reason or "post-hook verified")
+        if state == "post_pending":
+            return Verdict.in_progress(reason or "re-observe")
+        if state == "post_fail":
+            fail_reason = reason or "post-hook failed"
+            return Verdict.failure(fail_reason, fail_reason)
+        return None
+
+    # ------------------------------------------ re-observing after a place
+
+    def _reobserve_post(
+        self,
+        context: Context,
+        first_result: Any,
+        first_obs: Optional[WorldObservation],
+    ) -> Any:
+        """Bounded in-call RE-OBSERVE loop for a place's post-condition.
+
+        ONE post-hook judgment made immediately after the release cannot
+        stand, for two INDEPENDENT reasons — both are a missing second
+        observation, so both are answered by re-observing here rather than
+        by relaxing what the verifier demands:
+
+          * THE MEASURED-OPEN REFERENCE (bare place).  verify_place reads
+            grip.is_open, which is None until the side's CAUSAL OPEN
+            REFERENCE forms from TWO agreeing qualifying reads.  The
+            release is that side's first open-commanded event, so the
+            verifier's own read is read #1 (the candidate) and read #2 can
+            only come from a LATER observation.  Re-trying the tool is
+            worse than useless: a bare-place retry re-executes the release
+            and, with the hold record already cleared, is refused.
+
+          * CONTAINMENT (place into:).  The verifier's containment half
+            certifies success only on TWO CONSECUTIVE fresh in-region
+            post-drop frames of ONE task execution (one dropped_at epoch)
+            within RE_OBSERVE_WINDOW_S — and every NEW place execution
+            re-stamps dropped_at, so re-executing the tool could never
+            accumulate the pair (one observation per epoch ->
+            in_progress forever).  This loop re-observes inside the SAME
+            tool execution: the SAME tool reply (the same dropped_at) is
+            re-judged by hooks.run_post against each NEWER fresh packet,
+            so the two agreeing frames accumulate within this one call and
+            the verdict returns success the moment the honest pair is in.
+
+        Each iteration's ``self._observe()`` round-trips the gateway's
+        observe_dict(), which calls _refresh_grip_state (gateway_node.py)
+        — so a re-observe DOES advance the grip read, not merely the
+        scene, which is what lets the open reference form.
+
+        Honesty gates (all bounded by _MAX_RE_OBSERVES):
+          * fresh-only: each iteration feeds run_post ONLY a packet that
+            is fresh AND strictly NEWER than the last packet judged — a
+            re-delivered packet is one frame, never two (the verifier
+            would re-anchor it anyway; same-packet re-delivery is never
+            reused as the second frame);
+          * bounded: after the retry cap the LAST verifier verdict stands
+            (never a fabricated success) with the in-call re-observe
+            context appended, so the evidence names the ambiguity and the
+            honest next step;
+          * settle spacing: re-observes land ~_RE_OBSERVE_SETTLE_S apart,
+            so both frames stay inside RE_OBSERVE_WINDOW_S of each other
+            and each packet stays inside POST_DROP_FRESHNESS_S at judge
+            time.
+
+        No second tool call is exposed to the model: execute() still
+        returns ONE ToolOutcome.  Each task keeps its OWN dropped_at
+        epoch (stamped by the tool layer per execution — unchanged), so a
+        NEW drop still re-anchors the verifier's record: no cross-task
+        leak.
+        """
+        last_result = first_result
+        last_ts = getattr(first_obs, "detections_ts", 0.0) or 0.0
+        attempts = 0
+        judged = 0
+        while attempts < _MAX_RE_OBSERVES:
+            attempts += 1
+            if self.backend is not None:
+                time.sleep(_RE_OBSERVE_SETTLE_S)
+            re_obs = self._observe()
+            ts = getattr(re_obs, "detections_ts", 0.0) or 0.0
+            if (
+                re_obs is None
+                or not getattr(re_obs, "fresh", False)
+                or ts <= 0.0
+                or ts <= last_ts
+            ):
+                # useless (no source / stale) or not strictly newer
+                # (same packet twice): never fed to the verifier.
+                # one frame, never two
+                continue
+            if self.scene_graph is not None:
+                self.scene_graph.update(re_obs)
+            last_ts = ts
+            judged += 1
+            result = self.hooks.run_post(context, re_obs)
+            if result.state != "post_pending":
+                # measured either way, it stands
+                return result
+            last_result = result
+        if last_result.state == "post_pending":
+            last_result = HookResult.post_pending(
+                self._reobserve_cap_reason(
+                    last_result.reason, attempts, judged,
+                    getattr(getattr(context, "pending_action", None), "tool", None)
+                    or "place")
+            )
+        return last_result
+
