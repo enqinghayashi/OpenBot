@@ -865,3 +865,25 @@ class CloudLLMClient:
                     f"{exc2.status} {exc2.reason}: {exc2.detail}"
                 ) from exc2.cause
 
+    def _retry_payload_for(self, payload: dict, exc: "_CloudHTTPError"):
+        """``(new_token_param, new_payload)`` if the provider told us the
+        completion-budget field is wrong, else None.
+
+        Self-healing so a model family we have not seen yet costs one extra
+        request, not every request.  Only ever fires on the provider's own
+        explicit complaint about the field we actually sent.
+        """
+        if exc.status != 400:
+            return None
+        detail = (exc.detail or "").lower()
+        sent = self._token_param
+        for wrong, right in (("max_tokens", "max_completion_tokens"),
+                             ("max_completion_tokens", "max_tokens")):
+            if sent == wrong and right in detail and wrong in detail:
+                new = dict(payload)
+                if wrong not in new:
+                    return None
+                new[right] = new.pop(wrong)
+                return right, new
+        return None
+
