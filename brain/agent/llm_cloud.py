@@ -965,3 +965,12 @@ class CloudLLMClient:
         if key:
             headers["Authorization"] = "Bearer " + key
         return _probe_http_get(self.base_url + "/models", headers, timeout)
+
+
+# ---------------------------------------------------------------------------
+# Anthropic Messages adapter: native Messages wire shape
+# ---------------------------------------------------------------------------
+
+_ANTHROPIC_VERSION = "2023-06-01"
+
+
