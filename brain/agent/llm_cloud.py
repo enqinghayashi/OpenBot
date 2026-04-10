@@ -684,3 +684,33 @@ class CloudLLMClient:
 
     # -- helper methods -------------------------------------------------------
 
+    @staticmethod
+    def _inject_instruction(messages: List[dict], instruction: str) -> List[dict]:
+        """Copy messages with the tool-mode instruction appended to the
+        first user message (or as a trailing user message when none).
+
+        ``content`` may be a string or an OpenAI multimodal parts list
+        (the L3 image shape): a parts list gets the instruction appended
+        as an extra ``text`` part; a string keeps the historical
+        ``"<content>\\n\\n<instruction>"`` concat (byte-identical payloads
+        when no image is used).  The caller's list is never mutated.
+        """
+        prompt_messages: List[dict] = []
+        inserted = False
+        for m in messages:
+            prompt_messages.append(dict(m))
+            if m.get("role") == "user" and not inserted:
+                content = m.get("content")
+                if isinstance(content, list):
+                    prompt_messages[-1]["content"] = list(content) + [
+                        {"type": "text", "text": instruction}
+                    ]
+                else:
+                    prompt_messages[-1]["content"] = (
+                        f"{content or ''}\n\n{instruction}"
+                    )
+                inserted = True
+        if not inserted:
+            prompt_messages.append({"role": "user", "content": instruction})
+        return prompt_messages
+
