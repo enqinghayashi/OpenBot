@@ -974,3 +974,19 @@ class CloudLLMClient:
 _ANTHROPIC_VERSION = "2023-06-01"
 
 
+def _image_block_from_data_uri(uri: Any) -> Optional[dict]:
+    """OpenAI ``image_url`` data URI -> an Anthropic image content block.
+
+    Returns None when ``uri`` is not a parseable ``data:`` URI (bare
+    http(s) URLs are not representable as base64 blocks).
+    """
+    if not isinstance(uri, str) or not uri.startswith("data:"):
+        return None
+    header, _, data = uri.partition(",")
+    if not data:
+        return None
+    media_type = header[5:].split(";", 1)[0] or "image/jpeg"
+    return {
+        "type": "image",
+        "source": {"type": "base64", "media_type": media_type, "data": data},
+    }
