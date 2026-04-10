@@ -347,3 +347,25 @@ def _finish_reason(body: dict) -> Optional[str]:
         return None
 
 
+def _truncated(body: dict) -> bool:
+    """True when the provider stopped because the budget ran out.
+
+    LIVE-VERIFIED 2026-09-02 (deepseek-v4-flash-vision-exp, skeleton mode,
+    real billed calls): a reasoning model spends completion budget on
+    reasoning_tokens BEFORE emitting the answer, so at our shipped
+    ``max_tokens: 256`` a response can stop mid-JSON:
+
+        max_tokens=190 -> finish_reason "length", reasoning 136,
+          content '{"tool": "say", "args": {"text": "The image shows a solid,'
+        max_tokens=230 -> finish_reason "length", reasoning 174,
+          content '{"args": {"text": "I see a uniform, solid red square...'
+
+    That fragment does not parse as a tool call, so before this check it fell
+    through to the prose fallback and was SPOKEN to the operator as the final
+    answer — raw JSON read aloud, ``status: completed``, ``parse_failures``
+    never incremented, no execution, no confirm gate, no verifier.  A textbook
+    false success, on the deployed transcript lane.
+
+    A truncation is not a reply.  Callers must treat it as a failure.
+    """
+    return _finish_reason(body) == "length"
