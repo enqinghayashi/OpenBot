@@ -788,3 +788,10 @@ class CloudLLMClient:
             payload["enable_thinking"] = True
         return payload
 
+    @staticmethod
+    def _message_content(body: dict) -> Any:
+        try:
+            return body["choices"][0]["message"].get("content")
+        except (KeyError, IndexError, TypeError):
+            return None
+
