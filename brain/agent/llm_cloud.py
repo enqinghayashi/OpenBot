@@ -335,3 +335,13 @@ def _temperature_for(base_url: str, model: str, fallback: float) -> Optional[flo
     return fallback
 
 
+def _finish_reason(body: dict) -> Optional[str]:
+    """``choices[0].finish_reason``, or None when the wire omits it.
+
+    Read so that a TRUNCATED response can never be mistaken for a decision.
+    See ``_truncated`` for why this matters.
+    """
+    try:
+        return body["choices"][0].get("finish_reason")
+    except (KeyError, IndexError, TypeError):
+        return None
