@@ -1329,3 +1329,27 @@ class AnthropicMessagesClient:
                 out.append({"role": "user", "content": [image]})
         return out, "\n".join(system_parts)
 
+    def _anthropic_body(
+        self,
+        messages: List[dict],
+        tools: List[dict],
+        image_jpeg_b64: Optional[str],
+        image_media_type: str,
+    ) -> Dict[str, Any]:
+        """The /v1/messages request body (stream never used)."""
+        an_messages, system_text = self._anthropic_messages(
+            messages, image_jpeg_b64, image_media_type
+        )
+        body: Dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "messages": an_messages,
+        }
+        if system_text:
+            body["system"] = system_text
+        an_tools = self._tools_to_anthropic(tools)
+        if an_tools:
+            body["tools"] = an_tools
+        return body
+
