@@ -159,3 +159,45 @@ _SCENE_STALE = re.compile(r"STALE (?P<age>\d+)s")
 _SCENE_ENVELOPE = re.compile(r"^(?:OK|ERROR): ")
 
 
+def scene_brief_prose(text: str) -> str:
+    """Restructure the scene_brief DATA form into one spoken sentence.
+
+    The incoming text is the tool's RESULT TEXT (envelope form: the first
+    line carries the "OK: " prefix).  Every non-empty line must then parse
+    as the brief's own line form, else the text is returned BYTE-IDENTICAL
+    (the SCENE: special forms — unavailable / empty — and any foreign brief
+    are already honest prose; never a guessed restructure).  The numbers ARE
+    the measured values; nothing is added or smoothed.  Flags stay honest:
+    IN-HAND / IN-CONTAINER (task-inferred) / STALE are spelled out, never
+    dropped.
+    """
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    if not lines:
+        return text
+    first = _SCENE_ENVELOPE.sub("", lines[0], count=1)
+    rest = [first] + lines[1:]
+    parsed = []
+    for ln in rest:
+        m = _SCENE_BRIEF_LINE.match(ln)
+        if m is None:
+            return text  # not the data form — as-is
+        parsed.append(
+            (m.group("label"), float(m.group("x")), float(m.group("y")),
+             (m.group("parts") or "").strip())
+        )
+    n = len(parsed)
+    clauses = []
+    for label, x, y, flags in parsed:
+        side = "right" if x >= 0.0 else "left"
+        clause = "The %s is about %.2f metres to the %s and %.2f metres ahead" % (
+            label, abs(x), side, y)
+        if "IN-HAND" in flags:
+            clause += "; it is in my hand"
+        if "IN-CONTAINER" in flags:
+            clause += "; it is marked in the container (task-inferred)"
+        m_stale = _SCENE_STALE.search(flags)
+        if m_stale:
+            clause += "; its position was seen %s seconds ago" % m_stale.group("age")
+        clauses.append(clause)
+    return "I see %d object%s. %s." % (
+        n, "" if n == 1 else "s", "; ".join(clauses))
