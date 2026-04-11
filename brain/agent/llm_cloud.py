@@ -1219,3 +1219,37 @@ class AnthropicMessagesClient:
                 blocks.append(part)
         return blocks
 
+    @staticmethod
+    def _tool_calls_blocks(tool_calls: Any) -> List[dict]:
+        """OpenAI-style ``message["tool_calls"]`` -> ``tool_use`` blocks."""
+        if not isinstance(tool_calls, list):
+            return []
+        blocks: List[dict] = []
+        for item in tool_calls:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            if name is None:
+                function = item.get("function")
+                if isinstance(function, dict):
+                    name = function.get("name")
+            arguments = item.get("arguments")
+            if arguments is None and isinstance(item.get("function"), dict):
+                arguments = item["function"].get("arguments")
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments)
+                except ValueError:
+                    continue  # arguments string is not JSON; drop the call
+            if not isinstance(name, str) or not isinstance(arguments, dict):
+                continue
+            call_id = item.get("id")
+            if not isinstance(call_id, str) or not call_id:
+                # process-unique mint: a hardcoded id would
+                # collide on the wire.
+                call_id = _module_call_id("toolu")
+            blocks.append(
+                {"type": "tool_use", "id": call_id, "name": name, "input": arguments}
+            )
+        return blocks
+
