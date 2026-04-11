@@ -347,3 +347,31 @@ def _strip_lead_fillers(text: str, name: Optional[str] = None) -> str:
             return t if t else original
         if not text.strip():
             return original
+
+
+# ---------------------------------------------------------------------------
+# guards for the simple keyword + last-word lane
+# ---------------------------------------------------------------------------
+# simple lane scans
+# the WHOLE utterance
+# that's how 'Oh no, stay with it.
+# Pick up the cup.' works
+# and it acts on what
+# rich lanes refuse
+# two guards:
+#   clause head: the verb
+#     opens utterance/sentence
+#     not a continuation
+#     ('hey susan pick the bottle')
+#   payload veto: multi_clause_veto
+#     after the verb
+# trailing prep/article
+# is never an object
+_SIMPLE_CLAUSE_BREAK_RE = re.compile(r"[.!?;:]\s*$")
+_SIMPLE_NON_OBJECTS = frozenset({
+    "the", "a", "an", "this", "that", "these", "those",
+    "in", "into", "on", "onto", "at", "to", "for", "with", "from", "of",
+    "and", "then", "or", "but", "by", "over", "under", "near",
+})
+
+
