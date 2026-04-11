@@ -375,3 +375,14 @@ _SIMPLE_NON_OBJECTS = frozenset({
 })
 
 
+def _simple_lane_payload(cleaned_l: str) -> Optional[str]:
+    """Text AFTER the simple lane's action verb, or None when the verb does
+    not HEAD a clause (see the guard note above)."""
+    toks = cleaned_l.split()
+    for i, tok in enumerate(toks):
+        if tok.lower().strip("'") in _SIMPLE_ACTION_MAP:
+            lead = " ".join(toks[:i])
+            if lead and not _SIMPLE_CLAUSE_BREAK_RE.search(lead):
+                return None
+            return " ".join(toks[i + 1:])
+    return None
