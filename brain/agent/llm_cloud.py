@@ -1260,3 +1260,72 @@ class AnthropicMessagesClient:
         text = CloudLLMClient._content_text(content)
         return text if text else ""
 
+    def _anthropic_messages(
+        self,
+        messages: List[dict],
+        image_jpeg_b64: Optional[str],
+        image_media_type: str,
+    ) -> tuple:
+        """OpenAI-style history -> Anthropic messages + hoisted system.
+
+        Returns ``(messages, system_text)``.  The caller's list is never
+        mutated.  Raises ValueError for unknown roles (never guessed).
+        """
+        system_parts: List[str] = []
+        out: List[dict] = []
+        for m in messages:
+            role = m.get("role")
+            if role == "system":
+                text = self._blocks_text(m.get("content"))
+                if text:
+                    system_parts.append(text)
+            elif role == "user":
+                blocks = self._content_blocks(m.get("content"))
+                out.append({"role": "user", "content": blocks})
+            elif role == "assistant":
+                blocks = self._content_blocks(m.get("content"))
+                blocks.extend(self._tool_calls_blocks(m.get("tool_calls")))
+                out.append({"role": "assistant", "content": blocks})
+            elif role == "tool":
+                out.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": m.get("tool_call_id"),
+                                "content": self._blocks_text(m.get("content")),
+                            }
+                        ],
+                    }
+                )
+            else:
+                raise ValueError(
+                    f"Anthropic translation: unknown message role {role!r}"
+                )
+        if image_jpeg_b64:
+            image = {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": image_media_type,
+                    "data": image_jpeg_b64.split(",", 1)[-1],
+                },
+            }
+            for m in reversed(out):
+                if m.get("role") != "user":
+                    continue
+                blocks = m.get("content") or []
+                # keep tool_result turns tool_result-only; the
+                # frame belongs to the real utterance, so skip.
+                if blocks and all(
+                    isinstance(b, dict) and b.get("type") == "tool_result"
+                    for b in blocks
+                ):
+                    continue
+                m["content"] = list(blocks) + [image]
+                break
+            else:
+                out.append({"role": "user", "content": [image]})
+        return out, "\n".join(system_parts)
+
