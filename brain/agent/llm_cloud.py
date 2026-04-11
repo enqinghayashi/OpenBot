@@ -1353,3 +1353,20 @@ class AnthropicMessagesClient:
             body["tools"] = an_tools
         return body
 
+    @staticmethod
+    def _raw_text(body: dict) -> Optional[str]:
+        """Joined text blocks of an Anthropic response (None if none)."""
+        content = body.get("content")
+        if not isinstance(content, list):
+            return None
+        parts = [
+            block.get("text")
+            for block in content
+            if isinstance(block, dict)
+            and block.get("type") == "text"
+            and isinstance(block.get("text"), str)
+        ]
+        return "\n".join(parts) if parts else None
+
+    # -- transport layer ------------------------------------------------------
+
