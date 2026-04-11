@@ -304,3 +304,46 @@ _NAME_MISHEARD_VARIANTS = {
 _LEAD_COMMAND_PHRASES = ("do it", "go ahead", "go on")
 
 
+def _strip_lead_fillers(text: str, name: Optional[str] = None) -> str:
+    """Strip a bounded leading run of greeting/lead-in filler heads.
+
+    Live 2026-09-07 (offline lane): the transcripts 'Hey hey, do it. Pick up
+    the cup.' and 'Hey, hey, do it. Pick up the bottle.' reach this brain
+    with the wake-word greeting AND a 'do it' lead-in in front of a perfectly
+    canonical pick — and the '^'-anchored verb patterns decline them.  This
+    step removes only RECOGNIZED filler heads so the action verb is exposed:
+
+      'hey hey, do it. pick up the cup'  ->  'pick up the cup'
+
+    Safety: a filler head is stripped ONLY when a non-empty remainder
+    follows.  A bare greeting ('hey hey', 'hello there') returns unchanged
+    and declines — it is NOT the silent bare-summon path (that is reserved
+    for the embodied NAME).  A wrong-name utterance ('hey susan pick the
+    bottle') strips the greeting but 'susan' survives as a non-filler, so the
+    pick pattern still declines — the vocative strip's arbitrary-word guard
+    is preserved.
+    """
+    name_variants = _NAME_MISHEARD_VARIANTS.get((name or "").lower(), ())
+    original = text
+    while True:
+        t = text.strip()
+        if not t:
+            return original
+        stripped = False
+        m = re.match(r"^([A-Za-z']+)[\s,]+(.*)$", t)
+        if m and m.group(1).lower().rstrip(".,!?") in _LEAD_GREETINGS:
+            text = m.group(2).strip()
+            stripped = True
+        else:
+            low = t.lower()
+            for phrase in _LEAD_COMMAND_PHRASES + name_variants:
+                if low.startswith(phrase) and (
+                    len(low) == len(phrase) or low[len(phrase)] in " ,.!?"
+                ):
+                    text = t[len(phrase):].lstrip(" ,.!?").strip()
+                    stripped = True
+                    break
+        if not stripped:
+            return t if t else original
+        if not text.strip():
+            return original
