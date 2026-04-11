@@ -1161,3 +1161,27 @@ class AnthropicMessagesClient:
 
     # -- OpenAI-style history to the Anthropic wire shape ---------------------
 
+    @staticmethod
+    def _tools_to_anthropic(tools: List[dict]) -> List[dict]:
+        """OpenAI spec shape -> Anthropic ``{name, description,
+        input_schema}`` tools."""
+        out: List[dict] = []
+        for spec in tools:
+            fn = spec.get("function") if isinstance(spec, dict) else None
+            if not isinstance(fn, dict):
+                continue
+            name = fn.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            params = fn.get("parameters")
+            out.append(
+                {
+                    "name": name,
+                    "description": fn.get("description", ""),
+                    "input_schema": params
+                    if isinstance(params, dict)
+                    else {"type": "object", "properties": {}},
+                }
+            )
+        return out
+
