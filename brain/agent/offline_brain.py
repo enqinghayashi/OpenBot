@@ -388,3 +388,23 @@ def _simple_lane_payload(cleaned_l: str) -> Optional[str]:
     return None
 
 
+@dataclass
+class OfflineOutcome:
+    """One utterance's result: the spoken reply plus what (if anything) ran.
+
+    ``tool_call`` is the fastpath-family :class:`ToolCall` that was
+    executed (motion and scene_brief lanes) or None (declines); ``declined``
+    is True when the brain refused WITHOUT executing a tool.  The reply is
+    verdict-aware: only the post-hook verifier's VERDICT:success produces
+    success phrasing (see the module docstring).
+
+    ``silent`` marks the speech-stop lane ('stop talking'): the
+    requirement is NO SPEECH — the reply is dropped (never spoken, never
+    a decline, no tool ran), and the chain returns an empty-PCM outcome
+    the app's play path no-ops on.
+    """
+
+    reply: str
+    tool_call: Any = None
+    declined: bool = False
+    silent: bool = False
