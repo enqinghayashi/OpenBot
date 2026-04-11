@@ -1370,3 +1370,41 @@ class AnthropicMessagesClient:
 
     # -- transport layer ------------------------------------------------------
 
+    def _post(self, path: str, payload: dict) -> dict:
+        """JSON POST with ``x-api-key`` + ``anthropic-version`` headers;
+        raises :class:`ChatTransportError`.  The key is read from
+        ``os.environ[api_key_env]`` per request."""
+        key = os.environ.get(self.api_key_env)
+        if not key:
+            raise ChatTransportError(
+                f"anthropic API key missing: env var {self.api_key_env!r} is "
+                "unset or empty (export it on the deploy host; the key "
+                "never lives in the repo)"
+            )
+        request = urllib.request.Request(
+            self.base_url + path,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": key,
+                "anthropic-version": _ANTHROPIC_VERSION,
+            },
+            method="POST",
+        )
+        try:
+            if self._transport is not None:
+                body = self._transport(request, timeout=self.timeout_s)
+            else:
+                with urllib.request.urlopen(request, timeout=self.timeout_s) as resp:
+                    body = resp.read()
+        except urllib.error.URLError as exc:
+            raise ChatTransportError(
+                f"anthropic request to {self.base_url}{path} failed: {exc}"
+            ) from exc
+        try:
+            return json.loads(body)
+        except ValueError as exc:
+            raise ChatTransportError(
+                f"anthropic returned non-JSON body: {exc}"
+            ) from exc
+
