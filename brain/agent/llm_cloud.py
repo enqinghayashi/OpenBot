@@ -1120,3 +1120,44 @@ class AnthropicMessagesClient:
     def dropped_calls(self) -> int:
         return self._flight.dropped_calls
 
+    def chat(
+        self,
+        messages: List[dict],
+        tools: List[dict],
+        *,
+        image_jpeg_b64: Optional[str] = None,
+        image_media_type: str = "image/jpeg",
+    ) -> ChatResult:
+        """POST /v1/messages; parse the Anthropic content-block shape.
+
+        ``image_jpeg_b64`` (optional): attach ONE jpeg frame to the LAST
+        user message as an Anthropic ``image`` content block.  Never
+        raises for recoverable output problems; transport failures
+        (HTTP errors, missing API key) raise :class:`ChatTransportError`.
+        Single-flight drop while another call is in flight.
+        """
+        if not self._flight.acquire():
+            logger.warning("anthropic chat dropped: a previous call is in flight")
+            return ChatResult(dropped=True)
+        try:
+            self.chat_calls += 1
+            body = self._anthropic_body(
+                messages, tools, image_jpeg_b64, image_media_type
+            )
+            response = self._post("/v1/messages", body)
+            try:
+                result = _parse_anthropic_response(response)
+            except ToolCallParseError as exc:
+                logger.warning("anthropic response parse failed: %s", exc)
+                self.parse_failures += 1
+                return ChatResult()
+            raw = self._raw_text(response)
+            if raw:
+                self.think_blocks_seen += len(_find_think_blocks(raw))
+            self.images_seen += _count_anthropic_image_parts(response)
+            return result
+        finally:
+            self._flight.release()
+
+    # -- OpenAI-style history to the Anthropic wire shape ---------------------
+
