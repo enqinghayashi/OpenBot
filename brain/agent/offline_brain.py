@@ -408,3 +408,5 @@ class OfflineOutcome:
     tool_call: Any = None
     declined: bool = False
     silent: bool = False
+
+
