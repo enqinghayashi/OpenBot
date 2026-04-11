@@ -1032,3 +1032,5 @@ def _parse_anthropic_response(body: dict) -> ChatResult:
             call_id = _module_call_id("call")
         calls.append(ToolCall(id=call_id, name=name, arguments=arguments))
     return ChatResult(text=text, tool_calls=calls or None)
+
+
