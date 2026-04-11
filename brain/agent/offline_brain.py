@@ -201,3 +201,106 @@ def scene_brief_prose(text: str) -> str:
         clauses.append(clause)
     return "I see %d object%s. %s." % (
         n, "" if n == 1 else "s", "; ".join(clauses))
+
+# 'put the bottle at the shelf'
+# 'at' only
+# into/on live in PLACE_INTO_RE
+PLACE_AT_SPOT_RE = re.compile(
+    rf'^{_NAV_POLITE}(?:put|place|set)\s+(?:the\s+)?(.+?)'
+    rf'\s+at\s+(?:the\s+)?(.+)$',
+    re.IGNORECASE,
+)
+
+# 'put the bottle in the bin'
+# narrower than PLACE_INTO
+#   verbs put|place
+#   preps in|into
+# (on/onto = surface)
+# no legacy steal
+# TOOL layer does it
+# unknown -> NOT_DETECTED
+# a drop needs demonstrated containment
+# veto both groups
+PLACE_INTO_CONTAINER_RE = re.compile(
+    rf'^{_NAV_POLITE}(?:put|place)\s+(?:the\s+)?(.+?)'
+    rf'\s+(?:in|into)\s+(?:the\s+)?(.+)$',
+    re.IGNORECASE,
+)
+
+# -> scene_brief lane
+# before the decline
+# apostrophes first
+# ("what's" -> "whats")
+# hence the entries
+SEE_KEYWORDS = (
+    "see",
+    "look at",
+    "what is in the scene",
+    "what can you see",
+    "do you see",
+    "is there",
+    "what is on the table",
+    "what do you see",
+    # contracted forms only
+    "whats in the scene",
+    "whats on the table",
+)
+
+SEE_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(k) for k in SEE_KEYWORDS) + r")\b",
+    re.IGNORECASE,
+)
+
+# 'is the bottle on the table?'
+# catches the generic question
+# fronted question auxiliary
+# commands can't match
+# multi-clause vetoed too
+SEE_QUESTION_RE = re.compile(
+    r"^(?:is|are|was)\s+(?:the|there)\s+(?:a|an|the\s+)?"
+    r"(.+?)\s+(?:on|in|next to|beside|at)\s+(?:the\s+)?(.+?)\s*[?!.]*$",
+    re.IGNORECASE,
+)
+
+# no answer -> decline
+# no model backstop
+# never invented
+QUERY_PATTERN_RE = re.compile(
+    r"\b(?:what|why|how|when|who|where|explain)\b|tell me about",
+    re.IGNORECASE,
+)
+
+# ---------------------------------------------------------------------------
+# Spoken replies (OpenBot's own strings; byte-for-byte the same as the agent
+# wherever the lane exists online)
+# ---------------------------------------------------------------------------
+
+# same bytes as G1Agent.run() (agent.py)
+EMPTY_REPLY = "I did not understand the request."
+
+# no capability speech
+QUERY_DECLINE = "fail, try again."
+
+# no match -> same terse decline
+DEFAULT_DECLINE = "fail, try again."
+
+# stripped first
+# wake greetings leak in
+# plus lead-ins
+# filler only
+# never a verb, a halt word,
+# or an object label
+_LEAD_GREETINGS = frozenset({
+    "hey", "hi", "hello", "yo", "okay", "ok", "so", "well",
+})
+# butchered 'hey <name>'
+# mis-hearings we saw
+# exact -> _strip_vocative
+# unlisted: nothing
+# a wrong one dies
+_NAME_MISHEARD_VARIANTS = {
+    "stewart": ("stuart", "steal it", "still it", "still work", "steve with"),
+}
+_LEAD_COMMAND_PHRASES = ("do it", "go ahead", "go on")
+
+
