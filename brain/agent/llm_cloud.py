@@ -1116,3 +1116,7 @@ class AnthropicMessagesClient:
         #: from parse_failures.
         self.truncations: int = 0
 
+    @property
+    def dropped_calls(self) -> int:
+        return self._flight.dropped_calls
+
