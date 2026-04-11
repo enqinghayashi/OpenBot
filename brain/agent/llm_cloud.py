@@ -1034,3 +1034,13 @@ def _parse_anthropic_response(body: dict) -> ChatResult:
     return ChatResult(text=text, tool_calls=calls or None)
 
 
+def _count_anthropic_image_parts(body: dict) -> int:
+    """Count image content blocks in an Anthropic response."""
+    content = body.get("content")
+    if not isinstance(content, list):
+        return 0
+    return sum(
+        1
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "image"
+    )
