@@ -992,3 +992,43 @@ def _image_block_from_data_uri(uri: Any) -> Optional[dict]:
     }
 
 
+def _parse_anthropic_response(body: dict) -> ChatResult:
+    """Parse an Anthropic Messages response into a :class:`ChatResult`.
+
+    ``content`` is a block list: ``text`` blocks are joined (think blocks
+    stripped); ``tool_use`` blocks (``id``/``name``/``input``) become
+    :class:`ToolCall` objects — ``input`` is already a dict, no JSON-string
+    parsing.  Raises :class:`ToolCallParseError` for malformed bodies
+    (callers convert that to an empty result).
+    """
+    content = body.get("content")
+    if not isinstance(content, list):
+        raise ToolCallParseError(
+            "Anthropic response body has no content list: "
+            f"{type(content).__name__}"
+        )
+    text_parts = [
+        block.get("text")
+        for block in content
+        if isinstance(block, dict)
+        and block.get("type") == "text"
+        and isinstance(block.get("text"), str)
+    ]
+    text = _strip_think("\n".join(text_parts)) if text_parts else None
+    calls: List[ToolCall] = []
+    for n, block in enumerate(content, start=1):
+        if not isinstance(block, dict) or block.get("type") != "tool_use":
+            continue
+        name = block.get("name")
+        arguments = block.get("input")
+        if not isinstance(name, str) or not isinstance(arguments, dict):
+            raise ToolCallParseError(
+                f"tool_use block {n} needs name (str) and input (dict)"
+            )
+        call_id = block.get("id")
+        if not isinstance(call_id, str) or not call_id:
+            # process-unique mint: a per-response counter would
+            # reuse ids across turns and collide.
+            call_id = _module_call_id("call")
+        calls.append(ToolCall(id=call_id, name=name, arguments=arguments))
+    return ChatResult(text=text, tool_calls=calls or None)
