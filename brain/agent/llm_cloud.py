@@ -1046,3 +1046,39 @@ def _count_anthropic_image_parts(body: dict) -> int:
     )
 
 
+class AnthropicMessagesClient:
+    """Anthropic Messages API adapter — the same ``chat()`` interface as
+    :class:`CloudLLMClient` but speaking the NATIVE Anthropic wire shape
+    (the production-grade surface; Anthropic's separate OpenAI-compat
+    layer needs no adapter — CloudLLMClient already speaks it, see the
+    module docstring "REST endpoint compatibility (d)").
+
+    Deviations from CloudLLMClient (all measured against the docs):
+    - auth: ``x-api-key`` + ``anthropic-version: 2023-06-01`` headers
+      (never Bearer); the key is read per request from
+      ``os.environ[api_key_env]`` (default ``ANTHROPIC_API_KEY``) — a
+      missing/empty var raises :class:`ChatTransportError` before
+      anything is sent (the key never lives in config or the repo).
+    - endpoint: POST ``{base_url}/messages`` — ``base_url`` is the API
+      ROOT (default ``https://api.anthropic.com``), the client appends
+      ``/v1/messages``.
+    - body: ``system`` messages hoisted to the top-level ``system``
+      string; tools translated from the OpenAI spec shape to ``{"name",
+      "description", "input_schema"}``; assistant ``tool_calls`` ->
+      ``tool_use`` content blocks; ``role: "tool"`` messages ->
+      ``role: "user"`` messages with ``tool_result`` blocks; ``image_url``
+      parts and ``chat(..., image_jpeg_b64=...)`` -> ``{"type": "image",
+      "source": {"type": "base64", ...}}`` blocks.
+    - response: ``content`` block list — ``text`` blocks joined into
+      ``ChatResult.text``, ``tool_use`` blocks into ``ChatResult.tool_calls``
+      (input is already a dict).  Prose replies flow naturally in this
+      parse (no separate prose-fallback flag needed).
+    - native ``tool_use`` mode only (the structured-call shape the
+      transcript lane uses); the skeleton/json prompt modes are
+      CloudLLMClient-only.  ``enable_thinking`` is NOT forwarded
+      (Anthropic's thinking parameter has a different shape).
+
+    Counters mirror the other clients: ``chat_calls``, ``parse_failures``,
+    ``think_blocks_seen``, ``dropped_calls``, ``images_seen``.
+    """
+
