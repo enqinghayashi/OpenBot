@@ -410,3 +410,18 @@ class OfflineOutcome:
     silent: bool = False
 
 
+class OfflineBrain:
+    """Deterministic regex utterance brain (no LLM anywhere).
+
+    ``executor`` is a :class:`brain.agent.tool_executor.ToolExecutor` — it
+    owns the registry/hooks/scene_graph/backend/embodiment/failure-budget
+    and runs the pre-hook confirm gate + post-hook verifier pipeline; this
+    brain never constructs hooks itself (the voice app does).  ``embodiment``
+    is anything with ``base_relative.key_positions`` (brain/embodiment.py
+    Embodiment, or the loader's EmbodimentConfig); the named-spot map is
+    stored for the place_at_spot lane's validation.  ``name`` is the
+    robot's spoken name provided by the voice app — the production
+    Embodiment carries no name attribute, so without it the
+    greeting-vocative strip degrades to the fastpath heard-name fallback.
+    """
+
