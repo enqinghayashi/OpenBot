@@ -1185,3 +1185,37 @@ class AnthropicMessagesClient:
             )
         return out
 
+    @staticmethod
+    def _content_blocks(content: Any) -> List[dict]:
+        """OpenAI content (str or parts list) -> Anthropic content blocks.
+
+        Text stays text; ``image_url`` parts become base64 ``image``
+        blocks; an already-Anthropic ``image`` part passes through.  Non-
+        representable parts (bare URLs) are dropped.
+        """
+        blocks: List[dict] = []
+        if isinstance(content, str):
+            if content:
+                blocks.append({"type": "text", "text": content})
+            return blocks
+        if not isinstance(content, list):
+            return blocks
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            ptype = part.get("type")
+            if ptype == "text" and isinstance(part.get("text"), str):
+                blocks.append({"type": "text", "text": part["text"]})
+            elif ptype == "image_url":
+                url = part.get("image_url")
+                block = (
+                    _image_block_from_data_uri(url.get("url"))
+                    if isinstance(url, dict)
+                    else None
+                )
+                if block is not None:
+                    blocks.append(block)
+            elif ptype == "image":
+                blocks.append(part)
+        return blocks
+
