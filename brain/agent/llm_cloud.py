@@ -1082,3 +1082,37 @@ class AnthropicMessagesClient:
     ``think_blocks_seen``, ``dropped_calls``, ``images_seen``.
     """
 
+    def __init__(
+        self,
+        base_url: str = "https://api.anthropic.com",
+        model: str = "",
+        api_key_env: str = "ANTHROPIC_API_KEY",
+        temperature: float = 0.2,
+        max_tokens: int = 256,
+        timeout_s: float = 120.0,
+        _transport: Optional[Callable] = None,
+    ) -> None:
+        if not base_url:
+            raise ValueError(
+                "AnthropicMessagesClient requires base_url (the API root, "
+                "e.g. https://api.anthropic.com)"
+            )
+        if not model:
+            raise ValueError("AnthropicMessagesClient requires model")
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.api_key_env = api_key_env or "ANTHROPIC_API_KEY"
+        self.temperature = float(temperature)
+        self.max_tokens = int(max_tokens)
+        self.timeout_s = float(timeout_s)
+        self._transport = _transport  # test seam: overrides the HTTP call
+        self._flight = _SingleFlight()
+        self.think_blocks_seen: int = 0
+        self.parse_failures: int = 0
+        self.chat_calls: int = 0
+        self.images_seen: int = 0
+        #: replies cut off by the completion budget (finish_reason
+        #: "length"; "max_tokens" on Anthropic), counted apart
+        #: from parse_failures.
+        self.truncations: int = 0
+
