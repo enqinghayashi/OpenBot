@@ -1253,3 +1253,10 @@ class AnthropicMessagesClient:
             )
         return blocks
 
+    @staticmethod
+    def _blocks_text(content: Any) -> str:
+        """Plain text of str/parts content ("" when none) for system and
+        tool_result payloads."""
+        text = CloudLLMClient._content_text(content)
+        return text if text else ""
+
