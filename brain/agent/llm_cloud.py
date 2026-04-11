@@ -1044,3 +1044,5 @@ def _count_anthropic_image_parts(body: dict) -> int:
         for block in content
         if isinstance(block, dict) and block.get("type") == "image"
     )
+
+
