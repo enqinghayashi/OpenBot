@@ -115,3 +115,22 @@ def register_optional_tools(registry, switches, importer=importlib.import_module
     return registered
 
 
+def _restore_order(registry, order):
+    """Re-establish the pre-lane registration order after a rollback.
+
+    A restored original is re-registered at the END of the registry, so
+    without this a failed REPLACES lane would leave get_specs() in a
+    different order than before the lane ran (a spec-bytes change on a
+    FORCED OFF lane).  Only the SAME objects are unregistered and
+    re-registered (identity kept); a name not present is skipped."""
+    current = list(registry.snapshot())
+    if current == order:
+        return
+    first = 0
+    while first < len(order) and first < len(current) and order[first] == current[first]:
+        first += 1
+    snap = registry.snapshot()
+    for name in order[first:]:
+        if name in snap:
+            registry.unregister(name)
+            registry.register(snap[name])
