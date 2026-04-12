@@ -796,3 +796,12 @@ class OfflineBrain:
         configured — normalization is case/space only, never a guess."""
         return " ".join(str(name).lower().split())
 
+    def _resolve_spot(self, token: str) -> Optional[str]:
+        """Map a user spot token to a CONFIGURED key_positions name.
+
+        Exact case/space-normalized match against the stored key_positions;
+        None = unknown (the caller declines honestly — never a guessed
+        position).
+        """
+        return self._spot_lookup.get(self._normalize_spot(token))
+
