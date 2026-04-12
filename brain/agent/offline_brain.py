@@ -425,3 +425,45 @@ class OfflineBrain:
     greeting-vocative strip degrades to the fastpath heard-name fallback.
     """
 
+    def __init__(
+        self, executor: ToolExecutor, embodiment: Any, name: Optional[str] = None
+    ) -> None:
+        """Build the brain.
+
+        ``executor`` is a :class:`brain.agent.tool_executor.ToolExecutor`
+        — it owns the registry/hooks/scene_graph/backend/embodiment/
+        failure-budget and runs the pre-hook confirm gate + post-hook
+        verifier pipeline; this brain never constructs hooks itself (the
+        voice app does).  ``embodiment`` is anything with
+        ``base_relative.key_positions`` (brain/embodiment.py Embodiment,
+        or the loader's EmbodimentConfig); the named-spot map is stored
+        for the place_at_spot lane's validation.  ``name`` is the robot's
+        spoken name provided by the voice app — the production Embodiment
+        class carries no name attribute, so this constructor is the way
+        the name reaches the brain.  The effective vocative-strip name is
+        the explicit ``name`` when given (it wins), else the embodiment's
+        ``name`` if it has one, else None — without a name the
+        greeting-vocative strip degrades to the fastpath heard-name
+        fallback.
+        """
+        if executor is None:
+            raise ValueError("OfflineBrain requires a ToolExecutor")
+        self.executor = executor
+        self.embodiment = embodiment
+        br = getattr(embodiment, "base_relative", None)
+        key_positions = getattr(br, "key_positions", None) if br is not None else None
+        # what validation uses
+        # + name lookup
+        self.key_positions: Dict[str, List[float]] = dict(key_positions or {})
+        self._spot_lookup = {
+            self._normalize_spot(name): name for name in self.key_positions
+        }
+        # explicit param wins
+        # (production Embodiment
+        #  has no name attribute)
+        # else embodiment's
+        # none -> fastpath strip
+        self._name = (name or getattr(embodiment, "name", None) or "").strip() or None
+
+    # --------------------------------------------------- leading-vocative strip
+
