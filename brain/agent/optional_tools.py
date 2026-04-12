@@ -64,3 +64,5 @@ def switch_on(switches, key):
     ``OPTIONAL_TOOL_LANES``), so they register no tool and leave
     ``get_specs()`` byte-identical."""
     return isinstance(switches, dict) and switches.get(key) is True
+
+
