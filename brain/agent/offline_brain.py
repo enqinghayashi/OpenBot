@@ -467,3 +467,61 @@ class OfflineBrain:
 
     # --------------------------------------------------- leading-vocative strip
 
+    def _strip_vocative(self, text: str) -> str:
+        """Strip a leading vocative from the RAW utterance, name-aware.
+
+        Gap 2 fix: the KWS wake phrase ('hey stewart') can survive into
+        the raw transcript, and fastpath's NAME_PREFIX_RE head only ever
+        matches a leading 's-word' — never 'hey ...'.  This brain strips
+        the EMBODIED name's leading vocative forms (hey/hi/hello <name>,
+        <name>, and <name>), then falls back to the fastpath heard-name
+        strip.  Two deliberate deviations from the fastpath strip:
+
+          - a greeting head ONLY strips the embodied name, never an
+            arbitrary word ('hey hey' / 'hello there' are untouched);
+          - a partial KWS 'he' is NOT a vocative: the fastpath '(he )?'
+            prefix allowance is dropped here, so 'he stewart ...' (a
+            braindead 'he' partial, not 'hey stewart ...') stays
+            unstripped and the utterance declines honestly.
+
+        Halt words and verb heads are refused exactly like fastpath
+        (HALT_PHRASE_STARTS / S_VERB_HEADS); the raw halt check and the
+        post-strip halt re-check in new_utterance are untouched.
+        """
+        name = self._name
+        if name:
+            # bare summon, terminal
+            # regexes want a separator
+            # but the wake word lands
+            # ('hey stewart.')
+            # else it answered itself
+            # its own wake word
+            # halt/verb heads guarded
+            # 'stop' / 'set' are commands
+            g = _GREETING_HEAD_RE.match(text)
+            if g and text[g.end():].strip().rstrip(".,!?").lower() == name.lower():
+                return ""
+            b = _BARE_NAME_HEAD_RE.match(text)
+            if b:
+                cand = b.group(1).rstrip(".,!?").lower()
+                if cand == name.lower():
+                    if cand in HALT_PHRASE_STARTS or cand in S_VERB_HEADS:
+                        return text
+                    return ""
+            m = _GREETING_VOCATIVE_RE.match(text)
+            if m and m.group(1).rstrip(".,!?").lower() == name.lower():
+                return text[m.end():]
+            m = _BARE_NAME_RE.match(text)
+            if m:
+                cand = m.group(1).rstrip(".,!?").lower()
+                if cand == name.lower():
+                    if cand in HALT_PHRASE_STARTS or cand in S_VERB_HEADS:
+                        return text
+                    return text[m.end():]
+        # fastpath fallback, minus '(he )?'
+        if re.match(r"^he\s+", text, re.IGNORECASE):
+            return text
+        return _strip_heard_name(text)
+
+    # ------------------------------------------------------------- decision tree
+
