@@ -103,3 +103,34 @@ class ToolExecutor:
     run(): the per-utterance budget reset lives here.
     """
 
+    def __init__(
+        self,
+        *,
+        registry: Any,
+        hooks: Any,
+        scene_graph: Any,
+        backend: Any,
+        embodiment: Any,
+        failure_budget: int,
+    ) -> None:
+        self.registry = registry
+        self.hooks = hooks
+        self.scene_graph = scene_graph
+        self.backend = backend
+        self.embodiment = embodiment
+        self.failure_budget = int(failure_budget)
+        # per-utterance state: a fresh executor per run()
+        # resets the failure budget; G1Agent nils _executor
+        # at the top of run()
+        self._failure_budget_left = self.failure_budget
+        self._terminal_text: Optional[str] = None
+        # the tool set this run runs against — a registry
+        # snapshot (a mapping with .get; ToolRegistry has
+        # none).  G1Agent's run() pushes its own here before
+        # any execute(); `registry` is the lazy builder's
+        # fresh snapshot — an early execute() still resolves
+        # something honest
+        self._tools = registry
+
+    # ---------------------------------------------------- running one tool call
+
