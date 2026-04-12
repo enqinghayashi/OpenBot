@@ -66,3 +66,50 @@ def switch_on(switches, key):
     return isinstance(switches, dict) and switches.get(key) is True
 
 
+def register_optional_tools(registry, switches, importer=importlib.import_module):
+    """All-or-nothing per lane. switch must be exactly True. Any failure
+    (import, factory, name clash) -> print('[<tag>] <mod> FAILED (<exc>) - tool FORCED OFF')
+    and skip the lane; never raise. A lane module may declare REPLACES = ('scene_brief',)
+    to re-register an existing tool under the same name (restored on rollback).
+
+    Returns the list of tool names registered (or re-registered) by the
+    lanes that went ON, in lane order."""
+    if not isinstance(switches, dict):
+        return []
+    registered = []
+    for tag, mod_name, factory_name, tool_name in OPTIONAL_TOOL_LANES:
+        if switches.get(tag) is not True:
+            continue
+        done = []        # this lane's adds
+        replaced = []    # old Tool objects
+        order = None     # pre-swap order
+        try:
+            mod = importer(mod_name)
+            tools = list(getattr(mod, factory_name)(registry))
+            names = [t.name for t in tools]
+            if tool_name not in names:
+                raise RuntimeError("factory returned %r, expected %r" % (names, tool_name))
+            allowed = tuple(getattr(mod, "REPLACES", ()))
+            for t in tools:
+                if registry.has(t.name) and t.name not in allowed:
+                    raise RuntimeError("name clash: %r" % t.name)
+            for t in tools:
+                # `not in done`: a dup inside one factory list must clash,
+                # not push out this lane's own tool
+                if t.name in allowed and registry.has(t.name) and t.name not in done:
+                    if order is None:
+                        order = list(registry.snapshot())
+                    replaced.append(registry.snapshot()[t.name])
+                    registry.unregister(t.name)
+                registry.register(t)
+                done.append(t.name)
+            registered.extend(names)
+        except (Exception, SystemExit) as exc:  # off, never crash
+            for n in done:
+                registry.unregister(n)          # this lane only
+            for orig in replaced:
+                registry.register(orig)         # originals back
+            if replaced:
+                _restore_order(registry, order)  # get_specs() order as well
+            print("[%s] %s FAILED (%s) - tool FORCED OFF" % (tag, mod_name, exc))
+    return registered
