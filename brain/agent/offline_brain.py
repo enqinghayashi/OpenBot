@@ -805,3 +805,16 @@ class OfflineBrain:
         """
         return self._spot_lookup.get(self._normalize_spot(token))
 
+    def _unknown_spot_reply(self, token: str) -> str:
+        """Honest unknown-spot decline listing the configured spots."""
+        known = sorted(self._spot_lookup.values())
+        if not known:
+            return (
+                "I don't know any named spots to place at — no base-relative "
+                "key positions are configured, and I never guess a position."
+            )
+        return (
+            f"I don't know a spot called {token!r}. The configured "
+            f"base-relative spots are: {', '.join(known)}. I never guess a "
+            "position — tell me one of those names."
+        )
