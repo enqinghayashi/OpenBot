@@ -93,3 +93,13 @@ class ToolOutcome:
     terminal: bool = False
 
 
+class ToolExecutor:
+    """The tool-call execution machinery (extracted verbatim from G1Agent;
+    see the module docstring).  Carries the same attribute names the
+    original method bodies reference — ``_tools`` (the per-run registry
+    snapshot), ``scene_graph``, ``hooks``, ``backend``, ``embodiment``,
+    ``failure_budget``, ``_failure_budget_left``, ``_terminal_text`` — so
+    the moved bodies resolve ``self.X`` exactly as before.  Fresh per
+    run(): the per-utterance budget reset lives here.
+    """
+
