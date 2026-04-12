@@ -764,3 +764,28 @@ class OfflineBrain:
 
     # ------------------------------------------------------------- motion lanes
 
+    def _motion(self, name: str, args: dict) -> OfflineOutcome:
+        """Run one motion lane through the executor and phrase the result
+        verdict-aware.
+
+        The spoken reply is ToolExecutor._fastpath_summary's — the exact
+        phrasing the online fast path emits, keyed on the executor's
+        classification of the tool result (VERDICT:success is the ONLY
+        success; everything else phrases in-progress/not-confirmed/
+        failure).  place_at_spot is the 'place' platform verb (engine
+        'drop', release-only — tool_executor._PLATFORM_VERB and
+        _describe_action say the same), so its phrasing is the place
+        phrasing, byte-identical.
+        """
+        outcome: ToolOutcome = self.executor.execute(name, args)
+        summary_name = "place" if name == "place_at_spot" else name
+        reply = self.executor._fastpath_summary(
+            summary_name, args, outcome.kind, outcome.reason
+        )
+        return OfflineOutcome(
+            reply=reply,
+            tool_call=ToolCall(OFFLINE_TOOL_CALL_ID, name, dict(args)),
+        )
+
+    # ------------------------------------------------- place_at_spot validation
+
