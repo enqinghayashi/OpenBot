@@ -789,3 +789,10 @@ class OfflineBrain:
 
     # ------------------------------------------------- place_at_spot validation
 
+    @staticmethod
+    def _normalize_spot(name: str) -> str:
+        """Case/space normalization for spot names: lowercase + collapsed
+        whitespace ('THE  SHELF' -> 'the shelf').  Underscores are kept as
+        configured — normalization is case/space only, never a guess."""
+        return " ".join(str(name).lower().split())
+
