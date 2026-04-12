@@ -256,3 +256,25 @@ class ToolExecutor:
             result_text = envelope_to_str(env)
         return self._finish_tool_result(result_text)
 
+    def _auto_return(self, text: str) -> str:
+        """B8l-hf4: run return_home after a fetch pick; append its outcome and
+        the next step.  Never raises; its 'ERROR:' is reworded so the pick's
+        own classification is untouched (any 'ERROR:' marks a reply failed)."""
+        tool = self._tools.get("return_home") if self._tools is not None else None
+        if tool is None:
+            return text
+        log.info("fetch pick: walking back to the start point (auto return_home)")
+        try:
+            env = tool.call({})
+        except Exception as exc:  # noqa: BLE001 -- the pick result stands either way
+            env = fail("return_home raised: %s" % exc)
+        rt = envelope_to_str(env).replace("ERROR:", "failed:")
+        if isinstance(env, dict) and env.get("success"):
+            return (text + "\nAUTO_RETURN: done - " + rt + "\nNEXT: you are back at "
+                    "the start point facing the person who asked: place with "
+                    "into='person' now (navigate to 'person' first if they are "
+                    "out of reach).")
+        return (text + "\nAUTO_RETURN: did not finish - " + rt + "\nNEXT: you still "
+                "hold the object; tell the person, and call return_home again "
+                "when the way is clear.")
+
