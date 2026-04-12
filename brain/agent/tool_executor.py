@@ -91,3 +91,5 @@ class ToolOutcome:
     kind: str
     reason: str = ""
     terminal: bool = False
+
+
