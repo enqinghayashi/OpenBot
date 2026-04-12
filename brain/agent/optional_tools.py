@@ -113,3 +113,5 @@ def register_optional_tools(registry, switches, importer=importlib.import_module
                 _restore_order(registry, order)  # get_specs() order as well
             print("[%s] %s FAILED (%s) - tool FORCED OFF" % (tag, mod_name, exc))
     return registered
+
+
