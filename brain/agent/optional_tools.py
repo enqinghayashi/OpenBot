@@ -52,3 +52,15 @@ OPTIONAL_TOOL_LANES = (
 )
 
 
+def switch_on(switches, key):
+    """True ONLY when ``switches`` is a plain ``dict`` and ``switches.get(key)``
+    is the literal ``True`` (a string 'true', 1, or any other truthy value
+    reads OFF — the same rule ``register_optional_tools`` applies to a lane).
+
+    Used for the batch-4 non-lane switches that live in the SAME hand-merged
+    ``optional_tools:`` section (architecture §17 M6):
+    ``hint_charset_refusal`` and ``target_disambiguation``.  Non-lane keys
+    are ignored by ``register_optional_tools`` (it iterates only
+    ``OPTIONAL_TOOL_LANES``), so they register no tool and leave
+    ``get_specs()`` byte-identical."""
+    return isinstance(switches, dict) and switches.get(key) is True
