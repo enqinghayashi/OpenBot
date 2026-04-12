@@ -74,3 +74,20 @@ _VERDICT_RE = re.compile(r"VERDICT:(success|failure|in_progress)\|Evidence:(.*)"
 _REASON_RE = re.compile(r"\|Reason:(.*)$", re.DOTALL)
 
 
+@dataclass
+class ToolOutcome:
+    """One tool execution's outcome, shaped for the caller's branching.
+
+    ``text`` is the exact result text the caller emits (verdict line or
+    envelope string — byte-identical to the pre-extraction
+    _handle_tool_call return).  ``kind``/``reason`` carry the
+    _classify_result classification of that text, and ``terminal`` is True
+    when the result exhausted the failure budget (the caller then emits
+    the COMPLETE_FAIL_PREFIX text, which the executor also mirrors on its
+    own ``_terminal_text`` slot).
+    """
+
+    text: str
+    kind: str
+    reason: str = ""
+    terminal: bool = False
