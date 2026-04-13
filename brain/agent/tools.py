@@ -132,3 +132,108 @@ def envelope_to_str(env: dict) -> str:
         detail = "" if env.get("value") is None else str(env["value"])
         return f"OK: {detail}".rstrip()
     return f"ERROR: {env.get('reason') or 'unknown error'}"
+
+
+def _not_detected(label: str, recovery: Optional[str] = None) -> str:
+    """The ONE NOT_DETECTED refusal shape.  The head is written here and
+    nowhere else, so the pick lookup and the place ``into:`` lookup cannot
+    drift into two different stories about the same missing object.
+
+    ``recovery`` is MODEL-FACING, and must be passed only where the string
+    can never reach the speaker.  Part E (operator directive 2026-09-28)
+    wants a refusal to name the way out — call ``navigate``, then try again —
+    because that is what makes the model chain instead of giving up.  But
+    ``_fastpath_summary`` interpolates a place ``into:`` refusal VERBATIM
+    into the spoken sentence ("I could not place the bottle into the bin:
+    <reason>"), and the operator's standing directive is that speech stays
+    short and reason-free.  Reading "call navigate with this label ..." aloud
+    would be an instruction addressed to the model, delivered to a human.
+
+    So the asymmetry is deliberate and is pinned by test: the pick lookup
+    passes a recovery (its failure phrasing is a fixed one-line sentence and
+    never echoes the reason), the container lookup does not.
+    """
+    head = (
+        f"NOT_DETECTED: {label!r} is not in the current scene "
+        "(detections are event-driven — silence means empty)"
+    )
+    if recovery is None:
+        return head
+    return (
+        head + ". This is NOT the end of the task: call navigate with this "
+        f"label to search the workspace and walk to it, then {recovery}."
+    )
+
+
+#: model-facing next step for a fetch pick, never spoken and never
+#: phrased as an error.
+_FETCH_NEXT_STEP = ("; NEXT_STEP=fetch_return: this pick is part of a fetch for the "
+                    "person who asked - do NOT stop here and do NOT put it on a "
+                    "table: the robot walks back to the start point by itself "
+                    "(else call return_home), then place with into='person' "
+                    "(navigate to 'person' first if they are out of reach)")
+
+
+def _not_detected_held(label: str, ss: Any) -> str:
+    """NOT_DETECTED for a label the self-state believes is in the hand: the
+    object is absent from the scene BECAUSE it is probably held, so the
+    generic 'navigate to search' recovery would send the robot off for it."""
+    age = 0
+    try:
+        age = ss.hold_age()
+    except Exception:  # noqa: BLE001
+        pass
+    if _hold_is_measured(ss):
+        # a hold the fingers confirm: they are held open by an object after the lift.
+        # do not suggest open_hand here, it would release the object.
+        return (
+            "NOT_DETECTED: %r is not in the current scene (detections are "
+            "event-driven \u2014 silence means empty) - because you are "
+            "holding it (picked %ds ago; the fingers were held off their "
+            "close command by an object after the lift, MEASURED). Stay: do NOT "
+            "navigate to find it and do NOT pick it again. Call place if "
+            "the operator asked you to put it somewhere; call open_hand only "
+            "if the operator asks you to let go" % (label, age)
+        )
+    return (
+        "NOT_DETECTED: %r is not in the current scene (detections are "
+        "event-driven \u2014 silence means empty) - but you may be holding it "
+        "(picked %ds ago; if a release or cancel left the hand state "
+        "unconfirmed it may or may not still be there). It is probably in "
+        "your hand: do NOT navigate to find it now; check, or call place "
+        "or open_hand first. If the operator asks for it again after "
+        "this, navigate to search for it"
+        % (label, age)
+    )
+
+
+def _hold_is_measured(ss: Any) -> bool:
+    """B8h: the self-state's hold is the verifier's MEASURED one (False for a
+    self-state without the method: byte-identical old wording)."""
+    try:
+        return bool(ss.hold_measured())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _not_detected_unconfirmed(label: str, ss: Any) -> str:
+    """B8h: NOT_DETECTED for a label whose last pick came back UNCONFIRMED.
+    MEASURED (s1): a lifted object leaves the camera's view, so its absence is
+    the expected sign of a hold.  The generic reply said 'call navigate', the
+    held reply said 'open_hand first'; both made the model leave or drop it.
+    Neither is said here."""
+    age = 0
+    try:
+        age = ss._age(ss.pick_unconfirmed["ts"])
+    except Exception:  # noqa: BLE001
+        pass
+    return (
+        "NOT_DETECTED: %r is not in the current scene (detections are "
+        "event-driven \u2014 silence means empty) - and your pick of it %ds ago "
+        "was not fully confirmed, so it is probably in your hand (the camera "
+        "cannot see a held object). Stay: do NOT navigate to find it and do NOT "
+        "pick it again. Tell the operator in one sentence that the pick is "
+        "not fully confirmed; call place if the operator asked you to put it "
+        "somewhere; call open_hand only if the operator asks you to let go"
+        % (label, age)
+    )
