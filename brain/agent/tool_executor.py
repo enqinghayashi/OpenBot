@@ -287,3 +287,38 @@ class ToolExecutor:
         return "label" in params or any(
             p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
+    def _finish_tool_result(self, text: str) -> ToolOutcome:
+        """Classify the result and apply failure-budget bookkeeping."""
+        kind, reason = self._classify_result(text)
+        # those SPOKEN failure sentences are reason-free on
+        # purpose — operator: "failed, try again".  but `reason`
+        # only lived here and got dropped: two DICTATED
+        # refusals ('floor pick refused: workspace z=... <
+        # min -0.35 m', 'pick engine not configured
+        # (engine_cmd empty)') and every engine/verifier error
+        # read the same in the transcript.  a post-mortem then
+        # had to read source (it cost a whole multi-agent
+        # trace).  log it where kind and reason get computed —
+        # the reason is already in the text, verbatim.
+        if kind in ("failure", "unknown"):
+            log.warning(
+                "tool %s -> %s: %s",
+                getattr(self, "_current_tool", "?"),
+                kind,
+                text.replace("\n", " ")[:400],
+            )
+        self._apply_budget(kind, reason)
+        # expose self-state on every reply except the
+        # offline-parsed query tools (classification used RAW)
+        _ss = getattr(self.scene_graph, "self_state", None)
+        _line = _ss.render() if _ss is not None else ""
+        if _line and getattr(self, "_current_tool", None) not in (
+                "scene_brief", "resolve_ref"):
+            text = text + SELF_STATE_MARK + _line[len("SELF_STATE: "):]
+        return ToolOutcome(
+            text=text,
+            kind=kind,
+            reason=reason or "",
+            terminal=self._terminal_text is not None,
+        )
+
