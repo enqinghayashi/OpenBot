@@ -604,3 +604,53 @@ def container_aim(xc: float, yc: float, half: float, rim_z: float,
                         "inset": ins, "residual": round(r, 3),
                         "edge": round(edge, 3)}
     return None
+
+
+def _low_lane_drop_point(geo: dict) -> Optional[dict]:
+    """B8j-hf13: the drop point handed to the descent lane for a low container:
+    container_aim's x/y rule (deepest inset past the near rim, inside the side
+    rims, x >= 0 for the right arm when the opening allows) without its
+    standing reach gate, at z = rim + 0.02 (the legacy release height)."""
+    try:
+        xc, yc = float(geo["x"]), float(geo["y"])
+        half = max(CONTAINER_HALF_MIN_M, min(CONTAINER_HALF_MAX_M, float(geo["half"])))
+        edge, rim = float(geo["near"]), float(geo["rim"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not all(math.isfinite(v) for v in (xc, yc, half, edge, rim)):
+        return None
+    d = math.hypot(xc, yc)
+    if d < 0.05:
+        return None
+    depth = 2.0 * half
+    ins = min(max(AIM_INSET_MIN_M, min(AIM_INSET_MAX_M, AIM_INSET_FRAC * depth)),
+              depth - AIM_FAR_MARGIN_M)
+    if ins < AIM_INSET_MIN_M:
+        ins = depth / 2.0
+    da = max(0.0, edge) + ins
+    x, y = xc / d * da, yc / d * da
+    x_lo, x_hi = xc - (half - AIM_X_MARGIN_M), xc + (half - AIM_X_MARGIN_M)
+    if x_lo <= x_hi:
+        x = max(x_lo, min(x_hi, x))
+        if x < 0.0 <= x_hi:
+            x = 0.0
+    return {"x": round(x, 3), "y": round(y, 3), "z": round(rim + 0.02, 3)}
+
+
+def parse_creep_reply(text: Any) -> Dict[str, str]:
+    """The KEY=value tokens of a gateway creep reply (strings)."""
+    return dict(_CREEP_TOKEN_RE.findall(text if isinstance(text, str) else ""))
+
+
+# motion tools the model sees; the backend maps each to a gateway verb
+MOTION_TOOLS = frozenset({"pick", "place", "navigate", "open_hand", "close_hand"})
+
+TOOL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
+
+
+class ToolError(Exception):
+    """Base class for tool-layer errors."""
+
+
+class ToolNameConflict(ToolError):
+    """Raised when a tool name is registered twice."""
