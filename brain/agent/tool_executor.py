@@ -278,3 +278,12 @@ class ToolExecutor:
                 "hold the object; tell the person, and call return_home again "
                 "when the way is clear.")
 
+    def _apply_verdict_takes_label(self) -> bool:
+        try:
+            import inspect
+            params = inspect.signature(self.scene_graph.apply_verdict).parameters
+        except (TypeError, ValueError, AttributeError):
+            return False
+        return "label" in params or any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
