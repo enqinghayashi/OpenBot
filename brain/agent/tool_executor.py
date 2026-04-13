@@ -425,3 +425,101 @@ class ToolExecutor:
 
     # ------------------------------------------ re-observing after a place
 
+    def _reobserve_post(
+        self,
+        context: Context,
+        first_result: Any,
+        first_obs: Optional[WorldObservation],
+    ) -> Any:
+        """Bounded in-call RE-OBSERVE loop for a place's post-condition.
+
+        ONE post-hook judgment made immediately after the release cannot
+        stand, for two INDEPENDENT reasons — both are a missing second
+        observation, so both are answered by re-observing here rather than
+        by relaxing what the verifier demands:
+
+          * THE MEASURED-OPEN REFERENCE (bare place).  verify_place reads
+            grip.is_open, which is None until the side's CAUSAL OPEN
+            REFERENCE forms from TWO agreeing qualifying reads.  The
+            release is that side's first open-commanded event, so the
+            verifier's own read is read #1 (the candidate) and read #2 can
+            only come from a LATER observation.  Re-trying the tool is
+            worse than useless: a bare-place retry re-executes the release
+            and, with the hold record already cleared, is refused.
+
+          * CONTAINMENT (place into:).  The verifier's containment half
+            certifies success only on TWO CONSECUTIVE fresh in-region
+            post-drop frames of ONE task execution (one dropped_at epoch)
+            within RE_OBSERVE_WINDOW_S — and every NEW place execution
+            re-stamps dropped_at, so re-executing the tool could never
+            accumulate the pair (one observation per epoch ->
+            in_progress forever).  This loop re-observes inside the SAME
+            tool execution: the SAME tool reply (the same dropped_at) is
+            re-judged by hooks.run_post against each NEWER fresh packet,
+            so the two agreeing frames accumulate within this one call and
+            the verdict returns success the moment the honest pair is in.
+
+        Each iteration's ``self._observe()`` round-trips the gateway's
+        observe_dict(), which calls _refresh_grip_state (gateway_node.py)
+        — so a re-observe DOES advance the grip read, not merely the
+        scene, which is what lets the open reference form.
+
+        Honesty gates (all bounded by _MAX_RE_OBSERVES):
+          * fresh-only: each iteration feeds run_post ONLY a packet that
+            is fresh AND strictly NEWER than the last packet judged — a
+            re-delivered packet is one frame, never two (the verifier
+            would re-anchor it anyway; same-packet re-delivery is never
+            reused as the second frame);
+          * bounded: after the retry cap the LAST verifier verdict stands
+            (never a fabricated success) with the in-call re-observe
+            context appended, so the evidence names the ambiguity and the
+            honest next step;
+          * settle spacing: re-observes land ~_RE_OBSERVE_SETTLE_S apart,
+            so both frames stay inside RE_OBSERVE_WINDOW_S of each other
+            and each packet stays inside POST_DROP_FRESHNESS_S at judge
+            time.
+
+        No second tool call is exposed to the model: execute() still
+        returns ONE ToolOutcome.  Each task keeps its OWN dropped_at
+        epoch (stamped by the tool layer per execution — unchanged), so a
+        NEW drop still re-anchors the verifier's record: no cross-task
+        leak.
+        """
+        last_result = first_result
+        last_ts = getattr(first_obs, "detections_ts", 0.0) or 0.0
+        attempts = 0
+        judged = 0
+        while attempts < _MAX_RE_OBSERVES:
+            attempts += 1
+            if self.backend is not None:
+                time.sleep(_RE_OBSERVE_SETTLE_S)
+            re_obs = self._observe()
+            ts = getattr(re_obs, "detections_ts", 0.0) or 0.0
+            if (
+                re_obs is None
+                or not getattr(re_obs, "fresh", False)
+                or ts <= 0.0
+                or ts <= last_ts
+            ):
+                # useless (no source / stale) or not strictly newer
+                # (same packet twice): never fed to the verifier.
+                # one frame, never two
+                continue
+            if self.scene_graph is not None:
+                self.scene_graph.update(re_obs)
+            last_ts = ts
+            judged += 1
+            result = self.hooks.run_post(context, re_obs)
+            if result.state != "post_pending":
+                # measured either way, it stands
+                return result
+            last_result = result
+        if last_result.state == "post_pending":
+            last_result = HookResult.post_pending(
+                self._reobserve_cap_reason(
+                    last_result.reason, attempts, judged,
+                    getattr(getattr(context, "pending_action", None), "tool", None)
+                    or "place")
+            )
+        return last_result
+
