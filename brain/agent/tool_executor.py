@@ -408,3 +408,20 @@ class ToolExecutor:
             f"unexpected post-hook state {state!r}"
         )
 
+    @staticmethod
+    def _hook_result_to_verdict(result: "HookResult") -> Optional[Verdict]:
+        """Map a post-hook HookResult to a Verdict for scene-graph updates
+        (apply_verdict mutates ref edges only on a confirmed success)."""
+        state = getattr(result, "state", None)
+        reason = (getattr(result, "reason", None) or "").strip()
+        if state == "post_ok":
+            return Verdict.success(reason or "post-hook verified")
+        if state == "post_pending":
+            return Verdict.in_progress(reason or "re-observe")
+        if state == "post_fail":
+            fail_reason = reason or "post-hook failed"
+            return Verdict.failure(fail_reason, fail_reason)
+        return None
+
+    # ------------------------------------------ re-observing after a place
+
