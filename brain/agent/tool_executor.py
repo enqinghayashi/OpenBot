@@ -618,3 +618,18 @@ class ToolExecutor:
             return ("failure", text[len("ERROR:"):].strip() or None)
         return ("unknown", None)
 
+    def _apply_budget(self, kind: str, reason: Optional[str]) -> None:
+        """Failure decrements, success resets, in_progress/neutral never
+        move the budget; once exhausted, the NEXT failure terminates the
+        task."""
+        if kind == "success":
+            self._failure_budget_left = self.failure_budget
+        elif kind == "failure":
+            self._failure_budget_left -= 1
+            if self._failure_budget_left < 0:
+                self._terminal_text = COMPLETE_FAIL_PREFIX + (
+                    reason or "repeated failures"
+                )
+
+    # --------------------------------------------------------- the fast path
+
