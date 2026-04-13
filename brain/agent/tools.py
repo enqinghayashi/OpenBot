@@ -339,3 +339,92 @@ def _self_collision_hint(label: str, reason: str) -> str:
         "right of my centre line, then ask me again. Do not switch arms"
         % (_CROSS_BODY_MARK, pos, when, label, say, ask)
     )
+
+
+def _annotate_cross_body(env, label: str):
+    """Append the cross-body hint ONCE to a failed pick/place reply whose
+    reason carries ERROR:self_collision (bare or lane-wrapped)."""
+    try:
+        reason = env.get("reason") if isinstance(env, dict) else None
+        if (isinstance(env, dict) and not env.get("success")
+                and isinstance(reason, str)
+                and _SELF_COLLISION_RE.search(reason)
+                and _CROSS_BODY_MARK not in reason):
+            env = dict(env)
+            env["reason"] = reason.rstrip() + _self_collision_hint(
+                label or "object", reason)
+    except (TypeError, ValueError):
+        pass
+    return env
+
+
+# --- constants ---------------------------------------------------------------
+
+DEFAULT_TIMEOUT_S = 30.0
+
+#: cancel reply timeout: a healthy reply arrives in milliseconds, so a
+#: longer bound only waits on a hang. keep it above the gateway's 5.0 s
+#: cancel-reply timeout.
+CANCEL_TIMEOUT_S = 10.0
+
+# must mirror the per-tool contract timeouts
+CONTRACT_TIMEOUTS: Dict[str, float] = {
+    # pick needs 180 s: the engine reports done in about 3 s, then the daemon
+    # spends about 33 s lifting and tucking. timeouts must nest as 120 s
+    # internal < 150 s socket < 180 s tool.
+    "pick": 180.0,
+    "place": 60.0,
+    # navigate needs 180 s: a full search takes 12 windows of 5 s plus a
+    # ~1.05 s turn each (~73 s) before the FSM gives up, before any detected
+    # hold of up to 10 s. a 60 s bound would cut that short.
+    "navigate": 180.0,
+    "open_hand": 10.0,
+    "close_hand": 15.0,
+    # pose needs 30 s: 'tuck' is two moves (carry and carry_left), each a
+    # gravity feed-forward solve.
+    "pose": 30.0,
+}
+
+#: names the tool accepts; the backend maps them to engine verbs, which
+#: carry 'tuck' per arm.
+POSE_NAMES: frozenset = frozenset({"ready", "tuck", "neutral", "home"})
+
+# torso frame: the torso link is z=0, shared by the projector and the
+# engine. tabletop rows read z in [0, 0.07] and ground objects near
+# -0.75, so -0.35 refuses ground picks and keeps tabletops.
+TABLETOP_MIN_Z = -0.35
+TABLETOP_MAX_Z = 1.20  # default when no embodiment supplies a bound
+
+#: a container detection is usable only while this fresh; only the
+#: current row is checked for disambiguation.
+CONTAINER_REF_FRESH_S = 10.0
+
+# a value matching this is written bare; other labels are quoted so
+# multi-word names like 'wine glass' survive the round trip.
+_ANNOTATION_BARE_VALUE_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
+
+
+def _annotation_value(value: str) -> str:
+    """Encode a label for the legacy place-into annotation format.
+
+    Bare when the value contains only ``[A-Za-z0-9_.-]`` (single-token
+    labels — annotation bytes are byte-identical with the legacy format);
+    double-quoted otherwise, so multi-word labels ('wine glass') survive
+    the round trip with internal spaces intact.  The verifier's regexes
+    (brain/verifier._INTO_REF_RE/_INTO_LABEL_RE/_PLACED_OBJECT_RE) accept
+    the optional quote pair around the value.
+    """
+    if _ANNOTATION_BARE_VALUE_RE.match(value or ""):
+        return value
+    return '"%s"' % value
+
+
+#: extra lift for place: max(pick-time h when 0 < h <= 0.5, a class floor).
+#: the gate keeps junk heights out; 2.5 x 0.095 = 0.2375 m cup floor,
+#: 2.5 x 0.16 = 0.40 m engine cap. never applied to a pick.
+PLACE_LIFT_FLOOR_H_M = 0.095
+PLACE_LIFT_TALL_H_M = 0.16
+PLACE_LIFT_TALL_CLASSES = frozenset(("bottle", "vase", "wine glass"))
+PLACE_LIFT_H_MAX_M = 0.5  # matches the gateway pick height limit
+
+
