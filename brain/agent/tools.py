@@ -132,3 +132,5 @@ def envelope_to_str(env: dict) -> str:
         detail = "" if env.get("value") is None else str(env["value"])
         return f"OK: {detail}".rstrip()
     return f"ERROR: {env.get('reason') or 'unknown error'}"
+
+
