@@ -369,3 +369,42 @@ class ToolExecutor:
             return "" if value is None else str(value)
         return f"ERROR: {env.get('reason') or 'unknown error'}"
 
+    @staticmethod
+    def _hook_result_to_text(result: "HookResult") -> str:
+        """Render a post-hook HookResult back into the verdict-shaped line
+        the model and the budget classifier read.
+
+        Contract with brain.hooks (assignment agent-hook-wiring): post_ok ->
+        VERDICT:success with the hook's evidence; post_pending ->
+        VERDICT:in_progress with evidence 're-observe...' (conservative —
+        never success); post_fail -> VERDICT:failure with the failure
+        reason.  Any other/unknown state is rendered conservatively as
+        in_progress.  The agent NEVER self-grades: a success line exists
+        only when the post-hook's verifier produced it.
+
+        The verifier post-hook already passes ``verdict.to_string()``
+        (a complete 'VERDICT:...|Evidence:...|Reason:...' line) as the
+        HookResult reason; a reason that already parses as a complete
+        verdict is passed through VERBATIM — wrapping it in another
+        'VERDICT:...|Evidence:...' layer would corrupt the model and the
+        budget classifier's read of the line.
+        """
+        state = getattr(result, "state", None)
+        reason = (getattr(result, "reason", None) or "").strip()
+        if reason.startswith("VERDICT:") and _VERDICT_RE.match(reason):
+            return reason
+        if state == "post_ok":
+            return (
+                "VERDICT:success|Evidence:"
+                + (reason or "post-hook verified the action")
+            )
+        if state == "post_pending":
+            return "VERDICT:in_progress|Evidence:" + (reason or "re-observe")
+        if state == "post_fail":
+            fail_reason = reason or "post-hook failed"
+            return f"VERDICT:failure|Evidence:{fail_reason}|Reason:{fail_reason}"
+        return (
+            "VERDICT:in_progress|Evidence:re-observe; "
+            f"unexpected post-hook state {state!r}"
+        )
+
