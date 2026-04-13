@@ -116,3 +116,6 @@ except Exception as _exc:  # noqa: BLE001
 # --- result envelope ---------------------------------------------------------
 
 
+def ok(value: Any = None) -> dict:
+    """Success envelope: ``{'success': True, 'value': value}``."""
+    return {"success": True, "value": value}
