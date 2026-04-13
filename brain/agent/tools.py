@@ -237,3 +237,105 @@ def _not_detected_unconfirmed(label: str, ss: Any) -> str:
         "somewhere; call open_hand only if the operator asks you to let go"
         % (label, age)
     )
+
+
+#: reach-ceiling failures from the pick engine, bare or behind engine_reply=.
+_REACH_CEILING_RE = re.compile(r"\breach_ceiling\b")
+#: set when the hint is added, so it is never added twice.
+_REACH_HINT_MARK = "OUT OF REACH FROM HERE"
+
+
+def _reach_ceiling_hint(label: str) -> str:
+    """Model-facing recovery for ERROR:reach_ceiling: walk closer, re-pick."""
+    return (
+        ". %s: the arm cannot reach %r from where the robot stands now. This "
+        "is NOT the end of the task: the next step is to call navigate with "
+        "the label %r to walk closer to it, then pick it again. Do not ask "
+        "the operator for permission, and do not switch arms"
+        % (_REACH_HINT_MARK, label, label)
+    )
+
+
+#: cross-body failures from the pick engine, bare or behind engine_reply=.
+#: walking closer cannot help, so the hint asks the human to act.
+_SELF_COLLISION_RE = re.compile(r"\bself_collision\b")
+#: appended once; presence suppresses a second hint.
+_CROSS_BODY_MARK = "CROSS-BODY FROM HERE"
+#: collision fields; optional, missing values fall back to plain text.
+_SELF_COLLISION_FIELDS_RE = re.compile(
+    r"side=(left|right) x=(-?[\d.]+)m y=(-?[\d.]+)m .*?move_right_m=([\d.]+)")
+#: stage field: 'precheck' means no arm motion, any other stage means
+#: the arm moved and is parked at ready.
+_SELF_COLLISION_STAGE_RE = re.compile(r"\bstage=([A-Za-z0-9_-]+)")
+#: arm-safety state after the failure, e.g. already_safe or parked.
+_ARM_AFTER_RE = re.compile(r"\barm_after=([a-z_]+)")
+_ARTICLE_RE = re.compile(r"^(?:the|a|an)\s+", re.I)
+
+
+def _self_collision_hint(label: str, reason: str) -> str:
+    """Model-facing recovery for ERROR:self_collision: do NOT navigate; tell
+    the human to move the object right / turn the robot.  Pick only: a pick
+    failure is spoken as a fixed sentence (tool_executor._fastpath_summary),
+    so this text never reaches the speaker.  It states only what the engine
+    line says: the side of the midline (side=), the stage (a live stage
+    means the arm HAD moved), and numbers only when the fields are sane."""
+    x = cm = deg = None
+    side = "left"
+    m = _SELF_COLLISION_FIELDS_RE.search(reason or "")
+    if m:
+        try:
+            side = m.group(1)
+            xv, yv, mv = float(m.group(2)), float(m.group(3)), float(m.group(4))
+            if all(math.isfinite(v) for v in (xv, yv, mv)):
+                x = "%.3f" % xv
+                if mv > 0.0:
+                    cm = int(round(mv * 100.0))
+                    if yv > 0.0:
+                        deg = int(round(math.degrees(math.atan2(mv, yv))))
+        except (TypeError, ValueError):
+            pass
+    st = _SELF_COLLISION_STAGE_RE.search(reason or "")
+    stage = st.group(1) if st else None
+    aa = _ARM_AFTER_RE.search(reason or "")
+    arm_after = aa.group(1) if aa else None
+    noun = _ARTICLE_RE.sub("", label) or "object"
+    where = " (torso x=%s m)" % x if x is not None else ""
+    if side == "right":
+        pos = "%r is too close to the robot's centre line%s" % (label, where)
+        say = "the %s is too close to my centre line" % noun
+    else:
+        pos = "%r is on the robot's LEFT side%s" % (label, where)
+        say = "the %s is on my left side" % noun
+    if stage == "precheck":
+        when = ("so the pick was REFUSED before any arm motion (the arm did "
+                "NOT move)")
+        if arm_after in ("parked", "park_failed", "unknown"):
+            when += ("; afterwards the gateway's arm-safety check reported "
+                     "arm_after=%s" % arm_after)
+    elif stage:
+        if arm_after in ("park_failed", "unknown"):
+            parked = ("its park back to the ready pose was NOT confirmed "
+                      "(arm_after=%s)" % arm_after)
+        elif arm_after in ("parked", "already_safe"):
+            parked = "it was parked back at its ready pose"
+        else:
+            parked = "the engine's safe exit parks it back at its ready pose"
+        when = ("so the pick was STOPPED before the %s waypoint was commanded "
+                "(the arm had moved; %s)" % (stage, parked))
+    else:
+        when = "so the pick was REFUSED"
+    ask = "please move it to my right side"
+    if cm is not None:
+        ask += " (about %d cm further right)" % cm
+    ask += " or turn me to the left"
+    if deg is not None:
+        ask += " (about %d degrees)" % deg
+    return (
+        ". %s: %s: from where the robot stands the right arm would have to "
+        "reach across the body and press into the torso or the tucked left "
+        "arm, %s. Walking closer does NOT help: do NOT call navigate and do "
+        "NOT pick %r again until the human says it has been moved or the robot "
+        "has been turned. Tell the human in one sentence: %s; %s so it sits "
+        "right of my centre line, then ask me again. Do not switch arms"
+        % (_CROSS_BODY_MARK, pos, when, label, say, ask)
+    )
