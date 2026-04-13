@@ -523,3 +523,38 @@ class ToolExecutor:
             )
         return last_result
 
+    @staticmethod
+    def _reobserve_cap_reason(
+        last_reason: Optional[str], attempts: int, judged: int,
+        tool: str = "place",
+    ) -> str:
+        """The retry-cap in_progress evidence: the verifier's last honest
+        evidence plus the in-call re-observe context and the honest next
+        step — never silence, never a fabricated success.
+
+        B8h: a PICK gets its own text.  The place text ("post-drop ...
+        re-place ... the release") contradicted the pick verdicts' "do not
+        re-pick" (MEASURED, Stuart 2026-10-08): the pick may already be in the
+        hand, so the honest next step is to tell the operator, not to look
+        again, re-pick or navigate."""
+        base = (last_reason or "").rstrip()
+        if tool in ("pick", "pick_left"):
+            return (
+                "%s — the in-call re-observe loop ran %d attempt(s) (%d fresh "
+                "frame(s) judged) within this ONE tool execution and this "
+                "pick is not fully confirmed; the object may already be in "
+                "the hand: do NOT re-pick (a re-pick re-opens the hand and "
+                "would drop it), do NOT navigate, tell the operator what "
+                "is and is not confirmed, and place it only if the operator "
+                "asks" % (base, attempts, judged)
+            )
+        return (
+            "%s — the in-call post-drop re-observe loop ran %d attempt(s) "
+            "(%d fresh frame(s) judged) within this ONE tool execution and "
+            "the post-condition still could not be confirmed; the honest "
+            "next step is to re-observe on the next turn — NOT to re-place, "
+            "which re-executes the release (and on a bare place is refused "
+            "outright, the hold record having been cleared by that release)"
+            % (base, attempts, judged)
+        )
+
