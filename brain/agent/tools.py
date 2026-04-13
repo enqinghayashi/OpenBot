@@ -126,3 +126,9 @@ def fail(reason: str) -> dict:
     return {"success": False, "reason": reason}
 
 
+def envelope_to_str(env: dict) -> str:
+    """Serialize an envelope to the protocol string (verifier/LLM input)."""
+    if env.get("success"):
+        detail = "" if env.get("value") is None else str(env["value"])
+        return f"OK: {detail}".rstrip()
+    return f"ERROR: {env.get('reason') or 'unknown error'}"
