@@ -349,3 +349,23 @@ class ToolExecutor:
             return f"{verb} {(args.get('side') or 'right')} hand"
         return f"{name} {args}"
 
+    @staticmethod
+    def _tool_result_text(env: dict) -> str:
+        """The raw tool reply the verifier must judge — mirrors the
+        gateway's own lane (gateway_node feeds SkillVerifier the reply
+        string verbatim, annotations included).  Success envelopes carry
+        the raw slave reply in ``value`` ('DONE:contact', 'DONE pick
+        executed; grasp_verified=...', 'DONE walk triggered: ...;
+        NAV_EPOCH=...'); failure envelopes serialize to 'ERROR: <reason>'
+        — the verifier treats any ERROR: marker anywhere in the reply as
+        definitive failure.  NEVER 'OK: <value>': the verifier's reply
+        classifier only reads DONE:/ERROR:/Q:/STATE:-prefixed lines, so an
+        OK:-wrapped reply would classify as 'unknown' and can never
+        confirm success."""
+        if not isinstance(env, dict):
+            return ""
+        if env.get("success"):
+            value = env.get("value")
+            return "" if value is None else str(value)
+        return f"ERROR: {env.get('reason') or 'unknown error'}"
+
