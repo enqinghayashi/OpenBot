@@ -558,3 +558,20 @@ class ToolExecutor:
             % (base, attempts, judged)
         )
 
+    def _stop(self, args: dict) -> dict:
+        """Immediate halt — no confirm gate (stopping is always allowed)."""
+        if self.backend is None:
+            return fail("gateway not wired — cannot stop")
+        stop = getattr(self.backend, "stop", None)
+        if stop is None:
+            return fail("backend has no stop")
+        try:
+            env = stop(args)
+            if isinstance(env, dict) and "success" in env:
+                return env
+            return fail(f"stop returned a non-envelope result: {env!r}")
+        except Exception as exc:  # noqa: BLE001 — wrap it, never let it propagate
+            return fail(f"stop raised: {exc}")
+
+    # ------------------------------------------------------- reading the world
+
