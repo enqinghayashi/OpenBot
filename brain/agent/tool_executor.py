@@ -589,3 +589,32 @@ class ToolExecutor:
 
     # ----------------------------------------------- failure-budget bookkeeping
 
+    @classmethod
+    def _classify_result(cls, text: str) -> tuple[str, Optional[str]]:
+        """Classify a tool result -> (kind, reason).
+
+        kinds: 'success'|'failure'|'in_progress'|'neutral'|'unknown'.
+        Verdict lines win; else envelope prefixes OK:/ERROR:.  An 'OK:'
+        envelope (utility-tool reply: query_user / scene_brief /
+        notify_user / the fast-path stop) is 'neutral' — the tool ran but
+        no WORLD-GOAL success was verified, so it must neither reset nor
+        increment the failure budget; only a genuine world-goal
+        VERDICT:success resets it.  Anything else is 'unknown' (no budget
+        movement — conservative).
+        """
+        text = text.split(SELF_STATE_MARK, 1)[0] if text else text
+        if not text:
+            return ("unknown", None)
+        m = _VERDICT_RE.search(text)
+        if m:
+            kind = m.group(1)
+            tail = m.group(2)
+            rm = _REASON_RE.search(tail)
+            reason = rm.group(1) if rm else None
+            return (kind, reason)
+        if text.startswith("OK:"):
+            return ("neutral", None)
+        if text.startswith("ERROR:"):
+            return ("failure", text[len("ERROR:"):].strip() or None)
+        return ("unknown", None)
+
