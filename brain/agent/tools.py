@@ -121,3 +121,6 @@ def ok(value: Any = None) -> dict:
     return {"success": True, "value": value}
 
 
+def fail(reason: str) -> dict:
+    """Failure envelope: ``{'success': False, 'reason': reason}``."""
+    return {"success": False, "reason": reason}
