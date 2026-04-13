@@ -633,3 +633,78 @@ class ToolExecutor:
 
     # --------------------------------------------------------- the fast path
 
+    def _fastpath_summary(
+        self, name: str, args: dict, kind: str, reason: Optional[str]
+    ) -> str:
+        """Human phrasing for fast-path outcomes; success is ONLY ever
+        phrased after a VERDICT:success (never self-graded)."""
+        reason_txt = reason or "unclear reason"
+        if name == "stop":
+            # 'neutral' = the stop envelope came back 'OK: ...'
+            # (halt issued) — same phrasing, but the budget
+            # classifier treats 'OK:' as neutral, not a success reset
+            return {
+                "success": "Stopped.",
+                "neutral": "Stopped.",
+                "in_progress": "Stopping — re-observing.",
+                "failure": f"I could not stop: {reason_txt}.",
+            }.get(kind, f"Stop result: {reason_txt}")
+        if name == "pick":
+            label = (args.get("label") or "").strip()
+            return {
+                "success": f"Picked up the {label}.",
+                "in_progress": f"I am working on picking up the {label} — re-observing.",
+                "failure": "I have failed to pick up, please tell me in a sentence to try again.",
+            }.get(kind, f"Pick result for {label}: {reason_txt}")
+        if name == "place":
+            label = (args.get("label") or "").strip()
+            container = (args.get("into") or "").strip()
+            if container:
+                # into:<container> = containment request: the tool
+                # resolved the container (unknown = honest NOT_DETECTED
+                # refusal before anything moves), the containment half
+                # judged the drop.  VERDICT:success here only exists on
+                # DEMONSTRATED containment (ambiguity -> 're-observe'),
+                # so success may claim the placement; nothing else
+                # does
+                return {
+                    "success": f"Placed the {label} into the {container}.",
+                    "in_progress": (
+                        f"I am working on placing the {label} into the "
+                        f"{container} — re-observing."
+                    ),
+                    "failure": (
+                        f"I could not place the {label} into the {container}: "
+                        f"{reason_txt}."
+                    ),
+                }.get(
+                    kind,
+                    f"Place result for {label} into {container}: {reason_txt}",
+                )
+            return {
+                "success": (
+                    f"Released the {label} (release-only; placement not verified)."
+                ),
+                "in_progress": f"I am working on releasing the {label} — re-observing.",
+                "failure": f"I could not release the {label}: {reason_txt}.",
+            }.get(kind, f"Release result for {label}: {reason_txt}")
+        if name == "navigate":
+            target = (args.get("target") or "").strip()
+            return {
+                "success": f"Reached {target}.",
+                "in_progress": f"Still walking to {target}.",
+                "failure": f"I could not navigate to {target}: {reason_txt}.",
+            }.get(kind, f"Navigate result for {target}: {reason_txt}")
+        if name in ("open_hand", "close_hand"):
+            side = (args.get("side") or "right").strip()
+            verb = "open" if name == "open_hand" else "close"
+            # past-tense verb for the reply: 'opened' or 'closed'
+            past = "opened" if name == "open_hand" else "closed"
+            return {
+                "success": f"{past.capitalize()} the {side} hand.",
+                "in_progress": f"{verb.capitalize()}ing the {side} hand — re-observing.",
+                "failure": f"I could not {verb} the {side} hand: {reason_txt}.",
+            }.get(kind, f"{name} result: {reason_txt}")
+        return {"success": "Done.", "failure": f"Failed: {reason_txt}."}.get(
+            kind, "Working on it — re-observing."
+        )
