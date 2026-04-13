@@ -325,3 +325,27 @@ class ToolExecutor:
     def _platform_verb(self, name: str) -> str:
         return _PLATFORM_VERB.get(name, name)
 
+    @staticmethod
+    def _describe_action(name: str, args: dict) -> str:
+        if name == "pick":
+            return f"pick up {(args.get('label') or '?')}"
+        if name == "place":
+            # an into:<container> place is a containment request:
+            # the gate must name the container ('place bottle into
+            # bin', never 'at bin').  no-into keeps the old wording
+            into = (args.get("into") or "").strip()
+            if into:
+                return f"place {(args.get('label') or '?')} into {into}"
+            return f"place {(args.get('label') or '?')} at {(args.get('destination') or '?')}"
+        if name == "place_at_spot":
+            return (
+                f"place {(args.get('label') or '?')} at spot "
+                f"{(args.get('spot') or '?')}"
+            )
+        if name == "navigate":
+            return f"navigate to {(args.get('target') or '?')}"
+        if name in ("open_hand", "close_hand"):
+            verb = "open" if name == "open_hand" else "close"
+            return f"{verb} {(args.get('side') or 'right')} hand"
+        return f"{name} {args}"
+
