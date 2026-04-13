@@ -322,3 +322,6 @@ class ToolExecutor:
             terminal=self._terminal_text is not None,
         )
 
+    def _platform_verb(self, name: str) -> str:
+        return _PLATFORM_VERB.get(name, name)
+
