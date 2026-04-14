@@ -134,3 +134,32 @@ def envelope_to_str(env: dict) -> str:
     return f"ERROR: {env.get('reason') or 'unknown error'}"
 
 
+def _not_detected(label: str, recovery: Optional[str] = None) -> str:
+    """The ONE NOT_DETECTED refusal shape.  The head is written here and
+    nowhere else, so the pick lookup and the place ``into:`` lookup cannot
+    drift into two different stories about the same missing object.
+
+    ``recovery`` is MODEL-FACING, and must be passed only where the string
+    can never reach the speaker.  Part E (operator directive 2026-09-28)
+    wants a refusal to name the way out — call ``navigate``, then try again —
+    because that is what makes the model chain instead of giving up.  But
+    ``_fastpath_summary`` interpolates a place ``into:`` refusal VERBATIM
+    into the spoken sentence ("I could not place the bottle into the bin:
+    <reason>"), and the operator's standing directive is that speech stays
+    short and reason-free.  Reading "call navigate with this label ..." aloud
+    would be an instruction addressed to the model, delivered to a human.
+
+    So the asymmetry is deliberate and is pinned by test: the pick lookup
+    passes a recovery (its failure phrasing is a fixed one-line sentence and
+    never echoes the reason), the container lookup does not.
+    """
+    head = (
+        f"NOT_DETECTED: {label!r} is not in the current scene "
+        "(detections are event-driven — silence means empty)"
+    )
+    if recovery is None:
+        return head
+    return (
+        head + ". This is NOT the end of the task: call navigate with this "
+        f"label to search the workspace and walk to it, then {recovery}."
+    )
