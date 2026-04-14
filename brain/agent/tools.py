@@ -843,3 +843,76 @@ class Tool:
 
     # -- invocation ------------------------------------------------------------
 
+    def prepare(self, args: dict) -> tuple[dict, Optional[dict]]:
+        """Resolve/prepare args for the pre-hook phase.
+
+        Returns ``(augmented_args, refusal)``; ``refusal`` is a failure
+        envelope when the tool cannot proceed at all (e.g. the pick target
+        is not in fresh detections).  The agent runs the confirm gate and
+        safety checks on the AUGMENTED args (so the safety hook sees
+        resolved coordinates) and refuses motion when a refusal is
+        returned.  Base implementation passes args through unchanged; a
+        tool may override it via the constructor's ``prepare`` hook.
+        """
+        if self._prepare_hook is not None:
+            return self._prepare_hook(args)
+        return dict(args), None
+
+    def call(self, args: dict) -> dict:
+        """Validate, then execute ``run`` under the per-tool timeout.
+
+        Never raises: every failure mode is returned as a failure envelope.
+        """
+        violations = self.validate_args(args)
+        if violations:
+            detail = "; ".join(violations)
+            return fail(f"invalid arguments: {detail}")
+        pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix=f"tool-{self.name}"
+        )
+        future = pool.submit(self.run, args)
+        try:
+            try:
+                result = future.result(timeout=self.timeout_s)
+            except concurrent.futures.TimeoutError:
+                return fail(
+                    f"TIMEOUT: {self.name} did not finish in {self.timeout_s:g}s"
+                )
+        except Exception as exc:  # noqa: BLE001
+            return fail(f"{self.name} raised: {exc}")
+        finally:
+            # do not wait: a handler that outlives its timeout must not block the
+            # caller, so the single-use pool is shut down without waiting.
+            pool.shutdown(wait=False)
+        if isinstance(result, dict) and "success" in result:
+            return result
+        return fail(f"{self.name} returned a non-envelope result: {result!r}")
+
+
+# --- ToolRegistry ---------------------------------------------------------------
+
+
+class ToolRegistry:
+    """Holds the agent's flat tool set, in registration order.
+
+    Tools read ``backend`` and ``scene_graph`` off the registry at call
+    time, so :meth:`attach` can wire them late (e.g. when the gateway
+    connects after construction).
+    """
+
+    def __init__(
+        self,
+        backend: Any = None,
+        scene_graph: Any = None,
+        embodiment: Any = None,
+        switches: Any = None,
+    ) -> None:
+        self.backend = backend
+        self.scene_graph = scene_graph
+        self.embodiment = embodiment
+        # optional lanes, read once when the optional tools are registered;
+        # None turns all of them off.
+        self._optional_switches = switches
+        self._tools: Dict[str, Tool] = {}
+        self._register_defaults()
+
