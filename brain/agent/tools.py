@@ -163,3 +163,14 @@ def _not_detected(label: str, recovery: Optional[str] = None) -> str:
         head + ". This is NOT the end of the task: call navigate with this "
         f"label to search the workspace and walk to it, then {recovery}."
     )
+
+
+#: model-facing next step for a fetch pick, never spoken and never
+#: phrased as an error.
+_FETCH_NEXT_STEP = ("; NEXT_STEP=fetch_return: this pick is part of a fetch for the "
+                    "person who asked - do NOT stop here and do NOT put it on a "
+                    "table: the robot walks back to the start point by itself "
+                    "(else call return_home), then place with into='person' "
+                    "(navigate to 'person' first if they are out of reach)")
+
+
