@@ -654,3 +654,31 @@ class ToolError(Exception):
 
 class ToolNameConflict(ToolError):
     """Raised when a tool name is registered twice."""
+
+
+class UnknownTool(ToolError):
+    """Raised by ToolRegistry.execute for a name that is not registered."""
+
+
+class ToolNameInvalid(ValueError):
+    """Raised when a Tool name violates the naming pattern."""
+
+
+# --- backend protocol ---------------------------------------------------------
+
+
+class GatewayBackend(Protocol):
+    """Brain<->gateway seam (duck-typed; implement in gateway_node.py).
+
+    ``observe()`` returns a brain.observation.WorldObservation (the
+    normalized snapshot with ``detections`` / ``grip`` / ``walk`` /
+    ``detections_ts`` / ``fresh``) or None when no observation source is
+    wired.  The motion methods receive RESOLVED arguments (x/y/z in torso
+    frame) and return an envelope dict; their ``value`` carries the raw
+    slave reply (e.g. 'DONE:contact') for the verifier to judge.
+    """
+
+    def observe(self) -> Any:
+        """Latest WorldObservation, or None."""
+        ...
+
