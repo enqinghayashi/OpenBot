@@ -207,3 +207,10 @@ def _not_detected_held(label: str, ss: Any) -> str:
     )
 
 
+def _hold_is_measured(ss: Any) -> bool:
+    """B8h: the self-state's hold is the verifier's MEASURED one (False for a
+    self-state without the method: byte-identical old wording)."""
+    try:
+        return bool(ss.hold_measured())
+    except Exception:  # noqa: BLE001
+        return False
