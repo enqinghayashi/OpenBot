@@ -702,3 +702,32 @@ class GatewayBackend(Protocol):
         """Close the gripper (side: right|left|both)."""
         ...
 
+    def query_user(self, args: dict) -> dict:
+        """Blocking human question; value = the human's answer."""
+        ...
+
+    def notify_user(self, args: dict) -> dict:
+        """Non-blocking notice to the human."""
+        ...
+
+    def stop(self, args: dict) -> dict:
+        """Immediate halt (no confirmation required — stopping is always
+        allowed; the safety-critical reverse of the confirm gate)."""
+        ...
+
+    def capture_image(self) -> Optional[dict]:
+        """Latest camera frame {jpeg_b64, w, h, ts, fresh}, or None.
+
+        The camera lane is OPTIONAL (vision.enabled): a backend with no
+        camera returns None.  ``fresh`` is the frame's honesty flag —
+        False means stale / no camera / encode error (with a ``reason``),
+        never a stale frame under the green light.  Callers MUST
+        getattr-guard this member — camera is optional and older
+        backends may lack it.
+        """
+        ...
+
+
+# --- Tool ---------------------------------------------------------------------
+
+
