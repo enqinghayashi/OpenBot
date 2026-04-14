@@ -356,3 +356,51 @@ def _annotate_cross_body(env, label: str):
     except (TypeError, ValueError):
         pass
     return env
+
+
+# --- constants ---------------------------------------------------------------
+
+DEFAULT_TIMEOUT_S = 30.0
+
+#: cancel reply timeout: a healthy reply arrives in milliseconds, so a
+#: longer bound only waits on a hang. keep it above the gateway's 5.0 s
+#: cancel-reply timeout.
+CANCEL_TIMEOUT_S = 10.0
+
+# must mirror the per-tool contract timeouts
+CONTRACT_TIMEOUTS: Dict[str, float] = {
+    # pick needs 180 s: the engine reports done in about 3 s, then the daemon
+    # spends about 33 s lifting and tucking. timeouts must nest as 120 s
+    # internal < 150 s socket < 180 s tool.
+    "pick": 180.0,
+    "place": 60.0,
+    # navigate needs 180 s: a full search takes 12 windows of 5 s plus a
+    # ~1.05 s turn each (~73 s) before the FSM gives up, before any detected
+    # hold of up to 10 s. a 60 s bound would cut that short.
+    "navigate": 180.0,
+    "open_hand": 10.0,
+    "close_hand": 15.0,
+    # pose needs 30 s: 'tuck' is two moves (carry and carry_left), each a
+    # gravity feed-forward solve.
+    "pose": 30.0,
+}
+
+#: names the tool accepts; the backend maps them to engine verbs, which
+#: carry 'tuck' per arm.
+POSE_NAMES: frozenset = frozenset({"ready", "tuck", "neutral", "home"})
+
+# torso frame: the torso link is z=0, shared by the projector and the
+# engine. tabletop rows read z in [0, 0.07] and ground objects near
+# -0.75, so -0.35 refuses ground picks and keeps tabletops.
+TABLETOP_MIN_Z = -0.35
+TABLETOP_MAX_Z = 1.20  # default when no embodiment supplies a bound
+
+#: a container detection is usable only while this fresh; only the
+#: current row is checked for disambiguation.
+CONTAINER_REF_FRESH_S = 10.0
+
+# a value matching this is written bare; other labels are quoted so
+# multi-word names like 'wine glass' survive the round trip.
+_ANNOTATION_BARE_VALUE_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
+
+
