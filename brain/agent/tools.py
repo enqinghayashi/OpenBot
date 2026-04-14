@@ -214,3 +214,5 @@ def _hold_is_measured(ss: Any) -> bool:
         return bool(ss.hold_measured())
     except Exception:  # noqa: BLE001
         return False
+
+
