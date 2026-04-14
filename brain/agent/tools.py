@@ -404,3 +404,16 @@ CONTAINER_REF_FRESH_S = 10.0
 _ANNOTATION_BARE_VALUE_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
 
 
+def _annotation_value(value: str) -> str:
+    """Encode a label for the legacy place-into annotation format.
+
+    Bare when the value contains only ``[A-Za-z0-9_.-]`` (single-token
+    labels — annotation bytes are byte-identical with the legacy format);
+    double-quoted otherwise, so multi-word labels ('wine glass') survive
+    the round trip with internal spaces intact.  The verifier's regexes
+    (brain/verifier._INTO_REF_RE/_INTO_LABEL_RE/_PLACED_OBJECT_RE) accept
+    the optional quote pair around the value.
+    """
+    if _ANNOTATION_BARE_VALUE_RE.match(value or ""):
+        return value
+    return '"%s"' % value
