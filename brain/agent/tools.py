@@ -442,3 +442,38 @@ def place_lift_height(cls: Any, h_pick: Any) -> float:
     return round(max(h, floor), 4)
 
 
+def _drop_point(det: Any) -> Optional[dict]:
+    """Optional coordinate drop target just above a detection.
+
+    Returns ``{"x": det.x, "y": det.y, "z": det.z + height_half + 0.02}``
+    (``height_half`` = ``det.height_m / 2`` when the detection reports a
+    positive finite height, else 0) — a commanded place target that releases
+    the held object onto/into the destination detection instead of a bare
+    current-pose release.  Returns None (the caller then keeps the place
+    release-only) when any coordinate is missing, non-numeric, or
+    non-finite: a junk/absent detection must never fabricate a target.
+    """
+    def _finite(value: Any) -> Optional[float]:
+        try:
+            coord = float(value)
+        except (TypeError, ValueError):
+            return None
+        return coord if math.isfinite(coord) else None
+
+    x = _finite(getattr(det, "x", None))
+    y = _finite(getattr(det, "y", None))
+    z = _finite(getattr(det, "z", None))
+    if x is None or y is None or z is None:
+        return None
+    height = _finite(getattr(det, "height_m", None))
+    # cap the height by container class so a tall, under-segmented mask
+    # cannot push the drop point out of the lane band.
+    try:
+        from ..observation import detection_base_class as _dbc
+        _cap = CONTAINER_H_MAX_M.get(_dbc(det), CONTAINER_H_MAX_DEFAULT_M)
+    except Exception:  # noqa: BLE001
+        _cap = CONTAINER_H_MAX_DEFAULT_M
+    if height is not None:
+        height = min(height, _cap)
+    lift = height / 2.0 if height is not None and height > 0.0 else 0.0
+    return {"x": x, "y": y, "z": z + lift + 0.02}
