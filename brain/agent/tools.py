@@ -245,3 +245,12 @@ _REACH_CEILING_RE = re.compile(r"\breach_ceiling\b")
 _REACH_HINT_MARK = "OUT OF REACH FROM HERE"
 
 
+def _reach_ceiling_hint(label: str) -> str:
+    """Model-facing recovery for ERROR:reach_ceiling: walk closer, re-pick."""
+    return (
+        ". %s: the arm cannot reach %r from where the robot stands now. This "
+        "is NOT the end of the task: the next step is to call navigate with "
+        "the label %r to walk closer to it, then pick it again. Do not ask "
+        "the operator for permission, and do not switch arms"
+        % (_REACH_HINT_MARK, label, label)
+    )
