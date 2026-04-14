@@ -341,3 +341,18 @@ def _self_collision_hint(label: str, reason: str) -> str:
     )
 
 
+def _annotate_cross_body(env, label: str):
+    """Append the cross-body hint ONCE to a failed pick/place reply whose
+    reason carries ERROR:self_collision (bare or lane-wrapped)."""
+    try:
+        reason = env.get("reason") if isinstance(env, dict) else None
+        if (isinstance(env, dict) and not env.get("success")
+                and isinstance(reason, str)
+                and _SELF_COLLISION_RE.search(reason)
+                and _CROSS_BODY_MARK not in reason):
+            env = dict(env)
+            env["reason"] = reason.rstrip() + _self_collision_hint(
+                label or "object", reason)
+    except (TypeError, ValueError):
+        pass
+    return env
