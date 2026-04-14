@@ -428,3 +428,15 @@ PLACE_LIFT_TALL_CLASSES = frozenset(("bottle", "vase", "wine glass"))
 PLACE_LIFT_H_MAX_M = 0.5  # matches the gateway pick height limit
 
 
+def place_lift_height(cls: Any, h_pick: Any) -> float:
+    """B8i: the place-only height token (m) for the engine's 2.5x extra lift."""
+    try:
+        h = float(h_pick)
+    except (TypeError, ValueError):
+        h = 0.0
+    if not (math.isfinite(h) and 0.0 < h <= PLACE_LIFT_H_MAX_M):
+        h = 0.0
+    c = str(cls or "").strip().lower()
+    floor = (PLACE_LIFT_TALL_H_M if c in PLACE_LIFT_TALL_CLASSES
+             else PLACE_LIFT_FLOOR_H_M)
+    return round(max(h, floor), 4)
