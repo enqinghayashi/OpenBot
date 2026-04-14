@@ -440,3 +440,5 @@ def place_lift_height(cls: Any, h_pick: Any) -> float:
     floor = (PLACE_LIFT_TALL_H_M if c in PLACE_LIFT_TALL_CLASSES
              else PLACE_LIFT_FLOOR_H_M)
     return round(max(h, floor), 4)
+
+
