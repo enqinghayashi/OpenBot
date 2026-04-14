@@ -731,3 +731,115 @@ class GatewayBackend(Protocol):
 # --- Tool ---------------------------------------------------------------------
 
 
+class Tool:
+    """A callable tool exposed to the LLM.
+
+    ``schema`` is an OpenAI function-calling JSON schema
+    (``{"type": "object", "properties": {...}, "required": [...]}``).
+    ``run(args: dict) -> dict`` returns the result envelope.  ``blocking``
+    marks user-interaction tools (query_user blocks the turn; notify_user
+    does not).  ``prepare(args)`` is the agent's PRE-hook seam: it resolves
+    arguments (e.g. a pick label -> torso-frame x/y/z/ref) so the safety
+    hooks can inspect them before any motion, returning
+    ``(augmented_args, refusal_or_None)``.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        description: str,
+        schema: dict,
+        run: Callable[[dict], dict],
+        *,
+        timeout_s: float = DEFAULT_TIMEOUT_S,
+        blocking: bool = True,
+        prepare: Optional[Callable[[dict], tuple[dict, Optional[dict]]]] = None,
+    ) -> None:
+        if not isinstance(name, str) or not TOOL_NAME_RE.match(name):
+            raise ToolNameInvalid(
+                f"tool name {name!r} must match ^[a-z][a-z0-9_]{{1,63}}$"
+            )
+        if not isinstance(description, str) or not description.strip():
+            raise ValueError(f"tool {name!r} needs a non-empty description")
+        self._validate_schema(schema)
+        if not callable(run):
+            raise TypeError(f"tool {name!r} run must be callable")
+        if timeout_s <= 0:
+            raise ValueError(f"tool {name!r} timeout_s must be > 0")
+        if prepare is not None and not callable(prepare):
+            raise TypeError(f"tool {name!r} prepare must be callable")
+        self.name = name
+        self.description = description
+        self.schema = schema
+        self.run = run
+        self.timeout_s = float(timeout_s)
+        self.blocking = bool(blocking)
+        self._prepare_hook = prepare
+
+    @staticmethod
+    def _validate_schema(schema: dict) -> None:
+        """Validate that ``schema`` is a well-formed JSON-schema object."""
+        if not isinstance(schema, dict):
+            raise ValueError("schema must be a dict (JSON schema object)")
+        if schema.get("type") != "object":
+            raise ValueError("schema['type'] must be 'object'")
+        props = schema.get("properties")
+        if not isinstance(props, dict):
+            raise ValueError("schema['properties'] must be a dict")
+        required = schema.get("required", [])
+        if not isinstance(required, list):
+            raise ValueError("schema['required'] must be a list")
+        for field_name in required:
+            if field_name not in props:
+                raise ValueError(
+                    f"required field {field_name!r} missing from properties"
+                )
+
+    def validate_args(self, args: dict) -> List[str]:
+        """Validate ``args`` against the schema; [] means valid."""
+        if not isinstance(args, dict):
+            return [f"arguments (expected a dict, got {type(args).__name__})"]
+        errors: List[str] = []
+        props = self.schema.get("properties", {})
+        for field_name in self.schema.get("required", []):
+            if field_name not in args:
+                errors.append(f"{field_name} (missing required argument)")
+        for field_name, value in args.items():
+            spec = props.get(field_name)
+            if spec is None:
+                continue  # extra arguments are ignored
+            expected = spec.get("type")
+            if expected is None:
+                continue
+            if not self._type_matches(value, expected):
+                errors.append(
+                    f"{field_name} (expected {expected}, got {type(value).__name__})"
+                )
+            enum = spec.get("enum")
+            if enum is not None and value not in enum:
+                errors.append(
+                    f"{field_name} (must be one of {enum}, got {value!r})"
+                )
+        return errors
+
+    @staticmethod
+    def _type_matches(value: Any, expected: str) -> bool:
+        if expected == "string":
+            return isinstance(value, str)
+        if expected in ("number", "integer"):
+            is_num = isinstance(value, (int, float)) and not isinstance(
+                value, bool
+            )
+            return is_num and (expected == "number" or isinstance(value, int))
+        if expected == "boolean":
+            return isinstance(value, bool)
+        if expected == "array":
+            return isinstance(value, list)
+        if expected == "object":
+            return isinstance(value, dict)
+        if expected == "null":
+            return value is None
+        return True  # unknown schema types accept any value
+
+    # -- invocation ------------------------------------------------------------
+
