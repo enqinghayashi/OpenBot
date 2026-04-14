@@ -174,3 +174,34 @@ _FETCH_NEXT_STEP = ("; NEXT_STEP=fetch_return: this pick is part of a fetch for 
                     "(navigate to 'person' first if they are out of reach)")
 
 
+def _not_detected_held(label: str, ss: Any) -> str:
+    """NOT_DETECTED for a label the self-state believes is in the hand: the
+    object is absent from the scene BECAUSE it is probably held, so the
+    generic 'navigate to search' recovery would send the robot off for it."""
+    age = 0
+    try:
+        age = ss.hold_age()
+    except Exception:  # noqa: BLE001
+        pass
+    if _hold_is_measured(ss):
+        # a hold the fingers confirm: they are held open by an object after the lift.
+        # do not suggest open_hand here, it would release the object.
+        return (
+            "NOT_DETECTED: %r is not in the current scene (detections are "
+            "event-driven \u2014 silence means empty) - because you are "
+            "holding it (picked %ds ago; the fingers were held off their "
+            "close command by an object after the lift, MEASURED). Stay: do NOT "
+            "navigate to find it and do NOT pick it again. Call place if "
+            "the operator asked you to put it somewhere; call open_hand only "
+            "if the operator asks you to let go" % (label, age)
+        )
+    return (
+        "NOT_DETECTED: %r is not in the current scene (detections are "
+        "event-driven \u2014 silence means empty) - but you may be holding it "
+        "(picked %ds ago; if a release or cancel left the hand state "
+        "unconfirmed it may or may not still be there). It is probably in "
+        "your hand: do NOT navigate to find it now; check, or call place "
+        "or open_hand first. If the operator asks for it again after "
+        "this, navigate to search for it"
+        % (label, age)
+    )
