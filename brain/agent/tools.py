@@ -216,3 +216,24 @@ def _hold_is_measured(ss: Any) -> bool:
         return False
 
 
+def _not_detected_unconfirmed(label: str, ss: Any) -> str:
+    """B8h: NOT_DETECTED for a label whose last pick came back UNCONFIRMED.
+    MEASURED (s1): a lifted object leaves the camera's view, so its absence is
+    the expected sign of a hold.  The generic reply said 'call navigate', the
+    held reply said 'open_hand first'; both made the model leave or drop it.
+    Neither is said here."""
+    age = 0
+    try:
+        age = ss._age(ss.pick_unconfirmed["ts"])
+    except Exception:  # noqa: BLE001
+        pass
+    return (
+        "NOT_DETECTED: %r is not in the current scene (detections are "
+        "event-driven \u2014 silence means empty) - and your pick of it %ds ago "
+        "was not fully confirmed, so it is probably in your hand (the camera "
+        "cannot see a held object). Stay: do NOT navigate to find it and do NOT "
+        "pick it again. Tell the operator in one sentence that the pick is "
+        "not fully confirmed; call place if the operator asked you to put it "
+        "somewhere; call open_hand only if the operator asks you to let go"
+        % (label, age)
+    )
