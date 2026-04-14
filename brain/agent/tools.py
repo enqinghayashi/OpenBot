@@ -417,3 +417,14 @@ def _annotation_value(value: str) -> str:
     if _ANNOTATION_BARE_VALUE_RE.match(value or ""):
         return value
     return '"%s"' % value
+
+
+#: extra lift for place: max(pick-time h when 0 < h <= 0.5, a class floor).
+#: the gate keeps junk heights out; 2.5 x 0.095 = 0.2375 m cup floor,
+#: 2.5 x 0.16 = 0.40 m engine cap. never applied to a pick.
+PLACE_LIFT_FLOOR_H_M = 0.095
+PLACE_LIFT_TALL_H_M = 0.16
+PLACE_LIFT_TALL_CLASSES = frozenset(("bottle", "vase", "wine glass"))
+PLACE_LIFT_H_MAX_M = 0.5  # matches the gateway pick height limit
+
+
