@@ -254,3 +254,21 @@ def _reach_ceiling_hint(label: str) -> str:
         "the operator for permission, and do not switch arms"
         % (_REACH_HINT_MARK, label, label)
     )
+
+
+#: cross-body failures from the pick engine, bare or behind engine_reply=.
+#: walking closer cannot help, so the hint asks the human to act.
+_SELF_COLLISION_RE = re.compile(r"\bself_collision\b")
+#: appended once; presence suppresses a second hint.
+_CROSS_BODY_MARK = "CROSS-BODY FROM HERE"
+#: collision fields; optional, missing values fall back to plain text.
+_SELF_COLLISION_FIELDS_RE = re.compile(
+    r"side=(left|right) x=(-?[\d.]+)m y=(-?[\d.]+)m .*?move_right_m=([\d.]+)")
+#: stage field: 'precheck' means no arm motion, any other stage means
+#: the arm moved and is parked at ready.
+_SELF_COLLISION_STAGE_RE = re.compile(r"\bstage=([A-Za-z0-9_-]+)")
+#: arm-safety state after the failure, e.g. already_safe or parked.
+_ARM_AFTER_RE = re.compile(r"\barm_after=([a-z_]+)")
+_ARTICLE_RE = re.compile(r"^(?:the|a|an)\s+", re.I)
+
+
