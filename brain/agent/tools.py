@@ -916,3 +916,1307 @@ class ToolRegistry:
         self._tools: Dict[str, Tool] = {}
         self._register_defaults()
 
+    def attach(
+        self,
+        backend: Any = None,
+        scene_graph: Any = None,
+        embodiment: Any = None,
+    ) -> None:
+        """Wire the backend/scene graph/embodiment (idempotent; None leaves
+        unchanged).  ``embodiment`` is a brain.embodiment.Embodiment (or
+        anything with an ``.envelope``) read by the pick placeholder."""
+        if backend is not None:
+            self.backend = backend
+        if scene_graph is not None:
+            self.scene_graph = scene_graph
+        if embodiment is not None:
+            self.embodiment = embodiment
+
+    def _left_hand_in_service(self) -> bool:
+        """BRAIN BR-6: embodiment.envelope.left_hand_in_service (strict
+        True); an embodiment without an envelope reads False (refused)."""
+        env = getattr(self.embodiment, "envelope", None)
+        return getattr(env, "left_hand_in_service", False) is True
+
+    # -- defaults ---------------------------------------------------------------
+
+    def _register_defaults(self) -> None:
+        """The brain tools (motion + query/user)."""
+
+        def make_pick() -> Tool:
+            _left_in_service_at_reg = self._left_hand_in_service()
+
+            def prepare(args: dict) -> tuple[dict, Optional[dict]]:
+                """Resolve label -> fresh detection coordinates (x/y/z/ref)
+                and bind the grasp orientation to the detection.
+
+                ORIENTATION (fix 2026-09-07): the depth projector computes
+                whether the object is upright or horizontal, but the old
+                lane DROPPED that field, so a lying (horizontal) bottle was
+                picked with the VERTICAL approach.  This prepare hook is the
+                single place that already matches the label to the SAME
+                observation that produced x/y/z, so 'auto' (or an absent
+                orientation) binds here to the detection's own orientation
+                — a concrete 'upright'/'horizontal' is what travels on the
+                wire, never 'auto'.  An explicit upright/horizontal request
+                is honored; an unknown value falls back to 'auto'
+                resolution; a detection with no known orientation defaults
+                to 'upright' (preserving today's vertical behaviour).
+                """
+                from ..observation import detection_base_class  # used below for the not-pickable check
+
+                label = (args.get("label") or "").strip()
+                if not label:
+                    return dict(args), fail("invalid arguments: missing label")
+                # a left pick is refused before any motion unless the envelope
+                # confirms the left hand is in service.
+                arm = str(args.get("arm") or "auto").strip().lower()
+                if arm == "left" and not self._left_hand_in_service():
+                    return dict(args), fail(
+                        "pick refused: the LEFT hand is out of service "
+                        "(operator directive) - pick with the right arm (arm "
+                        "'auto' or 'right'). A failed pick is never a reason "
+                        "to switch arms: re-observe, navigate closer, or "
+                        "open_hand and retry with the right arm")
+                # resolve the alias first so a refusal names the search target
+                # ('me' -> 'person') instead of echoing the raw input.
+                label = known_labels.resolve_alias(label)
+                ss = getattr(self.scene_graph, "self_state", None)
+                # record the attempt before any refusal below, otherwise a
+                # prepare-time refusal never reaches the self-state log.
+                if ss is not None and hasattr(ss, "note_pick_attempt"):
+                    ss.note_pick_attempt(label)
+                det = self._find_target_detection(label)
+                _find_obs = self._take_find_obs()
+                # order matters: this guard runs after the lookup so a held label
+                # can return its own NOT_DETECTED wording.
+                if ss is not None and ss.pick_blocks():
+                    if det is None and ss.holds(label):
+                        return dict(args), fail(_not_detected_held(label, ss))
+                    return dict(args), fail(ss.pick_refusal(label))
+                # walk-only and post-place refusals run before NOT_DETECTED: the
+                # task context decides whether this pick is wanted at all.
+                if ss is not None and hasattr(ss, "walk_only_refusal"):
+                    _msg = ss.walk_only_refusal(label)
+                    if _msg:
+                        return dict(args), fail(_msg)
+                if ss is not None and hasattr(ss, "post_place_refusal"):
+                    _msg = ss.post_place_refusal(label)
+                    if _msg:
+                        return dict(args), fail(_msg)
+                # a pick whose outcome is unknown blocks the re-pick. its freshest
+                # detection may be the object resting in the parked hand, while
+                # the grip observation still reads empty.
+                if (ss is not None and det is not None
+                        and hasattr(ss, "repick_refusal")):
+                    _grip = getattr(_find_obs, "grip", None)
+                    if _grip is not None:
+                        _msg = ss.repick_refusal(label, grip=_grip)
+                    else:
+                        _msg = ss.repick_refusal(label)
+                    if _msg:
+                        return dict(args), fail(_msg)
+                # after a cancel only newer detections count; an older row may
+                # show an object that has since moved.
+                if (ss is not None and det is not None
+                        and hasattr(ss, "stale_after_cancel")):
+                    _msg = ss.stale_after_cancel(det)
+                    if _msg:
+                        return dict(args), fail(_msg)
+                # a release may be unconfirmed or the hand state unknown, but an
+                # absent label that might be held must not send the robot off to
+                # navigate. only applies after a pick.
+                if (ss is not None and det is None
+                        and hasattr(ss, "held_hint_due")
+                        and ss.held_hint_due(label)):
+                    return dict(args), fail(_not_detected_held(label, ss))
+                # absent and unsure: probably held, so neither navigate nor
+                # open_hand is suggested, for every pick inside the ambiguity window.
+                if (ss is not None and det is None
+                        and hasattr(ss, "unconfirmed_absent")
+                        and ss.unconfirmed_absent(label)):
+                    # prefer the ambiguity note when one is pending
+                    return dict(args), fail(self._take_find_note()
+                                            or _not_detected_unconfirmed(label, ss))
+                if det is None:  # prefer the ambiguity note when one is pending
+                    return dict(args), fail(self._take_find_note() or _not_detected(label, "pick it again"))
+                # refuse classes beyond the grasp vocabulary
+                base_class = detection_base_class(det)
+                if base_class.lower() in NOT_PICKABLE_CLASSES:
+                    return dict(args), fail(
+                        f"pick refused: {base_class} is not an object this robot "
+                        f"can manipulate (not in the grasping vocabulary). "
+                        f"Name a graspable object instead.")
+                augmented = dict(args)
+                augmented.setdefault("x", det.x)
+                augmented.setdefault("y", det.y)
+                augmented.setdefault("z", det.z)
+                if det.ref:
+                    augmented.setdefault("ref", det.ref)
+                requested = str(args.get("orientation") or "auto").strip().lower()
+                if requested not in ("auto", "upright", "horizontal"):
+                    requested = "auto"
+                det_ori = str(getattr(det, "orientation", "") or "upright").lower()
+                if det_ori not in ("upright", "horizontal"):
+                    det_ori = "upright"
+                augmented["orientation"] = det_ori if requested == "auto" else requested
+                # carry the detection's torso-frame 5-95 percentile z span as
+                # height_m so the engine records the pick height and the place lift
+                # has a value. setdefault keeps a caller value; None means unknown.
+                augmented.setdefault("height_m", getattr(det, "height_m", None))
+                # send the detector label downstream: scene names like 'green_cup_2'
+                # never appear in detections and would make the gateway refuse a fresh
+                # target as stale. the scene name travels as ref.
+                _cls = self._walk_label(label)
+                if _cls != label:
+                    augmented["label"] = _cls
+                    augmented.setdefault("ref", label)
+                return augmented, None
+
+            def run(args: dict) -> dict:
+                label = (args.get("label") or "").strip()
+                backend = self.backend
+                if backend is None:
+                    return fail("gateway not wired — cannot execute pick")
+                x, y, z, refusal = self._constrained_pick_point(
+                    args.get("x"), args.get("y"), args.get("z"), label
+                )
+                if refusal is not None:
+                    return refusal
+                self._home_fetch_confirm()          # promote a fetch start when its words arrive after the walk
+
+                def _send(px, py, pz):
+                    return backend.pick(
+                    {
+                        "label": label,
+                        "ref": args.get("ref"),
+                        "x": px,
+                        "y": py,
+                        "z": pz,
+                        "orientation": args.get("orientation", "auto"),
+                        "arm": args.get("arm", "auto"),
+                        # carried through from prepare: the detection's own height. the
+                        # gateway gates it and the engine records it so pick and place agree.
+                        "height_m": args.get("height_m"),
+                    }
+                    )
+
+                env = _send(x, y, z)
+                # cross-body retry: when the refusal left the arm unmoved, turn so
+                # the object sits right of centre and pick once more.
+                _aim = self._cross_body_aim(env, label, x, y)
+                if isinstance(_aim, tuple):
+                    ax, ay, az = _aim
+                    if not math.isfinite(az):
+                        az = z
+                    x2, y2, z2, refusal = self._constrained_pick_point(
+                        ax, ay, az, label)
+                    if refusal is not None:
+                        return refusal
+                    x, y, z = x2, y2, z2
+                    env = _send(x, y, z)
+                elif isinstance(_aim, str) and isinstance(env, dict) \
+                        and isinstance(env.get("reason"), str):
+                    env = dict(env)
+                    env["reason"] = env["reason"].rstrip() + "; AUTO_AIM=" + _aim
+                # a fetch reached its object: tell the home sequence the pick
+                # succeeded. spoken words can pause a fetch but never end it.
+                if (isinstance(env, dict) and env.get("success")
+                        and self.__dict__.get("_home_seq") is not None):
+                    self._home_call({"op": "picked"})
+                # tag a DONE reply with the commanded pick point so verification can
+                # tell an object in the parked hand from one on the table. the
+                # engine reply itself stays untouched.
+                try:
+                    value = env.get("value") if isinstance(env, dict) else None
+                    if (isinstance(env, dict) and env.get("success")
+                            and isinstance(value, str)
+                            and value.lstrip().startswith("DONE")
+                            and "pick_point=" not in value):
+                        px, py, pz = float(x), float(y), float(z)
+                        if all(math.isfinite(v) for v in (px, py, pz)):
+                            env = dict(env)
+                            env["value"] = "%s; pick_point=%.3f,%.3f,%.3f" % (
+                                value, px, py, pz)
+                except (TypeError, ValueError):
+                    pass
+                # out of reach from here: tell the model to navigate closer and pick
+                # again. model-facing only: the spoken failure is a fixed sentence,
+                # so this text never reaches the speaker.
+                try:
+                    reason = env.get("reason") if isinstance(env, dict) else None
+                    if (isinstance(env, dict) and not env.get("success")
+                            and isinstance(reason, str)
+                            and _REACH_CEILING_RE.search(reason)
+                            and _REACH_HINT_MARK not in reason):
+                        env = dict(env)
+                        env["reason"] = reason.rstrip() + _reach_ceiling_hint(
+                            label)
+                except (TypeError, ValueError):
+                    pass
+                # a self-collision hint tells the model not to navigate
+                env = _annotate_cross_body(env, label)
+                # a pick that completes a fetch names the next step on the reply so
+                # the model continues instead of stopping after the pick.
+                try:
+                    value = env.get("value") if isinstance(env, dict) else None
+                    if (isinstance(env, dict) and env.get("success")
+                            and isinstance(value, str)
+                            and value.lstrip().startswith("DONE")
+                            and self._fetch_filter_live()
+                            and "NEXT_STEP=" not in value):
+                        env = dict(env)
+                        env["value"] = value + _FETCH_NEXT_STEP
+                except (TypeError, ValueError):
+                    pass
+                return env
+
+            return Tool(
+                name="pick",
+                description=(
+                    "Pick up an object resting on a surface the robot can reach — a "
+                    "table, a chair seat, a low shelf (torso-frame z >= -0.35 m; z=0 is "
+                    "the torso link, so a NEGATIVE z is normal for a low surface and does "
+                    "not mean the object is off the table). The robot CANNOT pick "
+                    "floor/ground objects (they read z ~ -0.75) — no ground-pick skill "
+                    "exists, so it refuses honestly. If the object is not in view, or its "
+                    "scene line says OUT-OF-REACH, call navigate first, then pick. The "
+                    "tool resolves the label against the "
+                    "freshest detections for torso-frame coordinates."
+                ),
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "label": {
+                            "type": "string",
+                            "description": "Object label from CURRENT SCENE (e.g. "
+                            "'bottle'). Say it the way the human said it — the "
+                            "lookup matches articles, case and the bare class "
+                            "('cup' finds a 'red cup' row). It can ONLY match a "
+                            "class perception is able to report; scene_brief "
+                            "lists them.",
+                        },
+                        "orientation": {
+                            "type": "string",
+                            "enum": ["auto", "upright", "horizontal"],
+                            "description": "Grasp orientation: 'upright' for a "
+                            "vertical object, 'horizontal' for a lying object. "
+                            "'auto' (default) binds to the detected object's own "
+                            "orientation so a lying object is picked with the "
+                            "horizontal approach, never the vertical one.",
+                        },
+                        "arm": {
+                            "type": "string",
+                            "enum": ["auto", "right", "left"],
+                            "description": (
+                                "Arm to pick with; 'auto' picks the reachable side."
+                                if _left_in_service_at_reg else
+                                "Arm to pick with: 'auto' (the right arm) or "
+                                "'right'. The LEFT hand is out of service and "
+                                "'left' is refused."),
+                        },
+                    },
+                    "required": ["label"],
+                },
+                run=run,
+                prepare=prepare,
+                timeout_s=CONTRACT_TIMEOUTS["pick"],
+            )
+
+        def make_place() -> Tool:
+            def _prepare_core(args: dict) -> tuple[dict, Optional[dict]]:
+                """Resolve the optional into:<container_ref> argument against
+                the freshest detections — the same resolution the pick label
+                gets (``_find_target_detection`` + scene_graph.resolve_ref),
+                so an unknown or unresolvable container fails with the SAME
+                honest NOT_DETECTED phrasing unknown args get today.  No
+                into: argument -> the args pass through untouched here
+                (prepare adds nothing; the run layer's optional drop-point
+                resolver may still attach a destination-derived x/y/z).
+                """
+                _ss = getattr(self.scene_graph, "self_state", None)
+                _msg = _ss.place_refusal() if _ss is not None else None
+                if _msg:
+                    return dict(args), fail(_msg)
+                augmented = dict(args)
+                into = (args.get("into") or "").strip()
+                det = None
+                # the container the robot navigated to: its instance id survives a
+                # label change, so it wins over the label in the args.
+                _lock_rec = self._container_lock_record(args)
+                if _lock_rec is not None:
+                    det = self._lock_detection(_lock_rec)
+                    into = str(_lock_rec["label"])
+                    augmented["into"] = into
+                elif not into:
+                    # a bare place whose destination names an object uses that object:
+                    # models often put the container in 'destination' and leave 'into'
+                    # empty.
+                    into, refusal = self._place_destination_target(args.get("destination"))
+                    if refusal is not None:
+                        # a destination naming nothing in view may be rescued by the
+                        # operator's words; a beside relation never can.
+                        alt = None
+                        if "BESIDE" not in str(refusal.get("reason") or refusal.get("error") or ""):
+                            alt = self._place_operator_target()
+                        if alt is None:
+                            return dict(args), refusal
+                        into = alt
+                    elif not into:
+                        # no into and no destination: the operator's words may name the
+                        # target ('put it in the bowl'), otherwise release in place.
+                        into = self._place_operator_target() or ""
+                        if not into:
+                            # an ambiguous target that is in view with low confidence: report
+                            # it rather than dropping the object.
+                            _onote = self._take_operator_note()
+                            if _onote:
+                                return dict(args), fail(_onote)
+                            return augmented, None
+                    augmented["into"] = into
+                else:
+                    # an into label that will not resolve falls back to the
+                    # destination, then the operator's target, then the first refusal.
+                    # keep the first refusal for the failure path
+                    det = self._find_target_detection(into)
+                    if det is None:
+                        first_refusal = fail(self._take_find_note("use it as the container") or _not_detected(into, "place it into it (keep holding the object meanwhile)"))  # keep the same reason wording as the pick lookup
+                        alt, _alt_refusal = self._place_destination_target(args.get("destination"))
+                        if (_alt_refusal is not None and "BESIDE" in str(
+                                _alt_refusal.get("reason") or _alt_refusal.get("error") or "")):
+                            # a beside relation is never promoted into an into target: the
+                            # operator's words cannot turn 'next to' into 'inside'.
+                            return dict(args), _alt_refusal
+                        if not alt:
+                            alt = self._place_operator_target()
+                        if not alt:
+                            return dict(args), first_refusal
+                        into = alt
+                        augmented["into"] = into
+                if det is None:
+                    det = self._find_target_detection(into)
+                if det is None:  # prefer the ambiguity note when one is pending
+                    return dict(args), fail(self._take_find_note("use it as the container") or _not_detected(into, "place it into it (keep holding the object meanwhile)"))  # reuse the same reason wording
+                # a detection above the torso workspace cannot rest on a surface:
+                # it is the held object or the hand mislabelled, so refuse.
+                try:
+                    _cz = float(getattr(det, "z", float("nan")))
+                except (TypeError, ValueError):
+                    _cz = float("nan")
+                if math.isfinite(_cz) and _cz > CONTAINER_Z_MAX_M:
+                    return dict(args), fail(
+                        "NOT_DETECTED: the only %r detection sits at z %+.2f m, "
+                        "above the arm's workspace (containers rest on a surface "
+                        "below %+.2f m): it is the held object or the hand "
+                        "mislabelled, not a container; the object is still held. "
+                        "Call navigate with this label if the real %s is out of "
+                        "view, then place again" % (into, _cz, CONTAINER_Z_MAX_M,
+                                                    into))
+                label = (det.label or "").strip()
+                if not label:
+                    return dict(args), fail(
+                        f"NOT_DETECTED: {into!r} resolved to a detection "
+                        "without a label — cannot name the container"
+                    )
+                ref = None
+                if self.scene_graph is not None:
+                    try:
+                        ref = self.scene_graph.resolve_ref(into)
+                    except Exception:  # noqa: BLE001
+                        ref = None
+                # container identity: the scene-graph ref when available, else the
+                # label, which is what the verifier matches on.
+                augmented["into_ref"] = ref if ref is not None else label
+                augmented["into_label"] = label
+                # record a fresh last-seen position so the verifier can tell
+                # containers apart; it is used for disambiguation only, never for
+                # the offsets.
+                if ref is not None and self.scene_graph is not None:
+                    try:
+                        entry = self.scene_graph.refs.get(ref)
+                        if (
+                            entry is not None
+                            and isinstance(entry, dict)
+                            and (time.time() - entry.get("last_seen", 0.0))
+                            <= CONTAINER_REF_FRESH_S
+                        ):
+                            for axis in ("x", "y", "z"):
+                                v = entry.get(axis)
+                                if isinstance(v, (int, float)) and not isinstance(
+                                    v, bool
+                                ):
+                                    augmented["into_" + axis] = float(v)
+                    except Exception:  # noqa: BLE001
+                        pass
+                # an into place commands a drop point above the resolved container;
+                # without x/y/z the engine releases where it stands, next to the
+                # target. a caller's x/y/z wins.
+                # a place into a container aims just past the near rim inside the
+                # reach law, creeping first when needed, else at the centre.
+                _plan, _prefusal = self._container_plan(det, _lock_rec, args)
+                if _prefusal is not None:
+                    return dict(args), _prefusal
+                if _plan is not None:
+                    for _axis in ("x", "y", "z"):
+                        augmented[_axis] = _plan["aim"][_axis]
+                    augmented["_container_plan"] = _plan
+                    return augmented, None
+                _hint = getattr(self, "_low_lane_drop", None)   # handed over by the low lane
+                self._low_lane_drop = None
+                drop = _hint[1] if (_hint and _hint[0] == id(det) and _hint[1]) \
+                    else _drop_point(det)
+                if drop is None:
+                    # no usable position: refuse instead of releasing in the wrong
+                    # place. refusing leaves the object in the hand, which is recoverable.
+                    return dict(args), fail(
+                        f"NOT_DETECTED: {into!r} has no usable position "
+                        "(x/y/z absent or non-finite) — cannot place onto it"
+                    )
+                # reach gate: refuse a drop point beyond reach instead of releasing
+                # at the arm's limit, and name the way out.
+                _pd = math.hypot(float(drop["x"]), float(drop["y"]))
+                _pr = reach_residual(float(drop["x"]), float(drop["y"]),
+                                     min(float(drop["z"]), AIM_Z_MAX))
+                _low = LOW_BAND_Z_MIN_M <= float(drop["z"]) <= LOW_BAND_Z_MAX_M
+                # handover: a person within HANDOVER_START_MAX_M is approached to
+                # arm's reach, then the hand opens where it is with no arm motion.
+                _ho = self._handover_plan(into, det, _pd)
+                if _ho is not None:
+                    augmented["_handover"] = _ho
+                    for _axis in ("x", "y", "z"):
+                        augmented.setdefault(_axis, drop[_axis])
+                    return augmented, None
+                if _pd > PLACE_ON_MAX_PLANAR_M or (_pr > PLACE_ON_MAX_RESIDUAL_M
+                                                   and not _low):
+                    return dict(args), fail(
+                        "NOT_REACHABLE: the %s is %.2f m away (residual %.2f m "
+                        "beyond the arm's reach) - too far to place onto from "
+                        "here. This is NOT the end of the task: call navigate "
+                        "with this label to walk to it, then place again; the "
+                        "object is still held" % (into, _pd, _pr))
+                for _axis in ("x", "y", "z"):
+                    augmented.setdefault(_axis, drop[_axis])
+                return augmented, None
+
+            def prepare(args: dict) -> tuple[dict, Optional[dict]]:
+                """B8i: _prepare_core, then (success only) the held object's
+                class as 'label' and, for a coordinate place without a
+                caller height, the place-only lift height token."""
+                aug, refusal = _prepare_core(args)
+                if refusal is not None:
+                    return aug, refusal
+                _pl = self._place_object_label(aug.get("label"))
+                if isinstance(_pl, str) and _pl:
+                    aug["label"] = _pl
+                if (all(aug.get(_k) is not None for _k in ("x", "y", "z"))
+                        and aug.get("height_m") is None):
+                    aug["height_m"] = self._place_lift_height(aug.get("label"))
+                return aug, None
+
+            def run(args: dict) -> dict:
+                # place may carry an optional x/y/z as a commanded target, or fall
+                # back to a release at the current pose. no envelope key constrains
+                # it: max_reach_m and grip_center_standoff_m bound pick only.
+                backend = self.backend
+                if backend is None:
+                    return fail("gateway not wired — cannot execute place")
+                # creep to the container first when prepare planned it, then
+                # recompute the drop at the new position.
+                _plan = args.get("_container_plan")
+                _creep_note, _travel = None, 0.0
+                if isinstance(_plan, dict) and _plan.get("creep") is not None:
+                    _cr = self._run_container_creep(_plan)
+                    if isinstance(_cr, dict):
+                        return _cr
+                    _aim, _creep_note, _travel, _geo = _cr
+                    args = dict(args)
+                    for _axis in ("x", "y", "z"):
+                        args[_axis] = _aim[_axis]
+                    _plan = dict(_plan, aim=_aim, geo=_geo)
+                # close in on the person first, then recompute the drop point
+                _ho = args.get("_handover")
+                if isinstance(_ho, dict):
+                    _hr = self._run_handover_approach(_ho)
+                    if isinstance(_hr, dict):
+                        return _hr
+                    return self._handover_open(_hr)     # open at arm's reach, no drop motion
+                place_payload = {
+                    "label": args.get("label"),
+                    "destination": args.get("destination"),
+                }
+                # explicit x/y/z go through as given; the backend coerces and
+                # guards them. an into place always carries one, so the arm moves
+                # over the container before releasing and the verifier re-observes.
+                caller_xyz = {
+                    key: args[key]
+                    for key in ("x", "y", "z")
+                    if args.get(key) is not None
+                }
+                if caller_xyz:
+                    place_payload.update(caller_xyz)
+                # forward the engine's place-time 2.5x lift. it is accepted only
+                # with coordinates (the gateway parses 'place x y z height_m'); a
+                # lone token is a parse error, and the gateway re-gates the value.
+                if caller_xyz and args.get("height_m") is not None:
+                    place_payload["height_m"] = args.get("height_m")
+                env = backend.place(place_payload)
+                # the object left the hand: clear the fetch sequence unless the
+                # plan changed to a handover.
+                if (isinstance(env, dict) and env.get("success")
+                        and self.__dict__.get("_home_seq") is not None):
+                    self._home_call({"op": "clear", "why": "handover"})
+                    self._home_seq = None
+                # tag a successful into reply with the container ref and label so
+                # the verifier can find it. brain-side evidence only: into_* never
+                # rides the wire.
+                into_ref = args.get("into_ref")
+                into_label = args.get("into_label")
+                if (
+                    isinstance(env, dict)
+                    and env.get("success")
+                    and into_ref
+                    and into_label
+                ):
+                    value = env.get("value")
+                    label = (args.get("label") or "").strip()
+                    tail = "; into=%s; into_label=%s" % (
+                        _annotation_value(into_ref),
+                        _annotation_value(into_label))
+                    # a missing object label leaves containment un-checkable, so the
+                    # verifier treats it as in progress.
+                    if label:
+                        tail += "; placed_object=%s" % _annotation_value(label)
+                    else:
+                        tail += "; placed_object=(label missing)"
+                    # container position from prepare, when fresh
+                    for axis in ("x", "y", "z"):
+                        v = args.get("into_" + axis)
+                        if isinstance(v, (int, float)) and not isinstance(v, bool):
+                            if axis == "y":
+                                v = v - _travel    # adjust y for the creep travel
+                            tail += "; into_%s=%.3f" % (axis, v)
+                    if isinstance(_plan, dict):
+                        tail += self._container_tail(_plan, _creep_note)
+                    # execution timestamp on time.time(), the base the gateway and the
+                    # verifier share; identity only, never age math. predrop_* carry the
+                    # pre-drop in-region snapshot that the verifier cannot see.
+                    tail += "; dropped_at=%.6f" % time.time()
+                    snap = args.get("_predrop_containment")
+                    if isinstance(snap, dict) and snap.get("state") == "known":
+                        tail += "; predrop_state=known"
+                        positions = snap.get("preexisting") or []
+                        if positions:
+                            tail += "; predrop_obj=" + ";".join(
+                                "%.3f,%.3f,%.3f"
+                                % (float(p[0]), float(p[1]) - _travel,
+                                   float(p[2]))
+                                for p in positions)
+                    else:
+                        tail += "; predrop_state=unknown"
+                    if isinstance(value, str) and value:
+                        return ok(value + tail)
+                    # an empty drop reply is redacted so the verifier reads in progress,
+                    # never a false DONE.
+                    return ok("(drop reply empty)" + tail)
+                # a cross-body place refusal stays bare: place reasons are spoken
+                # verbatim, so a hint would be read aloud. the model sees it
+                # through self-state instead.
+                return env
+
+            return Tool(
+                name="place",
+                description=(
+                    "Release the held object by opening the gripper (engine 'place': "
+                    "hold_rc on -> LOW_CARRY -> open -> payload off -> NEUTRAL -> "
+                    "hold_rc off). Without coordinates this is RELEASE-ONLY: the "
+                    "hand opens at the current carry pose.  "
+                    "WHEN THE OPERATOR NAMES AN OBJECT TO PUT IT ON OR IN ('in the "
+                    "bowl', 'on the green cup'), PASS THAT OBJECT AS 'into' — "
+                    "without it the hand just opens where the arm is.  "
+                    "GIVING IT TO A PERSON ('give it to me', 'hand it over'): "
+                    "into='person' -- you turn to face them, step in to arm's "
+                    "reach and OPEN the hand for them to take it (no drop "
+                    "motion); say 'here you go' as you do.  "
+                    "Verifier v2: pass an optional 'into' argument (a container "
+                    "named in CURRENT SCENE) — the container resolves "
+                    "like the pick label (unknown container = NOT_DETECTED), "
+                    "the arm is then commanded to a drop point above it so the "
+                    "object is released ONTO the container, and the verifier "
+                    "only succeeds on demonstrated containment by "
+                    "re-observation."
+                ),
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "label": {
+                            "type": "string",
+                            "description": "The object you are holding.",
+                        },
+                        "destination": {
+                            "type": "string",
+                            "description": "Where you intend to put it (informational).",
+                        },
+                        "into": {
+                            "type": "string",
+                            "description": "Container to place the object INTO "
+                            "(a name from CURRENT SCENE); resolved like the "
+                            "pick label and gates verifier v2 containment.",
+                        },
+                        "height_m": {
+                            "type": "number",
+                            "description": "The held object's height in metres, "
+                            "for the engine's place-time extra lift (it raises "
+                            "the holding arm by 2.5x this, clamped, before the "
+                            "place proceeds). Only used WITH x/y/z. Omit it and "
+                            "the pick-time height of the last pick is used.",
+                        },
+                    },
+                    "required": ["label", "destination"],
+                },
+                run=run,
+                prepare=prepare,
+                timeout_s=CONTRACT_TIMEOUTS["place"],
+            )
+
+        def make_place_at_spot() -> Tool:
+            """Release the held object (VALIDATED against a named spot).
+
+            Consumes ``embodiment.base_relative.key_positions`` (round-5
+            config-seam) for VALIDATION only: the requested spot name is
+            resolved against the CONFIGURED key_positions map — an unknown
+            spot name is an honest UNKNOWN_SPOT tool error and an unwired
+            embodiment is an honest refusal (never a guessed position).
+            Placement itself is a RELEASE at the CURRENT pose (bare
+            'place', target-agnostic — the same backend.place path as the
+            place tool): the spot does NOT move the arm, no positional
+            guarantee is made or claimed, and the resolved position is
+            never sent anywhere — the platform has no spot-relative
+            placement.
+            """
+
+            def prepare(args: dict) -> tuple[dict, Optional[dict]]:
+                _ss = getattr(self.scene_graph, "self_state", None)
+                _msg = _ss.place_refusal() if _ss is not None else None
+                if _msg:
+                    return dict(args), fail(_msg)
+                return dict(args), None
+
+            def run(args: dict) -> dict:
+                spot = (args.get("spot") or "").strip()
+                if not spot:
+                    return fail("invalid arguments: missing spot")
+                backend = self.backend
+                if backend is None:
+                    return fail("gateway not wired — cannot execute place_at_spot")
+                _, refusal = self._spot_position(spot)
+                if refusal is not None:
+                    return refusal
+                return backend.place(
+                    {
+                        "label": args.get("label"),
+                        "destination": spot,
+                        "spot": spot,
+                    }
+                )
+
+            return Tool(
+                name="place_at_spot",
+                description=(
+                    "Release the held object (RELEASE-ONLY: engine 'place' opens "
+                    "the gripper at the CURRENT pose — no positional guarantee, "
+                    "the drop does not move the arm).  The named spot from "
+                    "embodiment.base_relative.key_positions is VALIDATED for "
+                    "capability/consistency checking only: an unknown spot name "
+                    "is an honest UNKNOWN_SPOT error and an unwired embodiment "
+                    "an honest refusal — the robot never guesses a position, and "
+                    "the resolved position is NOT commanded anywhere (the "
+                    "platform has no spot-relative placement; release happens "
+                    "where the robot stands)."
+                ),
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "spot": {
+                            "type": "string",
+                            "description": "Named base-relative spot from "
+                            "embodiment.base_relative.key_positions.",
+                        },
+                        "label": {
+                            "type": "string",
+                            "description": "The object you are holding.",
+                        },
+                    },
+                    "required": ["spot"],
+                },
+                run=run,
+                prepare=prepare,
+                timeout_s=CONTRACT_TIMEOUTS["place"],
+            )
+
+        def make_navigate() -> Tool:
+            def run(args: dict) -> dict:
+                backend = self.backend
+                if backend is None:
+                    return fail("gateway not wired — cannot navigate")
+                # resolve the alias before the target leaves the tool: the FSM matches
+                # by label and sweeps a class perception can publish, so 'bring it to
+                # me' would otherwise hunt nothing.
+                target = known_labels.resolve_alias(args.get("target"))
+                refusal = self._navigate_vocab(target)          # add the word to the detector vocabulary first
+                if refusal is not None:
+                    return refusal
+                # a fetch walk targets the requester only
+                spec, refusal = self._requester_walk_target(target)
+                if refusal is not None:
+                    return refusal
+                # the first empty-handed walk marks the fetch start
+                self._home_fetch_mark(target)
+                target = spec or self._walk_target_spec(target)
+                # not in view: step back, sweep
+                refusal = self._search_step_back(spec, target)
+                if refusal is not None:
+                    return refusal
+                return backend.navigate({"target": target})
+
+            return Tool(
+                name="navigate",
+                description=(
+                    "SEARCH for a destination or object and walk to it using the "
+                    "walk FSM (/walk_target, /walk_go; status on /walk_status). "
+                    "It SWEEPS when the target is not in view, so call it for "
+                    "anything you cannot see or cannot reach — being out of sight "
+                    "is not being unavailable. Verification is ONLY via "
+                    "/walk_status == REACHED — there is no odometry; a REACHED "
+                    "target is the go-ahead to pick it. Call it yourself whenever "
+                    "the target is out of view or out of reach — never ask the "
+                    "human for permission to walk first."
+                ),
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "target": {
+                            "type": "string",
+                            "description": "Destination or object name. Name it the "
+                            "way the human did — the label is matched against the "
+                            "scene, not spelled exactly ('the bottle' is fine). "
+                            "The walk FSM can only search for a class perception "
+                            "is able to report; scene_brief lists them.",
+                        },
+                    },
+                    "required": ["target"],
+                },
+                run=run,
+                timeout_s=CONTRACT_TIMEOUTS["navigate"],
+            )
+
+        def make_turn_around() -> Tool:
+            """Turn in place and sweep for a person, holding on first sight
+            (operator directive 2026-10-03: *"just the simple turn around
+            sweep when i ask it to turn around, it will turn around to look
+            for person, once detected person, it stopped sweeping"*).
+
+            The sweep primitive ALREADY EXISTS: navigate's walk FSM sweeps
+            and interrupts on the first sighting (walk_node._sweep_turn ->
+            _phase_hold: DETECTED, no turn, no walk).  What this tool must
+            NOT do is reach that FSM through the coordinator, whose
+            auto-approach (/walk_go on the 3rd detection beat) would walk the
+            robot TO the person.  The design of record for the gateway-side
+            verb is therefore to start the sweep by publishing the label
+            directly on /walk_target, bypassing /navigate_target and the
+            coordinator entirely, so the FSM reaches its DETECTED hold and
+            stays there; this brain half only names the target.
+
+            This is MOTION (hooks.MOTION_TOOLS carries 'turn_around'), so it
+            takes the same confirm gate as pick/place/navigate — turning in
+            place drives the walk FSM like any other locomotion.
+            """
+
+            def run(args: dict) -> dict:
+                backend = self.backend
+                if backend is None:
+                    return fail("gateway not wired — cannot turn around")
+                method = getattr(backend, "turn_around", None)
+                if method is None:
+                    return fail("backend has no turn_around — cannot turn around")
+                # same alias law: 'me' -> 'person' before it leaves the tool, and no
+                # target means the operator.
+                target = known_labels.resolve_alias(args.get("target") or "person")
+                return method({"target": target})
+
+            return Tool(
+                name="turn_around",
+                description=(
+                    "TURN IN PLACE and sweep the room for a person; STOP "
+                    "sweeping when one is seen, then rotate in place to "
+                    "CENTRE them in the camera frame — it does NOT walk to "
+                    "them. The call BLOCKS for up to about 2 minutes. Use "
+                    "this when the human asks to be found or to look around: "
+                    "'turn around', 'turnaround', 'look around', 'spin "
+                    "around', 'find me', 'who's there'. This is NOT navigate: "
+                    "navigate walks to a target, this only turns, watches and "
+                    "centres. Read TURN_RESULT in the reply: centred = done, "
+                    "the person is centred in front of you; not_seen = say "
+                    "you swept the full circle and saw no person (never claim "
+                    "you found someone); seen_not_centred or cancelled = "
+                    "report exactly that, and retry at most once. Call it "
+                    "yourself — never ask the human for permission first."
+                ),
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "target": {
+                            "type": "string",
+                            "description": "Who to look for; defaults to "
+                            "'person'. 'me', 'myself' and 'I' mean the "
+                            "person speaking.",
+                        },
+                    },
+                    "required": [],
+                },
+                run=run,
+                # the sweep takes as long as a navigate (12 windows of 5.0 s plus a
+                # ~1.05 s turn each, ~73 s), so reuse that timeout.
+                timeout_s=CONTRACT_TIMEOUTS["navigate"],
+            )
+
+        def make_return_home() -> Tool:
+            """B8l F7 (operator 2026-10-17): "hey stuart, can you go get me a
+            bottle of water?" -> navigate to the bottle, pick it, RETURN to
+            where the walk started, give it to the person near that spot.
+            The start point is recorded by the gateway (odometry) when a
+            navigate starts with an empty hand."""
+
+            def run(args: dict) -> dict:
+                backend = self.backend
+                if backend is None:
+                    return fail("gateway not wired — cannot return")
+                method = getattr(backend, "return_home", None)
+                if method is None:
+                    return fail("backend has no return_home — cannot return")
+                return method({})
+
+            return Tool(
+                name="return_home",
+                description=(
+                    "WALK BACK to where you were when the person asked you to "
+                    "fetch something (the start point, remembered by "
+                    "odometry when the first walk of that fetch began with "
+                    "an empty hand), and turn to face the person who asked. Use it "
+                    "for every fetch ('get me X', 'bring me X', 'can you go "
+                    "get me X'): navigate to X, pick X, call return_home, then "
+                    "place with into='person' — only a person near the start "
+                    "point counts as the one who asked; anyone far from it is "
+                    "ignored. If the person is out of reach after "
+                    "return_home, navigate to 'person' (it walks to the "
+                    "requester only), then place. It BLOCKS until arrival. "
+                    "ERROR replies say why (no start point recorded, "
+                    "odometry stale, blocked, cancelled) — report that "
+                    "honestly; never claim you are back when it failed."
+                ),
+                schema={"type": "object", "properties": {}, "required": []},
+                run=run,
+                timeout_s=140.0,
+            )
+
+        def make_cancel() -> Tool:
+            def run(args: dict) -> dict:
+                backend = self.backend
+                if backend is None:
+                    return fail("gateway not wired — cannot cancel")
+                method = getattr(backend, "stop", None)
+                if method is None:
+                    return fail("backend has no stop — cannot cancel")
+                return method({})
+
+            return Tool(
+                name="stop",
+                description=(
+                    "CANCEL the task that is running right now: stop picking "
+                    "while it is picking, stop placing while it is placing, "
+                    "stop sweeping/searching while it is searching. The arm "
+                    "freezes in place and the operator regains manual "
+                    "control; the walk stops. Call this IMMEDIATELY when the "
+                    "human says stop/cancel/halt/freeze/never mind/forget it "
+                    "— do not finish the current step first, and do not ask "
+                    "for confirmation. Stopping is always allowed and is "
+                    "never a destructive action."
+                ),
+                schema={"type": "object", "properties": {}},
+                run=run,
+                # the cancel answer comes back on the engine's connection thread, so
+                # a healthy one is instant. a long bound would make the stop itself
+                # wait on a wedged listener.
+                timeout_s=CANCEL_TIMEOUT_S,
+                # non-blocking: a cancel must not queue behind the task it cancels
+                blocking=False,
+            )
+
+        def make_hand(name: str, verb: str) -> Tool:
+            def run(args: dict) -> dict:
+                backend = self.backend
+                if backend is None:
+                    return fail(f"gateway not wired — cannot {verb}")
+                method = getattr(backend, name, None)
+                if method is None:
+                    return fail(f"backend has no {name} — cannot {verb}")
+                return method({"side": args.get("side", "right")})
+
+            if name == "open_hand":
+                description = (
+                    "Open the gripper (grip socket open|open_left|open_both). "
+                    "Verify afterwards via grip 'state <side>' — the grip does "
+                    "NOT auto-verify. "
+                    # opening the hand drops a good pick, so it is offered only as an
+                    # explicit release, never as a check.
+                    "Opening the hand DROPS whatever it holds, where the arm "
+                    "is now. Call it ONLY when the operator asks to open the "
+                    "hand, let go or drop; never to check, correct or retry a "
+                    "pick - if you are unsure the right object was picked, "
+                    "say so and ask the operator."
+                )
+            else:
+                description = (
+                    "Close the gripper (grip socket close|close_left|close_both). "
+                    "For grasping the gateway should use close_adaptive "
+                    "(DONE:contact = the real grasp signal). Verify afterwards via "
+                    "grip 'state <side>' — the grip does NOT auto-verify."
+                )
+            def prepare(args: dict) -> tuple[dict, Optional[dict]]:
+                """B8h (s1 rows 9 and 13, MEASURED): the description guard
+                above failed twice - the model opened the hand on a VERIFIED
+                pick nobody asked it to release.  Code guard: while a
+                verified pick is held, open_hand needs a release request from
+                the operator in this turn or the previous one
+                (SelfState.open_hand_refusal; inert for hand_unknown,
+                pick_unconfirmed and without the voice hook)."""
+                ss = getattr(self.scene_graph, "self_state", None)
+                if ss is not None and hasattr(ss, "open_hand_refusal"):
+                    msg = ss.open_hand_refusal(args.get("side"))
+                    if msg:
+                        return dict(args), fail(msg)
+                return dict(args), None
+
+            return Tool(
+                name=name,
+                description=description,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "side": {
+                            "type": "string",
+                            "enum": ["right", "left", "both"],
+                            "description": "Which hand (default right).",
+                        },
+                    },
+                    "required": [],
+                },
+                run=run,
+                prepare=prepare if name == "open_hand" else None,
+                timeout_s=CONTRACT_TIMEOUTS[name],
+            )
+
+        def make_pose() -> Tool:
+            """Move the arms to a named resting pose (operator directive
+            2026-09-26: *"i can ask it to go to neutral pose, tuck in pose
+            and ready pose ... tuck your arms in, be neutral, go ready
+            pose"*).
+
+            ONE tool with an enum rather than four tools, because the human
+            names a POSE and the four names differ only by which engine verb
+            they reach.  The enum members are OUR names; the engine's own
+            verbs differ (`tuck` needs TWO of them) and that mapping is the
+            backend's job, not the model's — see POSE_ENGINE_VERBS in
+            gateway/brain_client.py.
+
+            This is MOTION (hooks.MOTION_TOOLS carries 'pose'), so it passes
+            the same confirm gate as pick/place/navigate.
+            """
+
+            def run(args: dict) -> dict:
+                backend = self.backend
+                if backend is None:
+                    return fail("gateway not wired — cannot pose")
+                method = getattr(backend, "pose", None)
+                if method is None:
+                    return fail("backend has no pose — cannot pose")
+                name = str(args.get("name") or "").strip().lower()
+                if name not in POSE_NAMES:
+                    return fail(
+                        f"unknown pose {name!r}; valid: "
+                        + ", ".join(sorted(POSE_NAMES))
+                    )
+                return method({"name": name})
+
+            return Tool(
+                name="pose",
+                description=(
+                    "Move the robot's arms to a named resting pose. Use this "
+                    "whenever the human asks for a posture rather than an "
+                    "object: 'tuck your arms in', 'go to neutral', 'ready "
+                    "pose', 'put your arms down', 'arms down at your sides', "
+                    "'go home'.\n"
+                    "'ready' — the working pose, both arms tucked and BOTH "
+                    "HANDS OPEN (the pose the robot starts a task from).\n"
+                    "'tuck' — both arms folded in to the carry pose; hands "
+                    "are left as they are (a carried object stays held).\n"
+                    "'neutral' — the lowstate rest position: arms hanging "
+                    "with the elbows softened, both hands CLOSED. A working "
+                    "rest, NOT a full arms-down.\n"
+                    "'home' — THE ARMS-DOWN POSE: both arms hanging STRAIGHT "
+                    "DOWN at the sides of the torso, elbows nearly straight, "
+                    "palms turned inboard. Say this one for 'put your arms "
+                    "down', 'arms at your sides', 'lower your arms'.\n"
+                    "'ready' and 'tuck' are DIFFERENT poses: 'get ready' is "
+                    "'ready', 'tuck your arms in' is 'tuck'. 'arms down' is "
+                    "'home', NOT 'neutral'."
+                ),
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "enum": sorted(POSE_NAMES),
+                            "description": "Which pose to move to.",
+                        },
+                    },
+                    "required": ["name"],
+                },
+                run=run,
+                timeout_s=CONTRACT_TIMEOUTS["pose"],
+            )
+
+        def make_resolve_ref() -> Tool:
+            def run(args: dict) -> dict:
+                graph = self.scene_graph
+                label = (args.get("label") or "").strip()
+                if graph is None:
+                    return fail("scene graph not wired — cannot resolve_ref")
+                ref = graph.resolve_ref(label)
+                if ref is None:
+                    return fail(
+                        f"NOT_DETECTED: no scene reference for {label!r}"
+                    )
+                return ok(ref)
+
+            return Tool(
+                name="resolve_ref",
+                description=(
+                    "Map a label from CURRENT SCENE to its persistent object "
+                    "reference (e.g. 'bottle' -> 'bottle_3'). Use it when the same "
+                    "object must be tracked across steps. Honest error when the "
+                    "label is not in the current scene."
+                ),
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "label": {
+                            "type": "string",
+                            "description": "Label as shown in CURRENT SCENE.",
+                        },
+                    },
+                    "required": ["label"],
+                },
+                run=run,
+                timeout_s=10.0,
+            )
+
+        def make_scene_brief() -> Tool:
+            def run(args: dict) -> dict:
+                graph = self.scene_graph
+                if graph is None:
+                    return fail("scene graph not wired — cannot scene_brief")
+                # live re-check, not a cache read: the description promises a fresh
+                # look, and cached refs would report an empty scene once the lane
+                # died. update() only takes fresh observations, so health is judged here.
+                lane_stale_s = None
+                if self.backend is not None:
+                    obs = self._observe()
+                    if obs is None:
+                        return fail(
+                            "scene unavailable: the perception/gateway lane is "
+                            "not answering (observe() returned no observation). "
+                            "This is NOT an empty scene — nothing is currently "
+                            "known about the world. Do not plan motion."
+                        )
+                    ts = float(getattr(obs, "detections_ts", 0.0) or 0.0)
+                    if ts <= 0.0 or not getattr(obs, "fresh", True):
+                        # stale lane: report last-known detections with an age flag instead
+                        # of failing. the pick lookup and the 2.0 s pre-motion check refuse
+                        # stale data anyway, and merging it could turn no-data into an empty scene.
+                        lane_stale_s = (
+                            max(0.0, time.time() - ts) if ts > 0.0 else 0.0
+                        )
+                    else:
+                        lane_stale_s = None
+                        graph.update(obs)
+                # healthy path: the call shape differs, so keep the plain call for
+                # graphs whose scene_brief takes no arguments.
+                brief = (
+                    graph.scene_brief()
+                    if lane_stale_s is None
+                    else graph.scene_brief(lane_stale_s=lane_stale_s)
+                )
+                # the detectable vocabulary is not appended here: the offline lane
+                # speaks this string, so it belongs in the tool description as
+                # static text.
+                if getattr(graph, "_updates", 1) == 0:
+                    # the graph has never had an observation: report failure, because
+                    # success beside 'nothing is known' is a contradiction the model
+                    # resolves as false.
+                    return fail(brief)
+                return ok(brief)
+
+            return Tool(
+                name="scene_brief",
+                description=(
+                    "Return the compact current-scene summary with persistent "
+                    "references (one line per object: ref, label, pose, "
+                    "holding/in-container state, freshness). Call it to re-check "
+                    "what objects are visible and their refs.\n"
+                    "WHAT THE ROBOT CAN EVER SEE: " + known_labels.describe()
+                    + ". These 20 are the ONLY labels perception can report "
+                    "(a curated set, not all of COCO). When a human names "
+                    "something outside this list (a mug, a phone stand, a "
+                    "door), do NOT invent a label and do NOT report it as "
+                    "merely absent — say plainly that it is not something this "
+                    "robot can see, and name the closest real alternative when "
+                    "one exists (a mug is not visible to me; I can see cups)."
+                ),
+                schema={"type": "object", "properties": {}, "required": []},
+                run=run,
+                timeout_s=5.0,
+            )
+
+        def make_user_tool(name: str, blocking: bool) -> Tool:
+            def run(args: dict) -> dict:
+                backend = self.backend
+                if backend is None:
+                    return fail(f"gateway not wired — cannot {name}")
+                method = getattr(backend, name, None)
+                if method is None:
+                    return fail(f"backend has no {name}")
+                return method(args)
+
+            if name == "query_user":
+                description = (
+                    "Ask the human operator a question and WAIT for their reply "
+                    "(blocking). Returns the human's answer verbatim. Use it ONLY "
+                    "when the instruction itself is ambiguous — never to ask "
+                    "permission for a motion."
+                )
+                schema = {
+                    "type": "object",
+                    "properties": {
+                        "question": {
+                            "type": "string",
+                            "description": "The question for the human.",
+                        },
+                    },
+                    "required": ["question"],
+                }
+            else:
+                description = (
+                    "Send a short notice to the human operator WITHOUT waiting "
+                    "(non-blocking). Use to report progress or completion."
+                )
+                schema = {
+                    "type": "object",
+                    "properties": {
+                        "message": {
+                            "type": "string",
+                            "description": "The notice text.",
+                        },
+                    },
+                    "required": ["message"],
+                }
+            return Tool(
+                name=name,
+                description=description,
+                schema=schema,
+                run=run,
+                # the gateway's query reply timeout is 20.0 s and its honest reply
+                # goes out at that deadline, so this must be strictly greater (25.0)
+                # or the agent times out first and loses an answer from the last seconds.
+                timeout_s=25.0,
+                blocking=blocking,
+            )
+
+        for tool in (
+            make_pick(),
+            make_place(),
+            make_place_at_spot(),
+            make_navigate(),
+            make_turn_around(),
+            *((make_return_home(),) if self._fetch_on() else ()),   # '0' omits the return_home tool
+            make_hand("open_hand", "open"),
+            make_hand("close_hand", "close"),
+            make_cancel(),
+            make_pose(),
+            make_resolve_ref(),
+            make_scene_brief(),
+            make_user_tool("query_user", blocking=True),
+            make_user_tool("notify_user", blocking=False),
+        ):
+            self.register(tool)
+        register_optional_tools(self, self._optional_switches)
+
+    # -- embodiment consumption (pick placeholder geometry) ----------------------
+
+    def _envelope(self) -> Optional[Any]:
+        """The embodiment envelope object, or None when not wired."""
+        emb = self.embodiment
+        if emb is None:
+            return None
+        return getattr(emb, "envelope", None) or None
+
+    def _spot_position(
+        self, spot_name: str
+    ) -> tuple[Optional[List[float]], Optional[dict]]:
+        """Resolve a named base-relative spot from the wired embodiment.
+
+        Consumes ``embodiment.base_relative.key_positions`` (round-5
+        config-seam): the position returned is the CONFIGURED one — an
+        unknown spot name (or an unwired/no-key_positions embodiment) is
+        an honest failure envelope, NEVER a guessed position.  Works with
+        the loader's ``EmbodimentConfig`` (frozen, key_positions is a
+        mappingproxy) and brain/embodiment.py's ``Embodiment`` (which also
+        offers ``base_relative.position(name)``).
+
+        Returns ``(position, None)`` or ``(None, failure_envelope)``.
+        """
+        emb = self.embodiment
+        if emb is None:
+            return None, fail(
+                "embodiment not wired — no base_relative.key_positions to "
+                "resolve the spot against"
+            )
+        br = getattr(emb, "base_relative", None)
+        if br is None:
+            return None, fail(
+                "embodiment has no base_relative section — cannot resolve spots"
+            )
+        pos: Any = None
+        pos_fn = getattr(br, "position", None)
+        if callable(pos_fn):
+            try:
+                pos = pos_fn(spot_name)
+            except Exception:  # noqa: BLE001 — resolution must not crash the tool
+                pos = None
+        if pos is None:
+            kp = getattr(br, "key_positions", None)
+            if kp is not None:
+                pos = kp.get(spot_name)
+        if pos is None:
+            known = sorted(getattr(br, "key_positions", {}))
+            return None, fail(
+                f"UNKNOWN_SPOT: {spot_name!r} is not a configured base-relative "
+                f"spot (known: {known}) — never guessing a position"
+            )
+        try:
+            pos = [float(x) for x in pos]
+        except (TypeError, ValueError):
+            return None, fail(
+                f"spot {spot_name!r} has a non-numeric position {pos!r}"
+            )
+        return pos, None
+
