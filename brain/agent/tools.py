@@ -682,3 +682,23 @@ class GatewayBackend(Protocol):
         """Latest WorldObservation, or None."""
         ...
 
+    def pick(self, args: dict) -> dict:
+        """Command the pick engine (tabletop only); args carry x/y/z/ref."""
+        ...
+
+    def place(self, args: dict) -> dict:
+        """Release-only drop of the held object."""
+        ...
+
+    def navigate(self, args: dict) -> dict:
+        """Walk FSM approach; verify only via /walk_status == REACHED."""
+        ...
+
+    def open_hand(self, args: dict) -> dict:
+        """Open the gripper (side: right|left|both)."""
+        ...
+
+    def close_hand(self, args: dict) -> dict:
+        """Close the gripper (side: right|left|both)."""
+        ...
+
