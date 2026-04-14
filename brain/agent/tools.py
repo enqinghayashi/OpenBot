@@ -339,3 +339,5 @@ def _self_collision_hint(label: str, reason: str) -> str:
         "right of my centre line, then ask me again. Do not switch arms"
         % (_CROSS_BODY_MARK, pos, when, label, say, ask)
     )
+
+
