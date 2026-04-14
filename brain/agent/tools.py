@@ -237,3 +237,11 @@ def _not_detected_unconfirmed(label: str, ss: Any) -> str:
         "somewhere; call open_hand only if the operator asks you to let go"
         % (label, age)
     )
+
+
+#: reach-ceiling failures from the pick engine, bare or behind engine_reply=.
+_REACH_CEILING_RE = re.compile(r"\breach_ceiling\b")
+#: set when the hint is added, so it is never added twice.
+_REACH_HINT_MARK = "OUT OF REACH FROM HERE"
+
+
