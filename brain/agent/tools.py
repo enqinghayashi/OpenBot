@@ -546,3 +546,8 @@ def container_place_on(environ: Any = None) -> bool:
     return str(environ.get(CONTAINER_PLACE_ENV, "1")).strip() != "0"
 
 
+def reach_residual(x: float, y: float, z: float) -> float:
+    """B8j reach law: max(0, |(x, y, z) - REACH_SHOULDER| - REACH_LEN_M)."""
+    sx, sy, sz = REACH_SHOULDER
+    return max(0.0, math.sqrt((x - sx) ** 2 + (y - sy) ** 2 + (z - sz) ** 2)
+               - REACH_LEN_M)
