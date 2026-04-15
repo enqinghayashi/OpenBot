@@ -538,3 +538,9 @@ LOCK_USE_ROW_MAX_S = 20.0
 _CREEP_TOKEN_RE = re.compile(r"\b([A-Z_]+)=([^;\s]+)")
 
 
+def container_place_on(environ: Any = None) -> bool:
+    """OPENBOT_CONTAINER_PLACE: unset / anything but '0' = ON."""
+    if environ is None:
+        import os  # imported lazily; stdlib only
+        environ = os.environ
+    return str(environ.get(CONTAINER_PLACE_ENV, "1")).strip() != "0"
