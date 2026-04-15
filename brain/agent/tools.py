@@ -2429,3 +2429,177 @@ class ToolRegistry:
             entry = None
         return isinstance(entry, dict) and str(entry.get("label") or "").lower() == "person"
 
+    def _requester_filter(self, rows: list):
+        """(kept, note): person rows within the start point's radius of the
+        requester's spot (the gateway's center_body / radius_m).  Outside a
+        fetch (or with no start point) every row is kept, note None; with a
+        start point but no fresh odometry nobody is (review r1 M1)."""
+        if not self._fetch_filter_live():
+            return rows, None
+        snap = self._home_snapshot()
+        if not snap:
+            return rows, None
+        if "center_body" not in snap:
+            return [], ("CANNOT TELL WHO ASKED: the odometry is not fresh, so "
+                        "the person near the start point cannot be found; "
+                        "nothing was moved. Try again in a moment.")
+        try:
+            cx, cy = (float(v) for v in snap["center_body"])
+            rad = float(snap.get("radius_m"))
+        except (TypeError, ValueError):
+            return rows, None
+        kept, far, own_n = [], [], 0
+        for det in rows:
+            try:
+                d = math.hypot(float(det.x) - cx, float(det.y) - cy)
+                own = math.hypot(float(det.x), float(det.y)) < 0.35
+            except (TypeError, ValueError, AttributeError):
+                far.append(det)
+                continue
+            if own:
+                own_n += 1
+                continue        # treat this as the robot's own arm (0.35 m minimum range)
+            (kept if d <= rad else far).append(det)
+        note = None
+        try:
+            away = float(snap.get("robot_to_home_m"))
+        except (TypeError, ValueError):
+            away = 0.0
+        if not kept and not far and own_n:
+            # the only person rows sat inside the own-arm zone, so report too
+            # close rather than treating a far person as the requester
+            note = ("TOO CLOSE: the only person in view is within 0.35 m of the "
+                    "robot, which is treated as its own arm. Ask them to stand "
+                    "about half a metre in front (arm's length), then place "
+                    "again; nothing was moved.")
+        elif not kept and away > 1.0:
+            note = ("RETURN FIRST: the person who asked is back at the start "
+                    "point, %.1f m from here (%d other person(s) in view are "
+                    "ignored). Call return_home, then place into 'person'; "
+                    "nothing was moved." % (away, len(far)))
+        elif not kept:
+            note = ("NOT THE REQUESTER: %d person(s) in view, all farther than "
+                    "%.1f m from where the request was made (%s) - they are "
+                    "ignored. Ask the person who asked to come closer, or "
+                    "call return_home first; nothing was moved."
+                    % (len(far), rad, "the person who asked" if
+                       snap.get("requester_seen") else "the start point"))
+        return kept, note
+
+    # -- how the handover approach goes -------------------------------------------
+    #: mirror of HANDOVER_START_MAX_M: beyond it the robot walks instead
+    #: of creeping in.
+    HANDOVER_START_MAX_M = 0.80
+
+    def _handover_plan(self, into: Any, det: Any, planar: float):
+        """{x, y} of the person to close in on when a place INTO a person is
+        out of the arm's reach but within HANDOVER_START_MAX_M and the
+        gateway has the approach verb; None (refuse as before) otherwise."""
+        if not self._names_person(into) or planar > self.HANDOVER_START_MAX_M:
+            return None
+        if getattr(self.backend, "approach_person", None) is None:
+            return None
+        try:
+            x, y = float(det.x), float(det.y)
+        except (TypeError, ValueError, AttributeError):
+            return None
+        if not (math.isfinite(x) and math.isfinite(y)):
+            return None
+        return {"x": round(x, 3), "y": round(y, 3)}
+
+    def _run_handover_approach(self, plan: dict):
+        """((x, y), travel) of the person after the approach, or a failure
+        envelope (the object is still held; nothing was released)."""
+        try:
+            env = self.backend.approach_person(dict(plan))
+        except Exception as exc:  # noqa: BLE001
+            env = fail("ERROR:approach_person raised %s; "
+                       "APPROACH_RESULT=error" % (exc,))
+        text = ((env.get("value") if env.get("success") else env.get("reason"))
+                if isinstance(env, dict) else "")
+        text = str(text or "")
+        tok = parse_creep_reply(text)
+        res = tok.get("APPROACH_RESULT", "error")
+        held = "the object is still held, nothing was released"
+        # a centred person who dropped out of frame after sighting is still
+        # a valid approach result when they are within reach
+        if (not (isinstance(env, dict) and env.get("success"))
+                or res not in ("arrived", "close_lost")):
+            if res == "cancelled":
+                return fail("HANDOVER cancelled while closing in on the person; "
+                            "%s" % held)
+            if res == "too_far":
+                return fail("NOT_REACHABLE: the person is too far to close in "
+                            "on (%s); call navigate with 'person' first, then "
+                            "place into 'person' again; %s"
+                            % (text.split(";")[0][:120], held))
+            return fail("HANDOVER_APPROACH %s: could not get within reach of "
+                        "the person (%s); %s. Ask them to step about half a "
+                        "metre in front of you, then place into 'person' again"
+                        % (res, " ".join(text.split())[:160], held))
+        try:
+            x, y = float(tok["X"]), float(tok["Y"])
+            travel = float(tok.get("TRAVEL_M") or 0.0)
+        except (KeyError, TypeError, ValueError):
+            return fail("HANDOVER_APPROACH error: unreadable reply (%s); %s"
+                        % (" ".join(text.split())[:120], held))
+        return (x, y), travel
+
+    #: extra shift past the engine's move_right_m
+    AIM_MARGIN_M = 0.04
+
+    def _cross_body_aim(self, env: Any, label: str, x: Any, y: Any):
+        """B8l-hf7: on a pick refused ERROR:self_collision whose arm did not
+        move (stage=precheck) or was parked back (arm_after=already_safe /
+        parked), ask the gateway to turn in place until the object sits the
+        engine's move_right_m + AIM_MARGIN_M further right.  Returns the
+        object's fresh (x, y, z) after the turn, a short result word when a
+        turn was tried and failed, or None (not this case / no verb)."""
+        reason = env.get("reason") if isinstance(env, dict) else None
+        if (not isinstance(reason, str) or env.get("success")
+                or not _SELF_COLLISION_RE.search(reason)):
+            return None
+        fn = getattr(self.backend, "aim_turn", None)
+        m = _SELF_COLLISION_FIELDS_RE.search(reason)
+        st = _SELF_COLLISION_STAGE_RE.search(reason)
+        aa = _ARM_AFTER_RE.search(reason)
+        stage = st.group(1) if st else None
+        arm_after = aa.group(1) if aa else None
+        if fn is None or m is None:
+            return None
+        if not (stage == "precheck" or arm_after in ("already_safe", "parked")):
+            return None
+        try:
+            mv = float(m.group(4))
+            px, py = float(x), float(y)
+        except (TypeError, ValueError):
+            return None
+        if not all(math.isfinite(v) for v in (mv, px, py)) or mv <= 0.0:
+            return None
+        try:
+            aenv = fn({"label": label, "x": round(px, 3), "y": round(py, 3),
+                       "shift_m": round(mv + self.AIM_MARGIN_M, 3)})
+        except Exception as exc:  # noqa: BLE001
+            aenv = fail("ERROR:aim_turn raised %s; AIM_RESULT=error" % (exc,))
+        text = ((aenv.get("value") if aenv.get("success") else aenv.get("reason"))
+                if isinstance(aenv, dict) else "")
+        tok = parse_creep_reply(str(text or ""))
+        res = tok.get("AIM_RESULT", "error")
+        _log.info("pick %r cross-body: aim_turn -> %s", label,
+                  " ".join(str(text or "").split())[:160])
+        if not (isinstance(aenv, dict) and aenv.get("success")) or res != "aimed":
+            return res
+        try:
+            ax, ay = float(tok["X"]), float(tok["Y"])
+            az = float(tok.get("Z", "nan"))
+        except (KeyError, TypeError, ValueError):
+            return "unreadable"
+        if not (math.isfinite(ax) and math.isfinite(ay)):
+            return "unreadable"
+        return ax, ay, az
+
+    #: pause before opening the hand so the person can take the object
+    HANDOVER_OPEN_PAUSE_S = 1.5
+    #: marker that makes the reply read as an open
+    HANDOVER_OPEN_MARK = "HANDOVER=open"
+
