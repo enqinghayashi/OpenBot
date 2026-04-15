@@ -477,3 +477,64 @@ def _drop_point(det: Any) -> Optional[dict]:
         height = min(height, _cap)
     lift = height / 2.0 if height is not None and height > 0.0 else 0.0
     return {"x": x, "y": y, "z": z + lift + 0.02}
+
+
+# --- placing into a container ---
+# into a container: the walk stops at the near edge (0.45 m for a
+# non-pickable), creeps to 0.25 m and releases. a centre aim overshoots
+# reach, so aim just past the near rim, clearing it, and reach-check.
+#: set to '0' to turn into-container aiming off
+CONTAINER_PLACE_ENV = "OPENBOT_CONTAINER_PLACE"
+#: classes treated as containers. keep this in sync with the pick
+#: container classes; never person/chair, nor cup, vase or plate.
+CONTAINER_CLASSES = frozenset((
+    "bowl", "bin", "box", "basket", "bucket", "tray", "pot", "pan",
+    "lunchbox", "toolbox", "backpack", "handbag", "suitcase"))
+#: reach law: residual is max(0, |target - shoulder| - REACH_LEN_M).
+REACH_SHOULDER = (0.100, 0.004, 0.248)
+REACH_LEN_M = 0.386
+REACH_OK_M = 0.10            # 0.10 m tolerance; a tighter value would refuse reachable containers
+AIM_CLEAR_M = 0.04           # object bottom clears the rim by this much
+ENGINE_Z_OFFSET_M = 0.044    # engine z offset: the wrist lands 4.4 cm below the z that is sent
+AIM_INSET_FRAC = 0.35        # inset as a fraction of container depth
+AIM_INSET_MIN_M = 0.05
+AIM_INSET_MAX_M = 0.12
+AIM_INSET_DEAD_MIN_M = 0.06  # minimum inset when the aim is dead-reckoned
+AIM_FAR_MARGIN_M = 0.04      # margin kept inside the far rim
+AIM_Z_STEP_M = 0.02
+AIM_Z_RAISE_MAX_M = 0.40     # cap on how far the aim may be raised
+AIM_Z_MAX = 0.22             # aim never goes above this z
+#: a detection above this z is not a container; it is the hand or a
+#: mislabelled object.
+CONTAINER_Z_MAX_M = 0.20
+#: height cap per class, applied to the rim estimate z + h/2; a taller
+#: read means the mask ate the surface under the object.
+CONTAINER_H_MAX_M = {"bowl": 0.15, "cup": 0.15, "tray": 0.10, "basket": 0.40,
+                     "bucket": 0.40, "bin": 0.60, "box": 0.50}
+CONTAINER_H_MAX_DEFAULT_M = 0.50
+#: refuse a place-on target farther than this planar distance or with a
+#: larger fit residual; navigate closer instead.
+PLACE_ON_MAX_PLANAR_M = 0.55
+PLACE_ON_MAX_RESIDUAL_M = 0.10
+#: the descent lane's low band in the wire z frame; a rim inside it is
+#: never refused here.
+LOW_BAND_Z_MIN_M = -0.54
+LOW_BAND_Z_MAX_M = -0.02
+AIM_X_MARGIN_M = 0.06        # margin keeping the aim inside the side rims
+CONTAINER_HALF_MIN_M = 0.06
+CONTAINER_HALF_MAX_M = 0.35
+#: clearance above the rim reported by the point-cloud bowl fit.
+PC_RIM_CLEARANCE_M = 0.02
+#: only round openings use a circle fit (radius 0.05-0.18 m); a box
+#: shape overestimates the rim.
+PC_RIM_CLASSES = frozenset(("bowl", "cup", "vase", "bin"))
+#: largest near edge where the creep phase may start
+CREEP_START_MAX_EDGE_M = 0.60
+#: containers this tall are deep: judge them by their footprint, not
+#: by the +-0.12 m box.
+DEEP_CONTAINER_H_M = 0.25
+#: a cached container row may be used for this long
+LOCK_USE_ROW_MAX_S = 20.0
+_CREEP_TOKEN_RE = re.compile(r"\b([A-Z_]+)=([^;\s]+)")
+
+
