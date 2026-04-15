@@ -2347,3 +2347,85 @@ class ToolRegistry:
     def _self_state(self) -> Any:
         return getattr(self.scene_graph, "self_state", None)
 
+    def _home_fetch_mark(self, target: Any) -> None:
+        """navigate with an EMPTY hand: during a fetch-to-me request ("get me a
+        bottle") record the start point ONCE per request (r1 H3: never for a
+        plain walk); operator decisions 2026-10-17: a retry or a repeated
+        request keeps the first start point; the fetch ends on the handover /
+        any place, a stop BEFORE the pick (after it a stop only pauses), or the
+        gateway's 15 min expiry.  B8l-hf3: without a live fetch the walk's start
+        is kept as a CANDIDATE -- the realtime voice lane calls navigate before
+        the words of the request are transcribed; the pick promotes it."""
+        if not self._fetch_on() or self._held_record() is not None:
+            return
+        if self._names_person(target):
+            return
+        ss = self._self_state()
+        fetch_live = getattr(ss, "fetch_live", None)
+        if (ss is None or fetch_live is None or not fetch_live()
+                or (self.__dict__.get("_home_marked_seq") == ss.fetch_seq
+                    and self._home_snapshot() is None)):
+            # no live fetch: keep this walk's start as a candidate
+            self._home_call({"op": "candidate"})
+            return
+        self._home_record(ss, "mark")
+
+    def _home_record(self, ss: Any, op: str) -> None:
+        """Record the start point of the live fetch request (op 'mark': here,
+        at the walk; op 'promote': the pick of a request whose words came after
+        the walk began), unless the fetch already has one (kept) or this
+        request's fetch already ended (B8l-hf3: never a second start point for
+        one request -- Stuart 10-17 marked a later plain 'walk to the chair')."""
+        if (self.__dict__.get("_home_seq") is not None
+                and self._home_snapshot() is not None):
+            self._home_seq = ss.fetch_seq   # start of a fetch already in progress: keep the first
+            self._home_marked_seq = ss.fetch_seq
+            return
+        if self.__dict__.get("_home_marked_seq") == ss.fetch_seq:
+            return                          # this request's fetch already ended
+        text = self._home_call({"op": op})
+        if text and text.startswith("DONE:home marked"):
+            self._home_seq = ss.fetch_seq
+            self._home_marked_seq = ss.fetch_seq
+
+    def _home_fetch_confirm(self) -> None:
+        """B8l-hf3: the first pick of a fetch whose start point was not
+        recorded at the walk (its words arrived after the navigate) promotes
+        the walk's candidate (or marks here when the robot never walked)."""
+        if not self._fetch_on() or self._held_record() is not None:
+            return
+        ss = self._self_state()
+        fetch_live = getattr(ss, "fetch_live", None)
+        if ss is None or fetch_live is None or not fetch_live():
+            return
+        self._home_record(ss, "promote")
+
+    def _fetch_filter_live(self) -> bool:
+        """The requester rules apply: switch on and a start point recorded for
+        a fetch.  Nothing that is SAID ends them (r3 H1: "take your time" /
+        "hold on" parse as tasks); the fetch ends on actions -- a successful
+        place (the object left the hand), a cancel (the gateway clears its
+        anchor: the snapshot is then None and every person counts again), a
+        new fetch request, the 15 min expiry."""
+        if not self._fetch_on():
+            return False
+        return self.__dict__.get("_home_seq") is not None
+
+    _PERSON_QUERY_RE = re.compile(r"(?:^|[\s_])person(?:_\d+)?$")
+
+    def _names_person(self, target: Any) -> bool:
+        """'person', 'me', 'the person', 'person_1', 'red person', or a scene
+        ref whose label is person (review r1 H1)."""
+        t = known_labels.resolve_alias(target)
+        t = str(t or "").strip().lower()
+        t = re.sub(r"^(?:the|a|an|that|this)\s+", "", t)
+        if self._PERSON_QUERY_RE.search(t):
+            return True
+        sg = self.scene_graph
+        try:
+            ref = sg.resolve_ref(t) if sg is not None else None
+            entry = sg.refs.get(ref) if ref is not None else None
+        except Exception:  # noqa: BLE001 -- a ref lookup never breaks navigate
+            entry = None
+        return isinstance(entry, dict) and str(entry.get("label") or "").lower() == "person"
+
