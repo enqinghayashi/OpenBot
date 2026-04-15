@@ -551,3 +551,5 @@ def reach_residual(x: float, y: float, z: float) -> float:
     sx, sy, sz = REACH_SHOULDER
     return max(0.0, math.sqrt((x - sx) ** 2 + (y - sy) ** 2 + (z - sz) ** 2)
                - REACH_LEN_M)
+
+
