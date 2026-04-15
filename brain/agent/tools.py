@@ -553,3 +553,54 @@ def reach_residual(x: float, y: float, z: float) -> float:
                - REACH_LEN_M)
 
 
+def container_aim(xc: float, yc: float, half: float, rim_z: float,
+                  edge: float, h_obj: float, dead: bool = False
+                  ) -> Optional[dict]:
+    """The drop point for a container whose near rim is ``edge`` m away
+    (planar) on the bearing of (xc, yc): ``inset`` past the near rim, the
+    held object's bottom AIM_CLEAR_M over the rim (``h_obj`` its height),
+    raised in AIM_Z_STEP_M steps and moved toward the near rim until the
+    reach law accepts it (deepest inset first: containment before a low
+    drop).  None = no reachable point inside the container."""
+    vals = (xc, yc, half, rim_z, edge, h_obj)
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool)
+               and math.isfinite(v) for v in vals):
+        return None
+    d = math.hypot(xc, yc)
+    if d < 0.05 or edge <= 0.0:
+        return None
+    half = max(CONTAINER_HALF_MIN_M, min(CONTAINER_HALF_MAX_M, float(half)))
+    ux, uy = xc / d, yc / d
+    depth = 2.0 * half
+    ins_lo = AIM_INSET_DEAD_MIN_M if dead else AIM_INSET_MIN_M
+    ins_hi = min(max(AIM_INSET_MIN_M, min(AIM_INSET_MAX_M,
+                                          AIM_INSET_FRAC * depth)),
+                 depth - AIM_FAR_MARGIN_M)
+    if ins_hi < ins_lo:
+        insets = [round(depth / 2.0, 3)]          # container too small for an inset: aim at its centre
+    else:
+        insets, k = [], 0
+        while ins_hi - 0.01 * k >= ins_lo - 1e-9:
+            insets.append(round(ins_hi - 0.01 * k, 3))
+            k += 1
+    z0 = rim_z + AIM_CLEAR_M + ENGINE_Z_OFFSET_M + max(0.0, h_obj) / 2.0
+    zs, k = [round(z0, 3)], 1
+    while (z0 + AIM_Z_STEP_M * k <= min(AIM_Z_MAX, z0 + AIM_Z_RAISE_MAX_M)
+           + 1e-9):
+        zs.append(round(z0 + AIM_Z_STEP_M * k, 3))
+        k += 1
+    x_lo, x_hi = xc - (half - AIM_X_MARGIN_M), xc + (half - AIM_X_MARGIN_M)
+    for ins in insets:
+        da = edge + ins
+        x, y = ux * da, uy * da
+        if x_lo <= x_hi:
+            x = max(x_lo, min(x_hi, x))
+            if x < 0.0 <= x_hi:
+                x = 0.0            # the right arm cannot cross the centre line
+        for z in zs:
+            r = reach_residual(x, y, z)
+            if r <= REACH_OK_M:
+                return {"x": round(x, 3), "y": round(y, 3), "z": round(z, 3),
+                        "inset": ins, "residual": round(r, 3),
+                        "edge": round(edge, 3)}
+    return None
