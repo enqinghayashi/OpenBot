@@ -640,3 +640,11 @@ def _low_lane_drop_point(geo: dict) -> Optional[dict]:
 def parse_creep_reply(text: Any) -> Dict[str, str]:
     """The KEY=value tokens of a gateway creep reply (strings)."""
     return dict(_CREEP_TOKEN_RE.findall(text if isinstance(text, str) else ""))
+
+
+# motion tools the model sees; the backend maps each to a gateway verb
+MOTION_TOOLS = frozenset({"pick", "place", "navigate", "open_hand", "close_hand"})
+
+TOOL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
+
+
