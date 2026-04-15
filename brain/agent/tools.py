@@ -2812,3 +2812,153 @@ class ToolRegistry:
 
     # -- picking the target out of the matched rows -----------------------------
 
+    def _put_find_note(self, note: Optional[str]) -> None:
+        """Per-thread one-shot refusal reason of the last lookup (or None)."""
+        tls = self.__dict__.get("_find_tls")
+        if tls is None:
+            import threading  # imported lazily; stdlib only
+            tls = self.__dict__.setdefault("_find_tls", threading.local())
+        tls.note = note
+
+    def _put_find_obs(self, obs: Any) -> None:
+        """BATCH 5 B6: per-thread slot for the observation the last lookup
+        read (its grip proves / disproves an empty hand for the re-pick
+        guard), mirroring _put_find_note."""
+        tls = self.__dict__.get("_find_tls")
+        if tls is None:
+            import threading  # imported lazily; stdlib only
+            tls = self.__dict__.setdefault("_find_tls", threading.local())
+        tls.obs = obs
+
+    def _take_find_obs(self) -> Any:
+        """Pop the last lookup's observation on this thread (None = none)."""
+        tls = self.__dict__.get("_find_tls")
+        obs = getattr(tls, "obs", None) if tls is not None else None
+        if tls is not None:
+            tls.obs = None
+        return obs
+
+    def _take_find_note(self, act: str = "pick") -> Optional[str]:
+        """Pop the last lookup's refusal reason on this thread (None = none:
+        the caller's own NOT_DETECTED text stands, byte-identical).  ``act``
+        fills the verb slot of the low-confidence reason so a place into:
+        reply never claims a pick ('not confident enough to <act>')."""
+        tls = self.__dict__.get("_find_tls")
+        note = getattr(tls, "note", None) if tls is not None else None
+        if tls is not None:
+            tls.note = None
+        return note.replace("{act}", act) if note is not None else None
+
+    def _bind_target(self, label: str, ref: Optional[str], matched: list):
+        """Choose the ONE row ``label``/``ref`` names among ``matched``."""
+        from ..observation import detection_base_class, requested_colour
+        from .. import spatial  # spatial helpers for colour and distance
+
+        sg = self.scene_graph
+        floor = _finite_or(getattr(sg, "conf_floor", 0.35), 0.35)
+        # extras use the same confidence floor as the look_for lane,
+        # defaulting to 0.25
+        try:
+            from brain.look_for_tool import EXTRA_CONF_FLOOR as _xf
+            floor = min(floor, _finite_or(_xf, floor))
+        except Exception:  # noqa: BLE001
+            pass
+        gate = _finite_or(getattr(sg, "assoc_distance_m", 0.25), 0.25)
+        # the floor applies to extra classes only; tracked base classes pass
+        kept, low = [], []
+        for det in matched:
+            base = detection_base_class(det)
+            conf = _finite_or(getattr(det, "conf", 0.0), 0.0)
+            if base not in known_labels.TRACKED_CLASSES and conf < floor:
+                low.append((conf, base or str(getattr(det, "label", ""))))
+                continue
+            kept.append(det)
+        if not kept:
+            if low:
+                conf, name = max(low)
+                self._put_find_note(
+                    "NOT_DETECTED: only a low-confidence (%.2f) %s is seen "
+                    "\u2014 not confident enough to {act}; look again or closer"
+                    % (conf, name))
+            return None
+        best = _freshest(kept)
+        if len(kept) == 1:
+            return best  # a single row needs no disambiguation
+        # colour narrowing and the multi-object refusal apply only when
+        # target_disambiguation is exactly True; the default binds the
+        # freshest row
+        disamb = getattr(sg, "target_disambiguation", False) is True
+        # narrow same-class rows by the requested colour
+        # hue tolerance decides, not exact colour equality
+        colour = requested_colour(label) if disamb else None
+        if colour:
+            tinted = []
+            for d in kept:
+                # fields the colour matcher reads
+                obj = {
+                    "colour": getattr(d, "color_name", None),
+                    "hue": getattr(d, "hue", None),
+                }
+                # hue and colour name both count as a match
+                if spatial.colour_match(obj, colour):
+                    tinted.append(d)
+                # a matching colour prefix in the label also counts
+                elif (getattr(d, "label", "") or "").lower().split()[:1] == [colour]:
+                    tinted.append(d)
+            if tinted:
+                kept, best = tinted, _freshest(tinted)
+        entry = None
+        # an explicit ref in the label names one object: bind by its id
+        # or stored position, never another object of the class
+        named = None
+        if ref is not None and sg is not None:
+            _e = getattr(sg, "refs", {}).get(ref)
+            _names = getattr(sg, "_compute_display_names", lambda: {})()
+            _nm = _names.get(ref)
+            # only a coloured display name (one that differs from the ref key)
+            # names the object
+            if isinstance(_e, dict) and _nm and _nm != ref and _nm == "_".join(
+                    re.findall(r"[a-z0-9]+", str(label).lower())):
+                named = _e
+        if named is not None:
+            entry = named
+        elif ref is not None and sg is not None and ref in re.findall(
+                r"[a-z0-9_]+", str(label).lower()):
+            entry = getattr(sg, "refs", {}).get(ref)  # the label itself carries the ref
+        if isinstance(entry, dict):
+            iid = entry.get("instance_id")
+            if iid is not None:
+                same = [d for d in kept if getattr(d, "instance_id", None) == iid]
+                if same:
+                    return _freshest(same)
+            # nearest stored position, under the same switch: off means the
+            # freshest row wins
+            if named is not None:
+                # a named object binds only a row of the same colour within 0.10 m
+                # of its last position; a neighbour 0.22 m away is another object
+                _votes = [v for v in (named.get("colour_vote") or []) if v]
+                _col = max(set(_votes), key=_votes.count) if _votes else None
+                _rows = [d for d in kept if _col is None or spatial.colour_match(
+                    {"colour": getattr(d, "color_name", None),
+                     "hue": getattr(d, "hue", None)}, _col)]
+                near = _nearest_within(_rows, entry, min(gate, 0.10))
+            else:
+                near = _nearest_within(kept, entry, gate) if disamb else None
+            if near is not None:
+                return near
+            if named is not None:
+                # not in view: refuse rather than binding another object of that class
+                self._put_find_note(
+                    "NOT_DETECTED: %s is not in view right now - look again "
+                    "(scene_brief) before picking it" % str(label).strip())
+                return None
+        if not disamb or all(_dist3(d, best) <= gate for d in kept):
+            return best  # switch off or one cluster: use the freshest row
+        n = _count_clusters(kept, gate)
+        noun = (requested_colour(label) and str(label).strip().lower()) or (
+            detection_base_class(best) or str(label).strip().lower())
+        self._put_find_note(
+            "ambiguous: %d %ss, name one (left/right, colour, or its ref from "
+            "scene_brief) - no coordinates were bound" % (n, noun))
+        return None
+
