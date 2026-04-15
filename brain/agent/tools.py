@@ -544,3 +544,5 @@ def container_place_on(environ: Any = None) -> bool:
         import os  # imported lazily; stdlib only
         environ = os.environ
     return str(environ.get(CONTAINER_PLACE_ENV, "1")).strip() != "0"
+
+
