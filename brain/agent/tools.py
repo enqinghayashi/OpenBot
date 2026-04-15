@@ -637,3 +637,6 @@ def _low_lane_drop_point(geo: dict) -> Optional[dict]:
     return {"x": round(x, 3), "y": round(y, 3), "z": round(rim + 0.02, 3)}
 
 
+def parse_creep_reply(text: Any) -> Dict[str, str]:
+    """The KEY=value tokens of a gateway creep reply (strings)."""
+    return dict(_CREEP_TOKEN_RE.findall(text if isinstance(text, str) else ""))
