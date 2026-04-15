@@ -2603,3 +2603,212 @@ class ToolRegistry:
     #: marker that makes the reply read as an open
     HANDOVER_OPEN_MARK = "HANDOVER=open"
 
+    def _handover_open(self, approach):
+        """B8l-hf6 (operator 10-17 "face me and open"): after the approach
+        (the person centred at arm's reach) open the holding hand where it is
+        -- no place arm motion.  The reply carries HANDOVER_OPEN_MARK so the
+        executor verifies it as an open (measured-open hand)."""
+        (x, y), travel = approach
+        held = self._held_record() or {}
+        side = held.get("side") if held.get("side") in ("left", "right") else "right"
+        fn = getattr(self.backend, "open_hand", None)
+        if fn is None:
+            return fail("HANDOVER: the gateway has no open_hand; the object is "
+                        "still held, nothing was released")
+        time.sleep(self.HANDOVER_OPEN_PAUSE_S)
+        try:
+            env = fn({"side": side})
+        except Exception as exc:  # noqa: BLE001
+            env = fail("open_hand raised %s" % (exc,))
+        if not (isinstance(env, dict) and env.get("success")):
+            reason = env.get("reason") if isinstance(env, dict) else env
+            return fail("HANDOVER_OPEN failed: facing the person %.2f m away "
+                        "but the %s hand did not open (%s); the object may "
+                        "still be held" % (math.hypot(x, y), side,
+                                           " ".join(str(reason).split())[:160]))
+        # object gone: the fetch is over
+        if self.__dict__.get("_home_seq") is not None:
+            self._home_call({"op": "clear", "why": "handover"})
+            self._home_seq = None
+        value = env.get("value")
+        return ok("%s; %s; HANDOVER_SIDE=%s; HANDOVER_RANGE_M=%.3f; "
+                  "TRAVEL_M=%.3f" % (value if isinstance(value, str) and value
+                                     else "DONE open", self.HANDOVER_OPEN_MARK,
+                                     side, math.hypot(x, y), travel))
+
+    #: distance backed off before a sweep when the target is not in view
+    SEARCH_STEP_BACK_M = 0.50
+
+    def _target_in_view(self, target: Any):
+        """True / False: a row of the walk target's class is in the current
+        observation (a stale one under silence-means-empty is an empty scene);
+        None when there is no observation at all (cannot tell)."""
+        cls = str(target or "").split("#", 1)[0].split("@", 1)[0].strip().lower()
+        if not cls:
+            return None
+        obs = self._observe()
+        if obs is None:
+            return None
+        rows = (getattr(obs, "detections", None) or []) if getattr(
+            obs, "fresh", True) else []
+        return any(detection_matches_label(d, cls) for d in rows)
+
+    def _search_step_back(self, spec: Any, target: Any):
+        """B8l-hf6 (operator 10-17: "if object is not in the scene nor
+        detection before about to call the navigate, step back 5 steps slowly
+        before actually started sweeping"): ask the gateway to step back when
+        the walk target is not in view.  A requester found in view (``spec``),
+        a target in view, an unknown view or a gateway without the verb: no
+        step back.  Returns a failure envelope only for a cancel (do not walk
+        on); any other step-back failure is logged and the navigate goes on."""
+        fn = getattr(self.backend, "step_back", None)
+        if fn is None or spec is not None:
+            return None
+        if self._target_in_view(target) is not False:
+            return None
+        try:
+            env = fn({"m": self.SEARCH_STEP_BACK_M})
+        except Exception as exc:  # noqa: BLE001
+            env = fail("step_back raised %s" % (exc,))
+        text = ((env.get("value") if env.get("success") else env.get("reason"))
+                if isinstance(env, dict) else "")
+        text = " ".join(str(text or "").split())
+        _log.info("navigate %r: not in view, step back -> %s", target, text[:160])
+        if "STEPBACK_RESULT=cancelled" in text:
+            return fail("NAVIGATE cancelled while stepping back before the "
+                        "search (%s); the walk was not started" % text[:120])
+        return None
+
+    def _requester_walk_target(self, target: Any):
+        """(spec, refusal) for navigate('person') with a start point on
+        file: 'person#<iid>' of the requester (nearest to the requester's
+        spot, within the radius), a refusal when every visible person is
+        far from it, or (None, None) to walk as before."""
+        if not self._names_person(target) or not self._fetch_filter_live():
+            return None, None
+        snap = self._home_snapshot()
+        if not snap:
+            return None, None
+        if "center_body" not in snap:
+            return None, fail("CANNOT TELL WHO ASKED: the odometry is not fresh, "
+                              "so the person near the start point cannot be "
+                              "found; nothing was moved.")
+        obs = self._observe()
+        rows = [d for d in (getattr(obs, "detections", None) or [])
+                if (getattr(d, "label", "") or "").lower() == "person"]
+        kept, note = self._requester_filter(rows) if rows else ([], None)
+        if not kept:
+            try:
+                away = float(snap.get("robot_to_home_m"))
+            except (TypeError, ValueError):
+                away = 0.0                  # stale odometry: distance unknown
+            if away > 1.0:
+                # the requester is probably back at the start point, so walking to
+                # whoever is here would grab the wrong person
+                return None, fail(
+                    "RETURN FIRST: the person who asked is back at the start "
+                    "point, %.1f m from here. Call return_home, then navigate "
+                    "to 'person' (or place into 'person' if they are within "
+                    "reach); nothing was moved." % away)
+            if not rows:
+                return None, None
+            return None, fail(note)
+        cx, cy = (float(v) for v in snap["center_body"])
+        best = min(kept, key=lambda d: math.hypot(float(d.x) - cx, float(d.y) - cy))
+        iid = getattr(best, "instance_id", None)
+        if isinstance(iid, int) and not isinstance(iid, bool) and iid >= 1:
+            return "person#%d" % iid, None
+        return None, None
+
+    def _find_target_detection(self, label: str):
+        """The detection ``label`` (or its resolved ref) names, or None.
+
+        Reads ``backend.observe()``; refuses when the observation is stale
+        (a dead detection node must never drive motion).  Returns the
+        Detection or None.
+
+        Batch 4 / P5b (docs/YOLOE_BATCH4_ARCHITECTURE.md §6, D10b, D12) —
+        among the rows the matcher accepts:
+
+        * EXTRA FLOOR (D12): a row whose base class is NOT in
+          ``known_labels.TRACKED_CLASSES`` (an open-vocabulary extra such as
+          'bin') is skipped when ``conf < getattr(scene_graph, "conf_floor",
+          0.35)``.  Base-class rows are never floored here (byte-identical).
+        * EXPLICIT REF ('cup_2', a ref-syntax token in the query): the row
+          carrying the ref entry's ``instance_id`` wins; on an id miss the
+          row nearest the ref's stored position within the association gate
+          (0.25 m).  A single matched ROW binds exactly as before; with
+          several rows the row nearest the stored pose binds, which can
+          differ from today's freshest row even inside one physical cluster
+          (MEASURED by the round-2 A/B fuzz: 67/7600 outcomes differ, ALL on
+          explicit-ref queries, 0 on bare-label queries).  The old
+          first-row-wins bound cup_2 to cup_1's coordinates — MEASURED,
+          D10b; un-switched by design, pending operator sign-off §15 item 0.
+        * SWITCH ``scene_graph.target_disambiguation`` (default OFF; HARD
+          RULE 5): only when it is exactly True does a colour word narrow
+          same-class rows, and do several distinct same-label objects (rows
+          farther apart than the gate, no ref/id/near match) give
+          "ambiguous: N <label>s, name one ..." with no coordinates.  OFF:
+          today's freshest-first row binds (pick and place into: alike).
+
+        Every refusal also leaves a one-shot reason (``_take_find_note``)
+        that the pick and place into: replies speak; a plain miss leaves
+        none (today's reply).
+        """
+        self._put_find_note(None)
+        self._put_find_obs(None)
+        if self.backend is None:
+            return None
+        # resolve 'me' before any ref lookup or label match: the alias is
+        # language, not a scene handle
+        label = known_labels.resolve_alias(label)
+        obs = self._observe()
+        self._put_find_obs(obs)
+        if obs is None:
+            return None
+        if not getattr(obs, "fresh", True):
+            return None
+        ref = None
+        ref_label = None
+        if self.scene_graph is not None:
+            try:
+                ref = self.scene_graph.resolve_ref(label)
+                # a query in ref form must still reach its detection. the model asks
+                # for 'bottle_1' from a scene line and resolve_ref advertises 'bottle'
+                # -> 'bottle_3', but perception sets no ref, so translate ref -> label.
+                if ref is not None:
+                    entry = self.scene_graph.refs.get(ref)
+                    if isinstance(entry, dict):
+                        ref_label = (entry.get("label") or "").lower() or None
+            except Exception:  # noqa: BLE001 — resolution must not crash the tool
+                ref = None
+                ref_label = None
+        detections = list(getattr(obs, "detections", None) or [])
+        matched = []
+        for det in detections:
+            det_label = (getattr(det, "label", "") or "").lower()
+            det_ref = getattr(det, "ref", None)
+            # match through the shared matcher, not raw text equality: it
+            # handles articles ('the bottle'), case, padding and base classes
+            if not (
+                detection_matches_label(det, label)
+                or (ref_label is not None and det_label == ref_label)
+                or (ref is not None and det_ref == ref)
+            ):
+                continue
+            matched.append(det)
+        # a person row counts only near the fetch start point; farther off
+        # is ignored
+        from ..observation import detection_base_class as _base  # base-class helper; imported lazily
+        people = [d for d in matched if (_base(d) or "").lower() == "person"]
+        if people:
+            kept, note = self._requester_filter(people)
+            ids = set(id(d) for d in people)
+            matched = [d for d in matched if id(d) not in ids] + kept
+            if not matched:
+                self._put_find_note(note)
+                return None
+        return self._bind_target(label, ref, matched)
+
+    # -- picking the target out of the matched rows -----------------------------
+
