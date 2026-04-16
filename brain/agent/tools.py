@@ -682,3 +682,7 @@ class GatewayBackend(Protocol):
         """Latest WorldObservation, or None."""
         ...
 
+    def pick(self, args: dict) -> dict:
+        """Command the pick engine (tabletop only); args carry x/y/z/ref."""
+        ...
+
