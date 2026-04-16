@@ -2962,3 +2962,83 @@ class ToolRegistry:
             "scene_brief) - no coordinates were bound" % (n, noun))
         return None
 
+    def _held_record(self) -> Optional[dict]:
+        """B8i: SelfState.holding (the verified pick record) or None."""
+        ss = getattr(self.scene_graph, "self_state", None)
+        h = getattr(ss, "holding", None) if ss is not None else None
+        return h if isinstance(h, dict) else None
+
+    def _place_object_label(self, label: Any) -> Any:
+        """B8i (10-09 wires 34/46): the held object's class (set by the pick),
+        else the model's label through _walk_label ('cup_1' -> 'cup')."""
+        held = self._held_record()
+        if held is not None and held.get("label"):
+            return str(held["label"])
+        if isinstance(label, str) and label.strip():
+            return self._walk_label(label.strip())
+        return label
+
+    def _place_lift_height(self, label: Any) -> float:
+        """B8i: place_lift_height for the held object (pick-time height from
+        SelfState.holding['height_m'] when present)."""
+        held = self._held_record()
+        return place_lift_height(
+            label, held.get("height_m") if held is not None else None)
+
+    # -- placing into a container: lock, aim, creep ------------------------------
+
+    def _container_class_of(self, text: Any) -> Optional[str]:
+        """The ONE class ``text`` names: brain/strict_vocab.strict_class (base
+        classes, active extras, their aliases), else a container class word
+        or a look_for seed synonym ('trash can' -> 'bin') -- the lock works
+        whether or not look_for registered the extra in this process."""
+        if not isinstance(text, str) or not text.strip():
+            return None
+        try:
+            from ..strict_vocab import strict_class  # imported lazily
+            c = strict_class(self, text)
+        except Exception:  # noqa: BLE001
+            c = None
+        if c:
+            return c
+        from ..observation import label_base_class
+        t = label_base_class(known_labels.resolve_alias(text.strip()))
+        if t in CONTAINER_CLASSES:
+            return t
+        try:
+            from ..look_for_tool import SEED_TABLE  # imported lazily
+            for canon, (_prompt, syns) in SEED_TABLE.items():
+                if t == canon or t in syns:
+                    return canon
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+    def _container_classes_named(self, args: dict) -> List[Optional[str]]:
+        """The classes the place names as its target, in priority order:
+        'into', the cleaned destination (the B8f/B8i cleaning), the
+        operator's named destination; None where a text names no class."""
+        texts = []
+        into = args.get("into")
+        if isinstance(into, str) and into.strip():
+            texts.append(into.strip())
+        dest = args.get("destination")
+        if isinstance(dest, str) and dest.strip():
+            d = dest.strip().rstrip(".!? ")
+            if (d.lower() not in self._PLACE_HERE_WORDS
+                    and not self._PLACE_BESIDE_RE.search(d)):
+                d = self._PLACE_ON_IN_RE.sub("", d, count=1)
+                d = re.sub(r"^(?:the|a|an|that|this)\s+", "", d.strip(),
+                           flags=re.I).strip()
+                if d:
+                    texts.append(d)
+        ss = getattr(self.scene_graph, "self_state", None)
+        if ss is not None and hasattr(ss, "request_destination"):
+            try:
+                op = ss.request_destination()
+            except Exception:  # noqa: BLE001
+                op = None
+            if isinstance(op, str) and op.strip():
+                texts.append(op.strip())
+        return [self._container_class_of(t) for t in texts]
+
