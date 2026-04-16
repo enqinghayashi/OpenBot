@@ -678,3 +678,7 @@ class GatewayBackend(Protocol):
     slave reply (e.g. 'DONE:contact') for the verifier to judge.
     """
 
+    def observe(self) -> Any:
+        """Latest WorldObservation, or None."""
+        ...
+
