@@ -702,3 +702,7 @@ class GatewayBackend(Protocol):
         """Close the gripper (side: right|left|both)."""
         ...
 
+    def query_user(self, args: dict) -> dict:
+        """Blocking human question; value = the human's answer."""
+        ...
+
