@@ -694,3 +694,7 @@ class GatewayBackend(Protocol):
         """Walk FSM approach; verify only via /walk_status == REACHED."""
         ...
 
+    def open_hand(self, args: dict) -> dict:
+        """Open the gripper (side: right|left|both)."""
+        ...
+
