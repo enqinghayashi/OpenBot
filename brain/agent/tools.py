@@ -667,3 +667,14 @@ class ToolNameInvalid(ValueError):
 # --- backend protocol ---------------------------------------------------------
 
 
+class GatewayBackend(Protocol):
+    """Brain<->gateway seam (duck-typed; implement in gateway_node.py).
+
+    ``observe()`` returns a brain.observation.WorldObservation (the
+    normalized snapshot with ``detections`` / ``grip`` / ``walk`` /
+    ``detections_ts`` / ``fresh``) or None when no observation source is
+    wired.  The motion methods receive RESOLVED arguments (x/y/z in torso
+    frame) and return an envelope dict; their ``value`` carries the raw
+    slave reply (e.g. 'DONE:contact') for the verifier to judge.
+    """
+
