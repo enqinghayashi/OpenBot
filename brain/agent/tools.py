@@ -3042,3 +3042,228 @@ class ToolRegistry:
                 texts.append(op.strip())
         return [self._container_class_of(t) for t in texts]
 
+    def _container_lock_record(self, args: dict) -> Optional[dict]:
+        """B8j: the gateway's CONTAINER LOCK when it is the container this
+        place names (s3 B4-3: the navigated bin re-labelled 'backpack' kept
+        its instance id; the label lookup refused NOT_DETECTED).  None = the
+        B8i label lookup decides."""
+        if not container_place_on() or any(
+                args.get(k) is not None for k in ("x", "y", "z")):
+            return None
+        fn = getattr(self.backend, "container", None)
+        if fn is None:
+            return None
+        named = self._container_classes_named(args)
+        if not named or named[0] not in CONTAINER_CLASSES:
+            return None
+        try:
+            env = fn({})
+        except Exception:  # noqa: BLE001
+            return None
+        text = env.get("value") if isinstance(env, dict) and env.get("success") else None
+        if not isinstance(text, str) or not text.startswith("DONE:container {"):
+            return None
+        try:
+            import json  # imported lazily; stdlib only
+            rec = json.loads(text[len("DONE:container "):])
+        except ValueError:
+            return None
+        # only the primary named container (into, else destination, else the
+        # operator's words) can take the lock; a secondary name cannot
+        if not isinstance(rec, dict) or rec.get("label") != named[0]:
+            return None
+        # one observation, one lookup read: same slot as the label lookup
+        self._put_find_note(None)
+        obs = self._observe()
+        self._put_find_obs(obs)
+        if obs is None or not getattr(obs, "fresh", True):
+            return None
+        try:
+            if float(rec.get("row_age_s")) > LOCK_USE_ROW_MAX_S or lock_pose_unseen(rec):
+                return None
+            for key in ("x", "y", "z", "half", "rim_z", "bot_z", "near_m"):
+                if not math.isfinite(float(rec[key])):
+                    return None
+        except (KeyError, TypeError, ValueError):
+            return None
+        return rec
+
+    @staticmethod
+    def _lock_detection(rec: dict):
+        """A Detection for the locked container: its NAVIGATED label (the
+        detector's current label is rec['det_label'])."""
+        from ..observation import Detection
+        iid = rec.get("iid")
+        if isinstance(iid, bool) or not isinstance(iid, int) or iid < 1:
+            iid = None
+        conf = rec.get("conf")
+        ext = rec.get("extent") is True       # extents present: width/depth and height
+        return Detection(
+            label=str(rec["label"]), x=float(rec["x"]), y=float(rec["y"]),
+            z=float(rec["z"]),
+            conf=float(conf) if isinstance(conf, (int, float)) else 0.0,
+            ref=None, ts=time.time() - float(rec.get("row_age_s") or 0.0),
+            orientation="horizontal",
+            width_m=float(rec["w"]) if ext else None,
+            height_m=float(rec["h"]) if ext else None,
+            instance_id=iid)
+
+    def _container_geometry(self, det: Any, rec: Optional[dict]
+                            ) -> Optional[dict]:
+        """Container geometry for the aim: from the lock record, else from a
+        detection that carries BOTH extents (no extents: None = legacy aim)."""
+        if rec is not None and rec.get("extent") is not True:
+            return None                 # lock record without extents
+        if rec is not None:
+            # the lock reports the worst case (rim at the highest top, bottom at
+            # the lowest), so a merged 0.89 m mask pushes the rim too high. cap
+            # it by class.
+            _rim, _bot, _zc = float(rec["rim_z"]), float(rec["bot_z"]), float(rec["z"])
+            _cls = str(rec.get("label") or rec.get("det_label") or "").strip().lower()
+            _cap = CONTAINER_H_MAX_M.get(_cls, CONTAINER_H_MAX_DEFAULT_M)
+            if _rim - _bot > _cap:
+                _rim, _bot = _zc + _cap / 2.0, _zc - _cap / 2.0
+            return {"x": float(rec["x"]), "y": float(rec["y"]),
+                    "z": _zc, "half": float(rec["half"]),
+                    "rim": _rim, "bot": _bot,
+                    "h": float(rec.get("h") or 0.0),
+                    "near": float(rec["near_m"]), "iid": rec.get("iid"),
+                    "w": float(rec.get("w") or 2.0 * float(rec["half"])),
+                    "dd": float(rec.get("dd") or 2.0 * float(rec["half"])),
+                    "src": "lock"}
+        try:
+            x, y, z = float(det.x), float(det.y), float(det.z)
+            w = float(getattr(det, "width_m", None))
+            h = float(getattr(det, "height_m", None))
+        except (TypeError, ValueError):
+            return None
+        if not all(math.isfinite(v) for v in (x, y, z, w, h)) or w <= 0.0 or h <= 0.0:
+            return None
+        half = max(CONTAINER_HALF_MIN_M, min(CONTAINER_HALF_MAX_M, w / 2.0))
+        # cap the rim height: a row fused with the crate under it read 0.63 m
+        # tall, putting the rim 0.29 m too high and releasing the object above it
+        try:
+            from ..observation import detection_base_class as _dbc
+            _cls = _dbc(det)
+        except Exception:  # noqa: BLE001
+            _cls = None
+        h_rim = min(h, CONTAINER_H_MAX_M.get(_cls, CONTAINER_H_MAX_DEFAULT_M))
+        return {"x": x, "y": y, "z": z, "half": half, "rim": z + h_rim / 2.0,
+                "bot": z - h_rim / 2.0, "h": h, "near": math.hypot(x, y) - half,
+                "iid": getattr(det, "instance_id", None), "w": w, "dd": w,
+                "src": "row"}
+
+    def _pc_rim_geo(self, det: Any, geo: dict) -> dict:
+        """B8k: ``geo`` with its rim replaced by the point-cloud bowl-rim fit,
+        or ``geo`` unchanged.
+
+        Asks the gateway's ``pc_rim`` verb (standing places only: the caller
+        runs after the low-band hand-off, whose body squats and changes the
+        torso frame).  The gateway measures in SHADOW and answers
+        ``applied drop_z=<z>`` only when its ``pc_place_rim`` switch is on
+        and every fit gate passed (RIM_FIT, pose unchanged, fresh row); the
+        rim is then ``drop_z - PC_RIM_CLEARANCE_M`` (pc_core puts the drop
+        that far above the measured rim).  Any other answer, a backend
+        without the verb (mock, laptop), or an exception keeps today's rim
+        byte for byte."""
+        fn = getattr(self.backend, "pc_rim", None)
+        if fn is None or not isinstance(geo, dict):
+            return geo
+        try:
+            from ..observation import detection_base_class
+            if detection_base_class(det) not in PC_RIM_CLASSES:
+                return geo
+            env = fn({"label": str(getattr(det, "label", "") or ""),
+                      "x": float(geo["x"]), "y": float(geo["y"]),
+                      "ts": getattr(det, "ts", None)})
+            text = str(env.get("value") or "") if isinstance(env, dict) else ""
+            m = re.search(r"DONE:pc_rim applied drop_z=(-?\d+(?:\.\d+)?)", text)
+            if not m:
+                return geo
+            rim = float(m.group(1)) - PC_RIM_CLEARANCE_M
+            if not math.isfinite(rim):
+                return geo
+            out = dict(geo)
+            out["rim_formula"] = geo.get("rim")
+            out["rim"] = rim
+            out["rim_src"] = "pc"
+            return out
+        except Exception:  # noqa: BLE001
+            return geo
+
+    def _container_plan(self, det: Any, rec: Optional[dict], args: dict):
+        """(plan, refusal).  plan None + refusal None = the B8i centre aim
+        (switch off, not a container class, explicit x/y/z, no extents)."""
+        from ..observation import detection_base_class
+        if not container_place_on() or any(
+                args.get(k) is not None for k in ("x", "y", "z")):
+            return None, None
+        if detection_base_class(det) not in CONTAINER_CLASSES and rec is None:
+            return None, None
+        geo = self._container_geometry(det, rec)
+        if geo is None:
+            return None, None
+        name = str(getattr(det, "label", "") or "container")
+        h_obj = self._place_lift_height(self._place_object_label(args.get("label")))
+        plan = {"geo": geo, "h_obj": h_obj, "creep": None, "label": name}
+        # the low band belongs to the gateway descent lane, which squats the
+        # body, so decide before the standing aim: a raised aim would
+        # otherwise win over a rim at -0.11 m
+        if LOW_BAND_Z_MIN_M <= geo["rim"] <= LOW_BAND_Z_MAX_M \
+                and geo["near"] <= CREEP_START_MAX_EDGE_M:
+            # a lock geometry aims inside the opening at rim + 0.02 with no reach
+            # gate, since the lane owns that check; a plain row keeps the centre aim
+            if geo.get("src") == "lock":   # only a lock geometry gets the low-lane point
+                self._low_lane_drop = (id(det), _low_lane_drop_point(geo))
+            return None, None
+        geo = self._pc_rim_geo(det, geo)            # point-cloud rim for the aim
+        plan["geo"] = geo
+        aim = container_aim(geo["x"], geo["y"], geo["half"], geo["rim"],
+                            geo["near"], h_obj)
+        if aim is not None:
+            plan["aim"] = aim
+            return plan, None
+        held = "the object is still held"
+        if geo["near"] > CREEP_START_MAX_EDGE_M:
+            return None, fail(
+                "NOT_REACHABLE: the %s is %.2f m away (its near edge) - too far "
+                "for the arm; navigate to the %s first, then place again; %s"
+                % (name, geo["near"], name, held))
+        creep = getattr(self.backend, "creep", None)
+        spec = {"label": name, "iid": geo["iid"], "x": geo["x"], "y": geo["y"],
+                "z": geo["z"], "w": geo["w"], "dd": geo["dd"],
+                "h": geo["h"] if geo["h"] > 0.0 else None}
+        if creep is None:
+            return None, fail(
+                "NOT_REACHABLE: the drop point inside the %s is beyond the arm's "
+                "reach from here (near edge %.2f m) and this gateway cannot "
+                "creep closer; %s" % (name, geo["near"], held))
+        try:
+            dry = creep(dict(spec, dry=True))
+        except Exception as exc:  # noqa: BLE001
+            dry = fail("creep raised %s" % (exc,))
+        text = (dry.get("value") if dry.get("success") else dry.get("reason")) \
+            if isinstance(dry, dict) else ""
+        tok = parse_creep_reply(text)
+        if not (isinstance(dry, dict) and dry.get("success")) or "EDGE_M" not in tok:
+            return None, fail(
+                "NOT_REACHABLE: the drop point inside the %s is beyond the arm's "
+                "reach from here (near edge %.2f m) and the creep closer is not "
+                "available (%s); %s" % (name, geo["near"],
+                                        " ".join(str(text).split())[:120], held))
+        try:
+            e_end = float(tok["EDGE_M"])
+        except ValueError:
+            e_end = float("nan")
+        aim = container_aim(geo["x"], geo["y"] - (geo["near"] - e_end), geo["half"],
+                            geo["rim"], e_end, h_obj, dead=True)
+        if aim is None:
+            return None, fail(
+                "NOT_REACHABLE: even after creeping to a near edge of ~%.2f m "
+                "the drop point inside the %s is beyond the arm's reach (rim "
+                "z %+.2f m); %s" % (e_end, name, geo["rim"], held))
+        plan["aim"] = aim
+        plan["creep"] = spec
+        plan["creep_plan"] = tok
+        return plan, None
+
