@@ -690,3 +690,7 @@ class GatewayBackend(Protocol):
         """Release-only drop of the held object."""
         ...
 
+    def navigate(self, args: dict) -> dict:
+        """Walk FSM approach; verify only via /walk_status == REACHED."""
+        ...
+
