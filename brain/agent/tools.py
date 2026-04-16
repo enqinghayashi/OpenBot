@@ -656,3 +656,5 @@ class ToolNameConflict(ToolError):
     """Raised when a tool name is registered twice."""
 
 
+class UnknownTool(ToolError):
+    """Raised by ToolRegistry.execute for a name that is not registered."""
