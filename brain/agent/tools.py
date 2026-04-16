@@ -660,3 +660,5 @@ class UnknownTool(ToolError):
     """Raised by ToolRegistry.execute for a name that is not registered."""
 
 
+class ToolNameInvalid(ValueError):
+    """Raised when a Tool name violates the naming pattern."""
