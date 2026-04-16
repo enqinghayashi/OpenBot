@@ -710,3 +710,8 @@ class GatewayBackend(Protocol):
         """Non-blocking notice to the human."""
         ...
 
+    def stop(self, args: dict) -> dict:
+        """Immediate halt (no confirmation required — stopping is always
+        allowed; the safety-critical reverse of the confirm gate)."""
+        ...
+
