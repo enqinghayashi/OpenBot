@@ -658,3 +658,5 @@ class ToolNameConflict(ToolError):
 
 class UnknownTool(ToolError):
     """Raised by ToolRegistry.execute for a name that is not registered."""
+
+
