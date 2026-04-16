@@ -698,3 +698,7 @@ class GatewayBackend(Protocol):
         """Open the gripper (side: right|left|both)."""
         ...
 
+    def close_hand(self, args: dict) -> dict:
+        """Close the gripper (side: right|left|both)."""
+        ...
+
