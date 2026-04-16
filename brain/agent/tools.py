@@ -706,3 +706,7 @@ class GatewayBackend(Protocol):
         """Blocking human question; value = the human's answer."""
         ...
 
+    def notify_user(self, args: dict) -> dict:
+        """Non-blocking notice to the human."""
+        ...
+
