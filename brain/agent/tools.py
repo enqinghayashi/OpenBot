@@ -662,3 +662,8 @@ class UnknownTool(ToolError):
 
 class ToolNameInvalid(ValueError):
     """Raised when a Tool name violates the naming pattern."""
+
+
+# --- backend protocol ---------------------------------------------------------
+
+
