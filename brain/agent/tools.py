@@ -686,3 +686,7 @@ class GatewayBackend(Protocol):
         """Command the pick engine (tabletop only); args carry x/y/z/ref."""
         ...
 
+    def place(self, args: dict) -> dict:
+        """Release-only drop of the held object."""
+        ...
+
