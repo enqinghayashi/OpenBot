@@ -3267,3 +3267,200 @@ class ToolRegistry:
         plan["creep_plan"] = tok
         return plan, None
 
+    def _run_container_creep(self, plan: dict):
+        """(aim, note, travel, iid) after the creep, or a failure envelope."""
+        name = plan.get("label") or "container"
+        held = "the place was NOT executed and the object is still held"
+        try:
+            env = self.backend.creep(dict(plan["creep"]))
+        except Exception as exc:  # noqa: BLE001
+            env = fail("ERROR:creep raised %s; CREEP_RESULT=error" % (exc,))
+        text = (env.get("value") if env.get("success") else env.get("reason")) \
+            if isinstance(env, dict) else ""
+        tok = parse_creep_reply(text)
+        result = tok.get("CREEP_RESULT", "error")
+        if not (isinstance(env, dict) and env.get("success")) or result not in (
+                "arrived", "planned", "in_place"):
+            why = {"cancelled": "the operator stopped the walk-in",
+                   "blocked": "something was in the way",
+                   "bumped": "the %s moved during the walk-in" % name,
+                   "busy": "another motion was running",
+                   "disabled": "the walk-in is switched off"}.get(result, result)
+            return fail("NOT PLACED: the walk-in to the %s stopped (%s: %s); %s"
+                        % (name, why, " ".join(str(text).split())[:160], held))
+        try:
+            x, y, z = float(tok["X"]), float(tok["Y"]), float(tok["Z"])
+            half, rim = float(tok["HALF_M"]), float(tok["RIM_Z"])
+            edge = float(tok["EDGE_M"])
+            travel = float(tok.get("TRAVEL_M", "0") or 0.0)
+        except (KeyError, ValueError):
+            return fail("NOT PLACED: the walk-in reply was unreadable (%s); %s"
+                        % (" ".join(str(text).split())[:160], held))
+        aim = container_aim(x, y, half, rim, edge, plan["h_obj"],
+                            dead=tok.get("SRC") == "dead")
+        if aim is None:
+            return fail(
+                "NOT_REACHABLE: after the walk-in the %s's near edge is ~%.2f m "
+                "and the drop point inside it is beyond the arm's reach; %s"
+                % (name, edge, held))
+        # far rim: the creep dead-reckons any pulse no trusted row followed
+        # as 0.05 m, so the container may be up to EDGE_ERR_M nearer and the
+        # aim that much deeper. refuse an aim that could drop beyond the far rim
+        e_err = post_creep_edge_err(tok)
+        if container_far_clear(aim, half, edge, e_err) < 0.0:
+            return fail(
+                "NOT PLACED: after the walk-in the drop point could land beyond "
+                "the far rim of the %s (%.2f m across; the robot may have moved "
+                "up to %.2f m more than dead-reckoned); %s"
+                % (name, 2.0 * half, e_err, held))
+        iid = tok.get("IID")
+        iid = int(iid) if iid and iid.isdigit() else plan["geo"].get("iid")
+        try:
+            bot = float(tok["BOT_Z"])
+        except (KeyError, ValueError):
+            bot = plan["geo"]["bot"]
+        geo = dict(plan["geo"], x=x, y=y, z=z, half=half, rim=rim, bot=bot,
+                   near=edge, iid=iid)
+        note = "%s:%.3f:%.3f" % (result, edge, travel)
+        return aim, note, travel, geo
+
+    @staticmethod
+    def _container_tail(plan: dict, creep_note: Optional[str]) -> str:
+        """B8j place-reply tokens (after into_x/y/z): into_iid (the container's
+        instance id: the verifier finds it across label changes), creep=
+        <result>:<edge>:<travel>, and for a DEEP container into_fp=<x centre>,
+        <near y>,<far y>,<half x>,<rim z>,<bottom z> (torso frame at the drop)."""
+        geo = plan.get("geo") or {}
+        aim = plan.get("aim") or {}
+        tail = ""
+        iid = geo.get("iid")
+        if isinstance(iid, int) and not isinstance(iid, bool) and iid >= 1:
+            tail += "; into_iid=%d" % iid
+        if creep_note:
+            tail += "; creep=%s" % creep_note
+        try:
+            x, y = float(geo["x"]), float(geo["y"])
+            half, edge = float(geo["half"]), float(aim.get("edge", geo["near"]))
+            rim, bot = float(geo["rim"]), float(geo["bot"])
+            deep = max(float(geo.get("h") or 0.0), rim - bot) >= DEEP_CONTAINER_H_M
+        except (KeyError, TypeError, ValueError):
+            return tail
+        d = math.hypot(x, y)
+        if deep and d > 0.05:
+            uy = y / d
+            tail += "; into_fp=%.3f,%.3f,%.3f,%.3f,%.3f,%.3f" % (
+                x, uy * edge, uy * (edge + 2.0 * half), half, rim, bot)
+        return tail
+
+    def _navigate_vocab(self, target: Any) -> Optional[dict]:
+        """B8j-hf16 (2026-10-15, s5 18:39): navigate('bin') swept 77 s for a
+        word the detector did not have - 'bin' is not in the always-on base
+        classes and look_for came only AFTER the sweep gave up.  An EXTRA word
+        (look_for's own canon: not a base class, not invalid) is now added to
+        the live vocabulary BEFORE the walk starts, through the same look_for
+        handler the model calls.  Returns None to walk on, or a failure to
+        return instead (a word the bank cannot describe: sweeping for it would
+        be blind).  No look_for lane, a base class, or a word already
+        requested: None at once (today's behaviour)."""
+        tool = self._tools.get("look_for")
+        handler = getattr(tool, "handler", None)
+        if handler is None or not isinstance(target, str) or not target.strip():
+            return None
+        word = self._walk_label(target.strip().split("#")[0].split("@")[0])
+        try:
+            canon = handler.manager.canon(word)
+            if canon.kind != "extra" or canon.label in handler.manager.desired:
+                return None
+            res = handler({"nouns": [word], "mode": "add"})
+        except Exception as exc:  # noqa: BLE001
+            print("[navigate] B8j-hf16 look_for(%r) raised %r - walking anyway"
+                  % (word, exc), flush=True)
+            return None
+        text = str((res or {}).get("value") or (res or {}).get("reason") or "")
+        print("[navigate] B8j-hf16 look_for(%r) before the walk -> %s"
+              % (word, text[:160]), flush=True)
+        if canon.label in handler.manager.desired:
+            return None
+        return fail("navigate not started: the detector cannot be taught %r, so "
+                    "a sweep could never see it. %s" % (word, text))
+
+    def _walk_label(self, target: Any) -> Any:
+        """B7: the walk FSM matches DETECTOR labels ('cup'); a scene name the
+        brain hands the model ('green_cup_2', 'cup_3', 'black_backpack') never
+        appears on /detections, so navigate would sweep for it until it fails
+        (MEASURED on Stuart 2026-10-06: the reach_ceiling hint sent
+        navigate('green_cup_2') into a loop).  Translate a name that resolves
+        to ONE ref into that ref's class; an unresolved '<colour>_<class>_<n>'
+        form falls back to its base class.  Anything else is unchanged."""
+        if not isinstance(target, str) or not target.strip():
+            return target
+        t = target.strip()
+        sg = self.scene_graph
+        if sg is not None:
+            try:
+                ref = sg.resolve_ref(t)
+                entry = sg.refs.get(ref) if ref is not None else None
+                if isinstance(entry, dict) and entry.get("label"):
+                    lab = str(entry["label"])
+                    if "_".join(re.findall(r"[a-z0-9]+", t.lower())) != lab.replace(" ", "_"):
+                        return lab
+                    return t
+            except Exception:  # noqa: BLE001 - translation must never break navigate
+                pass
+        if "_" in t:
+            from ..observation import label_base_class
+            words = re.sub(r"_\d+$", "", t.lower()).replace("_", " ")
+            base = label_base_class(words)
+            return base or t
+        return t
+
+    #: words that mean release at the current pose
+    _PLACE_HERE_WORDS = frozenset((
+        "here", "there", "down", "table", "the table", "desk", "the desk",
+        "floor", "the floor", "ground", "the ground", "spot", "this spot",
+        "anywhere", "wherever", "hand", "release", "drop", "current position",
+    ))
+    #: relations a drop cannot honour
+    _PLACE_BESIDE_RE = re.compile(
+        r"\b(next to|beside|near|nearby|by the|left of|right of|behind|"
+        r"in front of|around|between)\b", re.I)
+    _PLACE_ON_IN_RE = re.compile(
+        r"^\s*(?:put it |place it |drop it )?(?:on top of|onto|on|into|inside of|"
+        r"inside|in|over|above|to|at)\s+", re.I)
+
+    def _place_operator_target(self) -> Optional[str]:
+        """B8h: the place target the OPERATOR named ('put it in the bowl' ->
+        'bowl', SelfState.request_destination) when that object is in view,
+        else None.  The third source for a place whose 'into' and
+        'destination' name nothing usable: it does not depend on what the
+        model wrote (s1: the model's place arguments were wrong or empty in
+        11 of 14 places; the operator's words were right)."""
+        _tls0 = self.__dict__.get("_find_tls")
+        if _tls0 is not None:
+            _tls0.op_note = None  # clear any note from a previous target
+        ss = getattr(self.scene_graph, "self_state", None)
+        if ss is None or not hasattr(ss, "request_destination"):
+            return None
+        try:
+            dest = ss.request_destination()
+        except Exception:  # noqa: BLE001 - a hint source must not break place
+            return None
+        if not dest:
+            return None
+        if self._find_target_detection(dest) is None:
+            note = self._take_find_note("use it as the container")
+            tls = self.__dict__.get("_find_tls")
+            if tls is not None:
+                tls.op_note = note
+            return None
+        return dest
+
+    def _take_operator_note(self) -> Optional[str]:
+        """Pop the reason the last operator-named target was not usable
+        (ambiguous / low confidence; None = not in view at all)."""
+        tls = self.__dict__.get("_find_tls")
+        note = getattr(tls, "op_note", None) if tls is not None else None
+        if tls is not None:
+            tls.op_note = None
+        return note
+
