@@ -932,3 +932,11 @@ class ToolRegistry:
         if embodiment is not None:
             self.embodiment = embodiment
 
+    def _left_hand_in_service(self) -> bool:
+        """BRAIN BR-6: embodiment.envelope.left_hand_in_service (strict
+        True); an embodiment without an envelope reads False (refused)."""
+        env = getattr(self.embodiment, "envelope", None)
+        return getattr(env, "left_hand_in_service", False) is True
+
+    # -- defaults ---------------------------------------------------------------
+
