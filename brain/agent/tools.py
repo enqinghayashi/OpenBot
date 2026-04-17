@@ -2324,3 +2324,19 @@ class ToolRegistry:
         value = env.get("value")
         return value if isinstance(value, str) else None
 
+    def _home_snapshot(self) -> Optional[dict]:
+        """The gateway's start-point snapshot (dict) or None."""
+        import json  # imported lazily to keep the module import light
+        text = self._home_call({"op": "status"})
+        if not text or not text.startswith("DONE:home {"):
+            return None
+        try:
+            snap = json.loads(text[len("DONE:home "):])
+        except ValueError:
+            return None
+        return snap if isinstance(snap, dict) else None
+
+    #: '0' disables the fetch-return rule: no start point, no requester
+    #: filtering and no return_home tool.
+    FETCH_RETURN_ENV = "OPENBOT_FETCH_RETURN"
+
