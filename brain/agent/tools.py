@@ -2220,3 +2220,92 @@ class ToolRegistry:
             )
         return pos, None
 
+    def _constrained_pick_point(
+        self, x: Any, y: Any, z: Any, label: str
+    ) -> tuple[float, float, float, Optional[dict]]:
+        """Placeholder pick-point computation consuming the embodiment
+        envelope (round-3 config-seam; documented semantics — the per-object
+        grasp geometry is the pick engine's / depth projector's job, this is
+        the brain-side capability net):
+
+          1. Tabletop floor: a target z below ``pick_min_height_m`` is a
+             capability-block (FLOOR_OBJECT refusal).  The bound is a
+             TORSO-frame height (z=0 at the torso link — the perception
+             and engine frames); ground objects read ~-0.75 and every
+             tabletop/low-workspace object passes.  No ground-pick skill
+             exists.
+          2. Height ceiling: z above ``pick_max_height_m`` is out of the
+             workspace (OUT_OF_REACH refusal).
+          3. Grip-center standoff (shipped 0.0): the commanded pick point is
+             the detection position offset by ``grip_center_standoff_m`` on
+             z and on x toward the object's side.  NO current target
+             (pick_engine_v2 / pick daemon) consumes it — stdin x/y/z is
+             the WRIST target — so a non-zero value offsets the point onto
+             air (0.37 -> cx 0.514, E2 22:49).  The engine's own grip-zone
+             + approach offsets do this job engine-side.
+          4. Reach clamp: the horizontal (x, y) distance of the COMMANDED
+             point is clamped to ``max_reach_m`` (x/y scaled together) —
+             the arm is never commanded past the envelope reach.
+
+        Without a wired embodiment the tool layer keeps its independent
+        constants (TABLETOP_MIN_Z / TABLETOP_MAX_Z) and applies no standoff
+        or clamp (the historical behavior).  Non-numeric / non-finite inputs
+        pass through untouched — the gateway refuses them honestly.
+
+        Returns ``(x, y, z, refusal_or_None)``; a refusal is a failure
+        envelope.
+        """
+        if x is None or y is None or z is None:
+            return x, y, z, None
+        try:
+            xf, yf, zf = float(x), float(y), float(z)
+        except (TypeError, ValueError):
+            return x, y, z, None
+        if not (math.isfinite(xf) and math.isfinite(yf) and math.isfinite(zf)):
+            return x, y, z, None
+        env = self._envelope()
+        # the floor comes from the envelope through the shared law: with the
+        # lane off it is pick_min_height_m unchanged, with the lane on the
+        # rescue floor. TABLETOP_MIN_Z is the fallback when none is wired.
+        min_z = effective_pick_floor(env) if env is not None else TABLETOP_MIN_Z
+        max_z = env.pick_max_height_m if env is not None else TABLETOP_MAX_Z
+        if zf < min_z:
+            if getattr(env, "low_workspace_lane", False) is True:
+                return x, y, z, fail(
+                    f"FLOOR_OBJECT: {label!r} is at torso-frame height "
+                    f"{zf:.2f} m — below the low-workspace descent floor "
+                    f"(min {min_z:.2f} m torso frame; a SIMULATED "
+                    "descent-budget bound with the lane armed, not a "
+                    "measured body capability). Refusing honestly."
+                )
+            return x, y, z, fail(
+                f"FLOOR_OBJECT: {label!r} is at torso-frame height "
+                f"{zf:.2f} m — below the tabletop workspace (min "
+                f"{min_z:.2f} m torso frame). The robot has no floor-pick "
+                "skill; refusing honestly."
+            )
+        if zf > max_z:
+            return x, y, z, fail(
+                f"OUT_OF_REACH: {label!r} is at height {zf:.2f} m — above "
+                f"the workspace ceiling (max {max_z:.2f} m)."
+            )
+        cx, cz = xf, zf
+        if env is not None:
+            standoff = float(getattr(env, "grip_center_standoff_m", 0.0) or 0.0)
+            cz = zf + standoff
+            if xf > 0.0:
+                cx = xf + standoff
+            elif xf < 0.0:
+                cx = xf - standoff
+            max_reach = float(getattr(env, "max_reach_m", 0.0) or 0.0)
+            if max_reach > 0.0:
+                d = math.hypot(cx, yf)
+                if d > max_reach:
+                    scale = max_reach / d
+                    cx, yf = cx * scale, yf * scale
+        return cx, yf, cz, None
+
+    # -- detection lookup (pick resolution) --------------------------------------
+
+    # -- where the fetch started and who asked for it ---------------------------
+
