@@ -822,3 +822,24 @@ class Tool:
                 )
         return errors
 
+    @staticmethod
+    def _type_matches(value: Any, expected: str) -> bool:
+        if expected == "string":
+            return isinstance(value, str)
+        if expected in ("number", "integer"):
+            is_num = isinstance(value, (int, float)) and not isinstance(
+                value, bool
+            )
+            return is_num and (expected == "number" or isinstance(value, int))
+        if expected == "boolean":
+            return isinstance(value, bool)
+        if expected == "array":
+            return isinstance(value, list)
+        if expected == "object":
+            return isinstance(value, dict)
+        if expected == "null":
+            return value is None
+        return True  # unknown schema types accept any value
+
+    # -- invocation ------------------------------------------------------------
+
