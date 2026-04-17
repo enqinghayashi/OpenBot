@@ -858,3 +858,32 @@ class Tool:
             return self._prepare_hook(args)
         return dict(args), None
 
+    def call(self, args: dict) -> dict:
+        """Validate, then execute ``run`` under the per-tool timeout.
+
+        Never raises: every failure mode is returned as a failure envelope.
+        """
+        violations = self.validate_args(args)
+        if violations:
+            detail = "; ".join(violations)
+            return fail(f"invalid arguments: {detail}")
+        pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix=f"tool-{self.name}"
+        )
+        future = pool.submit(self.run, args)
+        try:
+            try:
+                result = future.result(timeout=self.timeout_s)
+            except concurrent.futures.TimeoutError:
+                return fail(
+                    f"TIMEOUT: {self.name} did not finish in {self.timeout_s:g}s"
+                )
+        except Exception as exc:  # noqa: BLE001
+            return fail(f"{self.name} raised: {exc}")
+        finally:
+            # do not wait: a handler that outlives its timeout must not block the
+            # caller, so the single-use pool is shut down without waiting.
+            pool.shutdown(wait=False)
+        if isinstance(result, dict) and "success" in result:
+            return result
+        return fail(f"{self.name} returned a non-envelope result: {result!r}")
