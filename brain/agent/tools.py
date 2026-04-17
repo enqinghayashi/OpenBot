@@ -900,3 +900,19 @@ class ToolRegistry:
     connects after construction).
     """
 
+    def __init__(
+        self,
+        backend: Any = None,
+        scene_graph: Any = None,
+        embodiment: Any = None,
+        switches: Any = None,
+    ) -> None:
+        self.backend = backend
+        self.scene_graph = scene_graph
+        self.embodiment = embodiment
+        # optional lanes, read once when the optional tools are registered;
+        # None turns all of them off.
+        self._optional_switches = switches
+        self._tools: Dict[str, Tool] = {}
+        self._register_defaults()
+
