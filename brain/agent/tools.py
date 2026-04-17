@@ -3464,3 +3464,116 @@ class ToolRegistry:
             tls.op_note = None
         return note
 
+    def _place_destination_target(self, destination: Any):
+        """B8f: (into, refusal) for a place called WITHOUT 'into'.
+
+        * a destination naming a scene object ('the green cup', 'in the
+          bowl', 'on top of bowl_1') -> that object, exactly as if it had
+          been passed as 'into' (move-to-target, containment verifier);
+        * a 'here' word ('here', 'down', 'the table') -> ('', None): today's
+          release at the current pose;
+        * a beside-relation ('next to the cup') -> a refusal: a drop point
+          OVER the object would put it on top, and releasing here would put
+          it somewhere else - the object stays in the hand (recoverable);
+        * anything else not in view ('in the bin' with no bin, free text)
+          -> a NOT_DETECTED refusal instead of a release on the spot.
+        """
+        if not isinstance(destination, str) or not destination.strip():
+            return "", None
+        text = destination.strip().rstrip(".!? ")
+        if text.lower() in self._PLACE_HERE_WORDS:
+            return "", None
+        if self._PLACE_BESIDE_RE.search(text):
+            return "", fail(
+                "NOT SUPPORTED: placing BESIDE an object (%r) - the arm can only "
+                "drop ON or INTO an object it can see, or release where it is. "
+                "Ask the operator which they want; the object is still held."
+                % destination)
+        cand = self._PLACE_ON_IN_RE.sub("", text, count=1)
+        cand = re.sub(r"^(?:the|a|an|that|this)\s+", "", cand.strip(), flags=re.I).strip()
+        if not cand or cand.lower() in self._PLACE_HERE_WORDS:
+            return "", None
+        if self._find_target_detection(cand) is not None:
+            return cand, None
+        # not in view: a class absent from the scene, an untracked extra
+        # or free text is refused, keeping the object in the hand rather than
+        # releasing it where nobody asked
+        return "", fail(self._take_find_note("use it as the place target")
+                        or _not_detected(cand))
+
+    def _walk_target_spec(self, target: Any) -> Any:
+        """B8: the navigate target the gateway gets for ``target``.
+
+        A name that picks out ONE scene object ('red_cup_2', 'cup_3',
+        'black_backpack') becomes '<class>#<instance_id>@<hue>' from that
+        object's entry, so the walk follows THAT object and not the
+        highest-confidence one of its class (MEASURED on Stuart 2026-10-06:
+        with two cups navigate could not aim at the named one).  Parts the
+        entry does not have are left out.  A plain class word ('cup'), an
+        unknown word or a self-reference alias is returned exactly as
+        `_walk_label` gives it - today's behaviour."""
+        cls = self._walk_label(target)
+        if cls == target or not isinstance(target, str) or not isinstance(cls, str):
+            return cls
+        sg = self.scene_graph
+        try:
+            # aiming must not over-resolve: only the object's own ref key, its
+            # display name, or a '<colour>_<class>' matching exactly one object
+            # names an instance
+            refs = getattr(sg, "refs", None) or {}
+            names = sg._compute_display_names()
+            norm = "_".join(re.findall(r"[a-z0-9]+", target.lower()))
+            hits = [e for r, e in refs.items()
+                    if isinstance(e, dict) and str(e.get("label")) == cls
+                    and norm in (r, names.get(r))]
+            if not hits:
+                from .. import spatial
+                colour, _, rest = norm.partition("_")
+                if rest == cls.replace(" ", "_"):
+                    for e in refs.values():
+                        if not isinstance(e, dict) or str(e.get("label")) != cls:
+                            continue
+                        votes = [v for v in (e.get("colour_vote") or []) if v]
+                        if spatial.colour_match(
+                                {"colour": max(set(votes), key=votes.count)
+                                 if votes else None, "hue": e.get("hue")}, colour):
+                            hits.append(e)
+            if len(hits) != 1:
+                return cls
+            entry = hits[0]
+            spec = cls
+            iid = entry.get("instance_id")
+            if isinstance(iid, int) and not isinstance(iid, bool) and iid >= 1:
+                spec += "#%d" % iid
+            hue = entry.get("hue")
+            if isinstance(hue, (int, float)) and not isinstance(hue, bool) \
+                    and math.isfinite(hue):
+                spec += "@%d" % (int(round(hue)) % 360)
+            return spec
+        except Exception:  # noqa: BLE001 - the spec must never break navigate
+            return cls
+
+    def _observe(self):
+        """One guarded observation read from the backend (never raises)."""
+        try:
+            obs = self.backend.observe()
+            return obs if obs is not None else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    # -- mutation ---------------------------------------------------------------
+
+    def register(self, tool: Tool) -> None:
+        """Register a tool; raises ToolNameConflict on a duplicate name."""
+        if tool.name in self._tools:
+            raise ToolNameConflict(
+                f"tool {tool.name!r} is already registered"
+            )
+        self._tools[tool.name] = tool
+
+    def unregister(self, name: str) -> None:
+        """Unregister a tool by name.  Idempotent: silent if absent."""
+        self._tools.pop(name, None)
+
+    # -- queries ----------------------------------------------------------------
+
