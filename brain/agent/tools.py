@@ -3577,3 +3577,43 @@ class ToolRegistry:
 
     # -- queries ----------------------------------------------------------------
 
+    def has(self, name: str) -> bool:
+        return name in self._tools
+
+    def get_specs(self) -> List[dict]:
+        """OpenAI function-calling specs, in registration order:
+        ``[{"type": "function", "function": {name, description, parameters}}]``
+        """
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.schema,
+                },
+            }
+            for tool in self._tools.values()
+        ]
+
+    def snapshot(self) -> Dict[str, Tool]:
+        """Copy of the current tool map (per-utterance snapshot)."""
+        return dict(self._tools)
+
+    # -- execution --------------------------------------------------------------
+
+    def execute(self, name: str, args: dict) -> dict:
+        """Execute ``name`` with ``args``, returning an envelope dict.
+
+        Raises UnknownTool for an unregistered name — the agent converts it
+        to an error envelope and feeds it back (designed recovery path).
+        """
+        tool = self._tools.get(name)
+        if tool is None:
+            raise UnknownTool(f"unknown tool: {name!r}")
+        return tool.call(args)
+
+
+# --- little pure helpers used by the target binder ----------------------
+
+
