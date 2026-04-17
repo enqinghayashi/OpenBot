@@ -2370,3 +2370,21 @@ class ToolRegistry:
             return
         self._home_record(ss, "mark")
 
+    def _home_record(self, ss: Any, op: str) -> None:
+        """Record the start point of the live fetch request (op 'mark': here,
+        at the walk; op 'promote': the pick of a request whose words came after
+        the walk began), unless the fetch already has one (kept) or this
+        request's fetch already ended (B8l-hf3: never a second start point for
+        one request -- Stuart 10-17 marked a later plain 'walk to the chair')."""
+        if (self.__dict__.get("_home_seq") is not None
+                and self._home_snapshot() is not None):
+            self._home_seq = ss.fetch_seq   # start of a fetch already in progress: keep the first
+            self._home_marked_seq = ss.fetch_seq
+            return
+        if self.__dict__.get("_home_marked_seq") == ss.fetch_seq:
+            return                          # this request's fetch already ended
+        text = self._home_call({"op": op})
+        if text and text.startswith("DONE:home marked"):
+            self._home_seq = ss.fetch_seq
+            self._home_marked_seq = ss.fetch_seq
+
