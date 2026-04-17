@@ -776,3 +776,22 @@ class Tool:
         self.blocking = bool(blocking)
         self._prepare_hook = prepare
 
+    @staticmethod
+    def _validate_schema(schema: dict) -> None:
+        """Validate that ``schema`` is a well-formed JSON-schema object."""
+        if not isinstance(schema, dict):
+            raise ValueError("schema must be a dict (JSON schema object)")
+        if schema.get("type") != "object":
+            raise ValueError("schema['type'] must be 'object'")
+        props = schema.get("properties")
+        if not isinstance(props, dict):
+            raise ValueError("schema['properties'] must be a dict")
+        required = schema.get("required", [])
+        if not isinstance(required, list):
+            raise ValueError("schema['required'] must be a list")
+        for field_name in required:
+            if field_name not in props:
+                raise ValueError(
+                    f"required field {field_name!r} missing from properties"
+                )
+
