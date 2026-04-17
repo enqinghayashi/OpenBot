@@ -726,3 +726,8 @@ class GatewayBackend(Protocol):
         backends may lack it.
         """
         ...
+
+
+# --- Tool ---------------------------------------------------------------------
+
+
