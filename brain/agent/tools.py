@@ -2169,3 +2169,54 @@ class ToolRegistry:
             return None
         return getattr(emb, "envelope", None) or None
 
+    def _spot_position(
+        self, spot_name: str
+    ) -> tuple[Optional[List[float]], Optional[dict]]:
+        """Resolve a named base-relative spot from the wired embodiment.
+
+        Consumes ``embodiment.base_relative.key_positions`` (round-5
+        config-seam): the position returned is the CONFIGURED one — an
+        unknown spot name (or an unwired/no-key_positions embodiment) is
+        an honest failure envelope, NEVER a guessed position.  Works with
+        the loader's ``EmbodimentConfig`` (frozen, key_positions is a
+        mappingproxy) and brain/embodiment.py's ``Embodiment`` (which also
+        offers ``base_relative.position(name)``).
+
+        Returns ``(position, None)`` or ``(None, failure_envelope)``.
+        """
+        emb = self.embodiment
+        if emb is None:
+            return None, fail(
+                "embodiment not wired — no base_relative.key_positions to "
+                "resolve the spot against"
+            )
+        br = getattr(emb, "base_relative", None)
+        if br is None:
+            return None, fail(
+                "embodiment has no base_relative section — cannot resolve spots"
+            )
+        pos: Any = None
+        pos_fn = getattr(br, "position", None)
+        if callable(pos_fn):
+            try:
+                pos = pos_fn(spot_name)
+            except Exception:  # noqa: BLE001 — resolution must not crash the tool
+                pos = None
+        if pos is None:
+            kp = getattr(br, "key_positions", None)
+            if kp is not None:
+                pos = kp.get(spot_name)
+        if pos is None:
+            known = sorted(getattr(br, "key_positions", {}))
+            return None, fail(
+                f"UNKNOWN_SPOT: {spot_name!r} is not a configured base-relative "
+                f"spot (known: {known}) — never guessing a position"
+            )
+        try:
+            pos = [float(x) for x in pos]
+        except (TypeError, ValueError):
+            return None, fail(
+                f"spot {spot_name!r} has a non-numeric position {pos!r}"
+            )
+        return pos, None
+
