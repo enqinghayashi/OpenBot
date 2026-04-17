@@ -731,3 +731,16 @@ class GatewayBackend(Protocol):
 # --- Tool ---------------------------------------------------------------------
 
 
+class Tool:
+    """A callable tool exposed to the LLM.
+
+    ``schema`` is an OpenAI function-calling JSON schema
+    (``{"type": "object", "properties": {...}, "required": [...]}``).
+    ``run(args: dict) -> dict`` returns the result envelope.  ``blocking``
+    marks user-interaction tools (query_user blocks the turn; notify_user
+    does not).  ``prepare(args)`` is the agent's PRE-hook seam: it resolves
+    arguments (e.g. a pick label -> torso-frame x/y/z/ref) so the safety
+    hooks can inspect them before any motion, returning
+    ``(augmented_args, refusal_or_None)``.
+    """
+
