@@ -2344,3 +2344,6 @@ class ToolRegistry:
         import os  # imported lazily; stdlib only
         return os.environ.get(self.FETCH_RETURN_ENV, "").strip() != "0"
 
+    def _self_state(self) -> Any:
+        return getattr(self.scene_graph, "self_state", None)
+
