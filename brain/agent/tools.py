@@ -2162,3 +2162,10 @@ class ToolRegistry:
 
     # -- embodiment consumption (pick placeholder geometry) ----------------------
 
+    def _envelope(self) -> Optional[Any]:
+        """The embodiment envelope object, or None when not wired."""
+        emb = self.embodiment
+        if emb is None:
+            return None
+        return getattr(emb, "envelope", None) or None
+
