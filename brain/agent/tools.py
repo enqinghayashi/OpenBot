@@ -795,3 +795,30 @@ class Tool:
                     f"required field {field_name!r} missing from properties"
                 )
 
+    def validate_args(self, args: dict) -> List[str]:
+        """Validate ``args`` against the schema; [] means valid."""
+        if not isinstance(args, dict):
+            return [f"arguments (expected a dict, got {type(args).__name__})"]
+        errors: List[str] = []
+        props = self.schema.get("properties", {})
+        for field_name in self.schema.get("required", []):
+            if field_name not in args:
+                errors.append(f"{field_name} (missing required argument)")
+        for field_name, value in args.items():
+            spec = props.get(field_name)
+            if spec is None:
+                continue  # extra arguments are ignored
+            expected = spec.get("type")
+            if expected is None:
+                continue
+            if not self._type_matches(value, expected):
+                errors.append(
+                    f"{field_name} (expected {expected}, got {type(value).__name__})"
+                )
+            enum = spec.get("enum")
+            if enum is not None and value not in enum:
+                errors.append(
+                    f"{field_name} (must be one of {enum}, got {value!r})"
+                )
+        return errors
+
