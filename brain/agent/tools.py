@@ -2347,3 +2347,26 @@ class ToolRegistry:
     def _self_state(self) -> Any:
         return getattr(self.scene_graph, "self_state", None)
 
+    def _home_fetch_mark(self, target: Any) -> None:
+        """navigate with an EMPTY hand: during a fetch-to-me request ("get me a
+        bottle") record the start point ONCE per request (r1 H3: never for a
+        plain walk); operator decisions 2026-10-17: a retry or a repeated
+        request keeps the first start point; the fetch ends on the handover /
+        any place, a stop BEFORE the pick (after it a stop only pauses), or the
+        gateway's 15 min expiry.  B8l-hf3: without a live fetch the walk's start
+        is kept as a CANDIDATE -- the realtime voice lane calls navigate before
+        the words of the request are transcribed; the pick promotes it."""
+        if not self._fetch_on() or self._held_record() is not None:
+            return
+        if self._names_person(target):
+            return
+        ss = self._self_state()
+        fetch_live = getattr(ss, "fetch_live", None)
+        if (ss is None or fetch_live is None or not fetch_live()
+                or (self.__dict__.get("_home_marked_seq") == ss.fetch_seq
+                    and self._home_snapshot() is None)):
+            # no live fetch: keep this walk's start as a candidate
+            self._home_call({"op": "candidate"})
+            return
+        self._home_record(ss, "mark")
+
