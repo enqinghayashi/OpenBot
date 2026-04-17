@@ -843,3 +843,18 @@ class Tool:
 
     # -- invocation ------------------------------------------------------------
 
+    def prepare(self, args: dict) -> tuple[dict, Optional[dict]]:
+        """Resolve/prepare args for the pre-hook phase.
+
+        Returns ``(augmented_args, refusal)``; ``refusal`` is a failure
+        envelope when the tool cannot proceed at all (e.g. the pick target
+        is not in fresh detections).  The agent runs the confirm gate and
+        safety checks on the AUGMENTED args (so the safety hook sees
+        resolved coordinates) and refuses motion when a refusal is
+        returned.  Base implementation passes args through unchanged; a
+        tool may override it via the constructor's ``prepare`` hook.
+        """
+        if self._prepare_hook is not None:
+            return self._prepare_hook(args)
+        return dict(args), None
+
