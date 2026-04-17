@@ -892,3 +892,11 @@ class Tool:
 # --- ToolRegistry ---------------------------------------------------------------
 
 
+class ToolRegistry:
+    """Holds the agent's flat tool set, in registration order.
+
+    Tools read ``backend`` and ``scene_graph`` off the registry at call
+    time, so :meth:`attach` can wire them late (e.g. when the gateway
+    connects after construction).
+    """
+
