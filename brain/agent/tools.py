@@ -744,3 +744,35 @@ class Tool:
     ``(augmented_args, refusal_or_None)``.
     """
 
+    def __init__(
+        self,
+        name: str,
+        description: str,
+        schema: dict,
+        run: Callable[[dict], dict],
+        *,
+        timeout_s: float = DEFAULT_TIMEOUT_S,
+        blocking: bool = True,
+        prepare: Optional[Callable[[dict], tuple[dict, Optional[dict]]]] = None,
+    ) -> None:
+        if not isinstance(name, str) or not TOOL_NAME_RE.match(name):
+            raise ToolNameInvalid(
+                f"tool name {name!r} must match ^[a-z][a-z0-9_]{{1,63}}$"
+            )
+        if not isinstance(description, str) or not description.strip():
+            raise ValueError(f"tool {name!r} needs a non-empty description")
+        self._validate_schema(schema)
+        if not callable(run):
+            raise TypeError(f"tool {name!r} run must be callable")
+        if timeout_s <= 0:
+            raise ValueError(f"tool {name!r} timeout_s must be > 0")
+        if prepare is not None and not callable(prepare):
+            raise TypeError(f"tool {name!r} prepare must be callable")
+        self.name = name
+        self.description = description
+        self.schema = schema
+        self.run = run
+        self.timeout_s = float(timeout_s)
+        self.blocking = bool(blocking)
+        self._prepare_hook = prepare
+
