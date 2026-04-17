@@ -2340,3 +2340,7 @@ class ToolRegistry:
     #: filtering and no return_home tool.
     FETCH_RETURN_ENV = "OPENBOT_FETCH_RETURN"
 
+    def _fetch_on(self) -> bool:
+        import os  # imported lazily; stdlib only
+        return os.environ.get(self.FETCH_RETURN_ENV, "").strip() != "0"
+
