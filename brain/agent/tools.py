@@ -916,3 +916,19 @@ class ToolRegistry:
         self._tools: Dict[str, Tool] = {}
         self._register_defaults()
 
+    def attach(
+        self,
+        backend: Any = None,
+        scene_graph: Any = None,
+        embodiment: Any = None,
+    ) -> None:
+        """Wire the backend/scene graph/embodiment (idempotent; None leaves
+        unchanged).  ``embodiment`` is a brain.embodiment.Embodiment (or
+        anything with an ``.envelope``) read by the pick placeholder."""
+        if backend is not None:
+            self.backend = backend
+        if scene_graph is not None:
+            self.scene_graph = scene_graph
+        if embodiment is not None:
+            self.embodiment = embodiment
+
