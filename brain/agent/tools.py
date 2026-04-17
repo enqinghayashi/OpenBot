@@ -715,3 +715,14 @@ class GatewayBackend(Protocol):
         allowed; the safety-critical reverse of the confirm gate)."""
         ...
 
+    def capture_image(self) -> Optional[dict]:
+        """Latest camera frame {jpeg_b64, w, h, ts, fresh}, or None.
+
+        The camera lane is OPTIONAL (vision.enabled): a backend with no
+        camera returns None.  ``fresh`` is the frame's honesty flag —
+        False means stale / no camera / encode error (with a ``reason``),
+        never a stale frame under the green light.  Callers MUST
+        getattr-guard this member — camera is optional and older
+        backends may lack it.
+        """
+        ...
