@@ -2309,3 +2309,18 @@ class ToolRegistry:
 
     # -- where the fetch started and who asked for it ---------------------------
 
+    def _home_call(self, req: dict) -> Optional[str]:
+        """One gateway ``home`` call; the reply text, or None (no such
+        backend method / failure).  Never raises."""
+        fn = getattr(self.backend, "home", None) if self.backend is not None else None
+        if fn is None:
+            return None
+        try:
+            env = fn(dict(req))
+        except Exception:  # noqa: BLE001
+            return None
+        if not isinstance(env, dict) or not env.get("success"):
+            return None
+        value = env.get("value")
+        return value if isinstance(value, str) else None
+
