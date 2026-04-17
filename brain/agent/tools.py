@@ -887,3 +887,8 @@ class Tool:
         if isinstance(result, dict) and "success" in result:
             return result
         return fail(f"{self.name} returned a non-envelope result: {result!r}")
+
+
+# --- ToolRegistry ---------------------------------------------------------------
+
+
