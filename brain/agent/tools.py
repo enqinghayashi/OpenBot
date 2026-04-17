@@ -3617,3 +3617,53 @@ class ToolRegistry:
 # --- little pure helpers used by the target binder ----------------------
 
 
+def _finite_or(value: Any, default: float) -> float:
+    """``float(value)`` when finite (bools excluded), else ``default``."""
+    if isinstance(value, bool):
+        return default
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    return out if math.isfinite(out) else default
+
+
+def _freshest(rows: list):
+    """Today's pick rule: the newest ``ts``; ties keep the FIRST row."""
+    best = None
+    for det in rows:
+        if best is None or float(getattr(det, "ts", 0.0)) > float(
+            getattr(best, "ts", 0.0)
+        ):
+            best = det
+    return best
+
+
+def _xyz(obj: Any):
+    """(x, y, z) of a Detection or a scene-graph entry dict, or None."""
+    try:
+        if isinstance(obj, dict):
+            pt = (float(obj["x"]), float(obj["y"]), float(obj["z"]))
+        else:
+            pt = (float(obj.x), float(obj.y), float(obj.z))
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return None
+    return pt if all(math.isfinite(v) for v in pt) else None
+
+
+def _dist3(a: Any, b: Any) -> float:
+    """Torso-frame euclidean distance; +inf when either point is unknown."""
+    pa, pb = _xyz(a), _xyz(b)
+    if pa is None or pb is None:
+        return float("inf")
+    return math.sqrt(sum((u - v) ** 2 for u, v in zip(pa, pb)))
+
+
+def _nearest_within(rows: list, entry: dict, gate: float):
+    """The row nearest the ref entry's stored position, if within ``gate``."""
+    best, best_d = None, None
+    for det in rows:
+        d = _dist3(det, entry)
+        if d <= gate and (best_d is None or d < best_d):
+            best, best_d = det, d
+    return best
