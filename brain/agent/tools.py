@@ -2491,3 +2491,19 @@ class ToolRegistry:
     #: of creeping in.
     HANDOVER_START_MAX_M = 0.80
 
+    def _handover_plan(self, into: Any, det: Any, planar: float):
+        """{x, y} of the person to close in on when a place INTO a person is
+        out of the arm's reach but within HANDOVER_START_MAX_M and the
+        gateway has the approach verb; None (refuse as before) otherwise."""
+        if not self._names_person(into) or planar > self.HANDOVER_START_MAX_M:
+            return None
+        if getattr(self.backend, "approach_person", None) is None:
+            return None
+        try:
+            x, y = float(det.x), float(det.y)
+        except (TypeError, ValueError, AttributeError):
+            return None
+        if not (math.isfinite(x) and math.isfinite(y)):
+            return None
+        return {"x": round(x, 3), "y": round(y, 3)}
+
