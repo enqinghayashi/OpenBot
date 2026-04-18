@@ -2603,3 +2603,39 @@ class ToolRegistry:
     #: marker that makes the reply read as an open
     HANDOVER_OPEN_MARK = "HANDOVER=open"
 
+    def _handover_open(self, approach):
+        """B8l-hf6 (operator 10-17 "face me and open"): after the approach
+        (the person centred at arm's reach) open the holding hand where it is
+        -- no place arm motion.  The reply carries HANDOVER_OPEN_MARK so the
+        executor verifies it as an open (measured-open hand)."""
+        (x, y), travel = approach
+        held = self._held_record() or {}
+        side = held.get("side") if held.get("side") in ("left", "right") else "right"
+        fn = getattr(self.backend, "open_hand", None)
+        if fn is None:
+            return fail("HANDOVER: the gateway has no open_hand; the object is "
+                        "still held, nothing was released")
+        time.sleep(self.HANDOVER_OPEN_PAUSE_S)
+        try:
+            env = fn({"side": side})
+        except Exception as exc:  # noqa: BLE001
+            env = fail("open_hand raised %s" % (exc,))
+        if not (isinstance(env, dict) and env.get("success")):
+            reason = env.get("reason") if isinstance(env, dict) else env
+            return fail("HANDOVER_OPEN failed: facing the person %.2f m away "
+                        "but the %s hand did not open (%s); the object may "
+                        "still be held" % (math.hypot(x, y), side,
+                                           " ".join(str(reason).split())[:160]))
+        # object gone: the fetch is over
+        if self.__dict__.get("_home_seq") is not None:
+            self._home_call({"op": "clear", "why": "handover"})
+            self._home_seq = None
+        value = env.get("value")
+        return ok("%s; %s; HANDOVER_SIDE=%s; HANDOVER_RANGE_M=%.3f; "
+                  "TRAVEL_M=%.3f" % (value if isinstance(value, str) and value
+                                     else "DONE open", self.HANDOVER_OPEN_MARK,
+                                     side, math.hypot(x, y), travel))
+
+    #: distance backed off before a sweep when the target is not in view
+    SEARCH_STEP_BACK_M = 0.50
+
