@@ -2388,3 +2388,15 @@ class ToolRegistry:
             self._home_seq = ss.fetch_seq
             self._home_marked_seq = ss.fetch_seq
 
+    def _home_fetch_confirm(self) -> None:
+        """B8l-hf3: the first pick of a fetch whose start point was not
+        recorded at the walk (its words arrived after the navigate) promotes
+        the walk's candidate (or marks here when the robot never walked)."""
+        if not self._fetch_on() or self._held_record() is not None:
+            return
+        ss = self._self_state()
+        fetch_live = getattr(ss, "fetch_live", None)
+        if ss is None or fetch_live is None or not fetch_live():
+            return
+        self._home_record(ss, "promote")
+
