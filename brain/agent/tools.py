@@ -2548,3 +2548,58 @@ class ToolRegistry:
     #: extra shift past the engine's move_right_m
     AIM_MARGIN_M = 0.04
 
+    def _cross_body_aim(self, env: Any, label: str, x: Any, y: Any):
+        """B8l-hf7: on a pick refused ERROR:self_collision whose arm did not
+        move (stage=precheck) or was parked back (arm_after=already_safe /
+        parked), ask the gateway to turn in place until the object sits the
+        engine's move_right_m + AIM_MARGIN_M further right.  Returns the
+        object's fresh (x, y, z) after the turn, a short result word when a
+        turn was tried and failed, or None (not this case / no verb)."""
+        reason = env.get("reason") if isinstance(env, dict) else None
+        if (not isinstance(reason, str) or env.get("success")
+                or not _SELF_COLLISION_RE.search(reason)):
+            return None
+        fn = getattr(self.backend, "aim_turn", None)
+        m = _SELF_COLLISION_FIELDS_RE.search(reason)
+        st = _SELF_COLLISION_STAGE_RE.search(reason)
+        aa = _ARM_AFTER_RE.search(reason)
+        stage = st.group(1) if st else None
+        arm_after = aa.group(1) if aa else None
+        if fn is None or m is None:
+            return None
+        if not (stage == "precheck" or arm_after in ("already_safe", "parked")):
+            return None
+        try:
+            mv = float(m.group(4))
+            px, py = float(x), float(y)
+        except (TypeError, ValueError):
+            return None
+        if not all(math.isfinite(v) for v in (mv, px, py)) or mv <= 0.0:
+            return None
+        try:
+            aenv = fn({"label": label, "x": round(px, 3), "y": round(py, 3),
+                       "shift_m": round(mv + self.AIM_MARGIN_M, 3)})
+        except Exception as exc:  # noqa: BLE001
+            aenv = fail("ERROR:aim_turn raised %s; AIM_RESULT=error" % (exc,))
+        text = ((aenv.get("value") if aenv.get("success") else aenv.get("reason"))
+                if isinstance(aenv, dict) else "")
+        tok = parse_creep_reply(str(text or ""))
+        res = tok.get("AIM_RESULT", "error")
+        _log.info("pick %r cross-body: aim_turn -> %s", label,
+                  " ".join(str(text or "").split())[:160])
+        if not (isinstance(aenv, dict) and aenv.get("success")) or res != "aimed":
+            return res
+        try:
+            ax, ay = float(tok["X"]), float(tok["Y"])
+            az = float(tok.get("Z", "nan"))
+        except (KeyError, TypeError, ValueError):
+            return "unreadable"
+        if not (math.isfinite(ax) and math.isfinite(ay)):
+            return "unreadable"
+        return ax, ay, az
+
+    #: pause before opening the hand so the person can take the object
+    HANDOVER_OPEN_PAUSE_S = 1.5
+    #: marker that makes the reply read as an open
+    HANDOVER_OPEN_MARK = "HANDOVER=open"
+
