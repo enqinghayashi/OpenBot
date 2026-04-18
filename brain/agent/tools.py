@@ -2413,3 +2413,19 @@ class ToolRegistry:
 
     _PERSON_QUERY_RE = re.compile(r"(?:^|[\s_])person(?:_\d+)?$")
 
+    def _names_person(self, target: Any) -> bool:
+        """'person', 'me', 'the person', 'person_1', 'red person', or a scene
+        ref whose label is person (review r1 H1)."""
+        t = known_labels.resolve_alias(target)
+        t = str(t or "").strip().lower()
+        t = re.sub(r"^(?:the|a|an|that|this)\s+", "", t)
+        if self._PERSON_QUERY_RE.search(t):
+            return True
+        sg = self.scene_graph
+        try:
+            ref = sg.resolve_ref(t) if sg is not None else None
+            entry = sg.refs.get(ref) if ref is not None else None
+        except Exception:  # noqa: BLE001 -- a ref lookup never breaks navigate
+            entry = None
+        return isinstance(entry, dict) and str(entry.get("label") or "").lower() == "person"
+
