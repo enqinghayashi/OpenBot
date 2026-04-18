@@ -2812,3 +2812,11 @@ class ToolRegistry:
 
     # -- picking the target out of the matched rows -----------------------------
 
+    def _put_find_note(self, note: Optional[str]) -> None:
+        """Per-thread one-shot refusal reason of the last lookup (or None)."""
+        tls = self.__dict__.get("_find_tls")
+        if tls is None:
+            import threading  # imported lazily; stdlib only
+            tls = self.__dict__.setdefault("_find_tls", threading.local())
+        tls.note = note
+
