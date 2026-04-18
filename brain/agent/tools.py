@@ -3014,3 +3014,31 @@ class ToolRegistry:
             pass
         return None
 
+    def _container_classes_named(self, args: dict) -> List[Optional[str]]:
+        """The classes the place names as its target, in priority order:
+        'into', the cleaned destination (the B8f/B8i cleaning), the
+        operator's named destination; None where a text names no class."""
+        texts = []
+        into = args.get("into")
+        if isinstance(into, str) and into.strip():
+            texts.append(into.strip())
+        dest = args.get("destination")
+        if isinstance(dest, str) and dest.strip():
+            d = dest.strip().rstrip(".!? ")
+            if (d.lower() not in self._PLACE_HERE_WORDS
+                    and not self._PLACE_BESIDE_RE.search(d)):
+                d = self._PLACE_ON_IN_RE.sub("", d, count=1)
+                d = re.sub(r"^(?:the|a|an|that|this)\s+", "", d.strip(),
+                           flags=re.I).strip()
+                if d:
+                    texts.append(d)
+        ss = getattr(self.scene_graph, "self_state", None)
+        if ss is not None and hasattr(ss, "request_destination"):
+            try:
+                op = ss.request_destination()
+            except Exception:  # noqa: BLE001
+                op = None
+            if isinstance(op, str) and op.strip():
+                texts.append(op.strip())
+        return [self._container_class_of(t) for t in texts]
+
