@@ -2962,3 +2962,9 @@ class ToolRegistry:
             "scene_brief) - no coordinates were bound" % (n, noun))
         return None
 
+    def _held_record(self) -> Optional[dict]:
+        """B8i: SelfState.holding (the verified pick record) or None."""
+        ss = getattr(self.scene_graph, "self_state", None)
+        h = getattr(ss, "holding", None) if ss is not None else None
+        return h if isinstance(h, dict) else None
+
