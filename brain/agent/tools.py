@@ -2429,3 +2429,65 @@ class ToolRegistry:
             entry = None
         return isinstance(entry, dict) and str(entry.get("label") or "").lower() == "person"
 
+    def _requester_filter(self, rows: list):
+        """(kept, note): person rows within the start point's radius of the
+        requester's spot (the gateway's center_body / radius_m).  Outside a
+        fetch (or with no start point) every row is kept, note None; with a
+        start point but no fresh odometry nobody is (review r1 M1)."""
+        if not self._fetch_filter_live():
+            return rows, None
+        snap = self._home_snapshot()
+        if not snap:
+            return rows, None
+        if "center_body" not in snap:
+            return [], ("CANNOT TELL WHO ASKED: the odometry is not fresh, so "
+                        "the person near the start point cannot be found; "
+                        "nothing was moved. Try again in a moment.")
+        try:
+            cx, cy = (float(v) for v in snap["center_body"])
+            rad = float(snap.get("radius_m"))
+        except (TypeError, ValueError):
+            return rows, None
+        kept, far, own_n = [], [], 0
+        for det in rows:
+            try:
+                d = math.hypot(float(det.x) - cx, float(det.y) - cy)
+                own = math.hypot(float(det.x), float(det.y)) < 0.35
+            except (TypeError, ValueError, AttributeError):
+                far.append(det)
+                continue
+            if own:
+                own_n += 1
+                continue        # treat this as the robot's own arm (0.35 m minimum range)
+            (kept if d <= rad else far).append(det)
+        note = None
+        try:
+            away = float(snap.get("robot_to_home_m"))
+        except (TypeError, ValueError):
+            away = 0.0
+        if not kept and not far and own_n:
+            # the only person rows sat inside the own-arm zone, so report too
+            # close rather than treating a far person as the requester
+            note = ("TOO CLOSE: the only person in view is within 0.35 m of the "
+                    "robot, which is treated as its own arm. Ask them to stand "
+                    "about half a metre in front (arm's length), then place "
+                    "again; nothing was moved.")
+        elif not kept and away > 1.0:
+            note = ("RETURN FIRST: the person who asked is back at the start "
+                    "point, %.1f m from here (%d other person(s) in view are "
+                    "ignored). Call return_home, then place into 'person'; "
+                    "nothing was moved." % (away, len(far)))
+        elif not kept:
+            note = ("NOT THE REQUESTER: %d person(s) in view, all farther than "
+                    "%.1f m from where the request was made (%s) - they are "
+                    "ignored. Ask the person who asked to come closer, or "
+                    "call return_home first; nothing was moved."
+                    % (len(far), rad, "the person who asked" if
+                       snap.get("requester_seen") else "the start point"))
+        return kept, note
+
+    # -- how the handover approach goes -------------------------------------------
+    #: mirror of HANDOVER_START_MAX_M: beyond it the robot walks instead
+    #: of creeping in.
+    HANDOVER_START_MAX_M = 0.80
+
