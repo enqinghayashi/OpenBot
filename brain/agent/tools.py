@@ -2507,3 +2507,44 @@ class ToolRegistry:
             return None
         return {"x": round(x, 3), "y": round(y, 3)}
 
+    def _run_handover_approach(self, plan: dict):
+        """((x, y), travel) of the person after the approach, or a failure
+        envelope (the object is still held; nothing was released)."""
+        try:
+            env = self.backend.approach_person(dict(plan))
+        except Exception as exc:  # noqa: BLE001
+            env = fail("ERROR:approach_person raised %s; "
+                       "APPROACH_RESULT=error" % (exc,))
+        text = ((env.get("value") if env.get("success") else env.get("reason"))
+                if isinstance(env, dict) else "")
+        text = str(text or "")
+        tok = parse_creep_reply(text)
+        res = tok.get("APPROACH_RESULT", "error")
+        held = "the object is still held, nothing was released"
+        # a centred person who dropped out of frame after sighting is still
+        # a valid approach result when they are within reach
+        if (not (isinstance(env, dict) and env.get("success"))
+                or res not in ("arrived", "close_lost")):
+            if res == "cancelled":
+                return fail("HANDOVER cancelled while closing in on the person; "
+                            "%s" % held)
+            if res == "too_far":
+                return fail("NOT_REACHABLE: the person is too far to close in "
+                            "on (%s); call navigate with 'person' first, then "
+                            "place into 'person' again; %s"
+                            % (text.split(";")[0][:120], held))
+            return fail("HANDOVER_APPROACH %s: could not get within reach of "
+                        "the person (%s); %s. Ask them to step about half a "
+                        "metre in front of you, then place into 'person' again"
+                        % (res, " ".join(text.split())[:160], held))
+        try:
+            x, y = float(tok["X"]), float(tok["Y"])
+            travel = float(tok.get("TRAVEL_M") or 0.0)
+        except (KeyError, TypeError, ValueError):
+            return fail("HANDOVER_APPROACH error: unreadable reply (%s); %s"
+                        % (" ".join(text.split())[:120], held))
+        return (x, y), travel
+
+    #: extra shift past the engine's move_right_m
+    AIM_MARGIN_M = 0.04
+
