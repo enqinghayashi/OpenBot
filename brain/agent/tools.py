@@ -2830,3 +2830,11 @@ class ToolRegistry:
             tls = self.__dict__.setdefault("_find_tls", threading.local())
         tls.obs = obs
 
+    def _take_find_obs(self) -> Any:
+        """Pop the last lookup's observation on this thread (None = none)."""
+        tls = self.__dict__.get("_find_tls")
+        obs = getattr(tls, "obs", None) if tls is not None else None
+        if tls is not None:
+            tls.obs = None
+        return obs
+
