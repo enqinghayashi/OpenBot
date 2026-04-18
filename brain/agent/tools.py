@@ -2978,3 +2978,12 @@ class ToolRegistry:
             return self._walk_label(label.strip())
         return label
 
+    def _place_lift_height(self, label: Any) -> float:
+        """B8i: place_lift_height for the held object (pick-time height from
+        SelfState.holding['height_m'] when present)."""
+        held = self._held_record()
+        return place_lift_height(
+            label, held.get("height_m") if held is not None else None)
+
+    # -- placing into a container: lock, aim, creep ------------------------------
+
