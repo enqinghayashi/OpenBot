@@ -2838,3 +2838,14 @@ class ToolRegistry:
             tls.obs = None
         return obs
 
+    def _take_find_note(self, act: str = "pick") -> Optional[str]:
+        """Pop the last lookup's refusal reason on this thread (None = none:
+        the caller's own NOT_DETECTED text stands, byte-identical).  ``act``
+        fills the verb slot of the low-confidence reason so a place into:
+        reply never claims a pick ('not confident enough to <act>')."""
+        tls = self.__dict__.get("_find_tls")
+        note = getattr(tls, "note", None) if tls is not None else None
+        if tls is not None:
+            tls.note = None
+        return note.replace("{act}", act) if note is not None else None
+
