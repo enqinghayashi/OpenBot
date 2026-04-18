@@ -2679,3 +2679,44 @@ class ToolRegistry:
                         "search (%s); the walk was not started" % text[:120])
         return None
 
+    def _requester_walk_target(self, target: Any):
+        """(spec, refusal) for navigate('person') with a start point on
+        file: 'person#<iid>' of the requester (nearest to the requester's
+        spot, within the radius), a refusal when every visible person is
+        far from it, or (None, None) to walk as before."""
+        if not self._names_person(target) or not self._fetch_filter_live():
+            return None, None
+        snap = self._home_snapshot()
+        if not snap:
+            return None, None
+        if "center_body" not in snap:
+            return None, fail("CANNOT TELL WHO ASKED: the odometry is not fresh, "
+                              "so the person near the start point cannot be "
+                              "found; nothing was moved.")
+        obs = self._observe()
+        rows = [d for d in (getattr(obs, "detections", None) or [])
+                if (getattr(d, "label", "") or "").lower() == "person"]
+        kept, note = self._requester_filter(rows) if rows else ([], None)
+        if not kept:
+            try:
+                away = float(snap.get("robot_to_home_m"))
+            except (TypeError, ValueError):
+                away = 0.0                  # stale odometry: distance unknown
+            if away > 1.0:
+                # the requester is probably back at the start point, so walking to
+                # whoever is here would grab the wrong person
+                return None, fail(
+                    "RETURN FIRST: the person who asked is back at the start "
+                    "point, %.1f m from here. Call return_home, then navigate "
+                    "to 'person' (or place into 'person' if they are within "
+                    "reach); nothing was moved." % away)
+            if not rows:
+                return None, None
+            return None, fail(note)
+        cx, cy = (float(v) for v in snap["center_body"])
+        best = min(kept, key=lambda d: math.hypot(float(d.x) - cx, float(d.y) - cy))
+        iid = getattr(best, "instance_id", None)
+        if isinstance(iid, int) and not isinstance(iid, bool) and iid >= 1:
+            return "person#%d" % iid, None
+        return None, None
+
