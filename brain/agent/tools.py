@@ -2653,3 +2653,29 @@ class ToolRegistry:
             obs, "fresh", True) else []
         return any(detection_matches_label(d, cls) for d in rows)
 
+    def _search_step_back(self, spec: Any, target: Any):
+        """B8l-hf6 (operator 10-17: "if object is not in the scene nor
+        detection before about to call the navigate, step back 5 steps slowly
+        before actually started sweeping"): ask the gateway to step back when
+        the walk target is not in view.  A requester found in view (``spec``),
+        a target in view, an unknown view or a gateway without the verb: no
+        step back.  Returns a failure envelope only for a cancel (do not walk
+        on); any other step-back failure is logged and the navigate goes on."""
+        fn = getattr(self.backend, "step_back", None)
+        if fn is None or spec is not None:
+            return None
+        if self._target_in_view(target) is not False:
+            return None
+        try:
+            env = fn({"m": self.SEARCH_STEP_BACK_M})
+        except Exception as exc:  # noqa: BLE001
+            env = fail("step_back raised %s" % (exc,))
+        text = ((env.get("value") if env.get("success") else env.get("reason"))
+                if isinstance(env, dict) else "")
+        text = " ".join(str(text or "").split())
+        _log.info("navigate %r: not in view, step back -> %s", target, text[:160])
+        if "STEPBACK_RESULT=cancelled" in text:
+            return fail("NAVIGATE cancelled while stepping back before the "
+                        "search (%s); the walk was not started" % text[:120])
+        return None
+
