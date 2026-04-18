@@ -2968,3 +2968,13 @@ class ToolRegistry:
         h = getattr(ss, "holding", None) if ss is not None else None
         return h if isinstance(h, dict) else None
 
+    def _place_object_label(self, label: Any) -> Any:
+        """B8i (10-09 wires 34/46): the held object's class (set by the pick),
+        else the model's label through _walk_label ('cup_1' -> 'cup')."""
+        held = self._held_record()
+        if held is not None and held.get("label"):
+            return str(held["label"])
+        if isinstance(label, str) and label.strip():
+            return self._walk_label(label.strip())
+        return label
+
