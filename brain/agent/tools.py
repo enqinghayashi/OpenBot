@@ -2639,3 +2639,17 @@ class ToolRegistry:
     #: distance backed off before a sweep when the target is not in view
     SEARCH_STEP_BACK_M = 0.50
 
+    def _target_in_view(self, target: Any):
+        """True / False: a row of the walk target's class is in the current
+        observation (a stale one under silence-means-empty is an empty scene);
+        None when there is no observation at all (cannot tell)."""
+        cls = str(target or "").split("#", 1)[0].split("@", 1)[0].strip().lower()
+        if not cls:
+            return None
+        obs = self._observe()
+        if obs is None:
+            return None
+        rows = (getattr(obs, "detections", None) or []) if getattr(
+            obs, "fresh", True) else []
+        return any(detection_matches_label(d, cls) for d in rows)
+
