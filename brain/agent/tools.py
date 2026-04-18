@@ -2820,3 +2820,13 @@ class ToolRegistry:
             tls = self.__dict__.setdefault("_find_tls", threading.local())
         tls.note = note
 
+    def _put_find_obs(self, obs: Any) -> None:
+        """BATCH 5 B6: per-thread slot for the observation the last lookup
+        read (its grip proves / disproves an empty hand for the re-pick
+        guard), mirroring _put_find_note."""
+        tls = self.__dict__.get("_find_tls")
+        if tls is None:
+            import threading  # imported lazily; stdlib only
+            tls = self.__dict__.setdefault("_find_tls", threading.local())
+        tls.obs = obs
+
