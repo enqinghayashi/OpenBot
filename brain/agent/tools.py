@@ -2400,3 +2400,16 @@ class ToolRegistry:
             return
         self._home_record(ss, "promote")
 
+    def _fetch_filter_live(self) -> bool:
+        """The requester rules apply: switch on and a start point recorded for
+        a fetch.  Nothing that is SAID ends them (r3 H1: "take your time" /
+        "hold on" parse as tasks); the fetch ends on actions -- a successful
+        place (the object left the hand), a cancel (the gateway clears its
+        anchor: the snapshot is then None and every person counts again), a
+        new fetch request, the 15 min expiry."""
+        if not self._fetch_on():
+            return False
+        return self.__dict__.get("_home_seq") is not None
+
+    _PERSON_QUERY_RE = re.compile(r"(?:^|[\s_])person(?:_\d+)?$")
+
