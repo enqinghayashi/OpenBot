@@ -3042,3 +3042,49 @@ class ToolRegistry:
                 texts.append(op.strip())
         return [self._container_class_of(t) for t in texts]
 
+    def _container_lock_record(self, args: dict) -> Optional[dict]:
+        """B8j: the gateway's CONTAINER LOCK when it is the container this
+        place names (s3 B4-3: the navigated bin re-labelled 'backpack' kept
+        its instance id; the label lookup refused NOT_DETECTED).  None = the
+        B8i label lookup decides."""
+        if not container_place_on() or any(
+                args.get(k) is not None for k in ("x", "y", "z")):
+            return None
+        fn = getattr(self.backend, "container", None)
+        if fn is None:
+            return None
+        named = self._container_classes_named(args)
+        if not named or named[0] not in CONTAINER_CLASSES:
+            return None
+        try:
+            env = fn({})
+        except Exception:  # noqa: BLE001
+            return None
+        text = env.get("value") if isinstance(env, dict) and env.get("success") else None
+        if not isinstance(text, str) or not text.startswith("DONE:container {"):
+            return None
+        try:
+            import json  # imported lazily; stdlib only
+            rec = json.loads(text[len("DONE:container "):])
+        except ValueError:
+            return None
+        # only the primary named container (into, else destination, else the
+        # operator's words) can take the lock; a secondary name cannot
+        if not isinstance(rec, dict) or rec.get("label") != named[0]:
+            return None
+        # one observation, one lookup read: same slot as the label lookup
+        self._put_find_note(None)
+        obs = self._observe()
+        self._put_find_obs(obs)
+        if obs is None or not getattr(obs, "fresh", True):
+            return None
+        try:
+            if float(rec.get("row_age_s")) > LOCK_USE_ROW_MAX_S or lock_pose_unseen(rec):
+                return None
+            for key in ("x", "y", "z", "half", "rim_z", "bot_z", "near_m"):
+                if not math.isfinite(float(rec[key])):
+                    return None
+        except (KeyError, TypeError, ValueError):
+            return None
+        return rec
+
