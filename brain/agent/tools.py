@@ -2987,3 +2987,30 @@ class ToolRegistry:
 
     # -- placing into a container: lock, aim, creep ------------------------------
 
+    def _container_class_of(self, text: Any) -> Optional[str]:
+        """The ONE class ``text`` names: brain/strict_vocab.strict_class (base
+        classes, active extras, their aliases), else a container class word
+        or a look_for seed synonym ('trash can' -> 'bin') -- the lock works
+        whether or not look_for registered the extra in this process."""
+        if not isinstance(text, str) or not text.strip():
+            return None
+        try:
+            from ..strict_vocab import strict_class  # imported lazily
+            c = strict_class(self, text)
+        except Exception:  # noqa: BLE001
+            c = None
+        if c:
+            return c
+        from ..observation import label_base_class
+        t = label_base_class(known_labels.resolve_alias(text.strip()))
+        if t in CONTAINER_CLASSES:
+            return t
+        try:
+            from ..look_for_tool import SEED_TABLE  # imported lazily
+            for canon, (_prompt, syns) in SEED_TABLE.items():
+                if t == canon or t in syns:
+                    return canon
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
