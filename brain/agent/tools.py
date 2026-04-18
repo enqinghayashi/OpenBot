@@ -2720,3 +2720,95 @@ class ToolRegistry:
             return "person#%d" % iid, None
         return None, None
 
+    def _find_target_detection(self, label: str):
+        """The detection ``label`` (or its resolved ref) names, or None.
+
+        Reads ``backend.observe()``; refuses when the observation is stale
+        (a dead detection node must never drive motion).  Returns the
+        Detection or None.
+
+        Batch 4 / P5b (docs/YOLOE_BATCH4_ARCHITECTURE.md §6, D10b, D12) —
+        among the rows the matcher accepts:
+
+        * EXTRA FLOOR (D12): a row whose base class is NOT in
+          ``known_labels.TRACKED_CLASSES`` (an open-vocabulary extra such as
+          'bin') is skipped when ``conf < getattr(scene_graph, "conf_floor",
+          0.35)``.  Base-class rows are never floored here (byte-identical).
+        * EXPLICIT REF ('cup_2', a ref-syntax token in the query): the row
+          carrying the ref entry's ``instance_id`` wins; on an id miss the
+          row nearest the ref's stored position within the association gate
+          (0.25 m).  A single matched ROW binds exactly as before; with
+          several rows the row nearest the stored pose binds, which can
+          differ from today's freshest row even inside one physical cluster
+          (MEASURED by the round-2 A/B fuzz: 67/7600 outcomes differ, ALL on
+          explicit-ref queries, 0 on bare-label queries).  The old
+          first-row-wins bound cup_2 to cup_1's coordinates — MEASURED,
+          D10b; un-switched by design, pending operator sign-off §15 item 0.
+        * SWITCH ``scene_graph.target_disambiguation`` (default OFF; HARD
+          RULE 5): only when it is exactly True does a colour word narrow
+          same-class rows, and do several distinct same-label objects (rows
+          farther apart than the gate, no ref/id/near match) give
+          "ambiguous: N <label>s, name one ..." with no coordinates.  OFF:
+          today's freshest-first row binds (pick and place into: alike).
+
+        Every refusal also leaves a one-shot reason (``_take_find_note``)
+        that the pick and place into: replies speak; a plain miss leaves
+        none (today's reply).
+        """
+        self._put_find_note(None)
+        self._put_find_obs(None)
+        if self.backend is None:
+            return None
+        # resolve 'me' before any ref lookup or label match: the alias is
+        # language, not a scene handle
+        label = known_labels.resolve_alias(label)
+        obs = self._observe()
+        self._put_find_obs(obs)
+        if obs is None:
+            return None
+        if not getattr(obs, "fresh", True):
+            return None
+        ref = None
+        ref_label = None
+        if self.scene_graph is not None:
+            try:
+                ref = self.scene_graph.resolve_ref(label)
+                # a query in ref form must still reach its detection. the model asks
+                # for 'bottle_1' from a scene line and resolve_ref advertises 'bottle'
+                # -> 'bottle_3', but perception sets no ref, so translate ref -> label.
+                if ref is not None:
+                    entry = self.scene_graph.refs.get(ref)
+                    if isinstance(entry, dict):
+                        ref_label = (entry.get("label") or "").lower() or None
+            except Exception:  # noqa: BLE001 — resolution must not crash the tool
+                ref = None
+                ref_label = None
+        detections = list(getattr(obs, "detections", None) or [])
+        matched = []
+        for det in detections:
+            det_label = (getattr(det, "label", "") or "").lower()
+            det_ref = getattr(det, "ref", None)
+            # match through the shared matcher, not raw text equality: it
+            # handles articles ('the bottle'), case, padding and base classes
+            if not (
+                detection_matches_label(det, label)
+                or (ref_label is not None and det_label == ref_label)
+                or (ref is not None and det_ref == ref)
+            ):
+                continue
+            matched.append(det)
+        # a person row counts only near the fetch start point; farther off
+        # is ignored
+        from ..observation import detection_base_class as _base  # base-class helper; imported lazily
+        people = [d for d in matched if (_base(d) or "").lower() == "person"]
+        if people:
+            kept, note = self._requester_filter(people)
+            ids = set(id(d) for d in people)
+            matched = [d for d in matched if id(d) not in ids] + kept
+            if not matched:
+                self._put_find_note(note)
+                return None
+        return self._bind_target(label, ref, matched)
+
+    # -- picking the target out of the matched rows -----------------------------
+
