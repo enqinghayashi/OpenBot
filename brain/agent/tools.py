@@ -3108,3 +3108,48 @@ class ToolRegistry:
             height_m=float(rec["h"]) if ext else None,
             instance_id=iid)
 
+    def _container_geometry(self, det: Any, rec: Optional[dict]
+                            ) -> Optional[dict]:
+        """Container geometry for the aim: from the lock record, else from a
+        detection that carries BOTH extents (no extents: None = legacy aim)."""
+        if rec is not None and rec.get("extent") is not True:
+            return None                 # lock record without extents
+        if rec is not None:
+            # the lock reports the worst case (rim at the highest top, bottom at
+            # the lowest), so a merged 0.89 m mask pushes the rim too high. cap
+            # it by class.
+            _rim, _bot, _zc = float(rec["rim_z"]), float(rec["bot_z"]), float(rec["z"])
+            _cls = str(rec.get("label") or rec.get("det_label") or "").strip().lower()
+            _cap = CONTAINER_H_MAX_M.get(_cls, CONTAINER_H_MAX_DEFAULT_M)
+            if _rim - _bot > _cap:
+                _rim, _bot = _zc + _cap / 2.0, _zc - _cap / 2.0
+            return {"x": float(rec["x"]), "y": float(rec["y"]),
+                    "z": _zc, "half": float(rec["half"]),
+                    "rim": _rim, "bot": _bot,
+                    "h": float(rec.get("h") or 0.0),
+                    "near": float(rec["near_m"]), "iid": rec.get("iid"),
+                    "w": float(rec.get("w") or 2.0 * float(rec["half"])),
+                    "dd": float(rec.get("dd") or 2.0 * float(rec["half"])),
+                    "src": "lock"}
+        try:
+            x, y, z = float(det.x), float(det.y), float(det.z)
+            w = float(getattr(det, "width_m", None))
+            h = float(getattr(det, "height_m", None))
+        except (TypeError, ValueError):
+            return None
+        if not all(math.isfinite(v) for v in (x, y, z, w, h)) or w <= 0.0 or h <= 0.0:
+            return None
+        half = max(CONTAINER_HALF_MIN_M, min(CONTAINER_HALF_MAX_M, w / 2.0))
+        # cap the rim height: a row fused with the crate under it read 0.63 m
+        # tall, putting the rim 0.29 m too high and releasing the object above it
+        try:
+            from ..observation import detection_base_class as _dbc
+            _cls = _dbc(det)
+        except Exception:  # noqa: BLE001
+            _cls = None
+        h_rim = min(h, CONTAINER_H_MAX_M.get(_cls, CONTAINER_H_MAX_DEFAULT_M))
+        return {"x": x, "y": y, "z": z, "half": half, "rim": z + h_rim / 2.0,
+                "bot": z - h_rim / 2.0, "h": h, "near": math.hypot(x, y) - half,
+                "iid": getattr(det, "instance_id", None), "w": w, "dd": w,
+                "src": "row"}
+
