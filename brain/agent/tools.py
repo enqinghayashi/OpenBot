@@ -3455,3 +3455,12 @@ class ToolRegistry:
             return None
         return dest
 
+    def _take_operator_note(self) -> Optional[str]:
+        """Pop the reason the last operator-named target was not usable
+        (ambiguous / low confidence; None = not in view at all)."""
+        tls = self.__dict__.get("_find_tls")
+        note = getattr(tls, "op_note", None) if tls is not None else None
+        if tls is not None:
+            tls.op_note = None
+        return note
+
