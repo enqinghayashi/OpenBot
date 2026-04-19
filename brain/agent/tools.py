@@ -3088,3 +3088,23 @@ class ToolRegistry:
             return None
         return rec
 
+    @staticmethod
+    def _lock_detection(rec: dict):
+        """A Detection for the locked container: its NAVIGATED label (the
+        detector's current label is rec['det_label'])."""
+        from ..observation import Detection
+        iid = rec.get("iid")
+        if isinstance(iid, bool) or not isinstance(iid, int) or iid < 1:
+            iid = None
+        conf = rec.get("conf")
+        ext = rec.get("extent") is True       # extents present: width/depth and height
+        return Detection(
+            label=str(rec["label"]), x=float(rec["x"]), y=float(rec["y"]),
+            z=float(rec["z"]),
+            conf=float(conf) if isinstance(conf, (int, float)) else 0.0,
+            ref=None, ts=time.time() - float(rec.get("row_age_s") or 0.0),
+            orientation="horizontal",
+            width_m=float(rec["w"]) if ext else None,
+            height_m=float(rec["h"]) if ext else None,
+            instance_id=iid)
+
