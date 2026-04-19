@@ -3563,3 +3563,11 @@ class ToolRegistry:
 
     # -- mutation ---------------------------------------------------------------
 
+    def register(self, tool: Tool) -> None:
+        """Register a tool; raises ToolNameConflict on a duplicate name."""
+        if tool.name in self._tools:
+            raise ToolNameConflict(
+                f"tool {tool.name!r} is already registered"
+            )
+        self._tools[tool.name] = tool
+
