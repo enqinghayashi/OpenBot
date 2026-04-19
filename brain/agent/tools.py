@@ -3384,3 +3384,47 @@ class ToolRegistry:
         return fail("navigate not started: the detector cannot be taught %r, so "
                     "a sweep could never see it. %s" % (word, text))
 
+    def _walk_label(self, target: Any) -> Any:
+        """B7: the walk FSM matches DETECTOR labels ('cup'); a scene name the
+        brain hands the model ('green_cup_2', 'cup_3', 'black_backpack') never
+        appears on /detections, so navigate would sweep for it until it fails
+        (MEASURED on Stuart 2026-10-06: the reach_ceiling hint sent
+        navigate('green_cup_2') into a loop).  Translate a name that resolves
+        to ONE ref into that ref's class; an unresolved '<colour>_<class>_<n>'
+        form falls back to its base class.  Anything else is unchanged."""
+        if not isinstance(target, str) or not target.strip():
+            return target
+        t = target.strip()
+        sg = self.scene_graph
+        if sg is not None:
+            try:
+                ref = sg.resolve_ref(t)
+                entry = sg.refs.get(ref) if ref is not None else None
+                if isinstance(entry, dict) and entry.get("label"):
+                    lab = str(entry["label"])
+                    if "_".join(re.findall(r"[a-z0-9]+", t.lower())) != lab.replace(" ", "_"):
+                        return lab
+                    return t
+            except Exception:  # noqa: BLE001 - translation must never break navigate
+                pass
+        if "_" in t:
+            from ..observation import label_base_class
+            words = re.sub(r"_\d+$", "", t.lower()).replace("_", " ")
+            base = label_base_class(words)
+            return base or t
+        return t
+
+    #: words that mean release at the current pose
+    _PLACE_HERE_WORDS = frozenset((
+        "here", "there", "down", "table", "the table", "desk", "the desk",
+        "floor", "the floor", "ground", "the ground", "spot", "this spot",
+        "anywhere", "wherever", "hand", "release", "drop", "current position",
+    ))
+    #: relations a drop cannot honour
+    _PLACE_BESIDE_RE = re.compile(
+        r"\b(next to|beside|near|nearby|by the|left of|right of|behind|"
+        r"in front of|around|between)\b", re.I)
+    _PLACE_ON_IN_RE = re.compile(
+        r"^\s*(?:put it |place it |drop it )?(?:on top of|onto|on|into|inside of|"
+        r"inside|in|over|above|to|at)\s+", re.I)
+
