@@ -3580,3 +3580,19 @@ class ToolRegistry:
     def has(self, name: str) -> bool:
         return name in self._tools
 
+    def get_specs(self) -> List[dict]:
+        """OpenAI function-calling specs, in registration order:
+        ``[{"type": "function", "function": {name, description, parameters}}]``
+        """
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.schema,
+                },
+            }
+            for tool in self._tools.values()
+        ]
+
