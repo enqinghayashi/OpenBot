@@ -3596,3 +3596,9 @@ class ToolRegistry:
             for tool in self._tools.values()
         ]
 
+    def snapshot(self) -> Dict[str, Tool]:
+        """Copy of the current tool map (per-utterance snapshot)."""
+        return dict(self._tools)
+
+    # -- execution --------------------------------------------------------------
+
