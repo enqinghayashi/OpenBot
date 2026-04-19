@@ -3191,3 +3191,79 @@ class ToolRegistry:
         except Exception:  # noqa: BLE001
             return geo
 
+    def _container_plan(self, det: Any, rec: Optional[dict], args: dict):
+        """(plan, refusal).  plan None + refusal None = the B8i centre aim
+        (switch off, not a container class, explicit x/y/z, no extents)."""
+        from ..observation import detection_base_class
+        if not container_place_on() or any(
+                args.get(k) is not None for k in ("x", "y", "z")):
+            return None, None
+        if detection_base_class(det) not in CONTAINER_CLASSES and rec is None:
+            return None, None
+        geo = self._container_geometry(det, rec)
+        if geo is None:
+            return None, None
+        name = str(getattr(det, "label", "") or "container")
+        h_obj = self._place_lift_height(self._place_object_label(args.get("label")))
+        plan = {"geo": geo, "h_obj": h_obj, "creep": None, "label": name}
+        # the low band belongs to the gateway descent lane, which squats the
+        # body, so decide before the standing aim: a raised aim would
+        # otherwise win over a rim at -0.11 m
+        if LOW_BAND_Z_MIN_M <= geo["rim"] <= LOW_BAND_Z_MAX_M \
+                and geo["near"] <= CREEP_START_MAX_EDGE_M:
+            # a lock geometry aims inside the opening at rim + 0.02 with no reach
+            # gate, since the lane owns that check; a plain row keeps the centre aim
+            if geo.get("src") == "lock":   # only a lock geometry gets the low-lane point
+                self._low_lane_drop = (id(det), _low_lane_drop_point(geo))
+            return None, None
+        geo = self._pc_rim_geo(det, geo)            # point-cloud rim for the aim
+        plan["geo"] = geo
+        aim = container_aim(geo["x"], geo["y"], geo["half"], geo["rim"],
+                            geo["near"], h_obj)
+        if aim is not None:
+            plan["aim"] = aim
+            return plan, None
+        held = "the object is still held"
+        if geo["near"] > CREEP_START_MAX_EDGE_M:
+            return None, fail(
+                "NOT_REACHABLE: the %s is %.2f m away (its near edge) - too far "
+                "for the arm; navigate to the %s first, then place again; %s"
+                % (name, geo["near"], name, held))
+        creep = getattr(self.backend, "creep", None)
+        spec = {"label": name, "iid": geo["iid"], "x": geo["x"], "y": geo["y"],
+                "z": geo["z"], "w": geo["w"], "dd": geo["dd"],
+                "h": geo["h"] if geo["h"] > 0.0 else None}
+        if creep is None:
+            return None, fail(
+                "NOT_REACHABLE: the drop point inside the %s is beyond the arm's "
+                "reach from here (near edge %.2f m) and this gateway cannot "
+                "creep closer; %s" % (name, geo["near"], held))
+        try:
+            dry = creep(dict(spec, dry=True))
+        except Exception as exc:  # noqa: BLE001
+            dry = fail("creep raised %s" % (exc,))
+        text = (dry.get("value") if dry.get("success") else dry.get("reason")) \
+            if isinstance(dry, dict) else ""
+        tok = parse_creep_reply(text)
+        if not (isinstance(dry, dict) and dry.get("success")) or "EDGE_M" not in tok:
+            return None, fail(
+                "NOT_REACHABLE: the drop point inside the %s is beyond the arm's "
+                "reach from here (near edge %.2f m) and the creep closer is not "
+                "available (%s); %s" % (name, geo["near"],
+                                        " ".join(str(text).split())[:120], held))
+        try:
+            e_end = float(tok["EDGE_M"])
+        except ValueError:
+            e_end = float("nan")
+        aim = container_aim(geo["x"], geo["y"] - (geo["near"] - e_end), geo["half"],
+                            geo["rim"], e_end, h_obj, dead=True)
+        if aim is None:
+            return None, fail(
+                "NOT_REACHABLE: even after creeping to a near edge of ~%.2f m "
+                "the drop point inside the %s is beyond the arm's reach (rim "
+                "z %+.2f m); %s" % (e_end, name, geo["rim"], held))
+        plan["aim"] = aim
+        plan["creep"] = spec
+        plan["creep_plan"] = tok
+        return plan, None
+
