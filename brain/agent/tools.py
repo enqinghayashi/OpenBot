@@ -3352,3 +3352,35 @@ class ToolRegistry:
                 x, uy * edge, uy * (edge + 2.0 * half), half, rim, bot)
         return tail
 
+    def _navigate_vocab(self, target: Any) -> Optional[dict]:
+        """B8j-hf16 (2026-10-15, s5 18:39): navigate('bin') swept 77 s for a
+        word the detector did not have - 'bin' is not in the always-on base
+        classes and look_for came only AFTER the sweep gave up.  An EXTRA word
+        (look_for's own canon: not a base class, not invalid) is now added to
+        the live vocabulary BEFORE the walk starts, through the same look_for
+        handler the model calls.  Returns None to walk on, or a failure to
+        return instead (a word the bank cannot describe: sweeping for it would
+        be blind).  No look_for lane, a base class, or a word already
+        requested: None at once (today's behaviour)."""
+        tool = self._tools.get("look_for")
+        handler = getattr(tool, "handler", None)
+        if handler is None or not isinstance(target, str) or not target.strip():
+            return None
+        word = self._walk_label(target.strip().split("#")[0].split("@")[0])
+        try:
+            canon = handler.manager.canon(word)
+            if canon.kind != "extra" or canon.label in handler.manager.desired:
+                return None
+            res = handler({"nouns": [word], "mode": "add"})
+        except Exception as exc:  # noqa: BLE001
+            print("[navigate] B8j-hf16 look_for(%r) raised %r - walking anyway"
+                  % (word, exc), flush=True)
+            return None
+        text = str((res or {}).get("value") or (res or {}).get("reason") or "")
+        print("[navigate] B8j-hf16 look_for(%r) before the walk -> %s"
+              % (word, text[:160]), flush=True)
+        if canon.label in handler.manager.desired:
+            return None
+        return fail("navigate not started: the detector cannot be taught %r, so "
+                    "a sweep could never see it. %s" % (word, text))
+
