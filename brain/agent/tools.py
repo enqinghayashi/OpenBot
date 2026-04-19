@@ -3428,3 +3428,30 @@ class ToolRegistry:
         r"^\s*(?:put it |place it |drop it )?(?:on top of|onto|on|into|inside of|"
         r"inside|in|over|above|to|at)\s+", re.I)
 
+    def _place_operator_target(self) -> Optional[str]:
+        """B8h: the place target the OPERATOR named ('put it in the bowl' ->
+        'bowl', SelfState.request_destination) when that object is in view,
+        else None.  The third source for a place whose 'into' and
+        'destination' name nothing usable: it does not depend on what the
+        model wrote (s1: the model's place arguments were wrong or empty in
+        11 of 14 places; the operator's words were right)."""
+        _tls0 = self.__dict__.get("_find_tls")
+        if _tls0 is not None:
+            _tls0.op_note = None  # clear any note from a previous target
+        ss = getattr(self.scene_graph, "self_state", None)
+        if ss is None or not hasattr(ss, "request_destination"):
+            return None
+        try:
+            dest = ss.request_destination()
+        except Exception:  # noqa: BLE001 - a hint source must not break place
+            return None
+        if not dest:
+            return None
+        if self._find_target_detection(dest) is None:
+            note = self._take_find_note("use it as the container")
+            tls = self.__dict__.get("_find_tls")
+            if tls is not None:
+                tls.op_note = note
+            return None
+        return dest
+
