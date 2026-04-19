@@ -3153,3 +3153,41 @@ class ToolRegistry:
                 "iid": getattr(det, "instance_id", None), "w": w, "dd": w,
                 "src": "row"}
 
+    def _pc_rim_geo(self, det: Any, geo: dict) -> dict:
+        """B8k: ``geo`` with its rim replaced by the point-cloud bowl-rim fit,
+        or ``geo`` unchanged.
+
+        Asks the gateway's ``pc_rim`` verb (standing places only: the caller
+        runs after the low-band hand-off, whose body squats and changes the
+        torso frame).  The gateway measures in SHADOW and answers
+        ``applied drop_z=<z>`` only when its ``pc_place_rim`` switch is on
+        and every fit gate passed (RIM_FIT, pose unchanged, fresh row); the
+        rim is then ``drop_z - PC_RIM_CLEARANCE_M`` (pc_core puts the drop
+        that far above the measured rim).  Any other answer, a backend
+        without the verb (mock, laptop), or an exception keeps today's rim
+        byte for byte."""
+        fn = getattr(self.backend, "pc_rim", None)
+        if fn is None or not isinstance(geo, dict):
+            return geo
+        try:
+            from ..observation import detection_base_class
+            if detection_base_class(det) not in PC_RIM_CLASSES:
+                return geo
+            env = fn({"label": str(getattr(det, "label", "") or ""),
+                      "x": float(geo["x"]), "y": float(geo["y"]),
+                      "ts": getattr(det, "ts", None)})
+            text = str(env.get("value") or "") if isinstance(env, dict) else ""
+            m = re.search(r"DONE:pc_rim applied drop_z=(-?\d+(?:\.\d+)?)", text)
+            if not m:
+                return geo
+            rim = float(m.group(1)) - PC_RIM_CLEARANCE_M
+            if not math.isfinite(rim):
+                return geo
+            out = dict(geo)
+            out["rim_formula"] = geo.get("rim")
+            out["rim"] = rim
+            out["rim_src"] = "pc"
+            return out
+        except Exception:  # noqa: BLE001
+            return geo
+
