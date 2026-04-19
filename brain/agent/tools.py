@@ -3324,3 +3324,31 @@ class ToolRegistry:
         note = "%s:%.3f:%.3f" % (result, edge, travel)
         return aim, note, travel, geo
 
+    @staticmethod
+    def _container_tail(plan: dict, creep_note: Optional[str]) -> str:
+        """B8j place-reply tokens (after into_x/y/z): into_iid (the container's
+        instance id: the verifier finds it across label changes), creep=
+        <result>:<edge>:<travel>, and for a DEEP container into_fp=<x centre>,
+        <near y>,<far y>,<half x>,<rim z>,<bottom z> (torso frame at the drop)."""
+        geo = plan.get("geo") or {}
+        aim = plan.get("aim") or {}
+        tail = ""
+        iid = geo.get("iid")
+        if isinstance(iid, int) and not isinstance(iid, bool) and iid >= 1:
+            tail += "; into_iid=%d" % iid
+        if creep_note:
+            tail += "; creep=%s" % creep_note
+        try:
+            x, y = float(geo["x"]), float(geo["y"])
+            half, edge = float(geo["half"]), float(aim.get("edge", geo["near"]))
+            rim, bot = float(geo["rim"]), float(geo["bot"])
+            deep = max(float(geo.get("h") or 0.0), rim - bot) >= DEEP_CONTAINER_H_M
+        except (KeyError, TypeError, ValueError):
+            return tail
+        d = math.hypot(x, y)
+        if deep and d > 0.05:
+            uy = y / d
+            tail += "; into_fp=%.3f,%.3f,%.3f,%.3f,%.3f,%.3f" % (
+                x, uy * edge, uy * (edge + 2.0 * half), half, rim, bot)
+        return tail
+
