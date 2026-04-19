@@ -3612,3 +3612,8 @@ class ToolRegistry:
         if tool is None:
             raise UnknownTool(f"unknown tool: {name!r}")
         return tool.call(args)
+
+
+# --- little pure helpers used by the target binder ----------------------
+
+
