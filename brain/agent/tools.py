@@ -3571,3 +3571,9 @@ class ToolRegistry:
             )
         self._tools[tool.name] = tool
 
+    def unregister(self, name: str) -> None:
+        """Unregister a tool by name.  Idempotent: silent if absent."""
+        self._tools.pop(name, None)
+
+    # -- queries ----------------------------------------------------------------
+
