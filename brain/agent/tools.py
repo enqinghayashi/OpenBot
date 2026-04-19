@@ -3464,3 +3464,40 @@ class ToolRegistry:
             tls.op_note = None
         return note
 
+    def _place_destination_target(self, destination: Any):
+        """B8f: (into, refusal) for a place called WITHOUT 'into'.
+
+        * a destination naming a scene object ('the green cup', 'in the
+          bowl', 'on top of bowl_1') -> that object, exactly as if it had
+          been passed as 'into' (move-to-target, containment verifier);
+        * a 'here' word ('here', 'down', 'the table') -> ('', None): today's
+          release at the current pose;
+        * a beside-relation ('next to the cup') -> a refusal: a drop point
+          OVER the object would put it on top, and releasing here would put
+          it somewhere else - the object stays in the hand (recoverable);
+        * anything else not in view ('in the bin' with no bin, free text)
+          -> a NOT_DETECTED refusal instead of a release on the spot.
+        """
+        if not isinstance(destination, str) or not destination.strip():
+            return "", None
+        text = destination.strip().rstrip(".!? ")
+        if text.lower() in self._PLACE_HERE_WORDS:
+            return "", None
+        if self._PLACE_BESIDE_RE.search(text):
+            return "", fail(
+                "NOT SUPPORTED: placing BESIDE an object (%r) - the arm can only "
+                "drop ON or INTO an object it can see, or release where it is. "
+                "Ask the operator which they want; the object is still held."
+                % destination)
+        cand = self._PLACE_ON_IN_RE.sub("", text, count=1)
+        cand = re.sub(r"^(?:the|a|an|that|this)\s+", "", cand.strip(), flags=re.I).strip()
+        if not cand or cand.lower() in self._PLACE_HERE_WORDS:
+            return "", None
+        if self._find_target_detection(cand) is not None:
+            return cand, None
+        # not in view: a class absent from the scene, an untracked extra
+        # or free text is refused, keeping the object in the hand rather than
+        # releasing it where nobody asked
+        return "", fail(self._take_find_note("use it as the place target")
+                        or _not_detected(cand))
+
