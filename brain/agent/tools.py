@@ -3553,3 +3553,13 @@ class ToolRegistry:
         except Exception:  # noqa: BLE001 - the spec must never break navigate
             return cls
 
+    def _observe(self):
+        """One guarded observation read from the backend (never raises)."""
+        try:
+            obs = self.backend.observe()
+            return obs if obs is not None else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    # -- mutation ---------------------------------------------------------------
+
