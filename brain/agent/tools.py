@@ -3267,3 +3267,60 @@ class ToolRegistry:
         plan["creep_plan"] = tok
         return plan, None
 
+    def _run_container_creep(self, plan: dict):
+        """(aim, note, travel, iid) after the creep, or a failure envelope."""
+        name = plan.get("label") or "container"
+        held = "the place was NOT executed and the object is still held"
+        try:
+            env = self.backend.creep(dict(plan["creep"]))
+        except Exception as exc:  # noqa: BLE001
+            env = fail("ERROR:creep raised %s; CREEP_RESULT=error" % (exc,))
+        text = (env.get("value") if env.get("success") else env.get("reason")) \
+            if isinstance(env, dict) else ""
+        tok = parse_creep_reply(text)
+        result = tok.get("CREEP_RESULT", "error")
+        if not (isinstance(env, dict) and env.get("success")) or result not in (
+                "arrived", "planned", "in_place"):
+            why = {"cancelled": "the operator stopped the walk-in",
+                   "blocked": "something was in the way",
+                   "bumped": "the %s moved during the walk-in" % name,
+                   "busy": "another motion was running",
+                   "disabled": "the walk-in is switched off"}.get(result, result)
+            return fail("NOT PLACED: the walk-in to the %s stopped (%s: %s); %s"
+                        % (name, why, " ".join(str(text).split())[:160], held))
+        try:
+            x, y, z = float(tok["X"]), float(tok["Y"]), float(tok["Z"])
+            half, rim = float(tok["HALF_M"]), float(tok["RIM_Z"])
+            edge = float(tok["EDGE_M"])
+            travel = float(tok.get("TRAVEL_M", "0") or 0.0)
+        except (KeyError, ValueError):
+            return fail("NOT PLACED: the walk-in reply was unreadable (%s); %s"
+                        % (" ".join(str(text).split())[:160], held))
+        aim = container_aim(x, y, half, rim, edge, plan["h_obj"],
+                            dead=tok.get("SRC") == "dead")
+        if aim is None:
+            return fail(
+                "NOT_REACHABLE: after the walk-in the %s's near edge is ~%.2f m "
+                "and the drop point inside it is beyond the arm's reach; %s"
+                % (name, edge, held))
+        # far rim: the creep dead-reckons any pulse no trusted row followed
+        # as 0.05 m, so the container may be up to EDGE_ERR_M nearer and the
+        # aim that much deeper. refuse an aim that could drop beyond the far rim
+        e_err = post_creep_edge_err(tok)
+        if container_far_clear(aim, half, edge, e_err) < 0.0:
+            return fail(
+                "NOT PLACED: after the walk-in the drop point could land beyond "
+                "the far rim of the %s (%.2f m across; the robot may have moved "
+                "up to %.2f m more than dead-reckoned); %s"
+                % (name, 2.0 * half, e_err, held))
+        iid = tok.get("IID")
+        iid = int(iid) if iid and iid.isdigit() else plan["geo"].get("iid")
+        try:
+            bot = float(tok["BOT_Z"])
+        except (KeyError, ValueError):
+            bot = plan["geo"]["bot"]
+        geo = dict(plan["geo"], x=x, y=y, z=z, half=half, rim=rim, bot=bot,
+                   near=edge, iid=iid)
+        note = "%s:%.3f:%.3f" % (result, edge, travel)
+        return aim, note, travel, geo
+
