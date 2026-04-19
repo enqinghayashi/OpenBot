@@ -3602,3 +3602,13 @@ class ToolRegistry:
 
     # -- execution --------------------------------------------------------------
 
+    def execute(self, name: str, args: dict) -> dict:
+        """Execute ``name`` with ``args``, returning an envelope dict.
+
+        Raises UnknownTool for an unregistered name — the agent converts it
+        to an error envelope and feeds it back (designed recovery path).
+        """
+        tool = self._tools.get(name)
+        if tool is None:
+            raise UnknownTool(f"unknown tool: {name!r}")
+        return tool.call(args)
