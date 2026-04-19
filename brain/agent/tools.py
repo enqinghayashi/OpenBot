@@ -3577,3 +3577,6 @@ class ToolRegistry:
 
     # -- queries ----------------------------------------------------------------
 
+    def has(self, name: str) -> bool:
+        return name in self._tools
+
