@@ -185,3 +185,102 @@ def _parse_scalar(text: str) -> Any:
     except ValueError:
         pass
     return t
+
+
+def _parse_list(text: str) -> List[Any]:
+    inner = text.strip()
+    if inner.startswith("["):
+        if not inner.endswith("]"):
+            # line-oriented: a flow list must close on one line,
+            # or the open '[' is kept and the continuation lines
+            # are dropped, leaving a corrupt first entry
+            raise ConfigError(
+                "config error: a flow list must open and close on one line "
+                "— got %r. This parser is line-oriented; put the whole "
+                "list on a single line (a list wrapped across lines would "
+                "otherwise be truncated silently, keeping the '[' and "
+                "dropping every continuation line)." % inner
+            )
+        inner = inner[1:-1]
+    items = [x for x in (p.strip() for p in inner.split(",")) if x]
+    return [_parse_scalar(x) for x in items]
+
+
+def _has_deeper(lines: List[str], start: int, parent_indent: int) -> bool:
+    """True when an indented (non-comment) line follows at `start` — i.e.
+    the current key headers a nested block rather than a null value."""
+    j = start
+    while j < len(lines):
+        nxt = lines[j]
+        nxt_stripped = nxt.lstrip()
+        if nxt_stripped == "" or nxt_stripped.startswith("#"):
+            j += 1
+            continue
+        return (len(nxt) - len(nxt_stripped)) > parent_indent
+    return False
+
+
+def _collect_nested(lines: List[str], start: int, parent_indent: int) -> "tuple[List[str], int]":
+    """Collect the deeper-indented lines of a nested block; returns
+    (block lines, index just past the block)."""
+    j = start
+    nested: List[str] = []
+    while j < len(lines):
+        nxt = lines[j]
+        nxt_stripped = nxt.lstrip()
+        if nxt_stripped == "" or nxt_stripped.startswith("#"):
+            j += 1
+            continue
+        nxt_indent = len(nxt) - len(nxt_stripped)
+        if nxt_indent <= parent_indent:
+            break
+        nested.append(nxt.rstrip("\n"))
+        j += 1
+    return nested, j
+
+
+def _build_nested(lines: List[str], indent: Optional[int]) -> Dict[str, Any]:
+    """Recursively build a dict from indented `key: value` lines."""
+    out: Dict[str, Any] = {}
+    i = 0
+    while i < len(lines):
+        raw = lines[i]
+        stripped = raw.lstrip()
+        if stripped == "" or stripped.startswith("#"):
+            i += 1
+            continue
+        cur_indent = len(raw) - len(stripped)
+        if indent is not None and cur_indent <= indent:
+            break  # the caller's block ends at this dedent
+        key, sep, rest_raw = stripped.partition(":")
+        key = key.strip()
+        if not sep or not key:
+            i += 1
+            continue
+        rest_stripped = rest_raw.strip()
+        if rest_stripped == "" or rest_stripped.startswith("#"):
+            # empty rest is a block header or an absent key;
+            # a commented-out value with no deeper lines is absent,
+            # so the consumer default applies
+            if rest_stripped.startswith("#") and not _has_deeper(lines, i + 1, cur_indent):
+                i += 1
+                continue
+            nested, j = _collect_nested(lines, i + 1, cur_indent)
+            out[key] = _build_nested(nested, indent=cur_indent)
+            i = j
+        else:
+            rest = strip_inline_comment(rest_raw).strip()
+            if rest == "":
+                i += 1  # no value after comment strip
+                continue
+            if rest.startswith("["):
+                out[key] = _parse_list(rest)
+            else:
+                out[key] = _parse_scalar(rest)
+            i += 1
+    return out
+
+
+def _parse_text(text: str) -> Dict[str, Any]:
+    lines = [ln.rstrip("\n") for ln in text.splitlines() if ln.strip()]
+    return _build_nested(lines, indent=None)
