@@ -445,3 +445,133 @@ def _as_backoffs(value: Any, name: str) -> List[int]:
             )
         out.append(n)
     return out
+
+
+@dataclass(frozen=True)
+class LlmConfig:
+    """The `llm:` segment.  Field `temp` maps from the yaml key
+    `temperature` (the bare `temp` yaml key is accepted as an alias);
+    `temperature` is also available as a read-only property alias.
+    Defaults mirror brain/agent/llm.py's LlamaCppClient defaults.
+
+    PLAN-B keys (2026-08-30, R4 cloud rung) — consumed by
+    brain/agent/llm.py from_config's 'cloud' backend branch:
+    base_url / model / api_key_env / timeout_s / tool_mode /
+    enable_thinking.  tool_mode semantics (the profile ladder):
+      - laptop (base config.yaml) default 'skeleton' — the Plan-B R0'
+        recommendation (plain-text JSON skeleton + deterministic parse,
+        measured 9-10/10 and 2-4x faster than json-mode, whose grammar
+        constraint is the hard-schema Constraint Tax 91.5->48.0%
+        executable at 1.5B);
+      - stuart PINS 'json' in config.stuart.yaml — the D4 deployed
+        json-mode run must not silently change when the base default
+        moves to 'skeleton' (historical: the stuart profile is
+        SUPERSEDED 2026-08-31 and can no longer load — see load());
+      - cloud PINS 'skeleton' in config.cloud.yaml — the R4 rung."""
+
+    backend: str = "mock"  # mock = stub
+                           # real = llama-cpp; cloud = cloud API
+    model_path: str = ""
+    n_ctx: int = 4096
+    n_gpu_layers: int | str = "all"  # 'all' (CUDA) or an int (0 = CPU-only)
+    max_tokens: int = 256
+    temp: float = 0.2
+    base_url: str = ""  # OpenAI-compatible
+                        # cloud endpoint
+    model: str = ""  # cloud model id
+    api_key_env: str = ""  # env var NAME
+                           # never the key itself in config
+    timeout_s: float = 12.0  # cloud/sidecar timeout
+                             # cloud profile pins 120
+    tool_mode: str = "skeleton"  # 'skeleton' | 'json'
+                                 # skeleton = plain JSON + parse
+    enable_thinking: bool = False  # thinking off
+                                   # in every profile
+
+    @property
+    def temperature(self) -> float:
+        """Read-only alias for `temp` (the yaml key name)."""
+        return self.temp
+
+    @classmethod
+    def from_section(cls, section: Optional[Mapping[str, Any]]) -> "LlmConfig":
+        d = _section_dict(section, "llm")
+        _check_keys(
+            d,
+            {"backend", "model_path", "n_ctx", "n_gpu_layers", "max_tokens",
+             "temperature", "temp", "base_url", "model", "api_key_env",
+             "timeout_s", "tool_mode", "enable_thinking"},
+            "llm",
+        )
+        temp = d.get("temperature", d.get("temp", 0.2))
+        tool_mode = d.get("tool_mode", "skeleton")
+        if tool_mode not in ("skeleton", "json"):
+            raise ValueError(
+                f"config error: llm.tool_mode {tool_mode!r} must be "
+                f"'skeleton' (Plan-B R0'/R4 plain-text JSON + deterministic "
+                f"parse) or 'json' (D4 grammar-constrained json-mode)"
+            )
+        return cls(
+            backend=_as_str(d.get("backend", "mock"), "llm.backend"),
+            model_path=_as_str(d.get("model_path", ""), "llm.model_path"),
+            n_ctx=_as_int(d.get("n_ctx", 4096), "llm.n_ctx"),
+            n_gpu_layers=_as_gpu_layers(
+                d.get("n_gpu_layers", "all"), "llm.n_gpu_layers"
+            ),
+            max_tokens=_as_int(d.get("max_tokens", 256), "llm.max_tokens"),
+            temp=_as_float(temp, "llm.temperature"),
+            base_url=_as_str(d.get("base_url", ""), "llm.base_url"),
+            model=_as_str(d.get("model", ""), "llm.model"),
+            api_key_env=_as_str(d.get("api_key_env", ""), "llm.api_key_env"),
+            timeout_s=_as_float(d.get("timeout_s", 12.0), "llm.timeout_s"),
+            tool_mode=tool_mode,
+            enable_thinking=_as_bool(
+                d.get("enable_thinking", False), "llm.enable_thinking"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class GatewayConfig:
+    """The `gateway:` segment.  Host/port defaults are neutral placeholders
+    (the gateway-side consumer lives in gateway/; the deployed config.yaml
+    always carries the real endpoints)."""
+
+    transport: str = "mock"  # mock = in-process
+                             # real = socket to the gateway
+    host: str = ""
+    port: int = 0
+    #: bind host
+    #: server-side only; host above stays client-dial only
+    #: 0.0.0.0 binds every interface; 127.0.0.1 hides the
+    #: unauthenticated motion socket but blocks every LAN dial
+    bind_host: str = "0.0.0.0"
+
+    @classmethod
+    def from_section(cls, section: Optional[Mapping[str, Any]]) -> "GatewayConfig":
+        d = _section_dict(section, "gateway")
+        _check_keys(d, {"transport", "host", "port", "bind_host"}, "gateway")
+        return cls(
+            transport=_as_str(d.get("transport", "mock"), "gateway.transport"),
+            host=_as_str(d.get("host", ""), "gateway.host"),
+            port=_as_int(d.get("port", 0), "gateway.port"),
+            bind_host=_as_str(d.get("bind_host", "0.0.0.0"),
+                              "gateway.bind_host"),
+        )
+
+
+@dataclass(frozen=True)
+class SkillsConfig:
+    """The `skills:` segment (protocol endpoints).  Socket defaults are the
+    STUART-VERIFIED platform endpoints (writer /tmp/merged_writer.sock,
+    grip /tmp/grip_server.sock).  engine_cmd is DUAL-FORM: the dataclass
+    DEFAULT (key absent) is the engine-off verb form; a file key = its spawn."""
+
+    writer_sock: str = "/tmp/merged_writer.sock"
+    grip_sock: str = "/tmp/grip_server.sock"
+    #: engine sock
+    #: must match the entrypoint's SOCK_PATH
+    #: or connect-first degrades to spawn-always
+    engine_sock: str = "/tmp/pick_engine.sock"
+    engine_cmd: str = "pick x y z nx ny nz orientation height_m"
+
