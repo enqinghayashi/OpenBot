@@ -3677,3 +3677,10 @@ def _count_clusters(rows: list, gate: float) -> int:
         if not any(_dist3(det, s) <= gate for s in seeds):
             seeds.append(det)
     return len(seeds)
+
+
+# --- checking the far rim after a creep ------------------------------------
+#: a bottle's radius: half its width, kept inside the far rim
+AIM_FAR_OBJ_M = 0.035
+
+
