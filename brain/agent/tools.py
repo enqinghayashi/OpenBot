@@ -3628,3 +3628,12 @@ def _finite_or(value: Any, default: float) -> float:
     return out if math.isfinite(out) else default
 
 
+def _freshest(rows: list):
+    """Today's pick rule: the newest ``ts``; ties keep the FIRST row."""
+    best = None
+    for det in rows:
+        if best is None or float(getattr(det, "ts", 0.0)) > float(
+            getattr(best, "ts", 0.0)
+        ):
+            best = det
+    return best
