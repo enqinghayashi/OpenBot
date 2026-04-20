@@ -3639,3 +3639,13 @@ def _freshest(rows: list):
     return best
 
 
+def _xyz(obj: Any):
+    """(x, y, z) of a Detection or a scene-graph entry dict, or None."""
+    try:
+        if isinstance(obj, dict):
+            pt = (float(obj["x"]), float(obj["y"]), float(obj["z"]))
+        else:
+            pt = (float(obj.x), float(obj.y), float(obj.z))
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return None
+    return pt if all(math.isfinite(v) for v in pt) else None
