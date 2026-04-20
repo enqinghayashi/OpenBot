@@ -3626,3 +3626,5 @@ def _finite_or(value: Any, default: float) -> float:
     except (TypeError, ValueError):
         return default
     return out if math.isfinite(out) else default
+
+
