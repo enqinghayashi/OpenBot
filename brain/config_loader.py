@@ -327,3 +327,121 @@ def _check_keys(d: Dict[str, Any], allowed: set, name: str) -> None:
             f"config error: unknown key(s) {unknown} in section {name!r} "
             f"(typo?) -- allowed keys: {sorted(allowed)}"
         )
+
+
+def _as_int(value: Any, name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"config error: {name} must be an int, got bool {value!r}")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"config error: {name} must be an int, got {value!r}") from None
+
+
+def _as_float(value: Any, name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"config error: {name} must be a number, got bool {value!r}")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"config error: {name} must be a number, got {value!r}"
+        ) from None
+
+
+def _as_str(value: Any, name: str) -> str:
+    return str(value)
+
+
+def _as_bool(value: Any, name: str) -> bool:
+    """Bool coercion that NEVER guesses and NEVER inverts: only a real
+    Python bool is accepted.
+
+    In particular numeric 0/1 and the string 'false' are hard
+    ConfigErrors — bool(1) or bool('false') == True would silently flip
+    a safety-adjacent flag like embodiment.perception.silence_means_empty.
+    (The YAML-subset parser already maps true/false/yes/no to Python
+    bools, so every legit file value passes; this guard is what a
+    hand-built overrides mapping or a future YAML dialect hits.)"""
+    if isinstance(value, bool):
+        return value
+    raise ConfigError(
+        f"config error: {name} must be a bool, got {value!r} — bool "
+        f"coercion never guesses (a numeric 0/1 or the string 'false' "
+        f"could silently invert a safety-adjacent flag)"
+    )
+
+
+def _as_gpu_layers(value: Any, name: str) -> int | str:
+    """n_gpu_layers: an int, or the string 'all' (CUDA full offload)."""
+    if isinstance(value, bool):
+        raise ValueError(
+            f"config error: {name} must be an int or 'all', got bool {value!r}"
+        )
+    if isinstance(value, str):
+        if value == "all":
+            return value
+        try:
+            return int(value)
+        except ValueError:
+            raise ValueError(
+                f"config error: {name} must be an int or 'all', got {value!r}"
+            ) from None
+    if isinstance(value, (int, float)):
+        return int(value)
+    raise ValueError(
+        f"config error: {name} must be an int or 'all', got {value!r}"
+    )
+
+
+def _as_backoffs(value: Any, name: str) -> List[int]:
+    """reconnect_backoffs: a NON-EMPTY list of non-negative ints — either
+    the inline `[a, b, c]` list form (what the YAML-subset parser
+    resolves) or a comma-separated string ('1,2,4,8').  Every entry must
+    be a real int: bool and float are REJECTED, never coerced
+    (int(1.5) == 1 would silently reshape the retry ladder), and a
+    negative backoff is a contract violation.  An empty list is rejected
+    on BOTH branches too — a session with zero retries is not a config
+    value."""
+    items: List[Any]
+    if isinstance(value, str):
+        items = [p.strip() for p in value.split(",") if p.strip()]
+    elif isinstance(value, list):
+        items = value
+    else:
+        raise ValueError(
+            f"config error: {name} must be a list of ints or a "
+            f"comma-separated string, got {value!r}"
+        )
+    if not items:
+        raise ValueError(
+            f"config error: {name} must be a non-empty list of ints, "
+            f"got {value!r}"
+        )
+    out: List[int] = []
+    for item in items:
+        if isinstance(item, bool) or not isinstance(item, int):
+            # comma-separated strings still need an int parse;
+            # bools and floats are rejected rather than coerced
+            if isinstance(item, str):
+                try:
+                    n = int(item)
+                except ValueError:
+                    raise ValueError(
+                        f"config error: {name} entries must be "
+                        f"non-negative integers, got {item!r}"
+                    ) from None
+            else:
+                raise ValueError(
+                    f"config error: {name} entries must be non-negative "
+                    f"integers, got {item!r}"
+                )
+        else:
+            n = item
+        if n < 0:
+            raise ValueError(
+                f"config error: {name} entries must be non-negative "
+                f"integers, got {n}"
+            )
+        out.append(n)
+    return out
