@@ -3667,3 +3667,5 @@ def _nearest_within(rows: list, entry: dict, gate: float):
         if d <= gate and (best_d is None or d < best_d):
             best, best_d = det, d
     return best
+
+
