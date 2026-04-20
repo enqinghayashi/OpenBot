@@ -3649,3 +3649,5 @@ def _xyz(obj: Any):
     except (AttributeError, KeyError, TypeError, ValueError):
         return None
     return pt if all(math.isfinite(v) for v in pt) else None
+
+
