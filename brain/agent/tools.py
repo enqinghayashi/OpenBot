@@ -3657,3 +3657,5 @@ def _dist3(a: Any, b: Any) -> float:
     if pa is None or pb is None:
         return float("inf")
     return math.sqrt(sum((u - v) ** 2 for u, v in zip(pa, pb)))
+
+
