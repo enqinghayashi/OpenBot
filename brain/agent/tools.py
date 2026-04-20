@@ -3617,3 +3617,12 @@ class ToolRegistry:
 # --- little pure helpers used by the target binder ----------------------
 
 
+def _finite_or(value: Any, default: float) -> float:
+    """``float(value)`` when finite (bools excluded), else ``default``."""
+    if isinstance(value, bool):
+        return default
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    return out if math.isfinite(out) else default
