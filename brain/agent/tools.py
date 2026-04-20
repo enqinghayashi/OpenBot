@@ -3651,3 +3651,9 @@ def _xyz(obj: Any):
     return pt if all(math.isfinite(v) for v in pt) else None
 
 
+def _dist3(a: Any, b: Any) -> float:
+    """Torso-frame euclidean distance; +inf when either point is unknown."""
+    pa, pb = _xyz(a), _xyz(b)
+    if pa is None or pb is None:
+        return float("inf")
+    return math.sqrt(sum((u - v) ** 2 for u, v in zip(pa, pb)))
