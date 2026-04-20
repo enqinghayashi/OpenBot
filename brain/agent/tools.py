@@ -3684,3 +3684,23 @@ def _count_clusters(rows: list, gate: float) -> int:
 AIM_FAR_OBJ_M = 0.035
 
 
+def post_creep_edge_err(tok: Dict[str, str]) -> float:
+    """How much NEARER than its EDGE_M a container can truly be after a
+    creep: the reply's EDGE_ERR_M (the pulses no trusted row followed x the
+    worst-case travel per pulse - the nominal 0.05 m; 0 when a trusted row
+    ended it).  A reply without it (a gateway before this repair) counts every
+    pulse of a dead-reckoned end at the planning bound (TRAVEL_HI_M -
+    TRAVEL_M); an unreadable value is infinite (refuse)."""
+    raw: Any = tok.get("EDGE_ERR_M")
+    if raw is None:
+        if tok.get("SRC") != "dead":
+            return 0.0
+        try:
+            raw = float(tok.get("TRAVEL_HI_M", "")) - float(tok.get("TRAVEL_M", ""))
+        except ValueError:
+            return float("inf")
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return float("inf")
+    return max(0.0, v) if math.isfinite(v) else float("inf")
