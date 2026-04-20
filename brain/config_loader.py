@@ -284,3 +284,46 @@ def _build_nested(lines: List[str], indent: Optional[int]) -> Dict[str, Any]:
 def _parse_text(text: str) -> Dict[str, Any]:
     lines = [ln.rstrip("\n") for ln in text.splitlines() if ln.strip()]
     return _build_nested(lines, indent=None)
+
+
+def _deep_merge(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
+    """Mappings merge recursively; scalars/lists from `overrides` replace."""
+    out = dict(base)
+    for k, v in overrides.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def _profile_path(path: str, profile: str) -> str:
+    return os.path.join(os.path.dirname(path), "config." + profile + ".yaml")
+
+
+# ---------------------------------------------------------------------------
+# Section schemas
+# one frozen dataclass per config section; defaults match the
+# consumers, so a missing key falls back to the same value, and
+# from_section rejects unknown keys and wrong types
+# ---------------------------------------------------------------------------
+
+
+def _section_dict(section: Optional[Mapping[str, Any]], name: str) -> Dict[str, Any]:
+    if section is None:
+        return {}
+    if not isinstance(section, Mapping):
+        raise ValueError(
+            f"config error: section {name!r} must be a mapping, got "
+            f"{type(section).__name__}"
+        )
+    return dict(section)
+
+
+def _check_keys(d: Dict[str, Any], allowed: set, name: str) -> None:
+    unknown = sorted(k for k in d if k not in allowed)
+    if unknown:
+        raise ValueError(
+            f"config error: unknown key(s) {unknown} in section {name!r} "
+            f"(typo?) -- allowed keys: {sorted(allowed)}"
+        )
