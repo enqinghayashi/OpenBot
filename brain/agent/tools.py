@@ -3667,3 +3667,63 @@ def _nearest_within(rows: list, entry: dict, gate: float):
         if d <= gate and (best_d is None or d < best_d):
             best, best_d = det, d
     return best
+
+
+def _count_clusters(rows: list, gate: float) -> int:
+    """Distinct physical objects among ``rows``: greedy, a row within
+    ``gate`` of a cluster's seed joins it (grid duplicates count once)."""
+    seeds: list = []
+    for det in rows:
+        if not any(_dist3(det, s) <= gate for s in seeds):
+            seeds.append(det)
+    return len(seeds)
+
+
+# --- checking the far rim after a creep ------------------------------------
+#: a bottle's radius: half its width, kept inside the far rim
+AIM_FAR_OBJ_M = 0.035
+
+
+def post_creep_edge_err(tok: Dict[str, str]) -> float:
+    """How much NEARER than its EDGE_M a container can truly be after a
+    creep: the reply's EDGE_ERR_M (the pulses no trusted row followed x the
+    worst-case travel per pulse - the nominal 0.05 m; 0 when a trusted row
+    ended it).  A reply without it (a gateway before this repair) counts every
+    pulse of a dead-reckoned end at the planning bound (TRAVEL_HI_M -
+    TRAVEL_M); an unreadable value is infinite (refuse)."""
+    raw: Any = tok.get("EDGE_ERR_M")
+    if raw is None:
+        if tok.get("SRC") != "dead":
+            return 0.0
+        try:
+            raw = float(tok.get("TRAVEL_HI_M", "")) - float(tok.get("TRAVEL_M", ""))
+        except ValueError:
+            return float("inf")
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return float("inf")
+    return max(0.0, v) if math.isfinite(v) else float("inf")
+
+
+def container_far_clear(aim: dict, half: float, edge: float,
+                        edge_err: float) -> float:
+    """Worst-case room (m) between the held object (AIM_FAR_OBJ_M each side)
+    and the FAR rim of a container of half-size ``half`` for a drop at ``aim``
+    planned from the near edge ``edge``: the true near rim may lie
+    ``edge_err`` nearer, so the drop lands that much deeper.  Negative = it
+    could land beyond the far rim."""
+    ins = max(float(aim["inset"]),
+              math.hypot(float(aim["x"]), float(aim["y"])) - float(edge))
+    return 2.0 * float(half) - (ins + max(0.0, float(edge_err)) + AIM_FAR_OBJ_M)
+
+
+def lock_pose_unseen(rec: Any) -> bool:
+    """True while the gateway lock's pose is a walk-in's own estimate (src
+    'creep': the creep set it and no row of the container has been seen
+    since).  Its dead-reckoning error is not known here, so a later place
+    neither aims nor walks in from it: _container_lock_record does not use
+    the lock and the B8i label lookup decides (NOT_DETECTED while the
+    container stays out of view).  Else a repeated place would bypass the
+    walk-in's far-rim check."""
+    return isinstance(rec, dict) and rec.get("src") == "creep"
