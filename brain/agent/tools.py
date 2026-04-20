@@ -3659,3 +3659,11 @@ def _dist3(a: Any, b: Any) -> float:
     return math.sqrt(sum((u - v) ** 2 for u, v in zip(pa, pb)))
 
 
+def _nearest_within(rows: list, entry: dict, gate: float):
+    """The row nearest the ref entry's stored position, if within ``gate``."""
+    best, best_d = None, None
+    for det in rows:
+        d = _dist3(det, entry)
+        if d <= gate and (best_d is None or d < best_d):
+            best, best_d = det, d
+    return best
