@@ -3669,3 +3669,11 @@ def _nearest_within(rows: list, entry: dict, gate: float):
     return best
 
 
+def _count_clusters(rows: list, gate: float) -> int:
+    """Distinct physical objects among ``rows``: greedy, a row within
+    ``gate`` of a cluster's seed joins it (grid duplicates count once)."""
+    seeds: list = []
+    for det in rows:
+        if not any(_dist3(det, s) <= gate for s in seeds):
+            seeds.append(det)
+    return len(seeds)
