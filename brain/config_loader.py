@@ -286,3 +286,12 @@ def _parse_text(text: str) -> Dict[str, Any]:
     return _build_nested(lines, indent=None)
 
 
+def _deep_merge(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
+    """Mappings merge recursively; scalars/lists from `overrides` replace."""
+    out = dict(base)
+    for k, v in overrides.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
