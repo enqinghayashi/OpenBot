@@ -237,3 +237,5 @@ def _collect_nested(lines: List[str], start: int, parent_indent: int) -> "tuple[
         nested.append(nxt.rstrip("\n"))
         j += 1
     return nested, j
+
+
