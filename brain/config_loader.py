@@ -167,3 +167,21 @@ class ConfigError(ValueError):
     """
 
 
+def _parse_scalar(text: str) -> Any:
+    t = text.strip().strip('"').strip("'")
+    if t == "":
+        return ""
+    low = t.lower()
+    if low in ("true", "yes"):
+        return True
+    if low in ("false", "no"):
+        return False
+    try:
+        return int(t)
+    except ValueError:
+        pass
+    try:
+        return float(t)
+    except ValueError:
+        pass
+    return t
