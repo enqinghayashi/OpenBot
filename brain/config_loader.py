@@ -206,3 +206,15 @@ def _parse_list(text: str) -> List[Any]:
     return [_parse_scalar(x) for x in items]
 
 
+def _has_deeper(lines: List[str], start: int, parent_indent: int) -> bool:
+    """True when an indented (non-comment) line follows at `start` — i.e.
+    the current key headers a nested block rather than a null value."""
+    j = start
+    while j < len(lines):
+        nxt = lines[j]
+        nxt_stripped = nxt.lstrip()
+        if nxt_stripped == "" or nxt_stripped.startswith("#"):
+            j += 1
+            continue
+        return (len(nxt) - len(nxt_stripped)) > parent_indent
+    return False
