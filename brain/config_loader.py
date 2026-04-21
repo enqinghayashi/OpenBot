@@ -1082,3 +1082,219 @@ class RestConfig:
     #: pinned so a bench cannot outrank the lane by truncation
     max_tokens: int = 256
 
+    @classmethod
+    def from_section(cls, section: Optional[Mapping[str, Any]]) -> "RestConfig":
+        d = _section_dict(section, "rest")
+        _check_keys(
+            d,
+            {"model", "base_url", "api_key_env", "tool_mode", "timeout_s",
+             "prose_fallback", "max_tokens"},
+            "rest",
+        )
+        tool_mode = d.get("tool_mode", "skeleton")
+        if tool_mode not in ("skeleton", "json"):
+            raise ValueError(
+                f"config error: rest.tool_mode {tool_mode!r} must be "
+                f"'skeleton' (plain-text JSON skeleton + deterministic "
+                f"parse) or 'json' (grammar-constrained json-mode)"
+            )
+        tok_raw = d.get("max_tokens", 256)
+        if isinstance(tok_raw, float) and not tok_raw.is_integer():
+            raise ValueError(
+                f"config error: rest.max_tokens {tok_raw!r} must be an "
+                f"int (a fractional value would be silently truncated — "
+                f"never a silent budget change, #120)"
+            )
+        max_tokens = _as_int(tok_raw, "rest.max_tokens")
+        if max_tokens < 1:
+            raise ValueError(
+                f"config error: rest.max_tokens {max_tokens!r} must be >= 1 "
+                f"(a 0/negative budget makes the provider return an empty "
+                f"completion — a silent truncation, #120)"
+            )
+        return cls(
+            model=_as_str(d.get("model", "gpt-5.4-mini"), "rest.model"),
+            base_url=_as_str(
+                d.get("base_url", "https://api.openai.com/v1"), "rest.base_url"
+            ),
+            api_key_env=_as_str(
+                d.get("api_key_env", "OPENAI_API_KEY"), "rest.api_key_env"
+            ),
+            tool_mode=tool_mode,
+            timeout_s=_as_float(d.get("timeout_s", 120.0), "rest.timeout_s"),
+            prose_fallback=_as_bool(
+                d.get("prose_fallback", False), "rest.prose_fallback"
+            ),
+            max_tokens=max_tokens,
+        )
+
+
+@dataclass(frozen=True)
+class VoiceConfig:
+    """The `voice:` segment — the voice lane (Vosk KWS wake words ->
+    whisper.cpp STT -> brain -> Piper TTS; all local, plus the G1
+    on-board mic + multicast capture + energy-gate params).  Defaults
+    are the deploy kit's wired endpoints.
+
+    ``name`` is the robot's SPOKEN name (the OfflineBrain leading-vocative
+    strip, brain/agent/offline_brain.py: the explicit constructor name
+    wins over the embodiment's).  The voice app passes cfg.voice.name to
+    OfflineBrain(name=...); the default matches the shipped wake-phrase
+    family."""
+
+    name: str = "stewart"
+    mic_mode: str = "g1"  # g1 | file
+    multicast_group: str = "239.168.123.161"
+    multicast_port: int = 5555
+    sample_rate: int = 16000
+    kws_model_dir: str = "voice/models/vosk-model-small-en-us"
+    # wake words
+    # speakers say "hello stuwart" as often as the correct
+    # spelling and the KWS hears grammar phrases only, so both
+    # spellings are carried; the profiles must mirror this list
+    wake_phrases: List[str] = field(default_factory=lambda: [
+        "hey stewart", "hi stewart", "hello stewart", "okay stewart",
+        "hey stuwart", "hi stuwart", "hello stuwart", "okay stuwart",
+    ])
+    kws_cooldown_s: float = 3.0
+    whisper_url: str = "http://127.0.0.1:8082/inference"
+    whisper_model: str = "tiny.en-q5_1"  # small and fast
+    piper_bin: str = "voice/models/piper"
+    # reuse-first
+    # the default voice is en_US-ryan-medium, kept byte-identical
+    # to the upstream release; the fetch script copies it and a
+    # download is the fallback. Piper needs the .onnx.json sidecar
+    piper_voice: str = "en_US-ryan-medium.onnx"
+    speaker_app_name: str = "uwa_csse_voice"
+    speaker_cap_bytes: int = 96000
+    energy_min_peak: int = 1200
+    energy_floor_factor: float = 3.0
+    energy_hangover_s: float = 0.9
+    energy_prefix_s: float = 0.4
+    energy_cooldown_s: float = 3.0
+    echo_coupling: float = 1.5
+    arrival_announce: bool = False  # nav arrival
+                                    # one async spoken "arriving"
+                                    # default off keeps a bare config silent
+    @classmethod
+    def from_section(cls, section: Optional[Mapping[str, Any]]) -> "VoiceConfig":
+        d = _section_dict(section, "voice")
+        _check_keys(
+            d,
+            {"arrival_announce", "name", "mic_mode", "multicast_group",
+             "multicast_port",
+             "sample_rate", "kws_model_dir", "wake_phrases", "kws_cooldown_s",
+             "whisper_url", "whisper_model", "piper_bin", "piper_voice",
+             "speaker_app_name", "speaker_cap_bytes", "energy_min_peak",
+             "energy_floor_factor", "energy_hangover_s", "energy_prefix_s",
+             "energy_cooldown_s", "echo_coupling"},
+            "voice",
+        )
+        raw_phrases = d.get(
+            "wake_phrases",
+            ["hey stewart", "hi stewart", "hello stewart", "okay stewart"],
+        )
+        if not isinstance(raw_phrases, list) or not all(
+            isinstance(p, str) for p in raw_phrases
+        ):
+            raise ValueError(
+                "config error: voice.wake_phrases must be a list of "
+                f"strings, got {raw_phrases!r}"
+            )
+        if not raw_phrases:
+            raise ValueError(
+                "config error: voice.wake_phrases must be non-empty — a "
+                "zero-keyword grammar would make the KWS never wake"
+            )
+        return cls(
+            name=_as_str(d.get("name", "stewart"), "voice.name"),
+            mic_mode=_as_str(d.get("mic_mode", "g1"), "voice.mic_mode"),
+            multicast_group=_as_str(
+                d.get("multicast_group", "239.168.123.161"), "voice.multicast_group"
+            ),
+            multicast_port=_as_int(
+                d.get("multicast_port", 5555), "voice.multicast_port"
+            ),
+            sample_rate=_as_int(d.get("sample_rate", 16000), "voice.sample_rate"),
+            kws_model_dir=_as_str(
+                d.get("kws_model_dir", "voice/models/vosk-model-small-en-us"),
+                "voice.kws_model_dir",
+            ),
+            wake_phrases=list(raw_phrases),
+            kws_cooldown_s=_as_float(
+                d.get("kws_cooldown_s", 3.0), "voice.kws_cooldown_s"
+            ),
+            whisper_url=_as_str(
+                d.get("whisper_url", "http://127.0.0.1:8082/inference"),
+                "voice.whisper_url",
+            ),
+            whisper_model=_as_str(
+                d.get("whisper_model", "tiny.en-q5_1"), "voice.whisper_model"
+            ),
+            piper_bin=_as_str(
+                d.get("piper_bin", "voice/models/piper"), "voice.piper_bin"
+            ),
+            piper_voice=_as_str(
+                d.get("piper_voice", "en_US-ryan-medium.onnx"), "voice.piper_voice"
+            ),
+            speaker_app_name=_as_str(
+                d.get("speaker_app_name", "uwa_csse_voice"), "voice.speaker_app_name"
+            ),
+            speaker_cap_bytes=_as_int(
+                d.get("speaker_cap_bytes", 96000), "voice.speaker_cap_bytes"
+            ),
+            energy_min_peak=_as_int(
+                d.get("energy_min_peak", 1200), "voice.energy_min_peak"
+            ),
+            energy_floor_factor=_as_float(
+                d.get("energy_floor_factor", 3.0), "voice.energy_floor_factor"
+            ),
+            energy_hangover_s=_as_float(
+                d.get("energy_hangover_s", 0.9), "voice.energy_hangover_s"
+            ),
+            energy_prefix_s=_as_float(
+                d.get("energy_prefix_s", 0.4), "voice.energy_prefix_s"
+            ),
+            energy_cooldown_s=_as_float(
+                d.get("energy_cooldown_s", 3.0), "voice.energy_cooldown_s"
+            ),
+            echo_coupling=_as_float(d.get("echo_coupling", 1.5), "voice.echo_coupling"),
+            arrival_announce=_as_bool(
+                d.get("arrival_announce", False), "voice.arrival_announce"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class VisionConfig:
+    """The `vision:` segment — the camera capture lane (the image verb;
+    the gateway /capture_image and the camera topic).  The camera lane
+    is OFF unless `enabled: true` — config.voice.yaml /
+    config.offline.yaml / config.cloud.yaml-style profiles explicitly
+    set enabled: true when vision is wanted; the base config.yaml
+    (laptop) carries no vision: section and must stay OFF (a silent
+    default-on would make the gateway's camera lane subscribe
+    everywhere)."""
+
+    enabled: bool = False
+    topic: str = "/camera/color/image_raw"
+    max_age_s: float = 2.0
+    min_interval_s: float = 1.0
+    jpeg_quality: int = 80
+
+    @classmethod
+    def from_section(cls, section: Optional[Mapping[str, Any]]) -> "VisionConfig":
+        d = _section_dict(section, "vision")
+        _check_keys(
+            d, {"enabled", "topic", "max_age_s", "min_interval_s", "jpeg_quality"},
+            "vision",
+        )
+        return cls(
+            enabled=_as_bool(d.get("enabled", False), "vision.enabled"),
+            topic=_as_str(d.get("topic", "/camera/color/image_raw"), "vision.topic"),
+            max_age_s=_as_float(d.get("max_age_s", 2.0), "vision.max_age_s"),
+            min_interval_s=_as_float(
+                d.get("min_interval_s", 1.0), "vision.min_interval_s"
+            ),
+            jpeg_quality=_as_int(d.get("jpeg_quality", 80), "vision.jpeg_quality"),
+        )
