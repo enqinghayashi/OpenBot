@@ -187,3 +187,20 @@ def _parse_scalar(text: str) -> Any:
     return t
 
 
+def _parse_list(text: str) -> List[Any]:
+    inner = text.strip()
+    if inner.startswith("["):
+        if not inner.endswith("]"):
+            # line-oriented: a flow list must close on one line,
+            # or the open '[' is kept and the continuation lines
+            # are dropped, leaving a corrupt first entry
+            raise ConfigError(
+                "config error: a flow list must open and close on one line "
+                "— got %r. This parser is line-oriented; put the whole "
+                "list on a single line (a list wrapped across lines would "
+                "otherwise be truncated silently, keeping the '[' and "
+                "dropping every continuation line)." % inner
+            )
+        inner = inner[1:-1]
+    items = [x for x in (p.strip() for p in inner.split(",")) if x]
+    return [_parse_scalar(x) for x in items]
