@@ -3706,3 +3706,13 @@ def post_creep_edge_err(tok: Dict[str, str]) -> float:
     return max(0.0, v) if math.isfinite(v) else float("inf")
 
 
+def container_far_clear(aim: dict, half: float, edge: float,
+                        edge_err: float) -> float:
+    """Worst-case room (m) between the held object (AIM_FAR_OBJ_M each side)
+    and the FAR rim of a container of half-size ``half`` for a drop at ``aim``
+    planned from the near edge ``edge``: the true near rim may lie
+    ``edge_err`` nearer, so the drop lands that much deeper.  Negative = it
+    could land beyond the far rim."""
+    ins = max(float(aim["inset"]),
+              math.hypot(float(aim["x"]), float(aim["y"])) - float(edge))
+    return 2.0 * float(half) - (ins + max(0.0, float(edge_err)) + AIM_FAR_OBJ_M)
