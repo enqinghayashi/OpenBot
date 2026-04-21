@@ -147,3 +147,5 @@ def strip_inline_comment(text: str) -> str:
         return (head + tail[: m.start()]) if m else head
     m = _COMMENT_RE.search(value)
     return value[: m.start()] if m else value
+
+
