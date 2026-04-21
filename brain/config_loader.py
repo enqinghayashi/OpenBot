@@ -958,3 +958,127 @@ class BrainConfig:
     lane: str = "realtime"
     confirm_motion: bool = True
 
+    @classmethod
+    def from_section(cls, section: Optional[Mapping[str, Any]]) -> "BrainConfig":
+        d = _section_dict(section, "brain")
+        _check_keys(d, {"lane", "confirm_motion"}, "brain")
+        lane = _as_str(d.get("lane", "realtime"), "brain.lane")
+        if lane not in ("realtime", "transcript", "offline"):
+            raise ValueError(
+                f"config error: brain.lane {lane!r} must be one of "
+                f"'realtime' (cloud Realtime WebSocket), 'transcript' "
+                f"(REST chat-completions) or 'offline' (regex brain, "
+                f"no network)"
+            )
+        raw = d.get("confirm_motion", True)
+        if not isinstance(raw, bool):
+            # no guessing
+            # the parser maps true/false/yes/no to a bool; a str or int
+            # here is 'maybe'/'on'/'2', or an overrides dict carrying
+            # 'false', which reads truthy and leaves the gate on
+            raise ValueError(
+                f"config error: brain.confirm_motion {raw!r} must be a YAML "
+                f"boolean (true/false), not {type(raw).__name__} — refusing "
+                f"to guess whether the motion confirm gate is on or off"
+            )
+        return cls(lane=lane, confirm_motion=raw)
+
+
+@dataclass(frozen=True)
+class RealtimeConfig:
+    """The `realtime:` segment — the OpenAI Realtime WebSocket brain
+    (brain.lane 'realtime').  Every value is the SEALED marketplace
+    default until the bake-off pin (plan 6) pins model AND lane after
+    hardware testing.
+
+    reconnect_backoffs: seconds to wait per reconnect attempt — the i-th
+    entry is the i-th retry's backoff; 8 entries = 8 retries max, after
+    which the session gives up.  Accepted as an inline list
+    `[1, 2, 4, 8, ...]` (what the YAML-subset parser resolves) or a
+    comma-separated string '1,2,4,8,...'.
+    """
+
+    model: str = "gpt-realtime-2.1-mini"
+    base_url: str = "wss://api.openai.com/v1/realtime"
+    api_key_env: str = "OPENAI_API_KEY"  # env var NAME
+                                         # never the key itself
+    voice: str = "cedar"
+    speed: float = 0.9
+    sample_rate: int = 24000
+    #: voice identity
+    #: session.update `instructions`, sent once at connect;
+    #: per-turn create_response instructions still win.
+    #: Empty = field absent and the built-in default applies
+    instructions: str = ""
+    connect_timeout_s: float = 10.0
+    ready_timeout_s: float = 10.0
+    session_cap_min: int = 60
+    reconnect_backoffs: List[int] = field(
+        default_factory=lambda: [1, 2, 4, 8, 8, 8, 8, 8]
+    )
+
+    @classmethod
+    def from_section(cls, section: Optional[Mapping[str, Any]]) -> "RealtimeConfig":
+        d = _section_dict(section, "realtime")
+        _check_keys(
+            d,
+            {"model", "base_url", "api_key_env", "voice", "speed",
+             "sample_rate", "connect_timeout_s", "ready_timeout_s",
+             "session_cap_min", "reconnect_backoffs", "instructions"},
+            "realtime",
+        )
+        return cls(
+            model=_as_str(d.get("model", "gpt-realtime-2.1-mini"), "realtime.model"),
+            base_url=_as_str(
+                d.get("base_url", "wss://api.openai.com/v1/realtime"),
+                "realtime.base_url",
+            ),
+            api_key_env=_as_str(
+                d.get("api_key_env", "OPENAI_API_KEY"), "realtime.api_key_env"
+            ),
+            voice=_as_str(d.get("voice", "cedar"), "realtime.voice"),
+            instructions=_as_str(
+                d.get("instructions", ""), "realtime.instructions"
+            ),
+            speed=_as_float(d.get("speed", 0.9), "realtime.speed"),
+            sample_rate=_as_int(d.get("sample_rate", 24000), "realtime.sample_rate"),
+            connect_timeout_s=_as_float(
+                d.get("connect_timeout_s", 10.0), "realtime.connect_timeout_s"
+            ),
+            ready_timeout_s=_as_float(
+                d.get("ready_timeout_s", 10.0), "realtime.ready_timeout_s"
+            ),
+            session_cap_min=_as_int(
+                d.get("session_cap_min", 60), "realtime.session_cap_min"
+            ),
+            reconnect_backoffs=_as_backoffs(
+                d.get("reconnect_backoffs", [1, 2, 4, 8, 8, 8, 8, 8]),
+                "realtime.reconnect_backoffs",
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class RestConfig:
+    """The `rest:` segment — the transcript-lane REST chat-completions
+    brain (brain.lane 'transcript'; the OpenAI-compatible
+    /chat/completions endpoint, the same client family as
+    brain/agent/llm_cloud.py).  api_key_env names the env var holding
+    the key — the key itself NEVER lives in config files."""
+
+    model: str = "gpt-5.4-mini"
+    base_url: str = "https://api.openai.com/v1"
+    api_key_env: str = "OPENAI_API_KEY"
+    tool_mode: str = "skeleton"  # skeleton | json
+    timeout_s: float = 120.0
+    #: prose fallback
+    #: a prose-only reply comes back as ChatResult.text, which
+    #: the voice lane speaks, not as the empty repair-path
+    #: result. Consumer: CloudLLMClient.prose_fallback
+    prose_fallback: bool = False
+    #: budget
+    #: 256-token cap, same shape as llm.max_tokens; the client
+    #: applies the host dialect. The bake-off ranks with this cap,
+    #: pinned so a bench cannot outrank the lane by truncation
+    max_tokens: int = 256
+
