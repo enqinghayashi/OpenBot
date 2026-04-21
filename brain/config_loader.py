@@ -239,3 +239,43 @@ def _collect_nested(lines: List[str], start: int, parent_indent: int) -> "tuple[
     return nested, j
 
 
+def _build_nested(lines: List[str], indent: Optional[int]) -> Dict[str, Any]:
+    """Recursively build a dict from indented `key: value` lines."""
+    out: Dict[str, Any] = {}
+    i = 0
+    while i < len(lines):
+        raw = lines[i]
+        stripped = raw.lstrip()
+        if stripped == "" or stripped.startswith("#"):
+            i += 1
+            continue
+        cur_indent = len(raw) - len(stripped)
+        if indent is not None and cur_indent <= indent:
+            break  # the caller's block ends at this dedent
+        key, sep, rest_raw = stripped.partition(":")
+        key = key.strip()
+        if not sep or not key:
+            i += 1
+            continue
+        rest_stripped = rest_raw.strip()
+        if rest_stripped == "" or rest_stripped.startswith("#"):
+            # empty rest is a block header or an absent key;
+            # a commented-out value with no deeper lines is absent,
+            # so the consumer default applies
+            if rest_stripped.startswith("#") and not _has_deeper(lines, i + 1, cur_indent):
+                i += 1
+                continue
+            nested, j = _collect_nested(lines, i + 1, cur_indent)
+            out[key] = _build_nested(nested, indent=cur_indent)
+            i = j
+        else:
+            rest = strip_inline_comment(rest_raw).strip()
+            if rest == "":
+                i += 1  # no value after comment strip
+                continue
+            if rest.startswith("["):
+                out[key] = _parse_list(rest)
+            else:
+                out[key] = _parse_scalar(rest)
+            i += 1
+    return out
