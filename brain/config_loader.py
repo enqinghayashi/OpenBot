@@ -279,3 +279,5 @@ def _build_nested(lines: List[str], indent: Optional[int]) -> Dict[str, Any]:
                 out[key] = _parse_scalar(rest)
             i += 1
     return out
+
+
