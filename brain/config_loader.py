@@ -114,3 +114,36 @@ from typing import Any, Dict, List, Mapping, Optional
 _COMMENT_RE = re.compile(r"\s+#")
 
 
+def strip_inline_comment(text: str) -> str:
+    """Strip a trailing inline comment from a raw value.
+
+    '0.20   # workspace floor z' -> '0.20'.  A leading-quoted value
+    ('...' or "...") keeps any ' #' that lives inside the quotes:
+    "'a # b'  # c" -> "'a # b'".  Quotes are only honored at the START of
+    the value, so a stray apostrophe inside a bare string ('it's fine')
+    never swallows the comment.  A value that IS a comment (starts with
+    '#' — e.g. the rest of 'key: # note') strips to ''.
+    """
+    value = text.strip()
+    if not value:
+        return text
+    if value.startswith("#"):
+        return ""
+    if value[0] in ("'", '"'):
+        quote = value[0]
+        j = 1
+        while j < len(value):
+            if value[j] == quote:
+                if j + 1 < len(value) and value[j + 1] == quote:
+                    j += 2  # a doubled quote
+                            # is an escaped quote
+                    continue
+                break
+            j += 1
+        end = j + 1 if j < len(value) else len(value)
+        head = value[:end]
+        tail = value[end:]
+        m = _COMMENT_RE.search(tail)
+        return (head + tail[: m.start()]) if m else head
+    m = _COMMENT_RE.search(value)
+    return value[: m.start()] if m else value
