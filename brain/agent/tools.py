@@ -3716,3 +3716,5 @@ def container_far_clear(aim: dict, half: float, edge: float,
     ins = max(float(aim["inset"]),
               math.hypot(float(aim["x"]), float(aim["y"])) - float(edge))
     return 2.0 * float(half) - (ins + max(0.0, float(edge_err)) + AIM_FAR_OBJ_M)
+
+
