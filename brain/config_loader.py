@@ -218,3 +218,5 @@ def _has_deeper(lines: List[str], start: int, parent_indent: int) -> bool:
             continue
         return (len(nxt) - len(nxt_stripped)) > parent_indent
     return False
+
+
