@@ -3718,3 +3718,12 @@ def container_far_clear(aim: dict, half: float, edge: float,
     return 2.0 * float(half) - (ins + max(0.0, float(edge_err)) + AIM_FAR_OBJ_M)
 
 
+def lock_pose_unseen(rec: Any) -> bool:
+    """True while the gateway lock's pose is a walk-in's own estimate (src
+    'creep': the creep set it and no row of the container has been seen
+    since).  Its dead-reckoning error is not known here, so a later place
+    neither aims nor walks in from it: _container_lock_record does not use
+    the lock and the B8i label lookup decides (NOT_DETECTED while the
+    container stays out of view).  Else a repeated place would bypass the
+    walk-in's far-rim check."""
+    return isinstance(rec, dict) and rec.get("src") == "creep"
