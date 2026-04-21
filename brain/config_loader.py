@@ -220,3 +220,20 @@ def _has_deeper(lines: List[str], start: int, parent_indent: int) -> bool:
     return False
 
 
+def _collect_nested(lines: List[str], start: int, parent_indent: int) -> "tuple[List[str], int]":
+    """Collect the deeper-indented lines of a nested block; returns
+    (block lines, index just past the block)."""
+    j = start
+    nested: List[str] = []
+    while j < len(lines):
+        nxt = lines[j]
+        nxt_stripped = nxt.lstrip()
+        if nxt_stripped == "" or nxt_stripped.startswith("#"):
+            j += 1
+            continue
+        nxt_indent = len(nxt) - len(nxt_stripped)
+        if nxt_indent <= parent_indent:
+            break
+        nested.append(nxt.rstrip("\n"))
+        j += 1
+    return nested, j
