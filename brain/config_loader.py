@@ -575,3 +575,143 @@ class SkillsConfig:
     engine_sock: str = "/tmp/pick_engine.sock"
     engine_cmd: str = "pick x y z nx ny nz orientation height_m"
 
+    @classmethod
+    def from_section(cls, section: Optional[Mapping[str, Any]]) -> "SkillsConfig":
+        d = _section_dict(section, "skills")
+        _check_keys(d, {"writer_sock", "grip_sock", "engine_sock", "engine_cmd"},
+                    "skills")
+        return cls(
+            writer_sock=_as_str(
+                d.get("writer_sock", "/tmp/merged_writer.sock"), "skills.writer_sock"
+            ),
+            grip_sock=_as_str(
+                d.get("grip_sock", "/tmp/grip_server.sock"), "skills.grip_sock"
+            ),
+            engine_sock=_as_str(
+                d.get("engine_sock", "/tmp/pick_engine.sock"), "skills.engine_sock"
+            ),
+            engine_cmd=_as_str(
+                d.get("engine_cmd", "pick x y z nx ny nz orientation height_m"),
+                "skills.engine_cmd",
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class AgentConfig:
+    """The `agent:` segment.  Defaults mirror G1Agent.__init__ defaults.
+
+    RUNTIME CONSUMER (round-5 config-steering): every field is read by
+    brain/agent/agent.py ``G1Agent.from_config`` and wired into the
+    running agent (max_tool_calls / failure_budget /
+    detection_freshness_s / llm_timeout_s / max_llm_attempts /
+    max_tool_result_chars -> G1Agent.__init__; detection_freshness_s ->
+    brain/hooks.py safety_checks_hook freshness budget via
+    default_hooks(freshness_s=...))."""
+
+    max_tool_calls: int = 25
+    failure_budget: int = 3
+    detection_freshness_s: float = 2.0
+    llm_timeout_s: float = 12.0
+    max_llm_attempts: int = 2
+    max_tool_result_chars: int = 2000
+
+    @classmethod
+    def from_section(cls, section: Optional[Mapping[str, Any]]) -> "AgentConfig":
+        d = _section_dict(section, "agent")
+        _check_keys(
+            d,
+            {"max_tool_calls", "failure_budget", "detection_freshness_s",
+             "llm_timeout_s", "max_llm_attempts", "max_tool_result_chars"},
+            "agent",
+        )
+        return cls(
+            max_tool_calls=_as_int(d.get("max_tool_calls", 25), "agent.max_tool_calls"),
+            failure_budget=_as_int(d.get("failure_budget", 3), "agent.failure_budget"),
+            detection_freshness_s=_as_float(
+                d.get("detection_freshness_s", 2.0), "agent.detection_freshness_s"
+            ),
+            llm_timeout_s=_as_float(
+                d.get("llm_timeout_s", 12.0), "agent.llm_timeout_s"
+            ),
+            max_llm_attempts=_as_int(
+                d.get("max_llm_attempts", 2), "agent.max_llm_attempts"
+            ),
+            max_tool_result_chars=_as_int(
+                d.get("max_tool_result_chars", 2000), "agent.max_tool_result_chars"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class EnvelopeConfig:
+    """`embodiment.envelope` — STUART-verified platform facts (defaults
+    match brain/embodiment.py's Envelope)."""
+
+    pick_min_height_m: float = -0.35  # torso frame
+                                      # z = height above torso link;
+                                      # tabletop z ~[0.00,+0.07],
+                                      # ground ~-0.75
+    pick_max_height_m: float = 1.20
+    max_reach_m: float = 0.90
+    grip_center_standoff_m: float = 0.0  # must stay 0.0
+                                         # 0.37 offsets the wrist target and picks the wrong spot;
+                                         # no engine reads this field
+    min_arm_dur_s: float = 1.5  # <dur> clamp
+                                # shortest allowed arm motion
+
+    # ── descent lane
+    # all switches default off; False makes effective_pick_floor
+    # return pick_min_height_m unchanged. The four law inputs
+    # come from config, with no literals in the law itself
+    low_workspace_lane: bool = False  # master switch
+                                      # false = tabletop-only
+                                      # strict bool: "false"/0 refuses
+                                      # consumer: effective_pick_floor
+    height_stand_m: float = 0.74  # upper bound of the
+                                  # writer's height_stand
+    height_min_m: float = 0.55  # clamp floor
+                                # descent budget = stand - min; the writer keeps the
+                                # band shut (min == max == 0.74) until it is armed
+    hold_tol_m: float = 0.05  # same-height tol
+                              # hold iff |h_need - h_cur| <= it
+    descend_confirm_timeout_s: float = 3.0  # confirm poll (s)
+    lane_operation_budget_s: float = 30.0  # lane budget (s)
+                                           # matches the descent lane's own budget;
+                                           # brain never imports gateway
+    pre_descent_step: bool = False  # stance step
+                                    # widen on the writer's `step` verbs before descending;
+                                    # strict bool, defaults off
+                                    # consumer: _pre_descent_step_flag
+    left_hand_in_service: bool = False  # left Dex3 not in service
+                                        # strict bool; False makes the tool registry
+                                        # refuse arm commands for 'left'
+
+    # ── pc switches
+    # strict bools; all False means no pointcloud client, no
+    # /pc_arm publisher and no /pc_result subscriber. Consumer:
+    # resolve_pc_switches; pc_support_split is not allowlisted
+    pc_shadow: bool = False  # log only
+                             # non-decisive; the rim is requested and logged,
+                             # never applied
+    pc_hold_check: bool = False  # decisive
+                                 # a negative check only downgrades
+    pc_place_rim: bool = False  # applied
+                                # the rim applies only when the check passes and
+                                # the pose matches and the row is fresh
+
+
+@dataclass(frozen=True)
+class PerceptionConfig:
+    """`embodiment.perception` (defaults match brain/embodiment.py)."""
+
+    freshness_s: float = 2.0
+    silence_means_empty: bool = True  # event-driven
+                                      # silence == empty scene
+    frame: str = "torso"  # frame axes
+                          # x right, y fwd, z up
+    # conf floor
+    # brain-only: below it no detection becomes a scene-graph
+    # reference. The gateway still emits raw detections, so
+    # filtering upstream can make a table object read 'grasped'
+    det_conf_floor: float = 0.35
