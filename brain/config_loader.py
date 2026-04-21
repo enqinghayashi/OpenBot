@@ -281,3 +281,6 @@ def _build_nested(lines: List[str], indent: Optional[int]) -> Dict[str, Any]:
     return out
 
 
+def _parse_text(text: str) -> Dict[str, Any]:
+    lines = [ln.rstrip("\n") for ln in text.splitlines() if ln.strip()]
+    return _build_nested(lines, indent=None)
