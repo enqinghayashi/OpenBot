@@ -149,3 +149,19 @@ def strip_inline_comment(text: str) -> str:
     return value[: m.start()] if m else value
 
 
+class ConfigError(ValueError):
+    """Raised for config values that are structurally valid but cannot RUN.
+
+    Two gates raise this today (round 4; v4-trimmed 2026-08-31 — the
+    stuart placeholder-host gate died with the superseded stuart tier):
+      1. profile 'cloud' with gateway.transport 'real' and an unfilled
+         placeholder gateway.host ('', 'TODO', 'TODO-IP', ...) — the D0
+         preflight fills the address; loading a TODO host would be a
+         false 'config ok' before a launch that cannot connect;
+      2. a non-bool value for the safety-adjacent
+         embodiment.perception.silence_means_empty key (see _as_bool) —
+         silence_means_empty MUST stay a real bool, never coerced.
+
+    The message always names the offending key.  Subclasses ValueError so
+    every pre-existing 'except ValueError' caller keeps working.
+    """
