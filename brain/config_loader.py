@@ -1298,3 +1298,130 @@ class VisionConfig:
             ),
             jpeg_quality=_as_int(d.get("jpeg_quality", 80), "vision.jpeg_quality"),
         )
+
+
+class ConfigDict(dict):
+    """The merged config: a plain dict (legacy .get()/'cfg['llm']' access)
+    that ALSO carries every section as a validated read-only dataclass
+    attribute (.llm, .gateway, .skills, .agent, .embodiment, .brain,
+    .realtime, .rest, .voice, .vision, .profile).
+    Returned by load(); the attributes are set there."""
+
+    # annotation only
+    # load() fills these at runtime
+    llm: LlmConfig
+    gateway: GatewayConfig
+    skills: SkillsConfig
+    agent: AgentConfig
+    embodiment: EmbodimentConfig
+    brain: BrainConfig
+    realtime: RealtimeConfig
+    rest: RestConfig
+    voice: VoiceConfig
+    vision: VisionConfig
+    profile: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return dict(self)
+
+
+def _is_placeholder_host(host: str) -> bool:
+    """True when gateway.host is an unfilled D0 placeholder: empty, or
+    containing 'TODO' (case-insensitive — catches 'TODO', 'TODO-IP',
+    'todo', ...).  Broad on purpose: launching against a TODO address
+    must fail loudly, never silently."""
+    h = str(host).strip()
+    return h == "" or "TODO" in h.upper()
+
+
+def _validate_runnable(cfg: ConfigDict, active: str) -> None:
+    """Post-merge runnability gates (round 4; v4-trimmed 2026-08-31).
+    Raises ConfigError naming the offending key — a config that LOADS
+    but cannot RUN is a latent false-success.
+
+    v4 trim: the stuart/stuart-cuda branches are GONE with the superseded
+    tier (load() raises ValueError before this gate can ever see them).
+    The 'cloud' profile keeps its reachability law; the voice/offline
+    profiles need NO API key and no network for the brain lane (their
+    shipped gateway is 127.0.0.1:3900, the on-robot gateway — never a
+    placeholder), and the laptop profile behaves exactly as before (no
+    gates fire on its mock transport).
+
+    Called by load() AFTER overrides are merged and the section
+    dataclasses are built, so the gate sees the exact values a launcher
+    would run with.
+    """
+    # cloud gate
+    # 'cloud' + transport 'real' + a TODO host would report a
+    # bogus 'config ok' before a connection that cannot exist
+    if (
+        active == "cloud"
+        and cfg.gateway.transport == "real"
+        and _is_placeholder_host(cfg.gateway.host)
+    ):
+        raise ConfigError(
+            f"config error: gateway.host is an unfilled placeholder "
+            f"{cfg.gateway.host!r} in the 'cloud' profile with "
+            f"gateway.transport 'real' — the gateway must be reachable "
+            f"(config.cloud.yaml ships 192.168.123.164, the stuart box)"
+        )
+
+
+def load(
+    path: str,
+    profile: Optional[str] = None,
+    overrides: Optional[Mapping[str, Any]] = None,
+) -> ConfigDict:
+    """Parse the base file; merge `config.<profile>.yaml` on top for
+    non-laptop profiles; expose every section as a read-only dataclass;
+    run the round-4 runnability gate (_validate_runnable).  v4
+    (2026-08-31): the stuart tier (profiles + clamps) is superseded —
+    load(profile='stuart'/'stuart-cuda') raises ValueError naming the
+    replacement.  See the module docstring."""
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"config file not found: {path}")
+    with open(path, "r", encoding="utf-8") as fh:
+        cfg = _parse_text(fh.read())
+    active = profile if profile is not None else str(cfg.get("profile", "laptop"))
+    if active in ("stuart", "stuart-cuda"):
+        # stuart profiles are not in the allowlist: the files
+        # remain but cannot load, and the error names the
+        # voice and offline replacements
+        raise ValueError(
+            f"profile {active} requires the SUPERSEDED 2026-08-31 stuart "
+            f"tier: removed from the OpenBot v4 allowlist (local-LLM "
+            f"ladder replaced by the cloud realtime brain + offline "
+            f"regex voice fallback); use config.voice.yaml (profile "
+            f"voice) or config.offline.yaml (profile offline)"
+        )
+    if active not in ("laptop", "cloud", "voice", "offline"):
+        raise ValueError(
+            f"config error: profile {active!r} must be one of 'laptop', "
+            f"'cloud', 'voice' or 'offline'"
+        )
+    if active != "laptop":
+        override = _profile_path(path, active)
+        if not os.path.isfile(override):
+            raise FileNotFoundError(
+                f"profile {active!r} requires {override} (not found); "
+                "refusing to run laptop defaults on a non-laptop profile"
+            )
+        with open(override, "r", encoding="utf-8") as fh:
+            cfg = _deep_merge(cfg, _parse_text(fh.read()))
+    if overrides:
+        cfg = _deep_merge(cfg, dict(overrides))
+    cfg["profile"] = active
+    result = ConfigDict(cfg)
+    result.llm = LlmConfig.from_section(cfg.get("llm"))
+    result.gateway = GatewayConfig.from_section(cfg.get("gateway"))
+    result.skills = SkillsConfig.from_section(cfg.get("skills"))
+    result.agent = AgentConfig.from_section(cfg.get("agent"))
+    result.embodiment = EmbodimentConfig.from_section(cfg.get("embodiment"))
+    result.brain = BrainConfig.from_section(cfg.get("brain"))
+    result.realtime = RealtimeConfig.from_section(cfg.get("realtime"))
+    result.rest = RestConfig.from_section(cfg.get("rest"))
+    result.voice = VoiceConfig.from_section(cfg.get("voice"))
+    result.vision = VisionConfig.from_section(cfg.get("vision"))
+    result.profile = active
+    _validate_runnable(result, active)
+    return result
