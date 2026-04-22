@@ -38,3 +38,42 @@ class ContextSection:
     def render(self) -> str:
         return "\n".join(self.content)
 
+    @property
+    def chars(self) -> int:
+        return sum(len(t) for t in self.content)
+
+    def __len__(self) -> int:
+        return self.chars
+
+
+@dataclass
+class ToolSummary:
+    """Progressive tool disclosure entry.
+
+    Resident carries name + one-liner for every tool; `full_body` is
+    revealed only when the agent calls disclose(name) on the assembler.
+    """
+
+    name: str
+    one_liner: str
+    full_body: str = ""
+
+    def resident_line(self) -> str:
+        return f"- {self.name}: {self.one_liner}"
+
+    def full_line(self) -> str:
+        return f"- {self.name}: {self.full_body}"
+
+
+@dataclass
+class PendingAction:
+    """Structured description of the motion the agent is about to request.
+
+    Set `context.pending_action` before run_pre() so the confirm gate and
+    safety checks can inspect tool + args without parsing free text.
+    """
+
+    tool: str
+    args: Dict[str, Any] = field(default_factory=dict)
+    description: str = ""  # what the human reads in the confirm prompt
+
