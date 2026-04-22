@@ -372,3 +372,23 @@ def _as_bool(value: Any, name: str) -> bool:
     )
 
 
+def _as_gpu_layers(value: Any, name: str) -> int | str:
+    """n_gpu_layers: an int, or the string 'all' (CUDA full offload)."""
+    if isinstance(value, bool):
+        raise ValueError(
+            f"config error: {name} must be an int or 'all', got bool {value!r}"
+        )
+    if isinstance(value, str):
+        if value == "all":
+            return value
+        try:
+            return int(value)
+        except ValueError:
+            raise ValueError(
+                f"config error: {name} must be an int or 'all', got {value!r}"
+            ) from None
+    if isinstance(value, (int, float)):
+        return int(value)
+    raise ValueError(
+        f"config error: {name} must be an int or 'all', got {value!r}"
+    )
