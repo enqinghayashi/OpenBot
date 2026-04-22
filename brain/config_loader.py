@@ -338,3 +338,12 @@ def _as_int(value: Any, name: str) -> int:
         raise ValueError(f"config error: {name} must be an int, got {value!r}") from None
 
 
+def _as_float(value: Any, name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"config error: {name} must be a number, got bool {value!r}")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"config error: {name} must be a number, got {value!r}"
+        ) from None
