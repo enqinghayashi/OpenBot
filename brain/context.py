@@ -125,3 +125,22 @@ class Context:
             parts.append("[CONTEXT]\n" + self.accumulated.render())
         return "\n\n".join(parts)
 
+    @property
+    def chars(self) -> int:
+        return self.resident.chars + self.refreshed.chars + self.accumulated.chars
+
+    def budget_report(self) -> str:
+        return (
+            f"context chars: resident={self.resident.chars} "
+            f"refreshed={self.refreshed.chars} accumulated={self.accumulated.chars}"
+        )
+
+
+def __getattr__(name: str) -> Any:
+    """Lazy re-export so `from brain.context import ContextAssembler` works
+    without a module-level import cycle (context_assembler imports context)."""
+    if name == "ContextAssembler":
+        from .context_assembler import ContextAssembler as _ca
+
+        return _ca
+    raise AttributeError(f"module 'brain.context' has no attribute {name!r}")
