@@ -49,3 +49,50 @@ DEFAULT_SYSTEM_PROMPT = (
 )
 
 
+class ContextAssembler:
+    """Builds resident/refreshed/accumulated Context with budget control."""
+
+    def __init__(
+        self,
+        system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+        tools: Optional[List[ToolSummary]] = None,
+        n_ctx: int = 4096,
+        max_output_tokens: int = 256,
+        chars_per_token: float = 4.0,
+        resident_extras: Optional[List[str]] = None,
+    ) -> None:
+        self.system_prompt = system_prompt
+        self.tools: Dict[str, ToolSummary] = {}
+        for t in tools or []:
+            self.tools[t.name] = t
+        self.disclosed: set = set()  # tools whose body we've switched on
+        self.n_ctx = int(n_ctx)
+        self.max_output_tokens = int(max_output_tokens)
+        self.chars_per_token = float(chars_per_token)
+        self.resident_extras: List[str] = list(resident_extras or [])
+        self.last_truncation_note: str = ""
+        self.last_report: Dict[str, object] = {}
+
+    # --- poking at the resident state ---------------------------------------
+
+    def add_tool(self, tool: ToolSummary) -> None:
+        self.tools[tool.name] = tool
+
+    def disclose(self, name: str) -> str:
+        """Reveal a tool's full body (progressive disclosure).
+
+        Returns the body text.  Once disclosed, the body replaces the
+        one-liner in the resident section for the rest of the session.
+        Unknown tool -> ValueError.
+        """
+        tool = self.tools.get(name)
+        if tool is None:
+            raise ValueError(f"no such tool: {name!r}")
+        self.disclosed.add(name)
+        return tool.full_body
+
+    # --- sorting out the budget -----------------------------------------------
+
+    def budget_tokens(self, text: str) -> int:
+        return max(1, int(math.ceil(len(text) / self.chars_per_token)))
+
