@@ -353,3 +353,20 @@ def _as_str(value: Any, name: str) -> str:
     return str(value)
 
 
+def _as_bool(value: Any, name: str) -> bool:
+    """Bool coercion that NEVER guesses and NEVER inverts: only a real
+    Python bool is accepted.
+
+    In particular numeric 0/1 and the string 'false' are hard
+    ConfigErrors — bool(1) or bool('false') == True would silently flip
+    a safety-adjacent flag like embodiment.perception.silence_means_empty.
+    (The YAML-subset parser already maps true/false/yes/no to Python
+    bools, so every legit file value passes; this guard is what a
+    hand-built overrides mapping or a future YAML dialect hits.)"""
+    if isinstance(value, bool):
+        return value
+    raise ConfigError(
+        f"config error: {name} must be a bool, got {value!r} — bool "
+        f"coercion never guesses (a numeric 0/1 or the string 'false' "
+        f"could silently invert a safety-adjacent flag)"
+    )
