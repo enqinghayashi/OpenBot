@@ -329,3 +329,10 @@ def _check_keys(d: Dict[str, Any], allowed: set, name: str) -> None:
         )
 
 
+def _as_int(value: Any, name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"config error: {name} must be an int, got bool {value!r}")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"config error: {name} must be an int, got {value!r}") from None
