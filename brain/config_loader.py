@@ -297,3 +297,5 @@ def _deep_merge(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, An
     return out
 
 
+def _profile_path(path: str, profile: str) -> str:
+    return os.path.join(os.path.dirname(path), "config." + profile + ".yaml")
