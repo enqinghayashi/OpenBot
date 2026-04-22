@@ -347,3 +347,5 @@ def _as_float(value: Any, name: str) -> float:
         raise ValueError(
             f"config error: {name} must be a number, got {value!r}"
         ) from None
+
+
