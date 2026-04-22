@@ -320,3 +320,10 @@ def _section_dict(section: Optional[Mapping[str, Any]], name: str) -> Dict[str, 
     return dict(section)
 
 
+def _check_keys(d: Dict[str, Any], allowed: set, name: str) -> None:
+    unknown = sorted(k for k in d if k not in allowed)
+    if unknown:
+        raise ValueError(
+            f"config error: unknown key(s) {unknown} in section {name!r} "
+            f"(typo?) -- allowed keys: {sorted(allowed)}"
+        )
