@@ -318,3 +318,5 @@ def _section_dict(section: Optional[Mapping[str, Any]], name: str) -> Dict[str, 
             f"{type(section).__name__}"
         )
     return dict(section)
+
+
