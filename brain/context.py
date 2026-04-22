@@ -77,3 +77,51 @@ class PendingAction:
     args: Dict[str, Any] = field(default_factory=dict)
     description: str = ""  # what the human reads in the confirm prompt
 
+    def display(self) -> str:
+        if self.description:
+            return self.description
+        argstr = " ".join(f"{k}={v}" for k, v in self.args.items())
+        return f"{self.tool} {argstr}".strip()
+
+
+@dataclass
+class Context:
+    """The assembled prompt sections plus the live world snapshot.
+
+    Hooks (brain/hooks.py) read `world`, `pending_action` and `tool_result`
+    off this object; the agent sets them per turn.
+    """
+
+    resident: ContextSection
+    refreshed: ContextSection
+    accumulated: ContextSection
+    world: Optional[WorldObservation] = None  # for hooks/verifier
+    pending_action: Optional[PendingAction] = None  # set before run_pre()
+    pending_action_text: str = ""  # plain-text fallback
+    tool_result: str = ""  # set before run_post()
+
+    @classmethod
+    def empty(cls) -> "Context":
+        return cls(
+            resident=ContextSection("resident", "system"),
+            refreshed=ContextSection("refreshed", "per-turn"),
+            accumulated=ContextSection("accumulated", "task"),
+        )
+
+    @property
+    def pending(self) -> str:
+        if self.pending_action is not None:
+            return self.pending_action.display()
+        return self.pending_action_text or "(no pending action)"
+
+    def render(self) -> str:
+        """Full prompt text (sections joined; agent may re-wrap per template)."""
+        parts = []
+        if self.resident.content:
+            parts.append("[SYSTEM]\n" + self.resident.render())
+        if self.refreshed.content:
+            parts.append("[SCENE]\n" + self.refreshed.render())
+        if self.accumulated.content:
+            parts.append("[CONTEXT]\n" + self.accumulated.render())
+        return "\n\n".join(parts)
+
