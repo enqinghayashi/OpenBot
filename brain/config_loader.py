@@ -370,3 +370,5 @@ def _as_bool(value: Any, name: str) -> bool:
         f"coercion never guesses (a numeric 0/1 or the string 'false' "
         f"could silently invert a safety-adjacent flag)"
     )
+
+
