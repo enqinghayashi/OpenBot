@@ -299,3 +299,13 @@ def _deep_merge(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, An
 
 def _profile_path(path: str, profile: str) -> str:
     return os.path.join(os.path.dirname(path), "config." + profile + ".yaml")
+
+
+# ---------------------------------------------------------------------------
+# Section schemas
+# one frozen dataclass per config section; defaults match the
+# consumers, so a missing key falls back to the same value, and
+# from_section rejects unknown keys and wrong types
+# ---------------------------------------------------------------------------
+
+
