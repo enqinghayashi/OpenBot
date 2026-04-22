@@ -309,3 +309,12 @@ def _profile_path(path: str, profile: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _section_dict(section: Optional[Mapping[str, Any]], name: str) -> Dict[str, Any]:
+    if section is None:
+        return {}
+    if not isinstance(section, Mapping):
+        raise ValueError(
+            f"config error: section {name!r} must be a mapping, got "
+            f"{type(section).__name__}"
+        )
+    return dict(section)
