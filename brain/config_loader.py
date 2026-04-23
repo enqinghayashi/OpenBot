@@ -447,3 +447,44 @@ def _as_backoffs(value: Any, name: str) -> List[int]:
     return out
 
 
+@dataclass(frozen=True)
+class LlmConfig:
+    """The `llm:` segment.  Field `temp` maps from the yaml key
+    `temperature` (the bare `temp` yaml key is accepted as an alias);
+    `temperature` is also available as a read-only property alias.
+    Defaults mirror brain/agent/llm.py's LlamaCppClient defaults.
+
+    PLAN-B keys (2026-08-30, R4 cloud rung) — consumed by
+    brain/agent/llm.py from_config's 'cloud' backend branch:
+    base_url / model / api_key_env / timeout_s / tool_mode /
+    enable_thinking.  tool_mode semantics (the profile ladder):
+      - laptop (base config.yaml) default 'skeleton' — the Plan-B R0'
+        recommendation (plain-text JSON skeleton + deterministic parse,
+        measured 9-10/10 and 2-4x faster than json-mode, whose grammar
+        constraint is the hard-schema Constraint Tax 91.5->48.0%
+        executable at 1.5B);
+      - stuart PINS 'json' in config.stuart.yaml — the D4 deployed
+        json-mode run must not silently change when the base default
+        moves to 'skeleton' (historical: the stuart profile is
+        SUPERSEDED 2026-08-31 and can no longer load — see load());
+      - cloud PINS 'skeleton' in config.cloud.yaml — the R4 rung."""
+
+    backend: str = "mock"  # mock = stub
+                           # real = llama-cpp; cloud = cloud API
+    model_path: str = ""
+    n_ctx: int = 4096
+    n_gpu_layers: int | str = "all"  # 'all' (CUDA) or an int (0 = CPU-only)
+    max_tokens: int = 256
+    temp: float = 0.2
+    base_url: str = ""  # OpenAI-compatible
+                        # cloud endpoint
+    model: str = ""  # cloud model id
+    api_key_env: str = ""  # env var NAME
+                           # never the key itself in config
+    timeout_s: float = 12.0  # cloud/sidecar timeout
+                             # cloud profile pins 120
+    tool_mode: str = "skeleton"  # 'skeleton' | 'json'
+                                 # skeleton = plain JSON + parse
+    enable_thinking: bool = False  # thinking off
+                                   # in every profile
+
