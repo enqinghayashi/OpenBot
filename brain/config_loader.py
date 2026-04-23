@@ -488,3 +488,8 @@ class LlmConfig:
     enable_thinking: bool = False  # thinking off
                                    # in every profile
 
+    @property
+    def temperature(self) -> float:
+        """Read-only alias for `temp` (the yaml key name)."""
+        return self.temp
+
