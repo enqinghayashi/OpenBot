@@ -394,3 +394,54 @@ def _as_gpu_layers(value: Any, name: str) -> int | str:
     )
 
 
+def _as_backoffs(value: Any, name: str) -> List[int]:
+    """reconnect_backoffs: a NON-EMPTY list of non-negative ints — either
+    the inline `[a, b, c]` list form (what the YAML-subset parser
+    resolves) or a comma-separated string ('1,2,4,8').  Every entry must
+    be a real int: bool and float are REJECTED, never coerced
+    (int(1.5) == 1 would silently reshape the retry ladder), and a
+    negative backoff is a contract violation.  An empty list is rejected
+    on BOTH branches too — a session with zero retries is not a config
+    value."""
+    items: List[Any]
+    if isinstance(value, str):
+        items = [p.strip() for p in value.split(",") if p.strip()]
+    elif isinstance(value, list):
+        items = value
+    else:
+        raise ValueError(
+            f"config error: {name} must be a list of ints or a "
+            f"comma-separated string, got {value!r}"
+        )
+    if not items:
+        raise ValueError(
+            f"config error: {name} must be a non-empty list of ints, "
+            f"got {value!r}"
+        )
+    out: List[int] = []
+    for item in items:
+        if isinstance(item, bool) or not isinstance(item, int):
+            # comma-separated strings still need an int parse;
+            # bools and floats are rejected rather than coerced
+            if isinstance(item, str):
+                try:
+                    n = int(item)
+                except ValueError:
+                    raise ValueError(
+                        f"config error: {name} entries must be "
+                        f"non-negative integers, got {item!r}"
+                    ) from None
+            else:
+                raise ValueError(
+                    f"config error: {name} entries must be non-negative "
+                    f"integers, got {item!r}"
+                )
+        else:
+            n = item
+        if n < 0:
+            raise ValueError(
+                f"config error: {name} entries must be non-negative "
+                f"integers, got {n}"
+            )
+        out.append(n)
+    return out
