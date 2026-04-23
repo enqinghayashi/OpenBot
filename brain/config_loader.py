@@ -597,3 +597,22 @@ class SkillsConfig:
         )
 
 
+@dataclass(frozen=True)
+class AgentConfig:
+    """The `agent:` segment.  Defaults mirror G1Agent.__init__ defaults.
+
+    RUNTIME CONSUMER (round-5 config-steering): every field is read by
+    brain/agent/agent.py ``G1Agent.from_config`` and wired into the
+    running agent (max_tool_calls / failure_budget /
+    detection_freshness_s / llm_timeout_s / max_llm_attempts /
+    max_tool_result_chars -> G1Agent.__init__; detection_freshness_s ->
+    brain/hooks.py safety_checks_hook freshness budget via
+    default_hooks(freshness_s=...))."""
+
+    max_tool_calls: int = 25
+    failure_budget: int = 3
+    detection_freshness_s: float = 2.0
+    llm_timeout_s: float = 12.0
+    max_llm_attempts: int = 2
+    max_tool_result_chars: int = 2000
+
