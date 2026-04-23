@@ -616,3 +616,28 @@ class AgentConfig:
     max_llm_attempts: int = 2
     max_tool_result_chars: int = 2000
 
+    @classmethod
+    def from_section(cls, section: Optional[Mapping[str, Any]]) -> "AgentConfig":
+        d = _section_dict(section, "agent")
+        _check_keys(
+            d,
+            {"max_tool_calls", "failure_budget", "detection_freshness_s",
+             "llm_timeout_s", "max_llm_attempts", "max_tool_result_chars"},
+            "agent",
+        )
+        return cls(
+            max_tool_calls=_as_int(d.get("max_tool_calls", 25), "agent.max_tool_calls"),
+            failure_budget=_as_int(d.get("failure_budget", 3), "agent.failure_budget"),
+            detection_freshness_s=_as_float(
+                d.get("detection_freshness_s", 2.0), "agent.detection_freshness_s"
+            ),
+            llm_timeout_s=_as_float(
+                d.get("llm_timeout_s", 12.0), "agent.llm_timeout_s"
+            ),
+            max_llm_attempts=_as_int(
+                d.get("max_llm_attempts", 2), "agent.max_llm_attempts"
+            ),
+            max_tool_result_chars=_as_int(
+                d.get("max_tool_result_chars", 2000), "agent.max_tool_result_chars"
+            ),
+        )
