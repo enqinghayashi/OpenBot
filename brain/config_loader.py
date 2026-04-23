@@ -641,3 +641,5 @@ class AgentConfig:
                 d.get("max_tool_result_chars", 2000), "agent.max_tool_result_chars"
             ),
         )
+
+
