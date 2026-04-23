@@ -547,3 +547,14 @@ class GatewayConfig:
     #: unauthenticated motion socket but blocks every LAN dial
     bind_host: str = "0.0.0.0"
 
+    @classmethod
+    def from_section(cls, section: Optional[Mapping[str, Any]]) -> "GatewayConfig":
+        d = _section_dict(section, "gateway")
+        _check_keys(d, {"transport", "host", "port", "bind_host"}, "gateway")
+        return cls(
+            transport=_as_str(d.get("transport", "mock"), "gateway.transport"),
+            host=_as_str(d.get("host", ""), "gateway.host"),
+            port=_as_int(d.get("port", 0), "gateway.port"),
+            bind_host=_as_str(d.get("bind_host", "0.0.0.0"),
+                              "gateway.bind_host"),
+        )
