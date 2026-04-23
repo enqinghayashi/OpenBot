@@ -193,3 +193,117 @@ def classify_pick_z(z, tabletop_min_z, max_descent_m):
     if z >= rescue_floor(tabletop_min_z, max_descent_m):
         return "DESCEND"
     return "DEEP_FLOOR"
+
+
+def engine_z(z, stand_m, confirmed_ref_m):
+    """The z the engine must be commanded, in the DESCENDED torso frame.
+
+    ``z + (stand_m - confirmed_ref_m)``.  The torso frame rides with the torso,
+    so a body that has descended by ``stand_m - confirmed_ref_m`` sees the same
+    fixed object ``that much`` higher.  ``confirmed_ref_m`` is the CONFIRMED
+    reference read back from the writer's status — never the requested command
+    — which is what makes the precondition fail-closed rather than assumed.
+
+    That 1:1 torso-frame delta is INFERRED from the frame definition, not
+    measured; the torso-pitch coupling is the unverified term (see the module
+    docstring).  With ``confirmed_ref_m == stand_m`` this is the identity, so
+    the lane-off path cannot perturb a target.
+    """
+    zf = _finite(z, "z")
+    stand = _finite(stand_m, "stand_m")
+    ref = _finite(confirmed_ref_m, "confirmed_ref_m")
+    return zf + (stand - ref)
+
+
+def same_height(h_need, h_cur, tol_m):
+    """The operator's hold rule: is the height we need the height we have?
+
+    ``abs(h_need - h_cur) <= tol_m``.  A decision, not a measurement, so a
+    non-finite input answers ``False`` — the conservative direction, which
+    retreats first rather than HOLDING a body height nobody can vouch for.
+    """
+    if not (_is_finite_number(h_need) and _is_finite_number(h_cur)
+            and _is_finite_number(tol_m)):
+        return False
+    return abs(h_need - h_cur) <= tol_m
+
+
+# ────────────────────────────────────────── how the writer spells its height status
+# the writer's real status output, copied line for line.
+#
+#   height=<ref>(stand <stand>)                inactive  -> active=False
+#   height=<ref>-><target> active rem=<s>s     active    -> active=True
+#   height=<ref> SUSPENDED-><t> rem=<s>s       suspended -> suspended=True
+#
+# the `(stand ...)` form is the no-op detector: it's exactly what a shut band
+# produces, because `_apply_height` calls
+# `_return_to_standing("height standing")` whenever the clamped value is within
+# `height_stand_eps` of standing. so a shut band can't be mistaken for a
+# descent. the fragment sits mid-line in the real reply - the writer's `status`
+# verb returns "STATE: ... <cmd_auto> <height> <sonic>" - so the
+# parser searches the line instead of anchoring to its start.
+_NUM = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
+_RE_SUSPENDED = re.compile(
+    r"height=(%s)\s+SUSPENDED->(%s)\s+rem=(%s)s" % (_NUM, _NUM, _NUM))
+_RE_ACTIVE = re.compile(
+    r"height=(%s)->(%s)\s+active\s+rem=(%s)s" % (_NUM, _NUM, _NUM))
+_RE_STAND = re.compile(
+    r"height=(%s)\s*\(stand\s+(%s)\)" % (_NUM, _NUM))
+
+
+def parse_height_status(line):
+    """Parse the writer's inline height fragment; ``None`` if unparseable.
+
+    Returns a dict with these keys, or ``None``:
+
+        ``ref``        last reference the policy was given (float)
+        ``target``     tracked target (float), or ``None`` when nothing is
+                       tracked
+        ``stand``      nominal standing reference (float), or ``None``
+        ``rem``        seconds left on the hold (float), or ``None``
+        ``active``     True only for the ``active rem=`` form
+        ``suspended``  True only for the ``SUSPENDED->`` form
+
+    ``target`` is ``None`` — NOT a copy of ``stand`` — for the inactive form:
+    the writer is tracking nothing, and copying the standing reference into
+    ``target`` would let a ``|ref - target| <= tol`` test "confirm" a descent
+    that never happened.  A caller that wants a confirmed descent must require
+    ``active`` AND a matching pair.
+
+    Fail-closed on everything else: a non-string line, a field that does not
+    match the grammar, or a numeric field that is not finite, all return
+    ``None``.  Never a guess, never a default.
+    """
+    if not isinstance(line, str):
+        return None
+
+    m = _RE_SUSPENDED.search(line)
+    if m is not None:
+        ref, target, rem = (float(m.group(1)), float(m.group(2)),
+                            float(m.group(3)))
+        if not all(math.isfinite(v) for v in (ref, target, rem)):
+            return None
+        return {"ref": ref, "target": target, "stand": None, "rem": rem,
+                "active": False, "suspended": True}
+
+    m = _RE_ACTIVE.search(line)
+    if m is not None:
+        ref, target, rem = (float(m.group(1)), float(m.group(2)),
+                            float(m.group(3)))
+        if not all(math.isfinite(v) for v in (ref, target, rem)):
+            return None
+        return {"ref": ref, "target": target, "stand": None, "rem": rem,
+                "active": True, "suspended": False}
+
+    m = _RE_STAND.search(line)
+    if m is not None:
+        ref, stand = float(m.group(1)), float(m.group(2))
+        if not all(math.isfinite(v) for v in (ref, stand)):
+            return None
+        return {"ref": ref, "target": None, "stand": stand, "rem": None,
+                "active": False, "suspended": False}
+
+    return None
+
+
+# ──────────────────────────────────────────────── the lane switch and the envelope
