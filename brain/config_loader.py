@@ -531,3 +531,19 @@ class LlmConfig:
         )
 
 
+@dataclass(frozen=True)
+class GatewayConfig:
+    """The `gateway:` segment.  Host/port defaults are neutral placeholders
+    (the gateway-side consumer lives in gateway/; the deployed config.yaml
+    always carries the real endpoints)."""
+
+    transport: str = "mock"  # mock = in-process
+                             # real = socket to the gateway
+    host: str = ""
+    port: int = 0
+    #: bind host
+    #: server-side only; host above stays client-dial only
+    #: 0.0.0.0 binds every interface; 127.0.0.1 hides the
+    #: unauthenticated motion socket but blocks every LAN dial
+    bind_host: str = "0.0.0.0"
+
