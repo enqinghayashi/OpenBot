@@ -558,3 +558,5 @@ class GatewayConfig:
             bind_host=_as_str(d.get("bind_host", "0.0.0.0"),
                               "gateway.bind_host"),
         )
+
+
