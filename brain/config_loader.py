@@ -392,3 +392,5 @@ def _as_gpu_layers(value: Any, name: str) -> int | str:
     raise ValueError(
         f"config error: {name} must be an int or 'all', got {value!r}"
     )
+
+
