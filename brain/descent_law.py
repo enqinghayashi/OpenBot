@@ -123,3 +123,73 @@ def _finite(value, name):
         raise ValueError(
             "descent_law: %s must be a finite number, got %r" % (name, value))
     return float(value)
+
+
+def _finite_descent(value, name):
+    """:func:`_finite` plus the descent-budget invariant ``>= 0``.
+
+    A negative budget is not a small budget: ``clamp(COMFORT_Z - z, 0.0, cap)``
+    with ``cap < 0`` is an empty interval, so there is no honest number to
+    return.
+    """
+    budget = _finite(value, name)
+    if budget < 0.0:
+        raise ValueError(
+            "descent_law: %s must be >= 0, got %r" % (name, value))
+    return budget
+
+
+# ────────────────────────────────────────────────────────────── the law itself
+def descent_for_z(z, max_descent_m):
+    """Desired body descent for a target at torso-frame ``z``, in metres.
+
+    ``d(z) = clamp(COMFORT_Z - z, 0.0, max_descent_m)``.  One clamped linear
+    function: zero at and above :data:`COMFORT_Z` (the normal branch), then
+    proportional, then saturated at the caller's budget — and the saturated
+    band is the rescue band.  ``max_descent_m`` is the caller's: it is
+    ``height_stand_m - height_min_m``, the writer clamp's own band.
+
+    Raises ``ValueError`` for a non-finite ``z`` or a non-finite/negative
+    ``max_descent_m`` (see the module docstring's error discipline).
+    """
+    zf = _finite(z, "z")
+    budget = _finite_descent(max_descent_m, "max_descent_m")
+    return min(max(COMFORT_Z - zf, 0.0), budget)
+
+
+def rescue_floor(tabletop_min_z, max_descent_m):
+    """The lowest torso-frame ``z`` the body can still bring into reach.
+
+    Derived on EVERY call — ``tabletop_min_z - max_descent_m`` — so no number
+    for it exists anywhere in this file, and widening the writer's band (or
+    changing the envelope's floor) moves it without a code change.
+
+    ``max_descent_m`` is the caller's budget (``height_stand_m -
+    height_min_m``), never a constant here.  Raises ``ValueError`` for a
+    non-finite input or a negative budget, so a caller can never receive a
+    fabricated floor.
+    """
+    return (_finite(tabletop_min_z, "tabletop_min_z")
+            - _finite_descent(max_descent_m, "max_descent_m"))
+
+
+def classify_pick_z(z, tabletop_min_z, max_descent_m):
+    """The branch a pick target falls in, as one of four EXACT strings.
+
+        ``"ABSENT"``      ``z`` is ``None`` or not a finite number
+        ``"NORMAL"``      ``z >= COMFORT_Z`` — today's path, byte-identical
+        ``"DESCEND"``     ``rescue_floor(...) <= z < COMFORT_Z`` — the new lane
+        ``"DEEP_FLOOR"``  ``z < rescue_floor(...)`` — today's honest refusal
+
+    The floor is computed here from the two arguments, so the boundary is
+    inclusive at the bottom: ``z`` exactly AT the floor is ``"DESCEND"``.
+    ``"ABSENT"`` is returned WITHOUT touching the floor arguments — an absent
+    detection is not a config probe.
+    """
+    if not _is_finite_number(z):
+        return "ABSENT"
+    if z >= COMFORT_Z:
+        return "NORMAL"
+    if z >= rescue_floor(tabletop_min_z, max_descent_m):
+        return "DESCEND"
+    return "DEEP_FLOOR"
