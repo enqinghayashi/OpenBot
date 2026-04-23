@@ -529,3 +529,5 @@ class LlmConfig:
                 d.get("enable_thinking", False), "llm.enable_thinking"
             ),
         )
+
+
