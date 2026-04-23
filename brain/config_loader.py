@@ -493,3 +493,39 @@ class LlmConfig:
         """Read-only alias for `temp` (the yaml key name)."""
         return self.temp
 
+    @classmethod
+    def from_section(cls, section: Optional[Mapping[str, Any]]) -> "LlmConfig":
+        d = _section_dict(section, "llm")
+        _check_keys(
+            d,
+            {"backend", "model_path", "n_ctx", "n_gpu_layers", "max_tokens",
+             "temperature", "temp", "base_url", "model", "api_key_env",
+             "timeout_s", "tool_mode", "enable_thinking"},
+            "llm",
+        )
+        temp = d.get("temperature", d.get("temp", 0.2))
+        tool_mode = d.get("tool_mode", "skeleton")
+        if tool_mode not in ("skeleton", "json"):
+            raise ValueError(
+                f"config error: llm.tool_mode {tool_mode!r} must be "
+                f"'skeleton' (Plan-B R0'/R4 plain-text JSON + deterministic "
+                f"parse) or 'json' (D4 grammar-constrained json-mode)"
+            )
+        return cls(
+            backend=_as_str(d.get("backend", "mock"), "llm.backend"),
+            model_path=_as_str(d.get("model_path", ""), "llm.model_path"),
+            n_ctx=_as_int(d.get("n_ctx", 4096), "llm.n_ctx"),
+            n_gpu_layers=_as_gpu_layers(
+                d.get("n_gpu_layers", "all"), "llm.n_gpu_layers"
+            ),
+            max_tokens=_as_int(d.get("max_tokens", 256), "llm.max_tokens"),
+            temp=_as_float(temp, "llm.temperature"),
+            base_url=_as_str(d.get("base_url", ""), "llm.base_url"),
+            model=_as_str(d.get("model", ""), "llm.model"),
+            api_key_env=_as_str(d.get("api_key_env", ""), "llm.api_key_env"),
+            timeout_s=_as_float(d.get("timeout_s", 12.0), "llm.timeout_s"),
+            tool_mode=tool_mode,
+            enable_thinking=_as_bool(
+                d.get("enable_thinking", False), "llm.enable_thinking"
+            ),
+        )
