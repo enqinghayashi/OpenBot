@@ -560,3 +560,18 @@ class GatewayConfig:
         )
 
 
+@dataclass(frozen=True)
+class SkillsConfig:
+    """The `skills:` segment (protocol endpoints).  Socket defaults are the
+    STUART-VERIFIED platform endpoints (writer /tmp/merged_writer.sock,
+    grip /tmp/grip_server.sock).  engine_cmd is DUAL-FORM: the dataclass
+    DEFAULT (key absent) is the engine-off verb form; a file key = its spawn."""
+
+    writer_sock: str = "/tmp/merged_writer.sock"
+    grip_sock: str = "/tmp/grip_server.sock"
+    #: engine sock
+    #: must match the entrypoint's SOCK_PATH
+    #: or connect-first degrades to spawn-always
+    engine_sock: str = "/tmp/pick_engine.sock"
+    engine_cmd: str = "pick x y z nx ny nz orientation height_m"
+
