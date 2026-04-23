@@ -643,3 +643,57 @@ class AgentConfig:
         )
 
 
+@dataclass(frozen=True)
+class EnvelopeConfig:
+    """`embodiment.envelope` — STUART-verified platform facts (defaults
+    match brain/embodiment.py's Envelope)."""
+
+    pick_min_height_m: float = -0.35  # torso frame
+                                      # z = height above torso link;
+                                      # tabletop z ~[0.00,+0.07],
+                                      # ground ~-0.75
+    pick_max_height_m: float = 1.20
+    max_reach_m: float = 0.90
+    grip_center_standoff_m: float = 0.0  # must stay 0.0
+                                         # 0.37 offsets the wrist target and picks the wrong spot;
+                                         # no engine reads this field
+    min_arm_dur_s: float = 1.5  # <dur> clamp
+                                # shortest allowed arm motion
+
+    # ── descent lane
+    # all switches default off; False makes effective_pick_floor
+    # return pick_min_height_m unchanged. The four law inputs
+    # come from config, with no literals in the law itself
+    low_workspace_lane: bool = False  # master switch
+                                      # false = tabletop-only
+                                      # strict bool: "false"/0 refuses
+                                      # consumer: effective_pick_floor
+    height_stand_m: float = 0.74  # upper bound of the
+                                  # writer's height_stand
+    height_min_m: float = 0.55  # clamp floor
+                                # descent budget = stand - min; the writer keeps the
+                                # band shut (min == max == 0.74) until it is armed
+    hold_tol_m: float = 0.05  # same-height tol
+                              # hold iff |h_need - h_cur| <= it
+    descend_confirm_timeout_s: float = 3.0  # confirm poll (s)
+    lane_operation_budget_s: float = 30.0  # lane budget (s)
+                                           # matches the descent lane's own budget;
+                                           # brain never imports gateway
+    pre_descent_step: bool = False  # stance step
+                                    # widen on the writer's `step` verbs before descending;
+                                    # strict bool, defaults off
+                                    # consumer: _pre_descent_step_flag
+    left_hand_in_service: bool = False  # left Dex3 not in service
+                                        # strict bool; False makes the tool registry
+                                        # refuse arm commands for 'left'
+
+    # ── pc switches
+    # strict bools; all False means no pointcloud client, no
+    # /pc_arm publisher and no /pc_result subscriber. Consumer:
+    # resolve_pc_switches; pc_support_split is not allowlisted
+    pc_shadow: bool = False  # log only
+                             # non-decisive; the rim is requested and logged,
+                             # never applied
+    pc_hold_check: bool = False  # decisive
+                                 # a negative check only downgrades
+    pc_place_rim: bool = False  # applied
