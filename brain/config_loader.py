@@ -575,3 +575,23 @@ class SkillsConfig:
     engine_sock: str = "/tmp/pick_engine.sock"
     engine_cmd: str = "pick x y z nx ny nz orientation height_m"
 
+    @classmethod
+    def from_section(cls, section: Optional[Mapping[str, Any]]) -> "SkillsConfig":
+        d = _section_dict(section, "skills")
+        _check_keys(d, {"writer_sock", "grip_sock", "engine_sock", "engine_cmd"},
+                    "skills")
+        return cls(
+            writer_sock=_as_str(
+                d.get("writer_sock", "/tmp/merged_writer.sock"), "skills.writer_sock"
+            ),
+            grip_sock=_as_str(
+                d.get("grip_sock", "/tmp/grip_server.sock"), "skills.grip_sock"
+            ),
+            engine_sock=_as_str(
+                d.get("engine_sock", "/tmp/pick_engine.sock"), "skills.engine_sock"
+            ),
+            engine_cmd=_as_str(
+                d.get("engine_cmd", "pick x y z nx ny nz orientation height_m"),
+                "skills.engine_cmd",
+            ),
+        )
