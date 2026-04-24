@@ -738,3 +738,23 @@ class BaseRelativeConfig:
         )
 
 
+@dataclass(frozen=True)
+class EmbodimentConfig:
+    """The `embodiment:` capability segment — mirrors brain/embodiment.py's
+    schema exactly (envelope / perception / base_relative).
+
+    RUNTIME CONSUMER (round-5 config-steering): brain/agent/agent.py
+    ``G1Agent.from_config`` constructs this dataclass via
+    ``EmbodimentConfig.from_section`` and INJECTS it into the running
+    hooks (safety_checks_hook envelope — pick_min/max_height_m,
+    perception.freshness_s fallback) and the tool registry (pick
+    placeholder max_reach_m / grip_center_standoff_m + place_at_spot
+    base_relative.key_positions lookup).  Gateway-side keys
+    (min_arm_dur_s / silence_means_empty / frame) are consumed by the
+    gateway cluster's round-5 runtime-embodiment wiring (gateway/
+    gateway_node.py + gateway/assemble.py)."""
+
+    envelope: EnvelopeConfig = field(default_factory=EnvelopeConfig)
+    perception: PerceptionConfig = field(default_factory=PerceptionConfig)
+    base_relative: BaseRelativeConfig = field(default_factory=BaseRelativeConfig)
+
