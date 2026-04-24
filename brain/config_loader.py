@@ -758,3 +758,177 @@ class EmbodimentConfig:
     perception: PerceptionConfig = field(default_factory=PerceptionConfig)
     base_relative: BaseRelativeConfig = field(default_factory=BaseRelativeConfig)
 
+    @classmethod
+    def from_section(cls, section: Optional[Mapping[str, Any]]) -> "EmbodimentConfig":
+        d = _section_dict(section, "embodiment")
+        _check_keys(d, {"envelope", "perception", "base_relative"}, "embodiment")
+
+        env = _section_dict(d.get("envelope"), "embodiment.envelope")
+        _check_keys(
+            env,
+            {"pick_min_height_m", "pick_max_height_m", "max_reach_m",
+             "grip_center_standoff_m", "min_arm_dur_s",
+             # entry first
+             # _check_keys rejects unknown keys, so every key a
+             # config file may set must be listed here
+             "low_workspace_lane", "height_stand_m", "height_min_m",
+             "hold_tol_m", "descend_confirm_timeout_s",
+             # same rule for the lane budget
+             "lane_operation_budget_s",
+             # left-hand key, same rule
+             "left_hand_in_service",
+             # pc entries, same rule
+             # pc_support_split is deliberately absent, so it cannot
+             # be enabled from config. Keep these before
+             # pre_descent_step: the documented order is pinned
+             "pc_shadow", "pc_hold_check", "pc_place_rim",
+             # stance key, same rule
+             "pre_descent_step"},
+            "embodiment.envelope",
+        )
+    # validate, do not substitute
+    # a NaN budget makes every `elapsed > budget` false, so the
+    # lane is unbounded; 0 or negative refuses every dispatch
+    # and either way the file disagrees with the lane
+        lane_budget = _as_float(
+            env.get("lane_operation_budget_s", 30.0),
+            "embodiment.envelope.lane_operation_budget_s",
+        )
+        if not (math.isfinite(lane_budget) and lane_budget > 0.0):
+            raise ValueError(
+                "config error: embodiment.envelope.lane_operation_budget_s "
+                f"must be a finite positive number of seconds, got "
+                f"{lane_budget!r} — refusing to guess a budget for the lane"
+            )
+        envelope = EnvelopeConfig(
+            pick_min_height_m=_as_float(
+                env.get("pick_min_height_m", -0.35), "embodiment.envelope.pick_min_height_m"
+            ),
+            pick_max_height_m=_as_float(
+                env.get("pick_max_height_m", 1.20), "embodiment.envelope.pick_max_height_m"
+            ),
+            max_reach_m=_as_float(
+                env.get("max_reach_m", 0.90), "embodiment.envelope.max_reach_m"
+            ),
+            grip_center_standoff_m=_as_float(
+                env.get("grip_center_standoff_m", 0.0),
+                "embodiment.envelope.grip_center_standoff_m",
+            ),
+            min_arm_dur_s=_as_float(
+                env.get("min_arm_dur_s", 1.5), "embodiment.envelope.min_arm_dur_s"
+            ),
+            # strict bool
+            # _as_bool accepts a real Python bool only; 'false', 0 or 1
+            # is a ConfigError, never a silent motion enable. The law
+            # inputs stay plain finite floats and the law fails closed
+            # on a non-finite band
+            low_workspace_lane=_as_bool(
+                env.get("low_workspace_lane", False),
+                "embodiment.envelope.low_workspace_lane",
+            ),
+            height_stand_m=_as_float(
+                env.get("height_stand_m", 0.74), "embodiment.envelope.height_stand_m"
+            ),
+            height_min_m=_as_float(
+                env.get("height_min_m", 0.55), "embodiment.envelope.height_min_m"
+            ),
+            hold_tol_m=_as_float(
+                env.get("hold_tol_m", 0.05), "embodiment.envelope.hold_tol_m"
+            ),
+            descend_confirm_timeout_s=_as_float(
+                env.get("descend_confirm_timeout_s", 3.0),
+                "embodiment.envelope.descend_confirm_timeout_s",
+            ),
+            lane_operation_budget_s=lane_budget,
+            # strict bool
+            # like low_workspace_lane: 'true'/0/1 is a
+            # ConfigError, never a silent motion enable
+            pre_descent_step=_as_bool(
+                env.get("pre_descent_step", False),
+                "embodiment.envelope.pre_descent_step",
+            ),
+            left_hand_in_service=_as_bool(
+                env.get("left_hand_in_service", False),
+                "embodiment.envelope.left_hand_in_service",
+            ),
+            # strict bools too
+            # a string or number is a ConfigError, never a
+            # silent enable next to pick/place
+            pc_shadow=_as_bool(
+                env.get("pc_shadow", False),
+                "embodiment.envelope.pc_shadow",
+            ),
+            pc_hold_check=_as_bool(
+                env.get("pc_hold_check", False),
+                "embodiment.envelope.pc_hold_check",
+            ),
+            pc_place_rim=_as_bool(
+                env.get("pc_place_rim", False),
+                "embodiment.envelope.pc_place_rim",
+            ),
+        )
+
+        perc = _section_dict(d.get("perception"), "embodiment.perception")
+        _check_keys(
+            perc,
+            {"freshness_s", "silence_means_empty", "frame", "det_conf_floor"},
+            "embodiment.perception",
+        )
+        # finite only
+        # a NaN floor makes `d.conf < conf_floor` false, so it
+        # looks configured and filters nothing
+        conf_floor = _as_float(
+            perc.get("det_conf_floor", 0.35), "embodiment.perception.det_conf_floor"
+        )
+        if not math.isfinite(conf_floor):
+            raise ValueError(
+                "config error: embodiment.perception.det_conf_floor must be "
+                f"finite, got {conf_floor!r}"
+            )
+        perception = PerceptionConfig(
+            freshness_s=_as_float(
+                perc.get("freshness_s", 2.0), "embodiment.perception.freshness_s"
+            ),
+            silence_means_empty=_as_bool(
+                perc.get("silence_means_empty", True),
+                "embodiment.perception.silence_means_empty",
+            ),
+            frame=_as_str(perc.get("frame", "torso"), "embodiment.perception.frame"),
+            det_conf_floor=conf_floor,
+        )
+
+        br = _section_dict(d.get("base_relative"), "embodiment.base_relative")
+        _check_keys(br, {"key_positions"}, "embodiment.base_relative")
+        raw_kp = br.get("key_positions")
+        if raw_kp is None:
+            # dataclass default
+            # an absent key yields grip_center_m and
+            # camera_offset_m, matching the embodiment defaults;
+            # an explicit {} stays an empty map
+            base_relative = BaseRelativeConfig()
+        else:
+            if not isinstance(raw_kp, Mapping):
+                raise ValueError(
+                    "config error: embodiment.base_relative.key_positions must be a "
+                    f"mapping, got {type(raw_kp).__name__}"
+                )
+            key_positions: Dict[str, List[float]] = {}
+            for name, pos in raw_kp.items():
+                if (
+                    not isinstance(pos, list)
+                    or not all(
+                        isinstance(x, (int, float)) and not isinstance(x, bool)
+                        for x in pos
+                    )
+                ):
+                    raise ValueError(
+                        "config error: embodiment.base_relative.key_positions"
+                        f"[{name!r}] must be a list of numbers, got {pos!r}"
+                    )
+                key_positions[str(name)] = [float(x) for x in pos]
+            base_relative = BaseRelativeConfig(key_positions=key_positions)
+        return cls(
+            envelope=envelope,
+            perception=perception,
+            base_relative=base_relative,
+        )
