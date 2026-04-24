@@ -307,3 +307,50 @@ def parse_height_status(line):
 
 
 # ──────────────────────────────────────────────── the lane switch and the envelope
+def effective_pick_floor(envelope):
+    """The pick floor the brain's refusal nets should enforce, in metres.
+
+    THE SWITCH IS READ, THE FLOOR IS NOT REWRITTEN.  With the lane switch off
+    this returns ``envelope.pick_min_height_m`` UNCHANGED — the same object,
+    read once, with no other attribute touched — so a config that omits the
+    switch is indistinguishable from today's behaviour at the call site.
+
+    With the lane ON the floor relaxes to
+    ``rescue_floor(pick_min_height_m, height_stand_m - height_min_m)``: the
+    tabletop floor is still the envelope's authority, and the writer's band is
+    threaded in from the envelope's law inputs.
+
+    Envelope fields read (the last three are added by the config work; this
+    module assumes none of them):
+
+        ``pick_min_height_m``   the tabletop floor — EXISTING field
+        ``low_workspace_lane``  the switch; only a real ``bool`` ``True`` arms
+                                the lane, mirroring the config loader's
+                                strict-bool discipline — a string or a number
+                                refuses rather than silently arming it
+        ``height_stand_m``      nominal standing reference (m)
+        ``height_min_m``        the writer clamp's band floor (m)
+
+    FAIL-CLOSED.  If the switch is on but the band inputs are missing,
+    non-numeric, non-finite, inverted, or zero-width, the lane cannot relax
+    anything and this returns the UNRELAXED floor rather than raising — a
+    misconfigured envelope must degrade to today's honest refusal, never to a
+    crash and never to a silently widened workspace.  Reads are ``getattr`` so
+    an envelope that predates the lane still constructs and still answers.
+    """
+    floor = getattr(envelope, "pick_min_height_m", None)
+    if not _is_finite_number(floor):
+        raise ValueError(
+            "descent_law: envelope.pick_min_height_m must be a finite number, "
+            "got %r" % (floor,))
+
+    if getattr(envelope, "low_workspace_lane", False) is not True:
+        return floor
+
+    stand = getattr(envelope, "height_stand_m", None)
+    hmin = getattr(envelope, "height_min_m", None)
+    if not (_is_finite_number(stand) and _is_finite_number(hmin)):
+        return floor
+    if stand <= hmin:
+        return floor
+    return rescue_floor(floor, stand - hmin)
