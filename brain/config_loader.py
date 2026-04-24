@@ -982,3 +982,5 @@ class BrainConfig:
                 f"to guess whether the motion confirm gate is on or off"
             )
         return cls(lane=lane, confirm_motion=raw)
+
+
