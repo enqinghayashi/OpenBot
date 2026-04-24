@@ -238,3 +238,91 @@ class BaseRelative:
     def summary(self) -> str:
         items = ", ".join(f"{k}={v}" for k, v in self.key_positions.items())
         return f"key positions: {items}"
+
+
+def _as_bool(value: Any, name: str) -> bool:
+    """Coerce a parsed perception value to bool; raise on anything else.
+
+    The loader already returns Python bools; this also accepts the common
+    string spellings so a hand-built dict cannot silently flip a
+    safety-relevant flag (bool('false') == True would invert
+    silence_means_empty).  Garbage raises — never a guess.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    low = str(value).strip().lower()
+    if low in ("true", "yes", "on", "1"):
+        return True
+    if low in ("false", "no", "off", "0"):
+        return False
+    raise ValueError(f"embodiment perception.{name} must be a bool, got {value!r}")
+
+
+@dataclass
+class Embodiment:
+    """Capability payload assembled from the `embodiment:` config segment."""
+
+    envelope: Envelope = field(default_factory=Envelope)
+    perception: Perception = field(default_factory=Perception)
+    base_relative: BaseRelative = field(default_factory=BaseRelative)
+
+    @classmethod
+    def defaults(cls) -> "Embodiment":
+        return cls()
+
+    @classmethod
+    def from_dict(cls, d: Optional[Dict[str, Any]]) -> "Embodiment":
+        """Merge a parsed `embodiment:` dict over the defaults (per-key).
+
+        Values must already be parsed (config_loader does that); a raw
+        string with a trailing comment raises here by design — the loader
+        is the single comment-stripping place.
+        """
+        e = cls.defaults()
+        if not d:
+            return e
+        env = d.get("envelope")
+        if isinstance(env, dict):
+            for k, v in env.items():
+                if k == "left_hand_in_service":
+                    # bool switch
+                    # never float()
+                    e.envelope.left_hand_in_service = _as_bool(
+                        v, "envelope.left_hand_in_service")
+                elif hasattr(e.envelope, k):
+                    setattr(e.envelope, k, float(v))
+        perc = d.get("perception")
+        if isinstance(perc, dict):
+            if "freshness_s" in perc:
+                e.perception.freshness_s = float(perc["freshness_s"])
+            if "silence_means_empty" in perc:
+                e.perception.silence_means_empty = _as_bool(
+                    perc["silence_means_empty"], "silence_means_empty"
+                )
+            if "frame" in perc:
+                e.perception.frame = str(perc["frame"])
+        br = d.get("base_relative")
+        if isinstance(br, dict) and isinstance(br.get("key_positions"), dict):
+            for k, v in br["key_positions"].items():
+                if isinstance(v, list):
+                    e.base_relative.key_positions[str(k)] = [float(x) for x in v]
+        return e
+
+    @classmethod
+    def from_config(cls, cfg: Any) -> "Embodiment":
+        """Build from an ALREADY-LOADED config (config_loader.load() result).
+
+        The accessor the tools layer uses to wire the envelope into the
+        pick placeholder (no re-parse: the loader owns YAML parsing).
+        Missing segment -> defaults.  Accepts the loader's Config object
+        (dict-like; ``.get``) or a plain dict.
+        """
+        if isinstance(cfg, dict):
+            return cls.from_dict(cfg.get("embodiment"))
+        get = getattr(cfg, "get", None)
+        if callable(get):
+            return cls.from_dict(cfg.get("embodiment"))
+        return cls.defaults()
+
