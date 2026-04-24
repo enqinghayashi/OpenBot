@@ -984,3 +984,36 @@ class BrainConfig:
         return cls(lane=lane, confirm_motion=raw)
 
 
+@dataclass(frozen=True)
+class RealtimeConfig:
+    """The `realtime:` segment — the OpenAI Realtime WebSocket brain
+    (brain.lane 'realtime').  Every value is the SEALED marketplace
+    default until the bake-off pin (plan 6) pins model AND lane after
+    hardware testing.
+
+    reconnect_backoffs: seconds to wait per reconnect attempt — the i-th
+    entry is the i-th retry's backoff; 8 entries = 8 retries max, after
+    which the session gives up.  Accepted as an inline list
+    `[1, 2, 4, 8, ...]` (what the YAML-subset parser resolves) or a
+    comma-separated string '1,2,4,8,...'.
+    """
+
+    model: str = "gpt-realtime-2.1-mini"
+    base_url: str = "wss://api.openai.com/v1/realtime"
+    api_key_env: str = "OPENAI_API_KEY"  # env var NAME
+                                         # never the key itself
+    voice: str = "cedar"
+    speed: float = 0.9
+    sample_rate: int = 24000
+    #: voice identity
+    #: session.update `instructions`, sent once at connect;
+    #: per-turn create_response instructions still win.
+    #: Empty = field absent and the built-in default applies
+    instructions: str = ""
+    connect_timeout_s: float = 10.0
+    ready_timeout_s: float = 10.0
+    session_cap_min: int = 60
+    reconnect_backoffs: List[int] = field(
+        default_factory=lambda: [1, 2, 4, 8, 8, 8, 8, 8]
+    )
+
