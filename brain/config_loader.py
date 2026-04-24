@@ -958,3 +958,27 @@ class BrainConfig:
     lane: str = "realtime"
     confirm_motion: bool = True
 
+    @classmethod
+    def from_section(cls, section: Optional[Mapping[str, Any]]) -> "BrainConfig":
+        d = _section_dict(section, "brain")
+        _check_keys(d, {"lane", "confirm_motion"}, "brain")
+        lane = _as_str(d.get("lane", "realtime"), "brain.lane")
+        if lane not in ("realtime", "transcript", "offline"):
+            raise ValueError(
+                f"config error: brain.lane {lane!r} must be one of "
+                f"'realtime' (cloud Realtime WebSocket), 'transcript' "
+                f"(REST chat-completions) or 'offline' (regex brain, "
+                f"no network)"
+            )
+        raw = d.get("confirm_motion", True)
+        if not isinstance(raw, bool):
+            # no guessing
+            # the parser maps true/false/yes/no to a bool; a str or int
+            # here is 'maybe'/'on'/'2', or an overrides dict carrying
+            # 'false', which reads truthy and leaves the gate on
+            raise ValueError(
+                f"config error: brain.confirm_motion {raw!r} must be a YAML "
+                f"boolean (true/false), not {type(raw).__name__} — refusing "
+                f"to guess whether the motion confirm gate is on or off"
+            )
+        return cls(lane=lane, confirm_motion=raw)
