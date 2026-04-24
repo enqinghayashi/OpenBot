@@ -715,3 +715,5 @@ class PerceptionConfig:
     # reference. The gateway still emits raw detections, so
     # filtering upstream can make a table object read 'grasped'
     det_conf_floor: float = 0.35
+
+
