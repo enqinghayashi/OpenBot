@@ -701,3 +701,17 @@ class EnvelopeConfig:
                                 # the pose matches and the row is fresh
 
 
+@dataclass(frozen=True)
+class PerceptionConfig:
+    """`embodiment.perception` (defaults match brain/embodiment.py)."""
+
+    freshness_s: float = 2.0
+    silence_means_empty: bool = True  # event-driven
+                                      # silence == empty scene
+    frame: str = "torso"  # frame axes
+                          # x right, y fwd, z up
+    # conf floor
+    # brain-only: below it no detection becomes a scene-graph
+    # reference. The gateway still emits raw detections, so
+    # filtering upstream can make a table object read 'grasped'
+    det_conf_floor: float = 0.35
