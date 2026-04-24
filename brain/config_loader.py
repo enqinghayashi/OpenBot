@@ -934,3 +934,27 @@ class EmbodimentConfig:
         )
 
 
+@dataclass(frozen=True)
+class BrainConfig:
+    """The `brain:` segment — the v4 lane switch (OpenBot v4 rebuild).
+
+    lane:
+      - 'realtime'   — the cloud OpenAI Realtime WebSocket brain
+        (RealtimeConfig below).  The SEALED default; the user pins BOTH
+        model AND lane after the hardware bake-off (plan 6);
+      - 'transcript' — the REST chat-completions brain (RestConfig below);
+      - 'offline'    — the OfflineBrain regex brain (brain/agent/
+        offline_brain.py): NO LLM, NO API key, NO network — ever.
+
+    confirm_motion (operator directive 2026-09-26): whether a MOTION tool
+    pauses for a spoken yes before it runs.  False executes on the command.
+    This disables the ASK only — the safety pre-hooks, the verifier
+    post-hook and STOP/CANCEL are untouched, and the hook records each
+    unasked motion as APPROVED UNASKED so the audit trail never claims a
+    human consent that did not happen.  Default True: a config that never
+    sets the key keeps the pause.
+    """
+
+    lane: str = "realtime"
+    confirm_motion: bool = True
+
