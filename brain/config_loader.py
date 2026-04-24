@@ -736,3 +736,5 @@ class BaseRelativeConfig:
         object.__setattr__(
             self, "key_positions", MappingProxyType(dict(self.key_positions))
         )
+
+
