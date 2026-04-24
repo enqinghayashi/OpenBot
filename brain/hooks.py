@@ -222,3 +222,75 @@ class Hook:
     @staticmethod
     def failures(results: List[HookResult]) -> List[HookResult]:
         return [r for r in results if not r.ok]
+
+
+# --------------------------------------------------------------------------
+# action shapes
+# Context / PendingAction / ToolCall / free text
+# -> (tool, args, display, tool_result)
+# --------------------------------------------------------------------------
+
+
+def _action_tool(ctx_or_action: Any) -> Optional[str]:
+    """The pending tool/verb name, whatever the shape of the input:
+    Context (.pending_action / .pending_action_text), PendingAction
+    (.tool), ToolCall (.name), or a free-text line (first token)."""
+    if ctx_or_action is None:
+        return None
+    if isinstance(ctx_or_action, str):
+        first = ctx_or_action.strip().split()
+        return first[0] if first else None
+    pending = getattr(ctx_or_action, "pending_action", None)
+    if pending is not None:
+        return _action_tool(pending)
+    text = getattr(ctx_or_action, "pending_action_text", None)
+    if text:
+        first = str(text).strip().split()
+        return first[0] if first else None
+    tool = getattr(ctx_or_action, "tool", None) or getattr(ctx_or_action, "name", None)
+    return str(tool) if tool else None
+
+
+def _action_args(ctx_or_action: Any) -> Dict[str, Any]:
+    if ctx_or_action is None or isinstance(ctx_or_action, str):
+        return {}
+    pending = getattr(ctx_or_action, "pending_action", None)
+    if pending is not None:
+        return _action_args(pending)
+    args = getattr(ctx_or_action, "args", None) or getattr(ctx_or_action, "arguments", None)
+    return dict(args) if isinstance(args, dict) else {}
+
+
+#: hand-only verbs, no scene geometry
+#: executor sends the platform verb
+#: brain names too, direct callers
+_HAND_ONLY_TOOLS = frozenset({
+    "open_hand", "close_hand",
+    "open", "close", "open_left", "close_left", "open_both", "close_both",
+})
+
+
+def _args_carry_xyz(args: Dict[str, Any]) -> bool:
+    """True when a pending action carries a workspace coordinate (any of x, y,
+    z with a non-None value): such a place consumes scene geometry."""
+    return any(args.get(k) is not None for k in ("x", "y", "z"))
+
+
+def _action_display(ctx_or_action: Any) -> str:
+    """Human-readable description for the confirm prompt."""
+    if ctx_or_action is None:
+        return ""
+    if isinstance(ctx_or_action, str):
+        return ctx_or_action
+    pending = getattr(ctx_or_action, "pending_action", None)
+    if pending is not None:
+        return _action_display(pending)
+    if hasattr(ctx_or_action, "pending_action_text"):
+        return getattr(ctx_or_action, "pending", None) or ""  # Context shape
+    disp = getattr(ctx_or_action, "display", None)
+    if callable(disp):
+        try:
+            return disp()
+        except TypeError:
+            pass
+    return str(ctx_or_action)
