@@ -717,3 +717,18 @@ class PerceptionConfig:
     det_conf_floor: float = 0.35
 
 
+@dataclass(frozen=True)
+class BaseRelativeConfig:
+    """`embodiment.base_relative` — named positions relative to base/torso.
+    The key_positions map itself is read-only (mappingproxy).  Defaults
+    mirror brain/embodiment.py's BaseRelative (grip_center_m +
+    camera_offset_m) so an ABSENT segment yields the same named spots
+    across the loader and dataclass lanes (round-5 parity: place_at_spot
+    resolves the same defaults either way)."""
+
+    key_positions: Mapping[str, List[float]] = field(default_factory=lambda: {
+        "grip_center_m": [0.0, 0.37, 0.0],  # standoff
+                                            # from the grip centre
+        "camera_offset_m": [0.0, 0.0, 0.0],  # torso-frame
+    })
+
