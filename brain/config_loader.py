@@ -1017,3 +1017,42 @@ class RealtimeConfig:
         default_factory=lambda: [1, 2, 4, 8, 8, 8, 8, 8]
     )
 
+    @classmethod
+    def from_section(cls, section: Optional[Mapping[str, Any]]) -> "RealtimeConfig":
+        d = _section_dict(section, "realtime")
+        _check_keys(
+            d,
+            {"model", "base_url", "api_key_env", "voice", "speed",
+             "sample_rate", "connect_timeout_s", "ready_timeout_s",
+             "session_cap_min", "reconnect_backoffs", "instructions"},
+            "realtime",
+        )
+        return cls(
+            model=_as_str(d.get("model", "gpt-realtime-2.1-mini"), "realtime.model"),
+            base_url=_as_str(
+                d.get("base_url", "wss://api.openai.com/v1/realtime"),
+                "realtime.base_url",
+            ),
+            api_key_env=_as_str(
+                d.get("api_key_env", "OPENAI_API_KEY"), "realtime.api_key_env"
+            ),
+            voice=_as_str(d.get("voice", "cedar"), "realtime.voice"),
+            instructions=_as_str(
+                d.get("instructions", ""), "realtime.instructions"
+            ),
+            speed=_as_float(d.get("speed", 0.9), "realtime.speed"),
+            sample_rate=_as_int(d.get("sample_rate", 24000), "realtime.sample_rate"),
+            connect_timeout_s=_as_float(
+                d.get("connect_timeout_s", 10.0), "realtime.connect_timeout_s"
+            ),
+            ready_timeout_s=_as_float(
+                d.get("ready_timeout_s", 10.0), "realtime.ready_timeout_s"
+            ),
+            session_cap_min=_as_int(
+                d.get("session_cap_min", 60), "realtime.session_cap_min"
+            ),
+            reconnect_backoffs=_as_backoffs(
+                d.get("reconnect_backoffs", [1, 2, 4, 8, 8, 8, 8, 8]),
+                "realtime.reconnect_backoffs",
+            ),
+        )
