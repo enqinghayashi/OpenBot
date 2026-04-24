@@ -294,3 +294,90 @@ def _action_display(ctx_or_action: Any) -> str:
         except TypeError:
             pass
     return str(ctx_or_action)
+
+
+def _action_tool_result(ctx_or_action: Any) -> str:
+    """The raw tool reply attached to the action (`.tool_result` or
+    `.result`); '' when absent — the verifier maps '' to in_progress
+    ('no tool reply recorded'), never success."""
+    if ctx_or_action is None or isinstance(ctx_or_action, str):
+        return ""
+    result = getattr(ctx_or_action, "tool_result", None)
+    if result is not None:
+        return str(result)
+    result = getattr(ctx_or_action, "result", None)
+    if result is not None:
+        return str(result)
+    pending = getattr(ctx_or_action, "pending_action", None)
+    if pending is not None:
+        return _action_tool_result(pending)
+    return ""
+
+
+def _is_motion(ctx_or_action: Any) -> bool:
+    tool = _action_tool(ctx_or_action)
+    return tool is not None and tool in MOTION_TOOLS
+
+
+# --------------------------------------------------------------------------
+# The pre-hooks that ship in this module
+# --------------------------------------------------------------------------
+
+
+def confirm_gate_hook(
+    confirm: Optional[Callable[[Any], bool]] = None,
+    require_confirm: bool = True,
+) -> Callable[[Context], HookResult]:
+    """Human confirm gate: motion tools require explicit confirmation.
+
+    `confirm(context) -> bool` overrides the default interactive prompt
+    (tests and auto-mode inject a stub).  Default prompts `input()`; on
+    EOF/empty answer the hook FAILS — non-interactive is no-motion.
+    Non-motion (query) tools pass without prompting.
+
+    `require_confirm=False` is the OPERATOR'S OWN SWITCH (directive
+    2026-09-26: *"i want to remove the confirmation, it does not need to ask
+    shall i proceed, it should just do it immediately, so is pick and
+    place"*).  It makes motion proceed WITHOUT asking.  Two things it
+    deliberately does NOT do:
+
+      * it does NOT claim a human confirmed.  The HookResult says plainly
+        that the gate was disabled by config and no human confirmed — the
+        audit trail must not manufacture consent that never happened, or the
+        post-hoc record of "who approved this motion" becomes a lie;
+      * it does NOT disable anything else.  The safety_checks_hook still
+        runs (freshness, envelope, scene), the verifier post-hook still
+        runs, and STOP/CANCEL are untouched — they were never part of this
+        gate.  What is given up is exactly one thing: the pause between a
+        spoken command and the robot moving.
+
+    Default True so the pause is what you get unless someone turns it off
+    on purpose.
+    """
+
+    def _default_confirm(ctx_or_action: Any) -> bool:
+        display = _action_display(ctx_or_action) or "(pending action)"
+        try:
+            answer = input(f"Confirm motion: {display}? [y/N] ").strip().lower()
+        except EOFError:
+            return False
+        return answer in ("y", "yes")
+
+    gate = confirm if confirm is not None else _default_confirm
+
+    def hook(context: Context) -> HookResult:
+        if not _is_motion(context):
+            return HookResult.pre_ok("no motion pending; gate skipped")
+        if not require_confirm:
+            # not "confirmed"
+            # approved unasked
+            return HookResult.pre_ok(
+                "motion APPROVED UNASKED: the human confirm gate is disabled "
+                "(confirm_motion: false); no human confirmed "
+                f"{_action_display(context)}"
+            )
+        if gate(context):
+            return HookResult.pre_ok(f"confirmed: {_action_display(context)}")
+        return HookResult.pre_denied(f"human did NOT confirm: {_action_display(context)}")
+
+    return hook
