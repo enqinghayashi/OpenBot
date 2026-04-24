@@ -697,3 +697,7 @@ class EnvelopeConfig:
     pc_hold_check: bool = False  # decisive
                                  # a negative check only downgrades
     pc_place_rim: bool = False  # applied
+                                # the rim applies only when the check passes and
+                                # the pose matches and the row is fresh
+
+
