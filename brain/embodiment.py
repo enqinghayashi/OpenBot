@@ -199,3 +199,42 @@ class Envelope:
             f"grip standoff {self.grip_center_standoff_m:.2f} m, "
             f"arm dur >= {self.min_arm_dur_s:.1f} s"
         )
+
+
+@dataclass
+class Perception:
+    """Perception config governing how observations are interpreted.
+
+    silence_means_empty is SAFETY-ADJACENT: brain/config_loader.py rejects
+    any non-bool value for it, and config.yaml documents it MUST stay True
+    for the shipped profile.  Consumers: see the RUNTIME CONSUMERS section
+    of the module docstring (perception.* rows)."""
+
+    freshness_s: float = 2.0  # detection staleness, agent parity
+    silence_means_empty: bool = True  # silence = empty
+    frame: str = "torso"  # x right, y forward
+                          # z up
+
+    def summary(self) -> str:
+        return (
+            f"frame={self.frame} (x right, y forward, z up), "
+            f"freshness {self.freshness_s:.1f} s, "
+            f"silence_means_empty={self.silence_means_empty}"
+        )
+
+
+@dataclass
+class BaseRelative:
+    """Named positions relative to the robot base/torso frame."""
+
+    key_positions: Dict[str, List[float]] = field(default_factory=lambda: {
+        "grip_center_m": [0.0, 0.37, 0.0],  # standoff, verified
+        "camera_offset_m": [0.0, 0.0, 0.0],  # detections already torso-frame
+    })
+
+    def position(self, name: str) -> Optional[List[float]]:
+        return self.key_positions.get(name)
+
+    def summary(self) -> str:
+        items = ", ".join(f"{k}={v}" for k, v in self.key_positions.items())
+        return f"key positions: {items}"
