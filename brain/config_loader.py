@@ -732,3 +732,7 @@ class BaseRelativeConfig:
         "camera_offset_m": [0.0, 0.0, 0.0],  # torso-frame
     })
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "key_positions", MappingProxyType(dict(self.key_positions))
+        )
