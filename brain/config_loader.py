@@ -1058,3 +1058,27 @@ class RealtimeConfig:
         )
 
 
+@dataclass(frozen=True)
+class RestConfig:
+    """The `rest:` segment — the transcript-lane REST chat-completions
+    brain (brain.lane 'transcript'; the OpenAI-compatible
+    /chat/completions endpoint, the same client family as
+    brain/agent/llm_cloud.py).  api_key_env names the env var holding
+    the key — the key itself NEVER lives in config files."""
+
+    model: str = "gpt-5.4-mini"
+    base_url: str = "https://api.openai.com/v1"
+    api_key_env: str = "OPENAI_API_KEY"
+    tool_mode: str = "skeleton"  # skeleton | json
+    timeout_s: float = 120.0
+    #: prose fallback
+    #: a prose-only reply comes back as ChatResult.text, which
+    #: the voice lane speaks, not as the empty repair-path
+    #: result. Consumer: CloudLLMClient.prose_fallback
+    prose_fallback: bool = False
+    #: budget
+    #: 256-token cap, same shape as llm.max_tokens; the client
+    #: applies the host dialect. The bake-off ranks with this cap,
+    #: pinned so a bench cannot outrank the lane by truncation
+    max_tokens: int = 256
+
