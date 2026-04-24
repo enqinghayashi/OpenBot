@@ -130,3 +130,26 @@ class HookResult:
     state: str
     reason: str = ""
 
+    def __post_init__(self) -> None:
+        if self.state not in HOOK_STATES:
+            raise ValueError(
+                f"invalid HookResult state {self.state!r}; must be one of "
+                f"{sorted(HOOK_STATES)}"
+            )
+
+    @classmethod
+    def pre_ok(cls, reason: str = "") -> "HookResult":
+        return cls(True, "pre_ok", reason)
+
+    @classmethod
+    def pre_denied(cls, reason: str = "") -> "HookResult":
+        return cls(False, "pre_denied", reason)
+
+    @classmethod
+    def post_ok(cls, reason: str = "") -> "HookResult":
+        return cls(True, "post_ok", reason)
+
+    @classmethod
+    def post_pending(cls, reason: str = "") -> "HookResult":
+        return cls(False, "post_pending", reason)
+
