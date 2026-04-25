@@ -1325,3 +1325,10 @@ class ConfigDict(dict):
         return dict(self)
 
 
+def _is_placeholder_host(host: str) -> bool:
+    """True when gateway.host is an unfilled D0 placeholder: empty, or
+    containing 'TODO' (case-insensitive — catches 'TODO', 'TODO-IP',
+    'todo', ...).  Broad on purpose: launching against a TODO address
+    must fail loudly, never silently."""
+    h = str(host).strip()
+    return h == "" or "TODO" in h.upper()
