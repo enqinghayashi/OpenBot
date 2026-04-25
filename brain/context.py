@@ -24,3 +24,11 @@ from typing import Any, Dict, List, Optional
 from .observation import WorldObservation
 
 
+@dataclass
+class ContextSection:
+    """One lifetime bucket of prompt text."""
+
+    name: str  # 'resident' | 'refreshed' | 'accumulated'
+    lifetime: str  # 'system' | 'per-turn' | 'task'
+    content: List[str] = field(default_factory=list)
+
