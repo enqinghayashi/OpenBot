@@ -35,3 +35,6 @@ class ContextSection:
     def add(self, text: str) -> None:
         self.content.append(text)
 
+    def render(self) -> str:
+        return "\n".join(self.content)
+
