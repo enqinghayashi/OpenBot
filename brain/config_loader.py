@@ -1332,3 +1332,5 @@ def _is_placeholder_host(host: str) -> bool:
     must fail loudly, never silently."""
     h = str(host).strip()
     return h == "" or "TODO" in h.upper()
+
+
