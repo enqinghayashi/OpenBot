@@ -32,3 +32,6 @@ class ContextSection:
     lifetime: str  # 'system' | 'per-turn' | 'task'
     content: List[str] = field(default_factory=list)
 
+    def add(self, text: str) -> None:
+        self.content.append(text)
+
