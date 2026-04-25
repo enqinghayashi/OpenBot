@@ -1265,3 +1265,20 @@ class VoiceConfig:
         )
 
 
+@dataclass(frozen=True)
+class VisionConfig:
+    """The `vision:` segment — the camera capture lane (the image verb;
+    the gateway /capture_image and the camera topic).  The camera lane
+    is OFF unless `enabled: true` — config.voice.yaml /
+    config.offline.yaml / config.cloud.yaml-style profiles explicitly
+    set enabled: true when vision is wanted; the base config.yaml
+    (laptop) carries no vision: section and must stay OFF (a silent
+    default-on would make the gateway's camera lane subscribe
+    everywhere)."""
+
+    enabled: bool = False
+    topic: str = "/camera/color/image_raw"
+    max_age_s: float = 2.0
+    min_interval_s: float = 1.0
+    jpeg_quality: int = 80
+
