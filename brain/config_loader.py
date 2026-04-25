@@ -1129,3 +1129,50 @@ class RestConfig:
         )
 
 
+@dataclass(frozen=True)
+class VoiceConfig:
+    """The `voice:` segment — the voice lane (Vosk KWS wake words ->
+    whisper.cpp STT -> brain -> Piper TTS; all local, plus the G1
+    on-board mic + multicast capture + energy-gate params).  Defaults
+    are the deploy kit's wired endpoints.
+
+    ``name`` is the robot's SPOKEN name (the OfflineBrain leading-vocative
+    strip, brain/agent/offline_brain.py: the explicit constructor name
+    wins over the embodiment's).  The voice app passes cfg.voice.name to
+    OfflineBrain(name=...); the default matches the shipped wake-phrase
+    family."""
+
+    name: str = "stewart"
+    mic_mode: str = "g1"  # g1 | file
+    multicast_group: str = "239.168.123.161"
+    multicast_port: int = 5555
+    sample_rate: int = 16000
+    kws_model_dir: str = "voice/models/vosk-model-small-en-us"
+    # wake words
+    # speakers say "hello stuwart" as often as the correct
+    # spelling and the KWS hears grammar phrases only, so both
+    # spellings are carried; the profiles must mirror this list
+    wake_phrases: List[str] = field(default_factory=lambda: [
+        "hey stewart", "hi stewart", "hello stewart", "okay stewart",
+        "hey stuwart", "hi stuwart", "hello stuwart", "okay stuwart",
+    ])
+    kws_cooldown_s: float = 3.0
+    whisper_url: str = "http://127.0.0.1:8082/inference"
+    whisper_model: str = "tiny.en-q5_1"  # small and fast
+    piper_bin: str = "voice/models/piper"
+    # reuse-first
+    # the default voice is en_US-ryan-medium, kept byte-identical
+    # to the upstream release; the fetch script copies it and a
+    # download is the fallback. Piper needs the .onnx.json sidecar
+    piper_voice: str = "en_US-ryan-medium.onnx"
+    speaker_app_name: str = "uwa_csse_voice"
+    speaker_cap_bytes: int = 96000
+    energy_min_peak: int = 1200
+    energy_floor_factor: float = 3.0
+    energy_hangover_s: float = 0.9
+    energy_prefix_s: float = 0.4
+    energy_cooldown_s: float = 3.0
+    echo_coupling: float = 1.5
+    arrival_announce: bool = False  # nav arrival
+                                    # one async spoken "arriving"
+                                    # default off keeps a bare config silent
