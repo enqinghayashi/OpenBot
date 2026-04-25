@@ -1300,3 +1300,24 @@ class VisionConfig:
         )
 
 
+class ConfigDict(dict):
+    """The merged config: a plain dict (legacy .get()/'cfg['llm']' access)
+    that ALSO carries every section as a validated read-only dataclass
+    attribute (.llm, .gateway, .skills, .agent, .embodiment, .brain,
+    .realtime, .rest, .voice, .vision, .profile).
+    Returned by load(); the attributes are set there."""
+
+    # annotation only
+    # load() fills these at runtime
+    llm: LlmConfig
+    gateway: GatewayConfig
+    skills: SkillsConfig
+    agent: AgentConfig
+    embodiment: EmbodimentConfig
+    brain: BrainConfig
+    realtime: RealtimeConfig
+    rest: RestConfig
+    voice: VoiceConfig
+    vision: VisionConfig
+    profile: str
+
