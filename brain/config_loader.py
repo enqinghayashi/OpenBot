@@ -1263,3 +1263,5 @@ class VoiceConfig:
                 d.get("arrival_announce", False), "voice.arrival_announce"
             ),
         )
+
+
