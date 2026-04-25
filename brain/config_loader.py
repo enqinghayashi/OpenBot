@@ -1365,3 +1365,5 @@ def _validate_runnable(cfg: ConfigDict, active: str) -> None:
             f"gateway.transport 'real' — the gateway must be reachable "
             f"(config.cloud.yaml ships 192.168.123.164, the stuart box)"
         )
+
+
