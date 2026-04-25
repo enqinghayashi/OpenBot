@@ -1321,3 +1321,5 @@ class ConfigDict(dict):
     vision: VisionConfig
     profile: str
 
+    def to_dict(self) -> Dict[str, Any]:
+        return dict(self)
