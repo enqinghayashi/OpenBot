@@ -1298,3 +1298,5 @@ class VisionConfig:
             ),
             jpeg_quality=_as_int(d.get("jpeg_quality", 80), "vision.jpeg_quality"),
         )
+
+
