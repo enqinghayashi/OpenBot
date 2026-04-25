@@ -1367,3 +1367,61 @@ def _validate_runnable(cfg: ConfigDict, active: str) -> None:
         )
 
 
+def load(
+    path: str,
+    profile: Optional[str] = None,
+    overrides: Optional[Mapping[str, Any]] = None,
+) -> ConfigDict:
+    """Parse the base file; merge `config.<profile>.yaml` on top for
+    non-laptop profiles; expose every section as a read-only dataclass;
+    run the round-4 runnability gate (_validate_runnable).  v4
+    (2026-08-31): the stuart tier (profiles + clamps) is superseded —
+    load(profile='stuart'/'stuart-cuda') raises ValueError naming the
+    replacement.  See the module docstring."""
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"config file not found: {path}")
+    with open(path, "r", encoding="utf-8") as fh:
+        cfg = _parse_text(fh.read())
+    active = profile if profile is not None else str(cfg.get("profile", "laptop"))
+    if active in ("stuart", "stuart-cuda"):
+        # stuart profiles are not in the allowlist: the files
+        # remain but cannot load, and the error names the
+        # voice and offline replacements
+        raise ValueError(
+            f"profile {active} requires the SUPERSEDED 2026-08-31 stuart "
+            f"tier: removed from the OpenBot v4 allowlist (local-LLM "
+            f"ladder replaced by the cloud realtime brain + offline "
+            f"regex voice fallback); use config.voice.yaml (profile "
+            f"voice) or config.offline.yaml (profile offline)"
+        )
+    if active not in ("laptop", "cloud", "voice", "offline"):
+        raise ValueError(
+            f"config error: profile {active!r} must be one of 'laptop', "
+            f"'cloud', 'voice' or 'offline'"
+        )
+    if active != "laptop":
+        override = _profile_path(path, active)
+        if not os.path.isfile(override):
+            raise FileNotFoundError(
+                f"profile {active!r} requires {override} (not found); "
+                "refusing to run laptop defaults on a non-laptop profile"
+            )
+        with open(override, "r", encoding="utf-8") as fh:
+            cfg = _deep_merge(cfg, _parse_text(fh.read()))
+    if overrides:
+        cfg = _deep_merge(cfg, dict(overrides))
+    cfg["profile"] = active
+    result = ConfigDict(cfg)
+    result.llm = LlmConfig.from_section(cfg.get("llm"))
+    result.gateway = GatewayConfig.from_section(cfg.get("gateway"))
+    result.skills = SkillsConfig.from_section(cfg.get("skills"))
+    result.agent = AgentConfig.from_section(cfg.get("agent"))
+    result.embodiment = EmbodimentConfig.from_section(cfg.get("embodiment"))
+    result.brain = BrainConfig.from_section(cfg.get("brain"))
+    result.realtime = RealtimeConfig.from_section(cfg.get("realtime"))
+    result.rest = RestConfig.from_section(cfg.get("rest"))
+    result.voice = VoiceConfig.from_section(cfg.get("voice"))
+    result.vision = VisionConfig.from_section(cfg.get("vision"))
+    result.profile = active
+    _validate_runnable(result, active)
+    return result
