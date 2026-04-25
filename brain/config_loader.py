@@ -1334,3 +1334,34 @@ def _is_placeholder_host(host: str) -> bool:
     return h == "" or "TODO" in h.upper()
 
 
+def _validate_runnable(cfg: ConfigDict, active: str) -> None:
+    """Post-merge runnability gates (round 4; v4-trimmed 2026-08-31).
+    Raises ConfigError naming the offending key — a config that LOADS
+    but cannot RUN is a latent false-success.
+
+    v4 trim: the stuart/stuart-cuda branches are GONE with the superseded
+    tier (load() raises ValueError before this gate can ever see them).
+    The 'cloud' profile keeps its reachability law; the voice/offline
+    profiles need NO API key and no network for the brain lane (their
+    shipped gateway is 127.0.0.1:3900, the on-robot gateway — never a
+    placeholder), and the laptop profile behaves exactly as before (no
+    gates fire on its mock transport).
+
+    Called by load() AFTER overrides are merged and the section
+    dataclasses are built, so the gate sees the exact values a launcher
+    would run with.
+    """
+    # cloud gate
+    # 'cloud' + transport 'real' + a TODO host would report a
+    # bogus 'config ok' before a connection that cannot exist
+    if (
+        active == "cloud"
+        and cfg.gateway.transport == "real"
+        and _is_placeholder_host(cfg.gateway.host)
+    ):
+        raise ConfigError(
+            f"config error: gateway.host is an unfilled placeholder "
+            f"{cfg.gateway.host!r} in the 'cloud' profile with "
+            f"gateway.transport 'real' — the gateway must be reachable "
+            f"(config.cloud.yaml ships 192.168.123.164, the stuart box)"
+        )
