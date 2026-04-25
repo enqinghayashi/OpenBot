@@ -44,3 +44,5 @@ class ContextSection:
 
     def __len__(self) -> int:
         return self.chars
+
+
