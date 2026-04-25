@@ -1082,3 +1082,48 @@ class RestConfig:
     #: pinned so a bench cannot outrank the lane by truncation
     max_tokens: int = 256
 
+    @classmethod
+    def from_section(cls, section: Optional[Mapping[str, Any]]) -> "RestConfig":
+        d = _section_dict(section, "rest")
+        _check_keys(
+            d,
+            {"model", "base_url", "api_key_env", "tool_mode", "timeout_s",
+             "prose_fallback", "max_tokens"},
+            "rest",
+        )
+        tool_mode = d.get("tool_mode", "skeleton")
+        if tool_mode not in ("skeleton", "json"):
+            raise ValueError(
+                f"config error: rest.tool_mode {tool_mode!r} must be "
+                f"'skeleton' (plain-text JSON skeleton + deterministic "
+                f"parse) or 'json' (grammar-constrained json-mode)"
+            )
+        tok_raw = d.get("max_tokens", 256)
+        if isinstance(tok_raw, float) and not tok_raw.is_integer():
+            raise ValueError(
+                f"config error: rest.max_tokens {tok_raw!r} must be an "
+                f"int (a fractional value would be silently truncated — "
+                f"never a silent budget change, #120)"
+            )
+        max_tokens = _as_int(tok_raw, "rest.max_tokens")
+        if max_tokens < 1:
+            raise ValueError(
+                f"config error: rest.max_tokens {max_tokens!r} must be >= 1 "
+                f"(a 0/negative budget makes the provider return an empty "
+                f"completion — a silent truncation, #120)"
+            )
+        return cls(
+            model=_as_str(d.get("model", "gpt-5.4-mini"), "rest.model"),
+            base_url=_as_str(
+                d.get("base_url", "https://api.openai.com/v1"), "rest.base_url"
+            ),
+            api_key_env=_as_str(
+                d.get("api_key_env", "OPENAI_API_KEY"), "rest.api_key_env"
+            ),
+            tool_mode=tool_mode,
+            timeout_s=_as_float(d.get("timeout_s", 120.0), "rest.timeout_s"),
+            prose_fallback=_as_bool(
+                d.get("prose_fallback", False), "rest.prose_fallback"
+            ),
+            max_tokens=max_tokens,
+        )
