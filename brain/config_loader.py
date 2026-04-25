@@ -1176,3 +1176,90 @@ class VoiceConfig:
     arrival_announce: bool = False  # nav arrival
                                     # one async spoken "arriving"
                                     # default off keeps a bare config silent
+    @classmethod
+    def from_section(cls, section: Optional[Mapping[str, Any]]) -> "VoiceConfig":
+        d = _section_dict(section, "voice")
+        _check_keys(
+            d,
+            {"arrival_announce", "name", "mic_mode", "multicast_group",
+             "multicast_port",
+             "sample_rate", "kws_model_dir", "wake_phrases", "kws_cooldown_s",
+             "whisper_url", "whisper_model", "piper_bin", "piper_voice",
+             "speaker_app_name", "speaker_cap_bytes", "energy_min_peak",
+             "energy_floor_factor", "energy_hangover_s", "energy_prefix_s",
+             "energy_cooldown_s", "echo_coupling"},
+            "voice",
+        )
+        raw_phrases = d.get(
+            "wake_phrases",
+            ["hey stewart", "hi stewart", "hello stewart", "okay stewart"],
+        )
+        if not isinstance(raw_phrases, list) or not all(
+            isinstance(p, str) for p in raw_phrases
+        ):
+            raise ValueError(
+                "config error: voice.wake_phrases must be a list of "
+                f"strings, got {raw_phrases!r}"
+            )
+        if not raw_phrases:
+            raise ValueError(
+                "config error: voice.wake_phrases must be non-empty — a "
+                "zero-keyword grammar would make the KWS never wake"
+            )
+        return cls(
+            name=_as_str(d.get("name", "stewart"), "voice.name"),
+            mic_mode=_as_str(d.get("mic_mode", "g1"), "voice.mic_mode"),
+            multicast_group=_as_str(
+                d.get("multicast_group", "239.168.123.161"), "voice.multicast_group"
+            ),
+            multicast_port=_as_int(
+                d.get("multicast_port", 5555), "voice.multicast_port"
+            ),
+            sample_rate=_as_int(d.get("sample_rate", 16000), "voice.sample_rate"),
+            kws_model_dir=_as_str(
+                d.get("kws_model_dir", "voice/models/vosk-model-small-en-us"),
+                "voice.kws_model_dir",
+            ),
+            wake_phrases=list(raw_phrases),
+            kws_cooldown_s=_as_float(
+                d.get("kws_cooldown_s", 3.0), "voice.kws_cooldown_s"
+            ),
+            whisper_url=_as_str(
+                d.get("whisper_url", "http://127.0.0.1:8082/inference"),
+                "voice.whisper_url",
+            ),
+            whisper_model=_as_str(
+                d.get("whisper_model", "tiny.en-q5_1"), "voice.whisper_model"
+            ),
+            piper_bin=_as_str(
+                d.get("piper_bin", "voice/models/piper"), "voice.piper_bin"
+            ),
+            piper_voice=_as_str(
+                d.get("piper_voice", "en_US-ryan-medium.onnx"), "voice.piper_voice"
+            ),
+            speaker_app_name=_as_str(
+                d.get("speaker_app_name", "uwa_csse_voice"), "voice.speaker_app_name"
+            ),
+            speaker_cap_bytes=_as_int(
+                d.get("speaker_cap_bytes", 96000), "voice.speaker_cap_bytes"
+            ),
+            energy_min_peak=_as_int(
+                d.get("energy_min_peak", 1200), "voice.energy_min_peak"
+            ),
+            energy_floor_factor=_as_float(
+                d.get("energy_floor_factor", 3.0), "voice.energy_floor_factor"
+            ),
+            energy_hangover_s=_as_float(
+                d.get("energy_hangover_s", 0.9), "voice.energy_hangover_s"
+            ),
+            energy_prefix_s=_as_float(
+                d.get("energy_prefix_s", 0.4), "voice.energy_prefix_s"
+            ),
+            energy_cooldown_s=_as_float(
+                d.get("energy_cooldown_s", 3.0), "voice.energy_cooldown_s"
+            ),
+            echo_coupling=_as_float(d.get("echo_coupling", 1.5), "voice.echo_coupling"),
+            arrival_announce=_as_bool(
+                d.get("arrival_announce", False), "voice.arrival_announce"
+            ),
+        )
