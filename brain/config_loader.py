@@ -1282,3 +1282,19 @@ class VisionConfig:
     min_interval_s: float = 1.0
     jpeg_quality: int = 80
 
+    @classmethod
+    def from_section(cls, section: Optional[Mapping[str, Any]]) -> "VisionConfig":
+        d = _section_dict(section, "vision")
+        _check_keys(
+            d, {"enabled", "topic", "max_age_s", "min_interval_s", "jpeg_quality"},
+            "vision",
+        )
+        return cls(
+            enabled=_as_bool(d.get("enabled", False), "vision.enabled"),
+            topic=_as_str(d.get("topic", "/camera/color/image_raw"), "vision.topic"),
+            max_age_s=_as_float(d.get("max_age_s", 2.0), "vision.max_age_s"),
+            min_interval_s=_as_float(
+                d.get("min_interval_s", 1.0), "vision.min_interval_s"
+            ),
+            jpeg_quality=_as_int(d.get("jpeg_quality", 80), "vision.jpeg_quality"),
+        )
