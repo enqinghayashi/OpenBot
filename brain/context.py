@@ -42,3 +42,5 @@ class ContextSection:
     def chars(self) -> int:
         return sum(len(t) for t in self.content)
 
+    def __len__(self) -> int:
+        return self.chars
