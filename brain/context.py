@@ -46,3 +46,15 @@ class ContextSection:
         return self.chars
 
 
+@dataclass
+class ToolSummary:
+    """Progressive tool disclosure entry.
+
+    Resident carries name + one-liner for every tool; `full_body` is
+    revealed only when the agent calls disclose(name) on the assembler.
+    """
+
+    name: str
+    one_liner: str
+    full_body: str = ""
+
