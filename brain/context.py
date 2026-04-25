@@ -38,3 +38,7 @@ class ContextSection:
     def render(self) -> str:
         return "\n".join(self.content)
 
+    @property
+    def chars(self) -> int:
+        return sum(len(t) for t in self.content)
+
