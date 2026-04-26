@@ -134,3 +134,5 @@ class Context:
             f"context chars: resident={self.resident.chars} "
             f"refreshed={self.refreshed.chars} accumulated={self.accumulated.chars}"
         )
+
+
