@@ -75,3 +75,6 @@ class ContextAssembler:
 
     # --- poking at the resident state ---------------------------------------
 
+    def add_tool(self, tool: ToolSummary) -> None:
+        self.tools[tool.name] = tool
+
