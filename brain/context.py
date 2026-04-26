@@ -61,3 +61,5 @@ class ToolSummary:
     def resident_line(self) -> str:
         return f"- {self.name}: {self.one_liner}"
 
+    def full_line(self) -> str:
+        return f"- {self.name}: {self.full_body}"
