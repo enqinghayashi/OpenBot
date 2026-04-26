@@ -96,3 +96,13 @@ class ContextAssembler:
     def budget_tokens(self, text: str) -> int:
         return max(1, int(math.ceil(len(text) / self.chars_per_token)))
 
+    @property
+    def budget_chars(self) -> int:
+        """Character budget for the whole prompt (output reserved)."""
+        tokens = self.n_ctx - self.max_output_tokens
+        if tokens <= 0:
+            return 0
+        return int(tokens * self.chars_per_token)
+
+    # --- putting the prompt together --------------------------------------------
+
