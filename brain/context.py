@@ -129,3 +129,8 @@ class Context:
     def chars(self) -> int:
         return self.resident.chars + self.refreshed.chars + self.accumulated.chars
 
+    def budget_report(self) -> str:
+        return (
+            f"context chars: resident={self.resident.chars} "
+            f"refreshed={self.refreshed.chars} accumulated={self.accumulated.chars}"
+        )
