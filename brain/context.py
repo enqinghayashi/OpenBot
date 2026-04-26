@@ -108,3 +108,9 @@ class Context:
             accumulated=ContextSection("accumulated", "task"),
         )
 
+    @property
+    def pending(self) -> str:
+        if self.pending_action is not None:
+            return self.pending_action.display()
+        return self.pending_action_text or "(no pending action)"
+
