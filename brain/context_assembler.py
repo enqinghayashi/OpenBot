@@ -93,3 +93,6 @@ class ContextAssembler:
 
     # --- sorting out the budget -----------------------------------------------
 
+    def budget_tokens(self, text: str) -> int:
+        return max(1, int(math.ceil(len(text) / self.chars_per_token)))
+
