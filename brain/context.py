@@ -136,3 +136,11 @@ class Context:
         )
 
 
+def __getattr__(name: str) -> Any:
+    """Lazy re-export so `from brain.context import ContextAssembler` works
+    without a module-level import cycle (context_assembler imports context)."""
+    if name == "ContextAssembler":
+        from .context_assembler import ContextAssembler as _ca
+
+        return _ca
+    raise AttributeError(f"module 'brain.context' has no attribute {name!r}")
