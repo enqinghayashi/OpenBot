@@ -114,3 +114,14 @@ class Context:
             return self.pending_action.display()
         return self.pending_action_text or "(no pending action)"
 
+    def render(self) -> str:
+        """Full prompt text (sections joined; agent may re-wrap per template)."""
+        parts = []
+        if self.resident.content:
+            parts.append("[SYSTEM]\n" + self.resident.render())
+        if self.refreshed.content:
+            parts.append("[SCENE]\n" + self.refreshed.render())
+        if self.accumulated.content:
+            parts.append("[CONTEXT]\n" + self.accumulated.render())
+        return "\n\n".join(parts)
+
