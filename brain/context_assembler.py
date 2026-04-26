@@ -49,3 +49,6 @@ DEFAULT_SYSTEM_PROMPT = (
 )
 
 
+class ContextAssembler:
+    """Builds resident/refreshed/accumulated Context with budget control."""
+
