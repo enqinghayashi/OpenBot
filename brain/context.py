@@ -84,3 +84,19 @@ class PendingAction:
         return f"{self.tool} {argstr}".strip()
 
 
+@dataclass
+class Context:
+    """The assembled prompt sections plus the live world snapshot.
+
+    Hooks (brain/hooks.py) read `world`, `pending_action` and `tool_result`
+    off this object; the agent sets them per turn.
+    """
+
+    resident: ContextSection
+    refreshed: ContextSection
+    accumulated: ContextSection
+    world: Optional[WorldObservation] = None  # for hooks/verifier
+    pending_action: Optional[PendingAction] = None  # set before run_pre()
+    pending_action_text: str = ""  # plain-text fallback
+    tool_result: str = ""  # set before run_post()
+
