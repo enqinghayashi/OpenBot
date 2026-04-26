@@ -125,3 +125,7 @@ class Context:
             parts.append("[CONTEXT]\n" + self.accumulated.render())
         return "\n\n".join(parts)
 
+    @property
+    def chars(self) -> int:
+        return self.resident.chars + self.refreshed.chars + self.accumulated.chars
+
