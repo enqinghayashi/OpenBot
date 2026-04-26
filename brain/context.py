@@ -77,3 +77,8 @@ class PendingAction:
     args: Dict[str, Any] = field(default_factory=dict)
     description: str = ""  # what the human reads in the confirm prompt
 
+    def display(self) -> str:
+        if self.description:
+            return self.description
+        argstr = " ".join(f"{k}={v}" for k, v in self.args.items())
+        return f"{self.tool} {argstr}".strip()
