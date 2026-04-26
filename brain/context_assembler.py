@@ -78,3 +78,18 @@ class ContextAssembler:
     def add_tool(self, tool: ToolSummary) -> None:
         self.tools[tool.name] = tool
 
+    def disclose(self, name: str) -> str:
+        """Reveal a tool's full body (progressive disclosure).
+
+        Returns the body text.  Once disclosed, the body replaces the
+        one-liner in the resident section for the rest of the session.
+        Unknown tool -> ValueError.
+        """
+        tool = self.tools.get(name)
+        if tool is None:
+            raise ValueError(f"no such tool: {name!r}")
+        self.disclosed.add(name)
+        return tool.full_body
+
+    # --- sorting out the budget -----------------------------------------------
+
