@@ -113,3 +113,13 @@ def _is_finite_number(value):
     return math.isfinite(value)
 
 
+def _finite(value, name):
+    """Coerce ``value`` to ``float`` or raise ``ValueError``.
+
+    Used by the number-producing functions only (see the module docstring's
+    error discipline): a height that did not arrive is an error, never a 0.0.
+    """
+    if not _is_finite_number(value):
+        raise ValueError(
+            "descent_law: %s must be a finite number, got %r" % (name, value))
+    return float(value)
