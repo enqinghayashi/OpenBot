@@ -111,3 +111,5 @@ def _is_finite_number(value):
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
     return math.isfinite(value)
+
+
