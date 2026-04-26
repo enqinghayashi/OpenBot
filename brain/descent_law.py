@@ -100,3 +100,14 @@ COMFORT_Z = 0.0
 
 
 # ─────────────────────────────────────────────────────────────── sanity checks
+def _is_finite_number(value):
+    """True only for a real, finite ``int``/``float``.
+
+    ``bool`` is excluded on purpose: ``True`` is an ``int`` in Python, and a
+    boolean that reached a height comparison would be a wiring bug, not a
+    height.  Explicit ``math.isfinite`` — never a comparison that silently
+    falls through on ``None`` or ``nan``.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(value)
