@@ -65,3 +65,15 @@ class ToolSummary:
         return f"- {self.name}: {self.full_body}"
 
 
+@dataclass
+class PendingAction:
+    """Structured description of the motion the agent is about to request.
+
+    Set `context.pending_action` before run_pre() so the confirm gate and
+    safety checks can inspect tool + args without parsing free text.
+    """
+
+    tool: str
+    args: Dict[str, Any] = field(default_factory=dict)
+    description: str = ""  # what the human reads in the confirm prompt
+
