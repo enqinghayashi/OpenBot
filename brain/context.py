@@ -100,3 +100,11 @@ class Context:
     pending_action_text: str = ""  # plain-text fallback
     tool_result: str = ""  # set before run_post()
 
+    @classmethod
+    def empty(cls) -> "Context":
+        return cls(
+            resident=ContextSection("resident", "system"),
+            refreshed=ContextSection("refreshed", "per-turn"),
+            accumulated=ContextSection("accumulated", "task"),
+        )
+
