@@ -140,3 +140,18 @@ def _finite_descent(value, name):
 
 
 # ────────────────────────────────────────────────────────────── the law itself
+def descent_for_z(z, max_descent_m):
+    """Desired body descent for a target at torso-frame ``z``, in metres.
+
+    ``d(z) = clamp(COMFORT_Z - z, 0.0, max_descent_m)``.  One clamped linear
+    function: zero at and above :data:`COMFORT_Z` (the normal branch), then
+    proportional, then saturated at the caller's budget — and the saturated
+    band is the rescue band.  ``max_descent_m`` is the caller's: it is
+    ``height_stand_m - height_min_m``, the writer clamp's own band.
+
+    Raises ``ValueError`` for a non-finite ``z`` or a non-finite/negative
+    ``max_descent_m`` (see the module docstring's error discipline).
+    """
+    zf = _finite(z, "z")
+    budget = _finite_descent(max_descent_m, "max_descent_m")
+    return min(max(COMFORT_Z - zf, 0.0), budget)
