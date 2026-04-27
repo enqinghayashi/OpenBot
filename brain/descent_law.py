@@ -251,3 +251,56 @@ _RE_STAND = re.compile(
     r"height=(%s)\s*\(stand\s+(%s)\)" % (_NUM, _NUM))
 
 
+def parse_height_status(line):
+    """Parse the writer's inline height fragment; ``None`` if unparseable.
+
+    Returns a dict with these keys, or ``None``:
+
+        ``ref``        last reference the policy was given (float)
+        ``target``     tracked target (float), or ``None`` when nothing is
+                       tracked
+        ``stand``      nominal standing reference (float), or ``None``
+        ``rem``        seconds left on the hold (float), or ``None``
+        ``active``     True only for the ``active rem=`` form
+        ``suspended``  True only for the ``SUSPENDED->`` form
+
+    ``target`` is ``None`` — NOT a copy of ``stand`` — for the inactive form:
+    the writer is tracking nothing, and copying the standing reference into
+    ``target`` would let a ``|ref - target| <= tol`` test "confirm" a descent
+    that never happened.  A caller that wants a confirmed descent must require
+    ``active`` AND a matching pair.
+
+    Fail-closed on everything else: a non-string line, a field that does not
+    match the grammar, or a numeric field that is not finite, all return
+    ``None``.  Never a guess, never a default.
+    """
+    if not isinstance(line, str):
+        return None
+
+    m = _RE_SUSPENDED.search(line)
+    if m is not None:
+        ref, target, rem = (float(m.group(1)), float(m.group(2)),
+                            float(m.group(3)))
+        if not all(math.isfinite(v) for v in (ref, target, rem)):
+            return None
+        return {"ref": ref, "target": target, "stand": None, "rem": rem,
+                "active": False, "suspended": True}
+
+    m = _RE_ACTIVE.search(line)
+    if m is not None:
+        ref, target, rem = (float(m.group(1)), float(m.group(2)),
+                            float(m.group(3)))
+        if not all(math.isfinite(v) for v in (ref, target, rem)):
+            return None
+        return {"ref": ref, "target": target, "stand": None, "rem": rem,
+                "active": True, "suspended": False}
+
+    m = _RE_STAND.search(line)
+    if m is not None:
+        ref, stand = float(m.group(1)), float(m.group(2))
+        if not all(math.isfinite(v) for v in (ref, stand)):
+            return None
+        return {"ref": ref, "target": None, "stand": stand, "rem": None,
+                "active": False, "suspended": False}
+
+    return None
