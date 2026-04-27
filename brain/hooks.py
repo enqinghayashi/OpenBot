@@ -381,3 +381,394 @@ def confirm_gate_hook(
         return HookResult.pre_denied(f"human did NOT confirm: {_action_display(context)}")
 
     return hook
+
+
+def safety_checks_hook(
+    envelope: Optional[object] = None,
+    freshness_s: Optional[float] = None,
+    now_fn: Optional[Callable[[], float]] = None,
+    observation_source: Optional[Callable[[], object]] = None,
+) -> Callable[[Context], HookResult]:
+    """Deterministic pre-motion safety checks (platform facts).
+
+    Checks (all must pass for motion tools):
+      1. A world observation exists at all.
+      2. Detections are fresh (obs.fresh AND age <= freshness_s) — a dead
+         detection node is stale, and stale detections never drive motion.
+         The age law is evaluated at MOTION time: when the context's
+         snapshot has aged past the budget it is re-read once through
+         `observation_source` (the same ObservationSupplier the verifier
+         post-hook uses — both lanes already hand it to default_hooks)
+         before the law applies; a re-read that is also stale still
+         denies honestly.  Without a supplier the original denial stands
+         (B3: the spoken confirm gate blocks INSIDE the pre-pipeline, so
+         a normal confirm round alone would age any pre-gate snapshot
+         past freshness_s — the wire is not the thing that went stale).
+         CARVE-OUT: this law does NOT govern navigate — it is a
+         search-capable verb whose own walk FSM does its own detection
+         (SEARCHING window, stop-on-find, stall law, obstruction freeze,
+         NOT_FOUND terminal) and consumes NO brain-side geometry at motion
+         time, so "walk to X (not currently visible)" dispatches rather
+         than refusing on feed liveness.  navigate keeps the confirm gate
+         and the no-world-observation refusal; only freshness/age relax.
+      3. pick/pick_left z is inside the tabletop envelope — a floor pick
+         is a capability-block: refuse honestly, never attempt.
+    Non-motion tools pass.  `envelope`/`freshness_s` default to
+    Embodiment.defaults().
+    """
+    emb = Embodiment.defaults() if envelope is None else envelope
+    fresh_budget = emb.perception.freshness_s if freshness_s is None else freshness_s
+    now = now_fn or time.time
+
+    def hook(context: Context) -> HookResult:
+        if not _is_motion(context):
+            return HookResult.pre_ok("no motion pending; checks skipped")
+        world = context.world
+        if (
+            world is None
+            or not world.fresh
+            or now() - world.detections_ts > fresh_budget
+        ):
+            # gate ran already
+            # snapshot may be old, wire fine
+            # re-read, then judge the re-read
+            re_obs: Optional[object] = None
+            if observation_source is not None:
+                try:
+                    re_obs = observation_source()
+                except Exception:  # noqa: BLE001 — a wire hiccup denies, never crashes
+                    re_obs = None
+            if (
+                re_obs is not None
+                and getattr(re_obs, "fresh", False)
+            ):
+                re_age = max(0.0, now() - re_obs.detections_ts)
+                if re_age <= fresh_budget:
+                    context.world = re_obs
+                    return HookResult.pre_ok(
+                        "safety checks passed (wire re-observed at motion "
+                        f"time, age {re_age:.1f}s)"
+                    )
+            if re_obs is not None:
+                world = re_obs  # deny uses the new read
+        if world is None:
+            return HookResult.pre_denied(
+                "no world observation; cannot confirm scene before motion"
+            )
+        tool = _action_tool(context)
+        # navigate carve-out
+        # freshness/age only
+        # FSM detects
+        # (SEARCHING, stop-on-find,
+        # stall, obstruction freeze,
+        # NOT_FOUND)
+        # no brain geometry
+        # gate + no-world refusal bind
+        if tool == "navigate":
+            return HookResult.pre_ok(
+                "navigate dispatch allowed (search-capable verb; its walk FSM "
+                "does its own detection); safety checks passed"
+            )
+        age = max(0.0, now() - world.detections_ts)
+        # hand-only carve-out
+        # open/close + bare place: no geometry
+        # xyz place: law on
+        # gate still binds
+        if (not world.fresh or age > fresh_budget) and (
+            tool in _HAND_ONLY_TOOLS
+            or (tool == "place" and not _args_carry_xyz(_action_args(context)))
+        ):
+            return HookResult.pre_ok(
+                f"{tool} dispatch allowed (hand-only motion, no scene geometry "
+                "consumed); safety checks passed"
+            )
+        if not world.fresh:
+            return HookResult.pre_denied(
+                f"stale detections (fresh=False, ts={world.detections_ts:.1f}); "
+                "re-observe before motion"
+            )
+        if age > fresh_budget:
+            return HookResult.pre_denied(
+                f"stale detections (age {age:.1f}s > {fresh_budget:.1f}s); "
+                "re-observe before motion"
+            )
+        args = _action_args(context)
+        if tool in ("pick", "pick_left") and "z" in args:
+            try:
+                z = float(args["z"])
+            except (TypeError, ValueError):
+                return HookResult.pre_denied(
+                    f"pick z is not numeric ({args['z']!r}); cannot safety-check the height"
+                )
+            # floor = shared law
+            # lane off: min unchanged
+            # (refusal byte-identical)
+            # lane on: rescue floor
+            # ceiling untouched
+            floor = effective_pick_floor(emb.envelope)
+            if z < floor:
+                # torso frame: z=0 at torso link
+                if getattr(emb.envelope, "low_workspace_lane", False) is True:
+                    return HookResult.pre_denied(
+                        f"floor pick refused: workspace z={z:.2f} (torso frame) "
+                        f"< descent floor {floor:.2f} m — below the lane-armed "
+                        "low-workspace descent budget; a SIMULATED bound, not "
+                        "a measured body capability — refusing honestly"
+                    )
+                return HookResult.pre_denied(
+                    f"floor pick refused: workspace z={z:.2f} (torso frame) "
+                    f"< min {emb.envelope.pick_min_height_m:.2f} m — the engine "
+                    "is tabletop-only; no ground-pick skill exists "
+                    "(capability-block)"
+                )
+            if z > emb.envelope.pick_max_height_m:
+                return HookResult.pre_denied(
+                    f"pick out of reach: z={z:.2f} > max {emb.envelope.pick_max_height_m:.2f} m"
+                )
+        return HookResult.pre_ok("safety checks passed")
+
+    return hook
+
+
+# --------------------------------------------------------------------------
+# The post-hooks that ship in this module
+# --------------------------------------------------------------------------
+
+# platform verbs -> CONTRACTS keys
+# (pick/place/navigate/open_hand/close_hand)
+# no contract = FAIL
+_CONTRACT_FOR_VERB = {
+    "open": "open_hand",
+    "close": "close_hand",
+    "open_left": "open_hand",
+    "close_left": "close_hand",
+    "open_both": "open_hand",
+    "close_both": "close_hand",
+}
+
+#: hint charset
+#: verify_pick's _resolve_target set,
+#: brain/verifier.py:
+#: target_label\s*=\s*([A-Za-z0-9_.\-]+)
+#: same as gateway
+#: _HINT_LABEL_CHARS
+#: why: 'red cup' sent verbatim,
+#: regex cut it to 'red',
+#: nothing matched, pick read SUCCESS,
+#: cup still on the table
+#: outside set -> no hint, never truncated
+#: gated on
+#: optional_tools.hint_charset_refusal
+#: exactly True
+#: off = verbatim, defect included
+_HINT_LABEL_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
+
+
+def _runtime_target_hint(action: Any, refuse_charset: bool = False) -> Optional[str]:
+    """``target_label=<label>`` for THIS call, or None when it cannot be honest.
+
+    ``refuse_charset`` (batch-4 D10a switch, default OFF): when True a label
+    outside ``_HINT_LABEL_CHARS`` earns no hint at all; when False the hint
+    is ``"target_label=%s" % cand`` verbatim (base behaviour).
+
+    WHY THIS EXISTS (2026-09-27, MEASURED on Stuart).  ``verify_pick`` names
+    the picked object through ``_resolve_target`` (brain/verifier.py:752),
+    which parses the target out of ``contract.context``.  That string comes
+    from the STATIC ``CONTRACTS`` table (brain/tool_contract.py) — a prose
+    description of the pick engine that carries no ``target=``/``label=``
+    hint — so the verifier NEVER saw the object the call actually named.
+    ``_target_present`` then answered None on any non-empty scene and
+    ``verify_pick`` could only ever return ``in_progress`` 're-observe;
+    cannot confirm object gone (no target ref/label in contract context and
+    scene non-empty)'.
+
+    That is NOT a timing defect: the verdict is identical whenever it is
+    taken, so a pick could not verify success at ANY moment.  MEASURED: that
+    exact string was the tool result the model received at 18:49:43,103 —
+    one second after the pick that in fact SUCCEEDED (engine_grasp.log:
+    ``closure=full delta=7200.0 blocked=True``) — and the brain, told
+    "re-observe", re-observed, found the bottle still on the table (the arm
+    was still moving), and never called ``place``.  Zero place calls in
+    either run.
+
+    FOUR PROPERTIES, each deliberate:
+
+    * LABEL, never a bare ``target=<ref>``.  ``_target_present`` returns None
+      for a ref hint when no detection carries a ref — and perception does
+      not emit refs (``det.ref`` is never set, see
+      [[openbot-label-contract-ref-and-matcher]]) — so a ref hint would
+      reinstate exactly the permanent in_progress this fixes.
+
+    * The ``_<n>`` stem is applied to WHICHEVER field carried the ref, and
+      only as a FALLBACK: the value exactly as given is matched first, so a
+      detection genuinely labelled ``bottle_1`` still beats its own stem and
+      is never re-pointed at a different object.  (Before 2026-09-28 the stem
+      was confined to the ``ref`` branch, so the same string arriving in
+      ``label`` — the shape ``scene_brief``'s own output invites, since it
+      prints the ref as the line's first token — silently earned no hint.)
+
+    * The hint is supplied ONLY when the PRE-action observation already
+      showed that label (``action.world`` — the snapshot the executor took
+      before the tool was called, and never overwritten).  A hint therefore
+      means "this label was on the table BEFORE the call", so its absence
+      from the post-action packet is real evidence the object left the
+      source.  A label that was never seen earns NO hint and the existing
+      honest in_progress stands: a mis-spelled label cannot be turned into
+      a success by this function.
+
+    * The ``CONTRACTS`` entry is never mutated — the caller gets a
+      ``dataclasses.replace`` copy, so one call's target cannot leak into
+      the next (the table is module-level shared state).
+    """
+    pending = getattr(action, "pending_action", None)
+    args = getattr(pending, "args", None)
+    if not isinstance(args, dict):
+        return None
+    raw = str(args.get("label") or args.get("ref") or "").strip()
+    if not raw:
+        return None
+    pre = getattr(action, "world", None)
+    dets = getattr(pre, "detections", None) or []
+    seen = {(getattr(d, "label", None) or "").lower() for d in dets}
+    # scene_brief refs: 'bottle_1'
+    # stem = label
+    # ref can land in label or ref -
+    # prints it as first token
+    # exact first, stem fallback
+    # a real 'bottle_1' never re-pointed
+    for cand in (raw, re.sub(r"_\d+$", "", raw)):
+        if cand and cand.lower() in seen:
+            if refuse_charset is True and not set(cand) <= _HINT_LABEL_CHARS:
+                # refused outright
+                # never truncated
+                return None
+            return "target_label=%s" % cand
+    # not seen -> no proof it left
+    return None
+
+
+def _pick_preaction_hint(action: Any, hint: str) -> str:
+    """``"\\npreaction_dets=<x>,<y>,<hue|->;..."`` for THIS pick, or ``""``.
+
+    B8 (2026-10-06, MEASURED on Stuart): with two cups on the table the
+    verifier's label test matched the OTHER cup after every successful pick
+    ("target still visible").  This appends where every same-label object
+    stood BEFORE the call (``action.world``, the same pre-action snapshot
+    the hint's sighting gate reads) so ``verifier._only_bystanders`` can
+    tell the picked cup from its neighbours.  Any row it cannot serialise
+    voids the whole annotation: the verifier then keeps its old rule.
+    """
+    m = re.match(r"target_label=(.+)$", hint or "")
+    if not m:
+        return ""
+    label = m.group(1).lower()
+    pre = getattr(action, "world", None)
+    parts = []
+    for d in getattr(pre, "detections", None) or []:
+        if (getattr(d, "label", None) or "").lower() != label:
+            continue
+        try:
+            x, y = float(d.x), float(d.y)
+            hue = getattr(d, "hue", None)
+            hue = None if hue is None else float(hue)
+        except (TypeError, ValueError):
+            return ""
+        if x != x or y != y or abs(x) == float("inf") or abs(y) == float("inf"):
+            return ""
+        if hue is not None and (hue != hue or abs(hue) == float("inf")):
+            hue = None
+        parts.append("%.3f,%.3f,%s" % (x, y, "-" if hue is None else "%.1f" % hue))
+    if not parts:
+        return ""
+    return "\npreaction_dets=" + ";".join(parts)
+
+
+def verifier_post_hook(
+    get_obs: Optional[Callable[[], object]] = None,
+    verifier: Optional[object] = None,
+    hint_charset_refusal: bool = False,
+) -> Callable[[Any, Any], HookResult]:
+    """Post-tool verifier under the fixed contract.
+
+    ``hint_charset_refusal`` (default False = base behaviour) is passed to
+    ``_runtime_target_hint`` as ``refuse_charset`` (batch-4 D10a switch).
+
+    Maps the action's tool name through _CONTRACT_FOR_VERB onto a
+    CONTRACTS key; a missing mapping or missing contract yields
+    HookResult post_fail 'no contract for <verb>' — NEVER a silent ok.
+    The verdict maps one-to-one: 'success' -> post_ok,
+    'in_progress' -> post_pending (ok=False, evidence 're-observe'),
+    'failure' -> post_fail.
+
+    The SkillVerifier instance is constructed ONCE at hook-construction
+    (``verifier`` injects one; None -> a fresh instance) and held for the
+    hook's lifetime: SkillVerifier keeps instance-held state — the
+    navigate same-epoch guard (``_nav_last_success_epoch``) — and a fresh
+    instance per run_post call would reset that state and defeat
+    condition (e) of the navigate epoch gate on the agent lane.  The
+    sibling import stays lazy but moves to construction time; an import
+    failure is remembered and surfaces as post_fail on every run_post
+    (absent -> post_fail loudly, never silent).
+
+    Lazy-imports the sibling modules brain.verifier / brain.tool_contract
+    (SHARED CONTRACT names: SkillVerifier, CONTRACTS) — if they are
+    absent the hook FAILS loudly rather than pretending verification
+    happened.  `get_obs` (an ObservationSupplier: Callable returning
+    WorldObservation) is the fallback when run_post passes no
+    observation.  The raw tool reply is read off the action (`.tool_result`
+    or `.result`); a missing reply verifies as in_progress ('no tool
+    reply recorded').
+    """
+    # one instance, hook's life
+    _verifier: Any = verifier
+    _verifier_import_error: Optional[Exception] = None
+    if _verifier is None:
+        try:
+            from .verifier import SkillVerifier  # noqa: PLC0415 (lazy sibling)
+        except ImportError as exc:
+            _verifier_import_error = exc
+        else:
+            _verifier = SkillVerifier()
+
+    def hook(action: Any, observation: Any) -> HookResult:
+        if _verifier_import_error is not None:
+            return HookResult.post_fail(
+                "verifier unavailable (brain.verifier/tool_contract not "
+                f"importable): {_verifier_import_error}"
+            )
+        try:
+            from .tool_contract import CONTRACTS  # noqa: PLC0415 (lazy sibling)
+        except ImportError as exc:
+            return HookResult.post_fail(
+                f"verifier unavailable (brain.verifier/tool_contract not importable): {exc}"
+            )
+        tool = _action_tool(action)
+        if tool is None:
+            return HookResult.post_fail("no tool named in the pending action; cannot verify")
+        mapped = _CONTRACT_FOR_VERB.get(tool, tool)
+        contract = CONTRACTS.get(mapped)
+        if contract is None:
+            return HookResult.post_fail(f"no contract for {tool!r}")
+        obs = observation if observation is not None else (
+            get_obs() if get_obs is not None else None
+        )
+        # pick only: hint goes FIRST
+        # first match wins
+        if mapped == "pick":
+            # OFF = one-arg call
+            # byte for byte
+            hint = (_runtime_target_hint(action, refuse_charset=True)
+                    if hint_charset_refusal is True
+                    else _runtime_target_hint(action))
+            if hint is not None:
+                hint += _pick_preaction_hint(action, hint)  # bystanders too
+                contract = replace(contract, context=hint + "\n" + contract.context)
+        verdict = _verifier.verify(contract, obs, _action_tool_result(action))
+        if verdict.status == "success":
+            return HookResult.post_ok(verdict.to_string())
+        if verdict.status == "in_progress":
+            return HookResult.post_pending(verdict.to_string())
+        return HookResult.post_fail(verdict.to_string())
+
+    return hook
