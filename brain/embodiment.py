@@ -201,3 +201,17 @@ class Envelope:
         )
 
 
+@dataclass
+class Perception:
+    """Perception config governing how observations are interpreted.
+
+    silence_means_empty is SAFETY-ADJACENT: brain/config_loader.py rejects
+    any non-bool value for it, and config.yaml documents it MUST stay True
+    for the shipped profile.  Consumers: see the RUNTIME CONSUMERS section
+    of the module docstring (perception.* rows)."""
+
+    freshness_s: float = 2.0  # detection staleness, agent parity
+    silence_means_empty: bool = True  # silence = empty
+    frame: str = "torso"  # x right, y forward
+                          # z up
+
