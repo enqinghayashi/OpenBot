@@ -199,3 +199,5 @@ class Envelope:
             f"grip standoff {self.grip_center_standoff_m:.2f} m, "
             f"arm dur >= {self.min_arm_dur_s:.1f} s"
         )
+
+
