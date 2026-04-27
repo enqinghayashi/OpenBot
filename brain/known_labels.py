@@ -184,3 +184,72 @@ _EXTRA_CLASSES: Set[str] = set()
 _EXTRA_LOCK = threading.Lock()
 
 
+def extra_classes() -> FrozenSet[str]:
+    """Snapshot of the currently registered extra labels."""
+    return frozenset(_EXTRA_CLASSES)
+
+
+def register_extra_classes(names: Iterable[str],
+                           aliases: Optional[Mapping[str, str]] = None) -> None:
+    """Register confirmed extra labels and phrase aliases to them.
+
+    A BASE class is never an extra (D4: the base vocabulary is always on and
+    is the TRACKED string verbatim) -> ValueError, loud.  An alias whose
+    target is not a registered extra -> ValueError (an alias must resolve to
+    something perception can actually publish).  Alias keys that are base
+    class names or self-reference aliases ('me') are skipped: those words
+    already mean something on every tool path and must not be rewritten.
+    """
+    clean = []
+    for name in names:
+        n = str(name).strip().lower()
+        if not n:
+            continue
+        if n in TRACKED_CLASSES:
+            raise ValueError("%r is a base class, never an extra" % n)
+        clean.append(n)
+    with _EXTRA_LOCK:
+        # validate all, then apply: a
+        # ValueError leaves both containers
+        # untouched, nothing half-registered.
+        targets = set(_EXTRA_CLASSES) | set(clean)
+        pending = {}
+        for phrase, target in dict(aliases or {}).items():
+            key = str(phrase).strip().lower()
+            tgt = str(target).strip().lower()
+            if tgt not in targets:
+                raise ValueError("alias %r targets %r, which is not a registered "
+                                 "extra" % (key, tgt))
+            if not key or key == tgt or key in TRACKED_CLASSES \
+                    or key in TARGET_ALIASES:
+                continue
+            pending[key] = tgt
+        _EXTRA_CLASSES.update(clean)
+        EXTRA_ALIASES.update(pending)
+
+
+def unregister_extra_classes(names: Iterable[str]) -> None:
+    """Drop extra labels AND every alias that points at them."""
+    gone = {str(n).strip().lower() for n in names}
+    with _EXTRA_LOCK:
+        _EXTRA_CLASSES.difference_update(gone)
+        for key in [k for k, v in EXTRA_ALIASES.items() if v in gone]:
+            del EXTRA_ALIASES[key]
+
+
+def clear_extra_classes() -> None:
+    """Back to the default (empty) state.  Clears IN PLACE: callers that
+    imported the containers by name keep seeing the live (empty) objects."""
+    with _EXTRA_LOCK:
+        _EXTRA_CLASSES.clear()
+        EXTRA_ALIASES.clear()
+
+
+def seg_node_path() -> str:
+    """Absolute path to the perception node that OWNS the allowlist."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for _name in ("yolo_node_SEG_version.py", "yolo_node_seg.py"):
+        _p = os.path.join(root, "skills", "perception", _name)
+        if os.path.exists(_p):
+            return _p
+    return os.path.join(root, "skills", "perception", "yolo_node_seg.py")
