@@ -193,3 +193,5 @@ def classify_pick_z(z, tabletop_min_z, max_descent_m):
     if z >= rescue_floor(tabletop_min_z, max_descent_m):
         return "DESCEND"
     return "DEEP_FLOOR"
+
+
