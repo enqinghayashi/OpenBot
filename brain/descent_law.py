@@ -123,3 +123,5 @@ def _finite(value, name):
         raise ValueError(
             "descent_law: %s must be a finite number, got %r" % (name, value))
     return float(value)
+
+
