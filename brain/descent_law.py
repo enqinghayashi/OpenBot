@@ -125,3 +125,15 @@ def _finite(value, name):
     return float(value)
 
 
+def _finite_descent(value, name):
+    """:func:`_finite` plus the descent-budget invariant ``>= 0``.
+
+    A negative budget is not a small budget: ``clamp(COMFORT_Z - z, 0.0, cap)``
+    with ``cap < 0`` is an empty interval, so there is no honest number to
+    return.
+    """
+    budget = _finite(value, name)
+    if budget < 0.0:
+        raise ValueError(
+            "descent_law: %s must be >= 0, got %r" % (name, value))
+    return budget
