@@ -176,3 +176,26 @@ class Envelope:
                                         # left_hand_in_service;
                                         # False = refuse left-arm picks
 
+    def summary(self) -> str:
+        if self.low_workspace_lane is True:
+            # lane armed: floor from the law's
+            # writer band, every call
+            # never a literal
+            # descent is writer-reported
+            # not measured: no height sensor
+            floor = effective_pick_floor(self)
+            lane = (
+                f"TABLEtop + low-workspace descent lane (writer-reported, "
+                f"NOT sensor-measured; effective floor {floor:.2f} m)"
+            )
+        else:
+            # lane off: byte-identical output
+            floor = self.pick_min_height_m
+            lane = "TABLEtop-only; floor pick = capability-block"
+        return (
+            f"pick z in [{floor:.2f},{self.pick_max_height_m:.2f}] m "
+            f"({lane}), "
+            f"reach <= {self.max_reach_m:.2f} m, "
+            f"grip standoff {self.grip_center_standoff_m:.2f} m, "
+            f"arm dur >= {self.min_arm_dur_s:.1f} s"
+        )
