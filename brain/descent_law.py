@@ -215,3 +215,14 @@ def engine_z(z, stand_m, confirmed_ref_m):
     return zf + (stand - ref)
 
 
+def same_height(h_need, h_cur, tol_m):
+    """The operator's hold rule: is the height we need the height we have?
+
+    ``abs(h_need - h_cur) <= tol_m``.  A decision, not a measurement, so a
+    non-finite input answers ``False`` — the conservative direction, which
+    retreats first rather than HOLDING a body height nobody can vouch for.
+    """
+    if not (_is_finite_number(h_need) and _is_finite_number(h_cur)
+            and _is_finite_number(tol_m)):
+        return False
+    return abs(h_need - h_cur) <= tol_m
