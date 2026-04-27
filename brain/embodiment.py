@@ -126,3 +126,53 @@ except Exception as _exc:  # noqa: BLE001 — degrade, never raise
         return envelope.pick_min_height_m
 
 
+@dataclass
+class Envelope:
+    """Operational envelope the brain must never exceed.
+
+    Every field has a verified runtime consumer — see the RUNTIME
+    CONSUMERS section of the module docstring (envelope.* rows)."""
+
+    pick_min_height_m: float = -0.35  # torso-frame floor, 2026-09-06:
+                                      # tabletop z in [0.00,+0.07],
+                                      # ground ~ -0.75
+    pick_max_height_m: float = 1.20  # conservative
+                                     # verify on robot
+    max_reach_m: float = 0.90  # conservative
+                               # verify on robot
+    grip_center_standoff_m: float = 0.0  # 2026-09-06
+                                         # engines take no standoff
+                                         # stdin x/y/z = wrist target,
+                                         # grip offset is engine-side
+    min_arm_dur_s: float = 1.5  # writer's arm <dur> clamp floor,
+                                # verified; consumer: arm dispatch
+
+    # ── low-workspace descent lane (plan §8) — copies EnvelopeConfig's fields
+    # `low_workspace_lane` is the rollback switch:
+    # False (default) answers as today
+    # four law inputs
+    # threaded from descent_law.py
+    # by the gateway; no literal restated
+    low_workspace_lane: bool = False  # switch to the descend lane;
+                                      # strict bool only
+    height_stand_m: float = 0.74  # nominal stand
+                                  # (writer height_stand)
+                                  # SIMULATED not measured
+    height_min_m: float = 0.55    # writer's height clamp floor;
+                                  # budget = stand - min
+                                  # writer ships band shut
+    hold_tol_m: float = 0.05      # hold tolerance, m
+    descend_confirm_timeout_s: float = 3.0  # confirm poll, s
+    lane_operation_budget_s: float = 30.0  # lane budget, s
+                                           # mirrors descent_lane.LANE_OPERATION_BUDGET_S
+                                           # a literal, not an import --
+                                           # brain never imports gateway
+                                           # not in summary()
+    pre_descent_step: bool = False  # optional stance step pre-descent;
+                                    # mirrors the EnvelopeConfig field;
+                                    # strict bool, off
+                                    # not in summary()
+    left_hand_in_service: bool = False  # mirrors EnvelopeConfig
+                                        # left_hand_in_service;
+                                        # False = refuse left-arm picks
+
