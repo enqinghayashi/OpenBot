@@ -195,3 +195,21 @@ def classify_pick_z(z, tabletop_min_z, max_descent_m):
     return "DEEP_FLOOR"
 
 
+def engine_z(z, stand_m, confirmed_ref_m):
+    """The z the engine must be commanded, in the DESCENDED torso frame.
+
+    ``z + (stand_m - confirmed_ref_m)``.  The torso frame rides with the torso,
+    so a body that has descended by ``stand_m - confirmed_ref_m`` sees the same
+    fixed object ``that much`` higher.  ``confirmed_ref_m`` is the CONFIRMED
+    reference read back from the writer's status — never the requested command
+    — which is what makes the precondition fail-closed rather than assumed.
+
+    That 1:1 torso-frame delta is INFERRED from the frame definition, not
+    measured; the torso-pitch coupling is the unverified term (see the module
+    docstring).  With ``confirmed_ref_m == stand_m`` this is the identity, so
+    the lane-off path cannot perturb a target.
+    """
+    zf = _finite(z, "z")
+    stand = _finite(stand_m, "stand_m")
+    ref = _finite(confirmed_ref_m, "confirmed_ref_m")
+    return zf + (stand - ref)
