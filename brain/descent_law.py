@@ -137,3 +137,6 @@ def _finite_descent(value, name):
         raise ValueError(
             "descent_law: %s must be >= 0, got %r" % (name, value))
     return budget
+
+
+# ────────────────────────────────────────────────────────────── the law itself
