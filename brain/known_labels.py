@@ -82,3 +82,105 @@ def describe() -> str:
     """One line naming every detectable class, for the model's context."""
     return ("DETECTABLE (the only labels perception can ever report): "
             + ", ".join(sorted_classes()))
+
+
+def is_detectable(label: str) -> bool:
+    """True when ``label`` is a class the perception lane can publish.
+
+    Case/whitespace-insensitive.  A colour-prefixed form ('red cup') is
+    reduced to its class BEFORE the test, because the colour prefix is a
+    per-instance display adornment, never a class of its own.
+    """
+    if not label:
+        return False
+    text = label.strip().lower()
+    if text in TRACKED_CLASSES:
+        return True
+    # open-vocab extras. lane ON + node
+    # confirmed, else never fires.
+    if text in _EXTRA_CLASSES or EXTRA_ALIASES.get(text) in _EXTRA_CLASSES:
+        return True
+    try:
+        from .observation import label_base_class  # local: keep import light
+    except Exception:  # noqa: BLE001 — if the helper is missing we still must not break the test
+        return False
+    try:
+        base = label_base_class(text)
+        return (base in TRACKED_CLASSES or base in _EXTRA_CLASSES
+                or EXTRA_ALIASES.get(base) in _EXTRA_CLASSES)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+#: spoken self-references ('me', 'myself', 'i', 'human', 'operator')
+#: map to the tracked class 'person' - one word for the human, so
+#: just language -> class; every target is tested as publishable.
+TARGET_ALIASES: Dict[str, str] = {
+    "me": "person",
+    "myself": "person",
+    "i": "person",
+    "human": "person",
+    "operator": "person",
+}
+
+
+def resolve_alias(label: str) -> str:
+    """Map a self-reference ('me') to its tracked class ('person').
+
+    IDENTITY for every other label, INCLUDING its original casing and
+    whitespace: this sits on the target-resolution path for every tool, so it
+    must not quietly rewrite labels it does not own.  Case- and
+    whitespace-insensitive in the LOOKUP only -- the alias arrives from spoken
+    language, where the casing is whatever the model typed.
+    """
+    if not label:
+        return label
+    key = label.strip().lower()
+    hit = TARGET_ALIASES.get(key)
+    if hit is not None:
+        return hit
+    # learned phrases ('trash can' ->
+    # 'bin'). empty by default, so with
+    # lane OFF this is still the identity.
+    # leading article tolerated.
+    if EXTRA_ALIASES:
+        hit = EXTRA_ALIASES.get(key)
+        if hit is None:
+            parts = key.split()
+            while parts and parts[0] in ("the", "a", "an"):
+                parts.pop(0)
+            hit = EXTRA_ALIASES.get(" ".join(parts))
+        if hit is not None:
+            return hit
+    return label
+
+
+# --- open-vocab EXTRAS (brain/look_for_tool.py) ---
+#
+# TRACKED_CLASSES above stays the literal
+# the drift guard reads by AST.
+#
+# lane `optional_tools.open_vocab_lane`,
+# default OFF. adds single-token labels
+# ('bin', 'pencil_case') the node
+# CONFIRMED, plus phrases pointing at
+# them ('trash can' -> 'bin'). both
+# containers EMPTY by default; only the
+# lane fills them, so lane OFF behaves
+# byte-for-byte as before (pinned by
+# tests/test_known_labels.py).
+#
+# describe() skips extras: it renders the
+# STATIC capability line.
+
+#: phrase -> extra label.
+#: EMPTY by default.
+EXTRA_ALIASES: Dict[str, str] = {}
+
+#: confirmed extra labels.
+#: EMPTY by default.
+_EXTRA_CLASSES: Set[str] = set()
+
+_EXTRA_LOCK = threading.Lock()
+
+
