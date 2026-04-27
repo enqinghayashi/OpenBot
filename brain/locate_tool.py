@@ -119,3 +119,13 @@ class Locate(object):
         return fail("NOT_DETECTED: %s. It is not in view right now - this is NOT "
                     "the end: call navigate('%s') to search the room and walk to "
                     "it, then pick it." % (res.get("reason", "nothing fits"), label))
+
+
+def make_tools(registry: Any) -> List[Any]:
+    """[locate] for register_optional_tools (lane `spatial_lane`)."""
+    from brain.agent.tools import Tool
+    handler = Locate(registry)
+    tool = Tool(name="locate", description=LOCATE_DESCRIPTION, schema=LOCATE_SCHEMA,
+                run=handler, timeout_s=LOCATE_TIMEOUT_S)
+    tool.handler = handler  # hook for tests
+    return [tool]
