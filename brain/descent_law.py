@@ -171,3 +171,5 @@ def rescue_floor(tabletop_min_z, max_descent_m):
     """
     return (_finite(tabletop_min_z, "tabletop_min_z")
             - _finite_descent(max_descent_m, "max_descent_m"))
+
+
