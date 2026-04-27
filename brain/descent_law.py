@@ -226,3 +226,28 @@ def same_height(h_need, h_cur, tol_m):
             and _is_finite_number(tol_m)):
         return False
     return abs(h_need - h_cur) <= tol_m
+
+
+# ────────────────────────────────────────── how the writer spells its height status
+# the writer's real status output, copied line for line.
+#
+#   height=<ref>(stand <stand>)                inactive  -> active=False
+#   height=<ref>-><target> active rem=<s>s     active    -> active=True
+#   height=<ref> SUSPENDED-><t> rem=<s>s       suspended -> suspended=True
+#
+# the `(stand ...)` form is the no-op detector: it's exactly what a shut band
+# produces, because `_apply_height` calls
+# `_return_to_standing("height standing")` whenever the clamped value is within
+# `height_stand_eps` of standing. so a shut band can't be mistaken for a
+# descent. the fragment sits mid-line in the real reply - the writer's `status`
+# verb returns "STATE: ... <cmd_auto> <height> <sonic>" - so the
+# parser searches the line instead of anchoring to its start.
+_NUM = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
+_RE_SUSPENDED = re.compile(
+    r"height=(%s)\s+SUSPENDED->(%s)\s+rem=(%s)s" % (_NUM, _NUM, _NUM))
+_RE_ACTIVE = re.compile(
+    r"height=(%s)->(%s)\s+active\s+rem=(%s)s" % (_NUM, _NUM, _NUM))
+_RE_STAND = re.compile(
+    r"height=(%s)\s*\(stand\s+(%s)\)" % (_NUM, _NUM))
+
+
