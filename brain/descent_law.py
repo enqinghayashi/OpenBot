@@ -157,3 +157,17 @@ def descent_for_z(z, max_descent_m):
     return min(max(COMFORT_Z - zf, 0.0), budget)
 
 
+def rescue_floor(tabletop_min_z, max_descent_m):
+    """The lowest torso-frame ``z`` the body can still bring into reach.
+
+    Derived on EVERY call — ``tabletop_min_z - max_descent_m`` — so no number
+    for it exists anywhere in this file, and widening the writer's band (or
+    changing the envelope's floor) moves it without a code change.
+
+    ``max_descent_m`` is the caller's budget (``height_stand_m -
+    height_min_m``), never a constant here.  Raises ``ValueError`` for a
+    non-finite input or a negative budget, so a caller can never receive a
+    fabricated floor.
+    """
+    return (_finite(tabletop_min_z, "tabletop_min_z")
+            - _finite_descent(max_descent_m, "max_descent_m"))
