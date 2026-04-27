@@ -236,3 +236,56 @@ def _strip_colour(phrase: str) -> tuple:
     if toks and toks[0] in _COLOUR_WORDS:
         return toks[0], " ".join(toks[1:])
     return None, phrase
+
+
+def _norm_phrase(noun: Any, extract_colour: bool = False) -> Any:
+    """Lowercase, punctuation -> space, collapse, strip leading articles and
+    size words. If extract_colour is True, return (colour|None, phrase) tuple;
+    otherwise return the normalised phrase (for backward compatibility)."""
+    if not isinstance(noun, str):
+        return (None, "") if extract_colour else ""
+    text = re.sub(r"[^a-z0-9 \-]+", " ", noun.lower())
+    toks = text.split()
+    # leading articles
+    while toks and toks[0] in _ARTICLES:
+        toks.pop(0)
+    # then size words
+    while toks and toks[0] in _SIZE_WORDS:
+        toks.pop(0)
+    phrase = " ".join(toks)
+    if extract_colour:
+        colour, stripped = _strip_colour(phrase)
+        return colour, stripped
+    return phrase
+
+
+def _singular_candidates(phrase: str) -> List[str]:
+    """Lookup-only singular forms ('bins' -> 'bin', 'boxes' -> 'box').
+    Used ONLY to find a phrase in an existing table, never to mint a label
+    (so 'bus' is never shortened to 'bu')."""
+    out = []
+    if phrase.endswith("ies") and len(phrase) > 4:
+        out.append(phrase[:-3] + "y")
+    if phrase.endswith("es") and len(phrase) > 3:
+        out.append(phrase[:-2])
+    if phrase.endswith("s") and not phrase.endswith("ss") and len(phrase) > 2:
+        out.append(phrase[:-1])
+    return out
+
+
+def _mint_label(phrase: str) -> str:
+    """The canonical token of an UNSEEDED phrase: the FULL phrase, never a
+    shortened guess ('widget holder' -> 'widget_holder')."""
+    return re.sub(r"[^a-z0-9]+", "_", phrase).strip("_")
+
+
+# =============================================================================
+# VocabularyManager - pure state, canonicalisation, and the coalescing sender
+# =============================================================================
+
+
+class Canon(object):
+    """Result of canonicalising one spoken noun."""
+
+    __slots__ = ("kind", "label", "prompt", "phrase")
+
