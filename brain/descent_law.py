@@ -173,3 +173,23 @@ def rescue_floor(tabletop_min_z, max_descent_m):
             - _finite_descent(max_descent_m, "max_descent_m"))
 
 
+def classify_pick_z(z, tabletop_min_z, max_descent_m):
+    """The branch a pick target falls in, as one of four EXACT strings.
+
+        ``"ABSENT"``      ``z`` is ``None`` or not a finite number
+        ``"NORMAL"``      ``z >= COMFORT_Z`` — today's path, byte-identical
+        ``"DESCEND"``     ``rescue_floor(...) <= z < COMFORT_Z`` — the new lane
+        ``"DEEP_FLOOR"``  ``z < rescue_floor(...)`` — today's honest refusal
+
+    The floor is computed here from the two arguments, so the boundary is
+    inclusive at the bottom: ``z`` exactly AT the floor is ``"DESCEND"``.
+    ``"ABSENT"`` is returned WITHOUT touching the floor arguments — an absent
+    detection is not a config probe.
+    """
+    if not _is_finite_number(z):
+        return "ABSENT"
+    if z >= COMFORT_Z:
+        return "NORMAL"
+    if z >= rescue_floor(tabletop_min_z, max_descent_m):
+        return "DESCEND"
+    return "DEEP_FLOOR"
