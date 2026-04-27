@@ -215,3 +215,9 @@ class Perception:
     frame: str = "torso"  # x right, y forward
                           # z up
 
+    def summary(self) -> str:
+        return (
+            f"frame={self.frame} (x right, y forward, z up), "
+            f"freshness {self.freshness_s:.1f} s, "
+            f"silence_means_empty={self.silence_means_empty}"
+        )
