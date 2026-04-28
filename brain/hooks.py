@@ -145,3 +145,7 @@ class HookResult:
     def pre_denied(cls, reason: str = "") -> "HookResult":
         return cls(False, "pre_denied", reason)
 
+    @classmethod
+    def post_ok(cls, reason: str = "") -> "HookResult":
+        return cls(True, "post_ok", reason)
+
