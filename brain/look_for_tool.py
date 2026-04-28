@@ -347,3 +347,95 @@ class VocabularyManager(object):
 
     # -- seed -------------------------------------------------------------------
 
+    def _learn(self, label: str, prompt: str, phrases: Any) -> None:
+        self.prompts.setdefault(label, prompt)
+        self.phrase_to_label[label.replace("_", " ")] = label
+        self.phrase_to_label[prompt] = label
+        for p in phrases:
+            norm = _norm_phrase(p, extract_colour=False)
+            if norm:
+                self.phrase_to_label[norm] = label
+
+    def _load_vocab_prompts(self) -> None:
+        """Load the vocabulary prompts file if it exists."""
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        vocab_file = os.path.join(repo_root, "brain", "vocab_prompts.txt")
+        if os.path.isfile(vocab_file):
+            try:
+                with open(vocab_file, "r", encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if line:
+                            self.vocab_prompts[line] = line
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _seed_from_config(self, synonyms: Any) -> None:
+        if synonyms is None:
+            return
+        if not isinstance(synonyms, Mapping):
+            self._log("[%s] optional_tools.synonyms ignored: expected a mapping "
+                      "with inline lists (bin: [trash can, rubbish bin]), got "
+                      "%s %r" % (LANE_TAG, type(synonyms).__name__, synonyms))
+            return
+        for raw_label, phrases in synonyms.items():
+            label = _mint_label(_norm_phrase(str(raw_label), extract_colour=False))
+            if (not isinstance(phrases, list) or not phrases
+                    or not all(isinstance(p, str) for p in phrases)):
+                self._log("[%s] optional_tools.synonyms.%s ignored: expected an "
+                          "inline list of phrases ([a, b]), got %r (the block-list "
+                          "form is unsupported)" % (LANE_TAG, raw_label, phrases))
+                continue
+            norm = [_norm_phrase(p, extract_colour=False) for p in phrases]
+            norm = [p for p in norm if p]
+            if (not LABEL_RE.match(label) or label in known_labels.TRACKED_CLASSES
+                    or not norm or not all(PROMPT_RE.match(p) for p in norm)
+                    or any(self._base_of(p) for p in norm)):
+                self._log("[%s] optional_tools.synonyms.%s ignored: invalid label "
+                          "or phrase (or a phrase that names a base class)"
+                          % (LANE_TAG, raw_label))
+                continue
+            self._learn(label, self.prompts.get(label, norm[0]), norm)
+
+    # -- canonicalisation --------------------------------------------------------
+
+    @staticmethod
+    def _base_of(phrase: str) -> Optional[str]:
+        """The base TRACKED class a phrase names, or None."""
+        tracked = known_labels.TRACKED_CLASSES
+        if phrase in tracked:
+            return phrase
+        if phrase in BASE_SYNONYMS:
+            return BASE_SYNONYMS[phrase]
+        alias = known_labels.TARGET_ALIASES.get(phrase)
+        if alias in tracked:
+            return alias
+        stripped = label_base_class(phrase)  # colour prefix
+        if stripped in tracked:
+            return stripped
+        if stripped in BASE_SYNONYMS:
+            return BASE_SYNONYMS[stripped]
+        return None
+
+    def canon(self, noun: Any) -> Canon:
+        colour, phrase = _norm_phrase(noun, extract_colour=True)
+        if not phrase:
+            return Canon("invalid", "", None, (colour or "") + (" " if colour else "") + phrase)
+        # colour is perception's decoration
+        core = label_base_class(phrase) or phrase
+        # lookup: synonyms, prompts, stripped, singular, last words
+        lookup_candidates = [core] + _singular_candidates(core) + self._last_n_words(core, 2) + self._last_n_words(core, 1)
+        for cand in lookup_candidates:
+            if not cand:
+                continue
+            base = self._base_of(cand)
+            if base is not None:
+                return Canon("base", base, None, phrase)
+            label = self.phrase_to_label.get(cand)
+            if label is not None:
+                return Canon("extra", label, self.prompts[label], phrase)
+        label = _mint_label(core)
+        if not LABEL_RE.match(label) or not PROMPT_RE.match(core):
+            return Canon("invalid", label, None, phrase)
+        return Canon("extra", label, core, phrase)
+
