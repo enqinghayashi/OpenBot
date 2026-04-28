@@ -553,3 +553,97 @@ _REFUSAL_KINDS = {"backend_fixed": "backend_fixed", "busy": "busy",
                   "bad_request": "bad_request"}
 
 
+def _env_text(env: Any) -> Tuple[Optional[bool], str, Any]:
+    """(success, text, raw value) from an envelope of either shape:
+    {'success', 'value'|'reason'} (brain envelope) or {'ok', 'text'}."""
+    if not isinstance(env, dict):
+        return None, str(env), env
+    success = env.get("success", env.get("ok"))
+    value = env.get("value")
+    if value is None:
+        value = env.get("text", env.get("reply"))
+    if success is False or value is None:
+        text = env.get("reason") or value or ""
+    else:
+        text = value
+    return success, text if isinstance(text, str) else str(text), value
+
+
+class GatewayOutcome(object):
+    """Classified result of one yolo_classes round-trip."""
+
+    __slots__ = ("kind", "text", "extras", "rejected")
+
+    def __init__(self, kind: str, text: str, extras: Optional[List[str]] = None,
+                 rejected: Optional[Dict[str, str]] = None) -> None:
+        self.kind = kind  # applied|unconfirmed|backend_fixed|busy|
+        self.text = text  # disabled|swap_failed|bad_request|no_verb
+        self.extras = extras  # confirmed extras
+        self.rejected = rejected or {}
+
+
+def classify_outcome(env: Any) -> GatewayOutcome:
+    success, text, value = _env_text(env)
+    if isinstance(value, dict):  # classes_state, structured
+        rejected = {str(k): str(v) for k, v in
+                    dict(value.get("rejected") or {}).items()}
+        extras = [str(x) for x in (value.get("extras") or [])]
+        if value.get("backend") == "yolo":
+            return GatewayOutcome("backend_fixed", text, [], rejected)
+        if value.get("error"):
+            return GatewayOutcome("swap_failed", str(value.get("error")))
+        if success and value.get("backend") == "yoloe":
+            return GatewayOutcome("applied", text, extras, rejected)
+        return GatewayOutcome("unconfirmed", text)
+    stripped = text.lstrip()
+    # confirmed shapes
+    # gateway_node.py _yolo_reply:
+    #   set/reset -> "DONE:applied seq=N active=B+K extras=..."
+    #   query     -> "DONE:state seq=N backend=<b> active=..."
+    # checked first, only on those prefixes, so a label
+    # echoed in extras= ('busy_board') is never a keyword
+    if success and (stripped.startswith("DONE:applied")
+                    or stripped.startswith("DONE:state")):
+        if stripped.startswith("DONE:state"):
+            m = _BACKEND_RE.search(stripped)
+            backend = m.group(1) if m else None
+            if backend == "yolo":
+                return GatewayOutcome("backend_fixed", text, [], {})
+            if backend != "yoloe":
+                return GatewayOutcome("unconfirmed", text)
+        m = _EXTRAS_RE.search(stripped)
+        if m is None:
+            # no extras= echo = not confirmed
+            # never assume a label got active
+            return GatewayOutcome("unconfirmed", text)
+        extras = [x for x in m.group(1).split(",") if x]
+        rejected = {}
+        m = _REJECTED_RE.search(stripped)
+        if m:
+            for item in m.group(1).split(","):
+                if ":" in item:
+                    k, v = item.split(":", 1)
+                    rejected[k] = v
+        return GatewayOutcome("applied", text, extras, rejected)
+    # refusals
+    # only the gateway's own token picks the kind
+    # 'ERROR:yolo_classes <kind>'
+    # (gateway_node.py _do_yolo_classes)
+    m = _REFUSAL_RE.match(stripped)
+    if m is not None and m.group(1) in _REFUSAL_KINDS:
+        return GatewayOutcome(_REFUSAL_KINDS[m.group(1)], text)
+    # unconfirmed
+    # DONE:requested, no_ack, no_subscriber,
+    # publish_failed, state_error, transport errors:
+    # NOT confirmed
+    return GatewayOutcome("unconfirmed", text)
+
+
+# =============================================================================
+# how the reply is worded
+# =============================================================================
+
+
+def _label_line(label: str, prompt: str, confident: bool) -> str:
+    tail = "" if confident else " once it is seen with confidence"
+    return "label: %s (prompt: %s) - say pick %s%s." % (label, prompt, label, tail)
