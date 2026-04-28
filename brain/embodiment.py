@@ -326,3 +326,25 @@ class Embodiment:
             return cls.from_dict(cfg.get("embodiment"))
         return cls.defaults()
 
+    @classmethod
+    def from_config_file(cls, path: str, profile: Optional[str] = None) -> "Embodiment":
+        """Load the `embodiment:` segment from config.yaml.
+
+        Reads through brain/config_loader.load() — the ONE parser (with
+        the value-level comment stripping).  The ACTIVE profile is the
+        given `profile` when a caller passes it (the launcher knows the
+        deployment, e.g. 'voice'), else the base file's own `profile:`
+        key (config_loader's default) — so a voice-declaring base file
+        merges config.voice.yaml on top and its embodiment overrides win
+        over the laptop defaults.  The v4 allowlist is {laptop, cloud,
+        voice, offline} (profile files config.cloud.yaml,
+        config.voice.yaml, config.offline.yaml; the stuart tier is
+        SUPERSEDED — config.stuart.yaml is an inert archive).  Missing
+        file or missing segment -> defaults (documented fallback).
+        """
+        try:
+            cfg = _load_config(path, profile=profile)
+        except FileNotFoundError:
+            return cls.defaults()
+        return cls.from_dict(cfg.get("embodiment"))
+
