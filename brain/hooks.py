@@ -137,3 +137,7 @@ class HookResult:
                 f"{sorted(HOOK_STATES)}"
             )
 
+    @classmethod
+    def pre_ok(cls, reason: str = "") -> "HookResult":
+        return cls(True, "pre_ok", reason)
+
