@@ -369,3 +369,8 @@ class Embodiment:
             },
         }
 
+    def summary(self) -> str:
+        return (
+            f"[embodiment] {self.envelope.summary()} | "
+            f"{self.perception.summary()} | {self.base_relative.summary()}"
+        )
