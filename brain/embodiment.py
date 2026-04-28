@@ -232,3 +232,6 @@ class BaseRelative:
         "camera_offset_m": [0.0, 0.0, 0.0],  # detections already torso-frame
     })
 
+    def position(self, name: str) -> Optional[List[float]]:
+        return self.key_positions.get(name)
+
