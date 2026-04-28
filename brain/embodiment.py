@@ -258,3 +258,5 @@ def _as_bool(value: Any, name: str) -> bool:
     if low in ("false", "no", "off", "0"):
         return False
     raise ValueError(f"embodiment perception.{name} must be a bool, got {value!r}")
+
+
