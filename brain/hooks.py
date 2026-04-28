@@ -130,3 +130,10 @@ class HookResult:
     state: str
     reason: str = ""
 
+    def __post_init__(self) -> None:
+        if self.state not in HOOK_STATES:
+            raise ValueError(
+                f"invalid HookResult state {self.state!r}; must be one of "
+                f"{sorted(HOOK_STATES)}"
+            )
+
