@@ -223,3 +223,12 @@ class Perception:
         )
 
 
+@dataclass
+class BaseRelative:
+    """Named positions relative to the robot base/torso frame."""
+
+    key_positions: Dict[str, List[float]] = field(default_factory=lambda: {
+        "grip_center_m": [0.0, 0.37, 0.0],  # standoff, verified
+        "camera_offset_m": [0.0, 0.0, 0.0],  # detections already torso-frame
+    })
+
