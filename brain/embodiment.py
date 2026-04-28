@@ -348,3 +348,24 @@ class Embodiment:
             return cls.defaults()
         return cls.from_dict(cfg.get("embodiment"))
 
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "envelope": {
+                "pick_min_height_m": self.envelope.pick_min_height_m,
+                "pick_max_height_m": self.envelope.pick_max_height_m,
+                "max_reach_m": self.envelope.max_reach_m,
+                "grip_center_standoff_m": self.envelope.grip_center_standoff_m,
+                "min_arm_dur_s": self.envelope.min_arm_dur_s,
+            },
+            "perception": {
+                "freshness_s": self.perception.freshness_s,
+                "silence_means_empty": self.perception.silence_means_empty,
+                "frame": self.perception.frame,
+            },
+            "base_relative": {
+                "key_positions": {
+                    k: list(v) for k, v in self.base_relative.key_positions.items()
+                }
+            },
+        }
+
