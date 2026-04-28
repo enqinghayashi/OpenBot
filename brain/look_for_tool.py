@@ -439,3 +439,34 @@ class VocabularyManager(object):
             return Canon("invalid", label, None, phrase)
         return Canon("extra", label, core, phrase)
 
+    def _last_n_words(self, phrase: str, n: int) -> List[str]:
+        """Return list of last n words from phrase."""
+        toks = phrase.split()
+        if len(toks) <= n:
+            return []
+        return [" ".join(toks[-n:])]
+
+    # -- known_labels mirror -----------------------------------------------------
+
+    def _aliases_for(self, labels: Any) -> Dict[str, str]:
+        wanted = set(labels)
+        return {p: l for p, l in self.phrase_to_label.items()
+                if l in wanted and p != l}
+
+    def set_active(self, labels: Any) -> None:
+        """The node's confirmed extras become the brain's active set and the
+        ONLY extras known_labels resolves."""
+        labels = [l for l in labels
+                  if LABEL_RE.match(l) and l not in known_labels.TRACKED_CLASSES]
+        self.active = OrderedDict(
+            (l, self.desired.get(l) or self.prompts.get(l) or l.replace("_", " "))
+            for l in labels)
+        known_labels.clear_extra_classes()
+        if self.active:
+            known_labels.register_extra_classes(
+                list(self.active), aliases=self._aliases_for(self.active))
+
+    def clear(self) -> None:
+        self.desired = OrderedDict()
+        self.set_active([])
+
