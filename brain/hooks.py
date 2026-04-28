@@ -167,3 +167,5 @@ class HookResult:
         """Compatibility alias for older readers; prefer `reason`."""
         return self.reason
 
+    def to_string(self) -> str:
+        return f"HOOK:{self.state.upper()}|ok={self.ok}|{self.reason}"
