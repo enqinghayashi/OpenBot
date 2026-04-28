@@ -310,3 +310,19 @@ class Embodiment:
                     e.base_relative.key_positions[str(k)] = [float(x) for x in v]
         return e
 
+    @classmethod
+    def from_config(cls, cfg: Any) -> "Embodiment":
+        """Build from an ALREADY-LOADED config (config_loader.load() result).
+
+        The accessor the tools layer uses to wire the envelope into the
+        pick placeholder (no re-parse: the loader owns YAML parsing).
+        Missing segment -> defaults.  Accepts the loader's Config object
+        (dict-like; ``.get``) or a plain dict.
+        """
+        if isinstance(cfg, dict):
+            return cls.from_dict(cfg.get("embodiment"))
+        get = getattr(cfg, "get", None)
+        if callable(get):
+            return cls.from_dict(cfg.get("embodiment"))
+        return cls.defaults()
+
