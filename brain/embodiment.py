@@ -240,3 +240,21 @@ class BaseRelative:
         return f"key positions: {items}"
 
 
+def _as_bool(value: Any, name: str) -> bool:
+    """Coerce a parsed perception value to bool; raise on anything else.
+
+    The loader already returns Python bools; this also accepts the common
+    string spellings so a hand-built dict cannot silently flip a
+    safety-relevant flag (bool('false') == True would invert
+    silence_means_empty).  Garbage raises — never a guess.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    low = str(value).strip().lower()
+    if low in ("true", "yes", "on", "1"):
+        return True
+    if low in ("false", "no", "off", "0"):
+        return False
+    raise ValueError(f"embodiment perception.{name} must be a bool, got {value!r}")
