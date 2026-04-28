@@ -235,3 +235,6 @@ class BaseRelative:
     def position(self, name: str) -> Optional[List[float]]:
         return self.key_positions.get(name)
 
+    def summary(self) -> str:
+        items = ", ".join(f"{k}={v}" for k, v in self.key_positions.items())
+        return f"key positions: {items}"
