@@ -470,3 +470,86 @@ class VocabularyManager(object):
         self.desired = OrderedDict()
         self.set_active([])
 
+    def seed_from_node(self, labels: Any) -> None:
+        """op:query answer: the node's extras become desired AND active."""
+        clean = [l for l in labels
+                 if LABEL_RE.match(l) and l not in known_labels.TRACKED_CLASSES]
+        self.desired = OrderedDict(
+            (l, self.prompts.get(l) or l.replace("_", " ")) for l in clean)
+        for l, p in self.desired.items():
+            self.phrase_to_label.setdefault(p, l)
+            self.prompts.setdefault(l, p)
+        self.set_active(clean)
+
+    # -- message -----------------------------------------------------------------
+
+    def message(self) -> Dict[str, Any]:
+        """ONE request carrying the FULL extras set (idempotent replace)."""
+        if not self.desired:
+            return {"op": "reset", "classes": []}
+        return {"op": "set",
+                "classes": [{"label": l, "prompt": p}
+                            for l, p in self.desired.items()],
+                "min_conf": self.min_conf}
+
+    # -- coalescing sender ---------------------------------------------------------
+
+    def mark_dirty(self) -> int:
+        """Record that ``desired`` changed (or was re-requested); returns the
+        generation the caller must see sent."""
+        with self._cv:
+            self._gen += 1
+            return self._gen
+
+    def send(self, transmit: Callable[[Dict[str, Any]], Any], gen: int) -> Any:
+        """Send the FULL set once generation ``gen`` is covered.
+
+        A call inside ``min_interval_s`` of the last send waits for the window
+        to close; every generation recorded while it waited rides on the same
+        single send (coalescing).  A caller whose generation was already
+        covered by another thread's send returns that send's result without
+        transmitting.  There is deliberately NO 'set unchanged -> skip'
+        short-circuit (critic B-M1).
+        """
+        while True:
+            with self._cv:
+                if self._sent_gen >= gen:
+                    return self._last_result
+                if self._sending:
+                    self._cv.wait(0.05)
+                    continue
+                wait_s = 0.0
+                if self._last_send_t is not None:
+                    wait_s = self._last_send_t + self.min_interval_s - self._clock()
+                if wait_s <= 0:
+                    self._sending = True
+                    covered = self._gen
+                    msg = self.message()
+                    break
+            self._sleep(min(wait_s, 0.05))
+        result = None
+        try:
+            result = transmit(msg)
+        finally:
+            with self._cv:
+                self._sending = False
+                self._sent_gen = covered
+                self._last_send_t = self._clock()
+                self._last_result = result
+                self._cv.notify_all()
+        return result
+
+
+# =============================================================================
+# making sense of the gateway reply
+# =============================================================================
+
+_EXTRAS_RE = re.compile(r"\bextras=([a-z0-9_,]*)")
+_REJECTED_RE = re.compile(r"\brejected=(\S*)")
+_BACKEND_RE = re.compile(r"\bbackend=(\S+)")
+_REFUSAL_RE = re.compile(r"ERROR:\s*yolo_classes\s+([a-z_]+)")
+_REFUSAL_KINDS = {"backend_fixed": "backend_fixed", "busy": "busy",
+                  "disabled": "disabled", "swap_failed": "swap_failed",
+                  "bad_request": "bad_request"}
+
+
