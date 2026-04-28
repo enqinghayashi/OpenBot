@@ -171,3 +171,15 @@ class HookResult:
         return f"HOOK:{self.state.upper()}|ok={self.ok}|{self.reason}"
 
 
+@dataclass
+class Hook:
+    """Pre/post hook pipeline under the fixed contract.
+
+    run_pre MUST gate motion in the agent loop (a pre_denied result means
+    the motion tool is NOT called).  run_post is THE single verification
+    path for a tool call.
+    """
+
+    pre_hooks: List[Callable[[Context], HookResult]]
+    post_hooks: List[Callable[[Any, Any], HookResult]]
+
