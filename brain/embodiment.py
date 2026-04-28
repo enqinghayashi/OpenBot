@@ -268,3 +268,7 @@ class Embodiment:
     perception: Perception = field(default_factory=Perception)
     base_relative: BaseRelative = field(default_factory=BaseRelative)
 
+    @classmethod
+    def defaults(cls) -> "Embodiment":
+        return cls()
+
