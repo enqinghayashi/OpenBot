@@ -117,3 +117,16 @@ HOOK_STATES = frozenset({
 })
 
 
+@dataclass
+class HookResult:
+    """One hook's verdict under the fixed contract.
+
+    `ok` is the pass/fail bit; `state` is one of HOOK_STATES; `reason`
+    carries the honest human/LLM-readable detail (verdict lines for the
+    verifier post-hook).
+    """
+
+    ok: bool
+    state: str
+    reason: str = ""
+
