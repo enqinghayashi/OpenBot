@@ -162,3 +162,8 @@ class HookResult:
         """Compatibility alias for older readers; prefer `ok`."""
         return self.ok
 
+    @property
+    def message(self) -> str:
+        """Compatibility alias for older readers; prefer `reason`."""
+        return self.reason
+
