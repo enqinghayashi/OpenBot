@@ -221,3 +221,5 @@ class Perception:
             f"freshness {self.freshness_s:.1f} s, "
             f"silence_means_empty={self.silence_means_empty}"
         )
+
+
