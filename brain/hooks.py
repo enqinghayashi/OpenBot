@@ -169,3 +169,5 @@ class HookResult:
 
     def to_string(self) -> str:
         return f"HOOK:{self.state.upper()}|ok={self.ok}|{self.reason}"
+
+
