@@ -153,3 +153,7 @@ class HookResult:
     def post_pending(cls, reason: str = "") -> "HookResult":
         return cls(False, "post_pending", reason)
 
+    @classmethod
+    def post_fail(cls, reason: str = "") -> "HookResult":
+        return cls(False, "post_fail", reason)
+
