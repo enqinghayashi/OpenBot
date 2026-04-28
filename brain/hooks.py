@@ -157,3 +157,8 @@ class HookResult:
     def post_fail(cls, reason: str = "") -> "HookResult":
         return cls(False, "post_fail", reason)
 
+    @property
+    def passed(self) -> bool:
+        """Compatibility alias for older readers; prefer `ok`."""
+        return self.ok
+
