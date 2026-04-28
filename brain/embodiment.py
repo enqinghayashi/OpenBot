@@ -260,3 +260,11 @@ def _as_bool(value: Any, name: str) -> bool:
     raise ValueError(f"embodiment perception.{name} must be a bool, got {value!r}")
 
 
+@dataclass
+class Embodiment:
+    """Capability payload assembled from the `embodiment:` config segment."""
+
+    envelope: Envelope = field(default_factory=Envelope)
+    perception: Perception = field(default_factory=Perception)
+    base_relative: BaseRelative = field(default_factory=BaseRelative)
+
