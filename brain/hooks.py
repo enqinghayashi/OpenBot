@@ -219,3 +219,6 @@ class Hook:
     def all_pass(results: List[HookResult]) -> bool:
         return all(r.ok for r in results)
 
+    @staticmethod
+    def failures(results: List[HookResult]) -> List[HookResult]:
+        return [r for r in results if not r.ok]
