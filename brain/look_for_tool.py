@@ -877,3 +877,207 @@ class LookFor(object):
 
     # -- run ----------------------------------------------------------------------
 
+    def __call__(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        from brain.agent.tools import fail, ok  # manager stays pure
+        t0 = self._clock()
+        nouns = args.get("nouns") or []
+        if not isinstance(nouns, list) or not all(isinstance(n, str) for n in nouns):
+            return fail("look_for: nouns must be a list of strings")
+        mode = args.get("mode") or "add"
+        if self._verb() is None:
+            return fail("The gateway on this robot has no vocabulary verb "
+                        "(deploy the batch 4 gateway); I cannot learn new "
+                        "objects yet.")
+        lines: List[str] = []
+        if mode == "status" or not self.manager.queried:
+            q = self._query()
+            if mode == "status":
+                return self._status(q)
+        if mode == "forget":
+            return self._forget(nouns)
+
+        canons = [self.manager.canon(n) for n in nouns]
+        new_extras: List[Canon] = []
+        refused: List[Canon] = []
+        bases: List[Canon] = []
+        seen_labels = set()
+        with self._lock:
+            for c in canons:
+                if c.kind == "base":
+                    bases.append(c)
+                elif c.kind == "invalid":
+                    lines.append("'%s' is not a usable object name; say it "
+                                 "as a plain noun." % (c.phrase,))
+                elif c.label in seen_labels:
+                    continue
+                elif (c.label in self.manager.desired
+                      or len(self.manager.desired) < self.manager.max_extras):
+                    seen_labels.add(c.label)
+                    self.manager.desired[c.label] = c.prompt
+                    new_extras.append(c)
+                else:
+                    refused.append(c)
+            gen = self.manager.mark_dirty() if new_extras else None
+        if bases:
+            # base nouns
+            # a base noun is never sent, but the reply still LOOKS
+            # around: best FRESH row, so 'can you see the cup?'
+            # answers from the camera
+            if gen is None:  # base-only look is strict
+                with self._strict([c.label for c in bases], t0):
+                    lines = self._base_lines(bases) + lines
+            else:
+                lines = self._base_lines(bases) + lines
+        if refused:
+            lines.append(
+                "I can only look for %d extra objects at once; not added: %s. "
+                "Use mode forget to drop some first."
+                % (self.manager.max_extras,
+                   ", ".join(c.phrase for c in refused)))
+        if gen is None:
+            return ok(" ".join(lines) if lines else "Nothing to look for.")
+
+        try:
+            raw = self.manager.send(self._verb(), gen)
+            outcome = classify_outcome(raw)
+        except Exception as exc:  # noqa: BLE001
+            outcome = GatewayOutcome("unconfirmed", "send failed: %s" % exc)
+        labels = [c.label for c in new_extras]
+        prompts = dict((c.label, c.prompt) for c in new_extras)
+        return self._report(outcome, labels, prompts, lines, t0)
+
+    def _base_lines(self, bases: List[Canon]) -> List[str]:
+        obs = self._observe()
+        fresh = obs is not None and bool(getattr(obs, "fresh", False))
+        rows = best_rows(obs, [c.label for c in bases])
+        out = []
+        for c in bases:
+            head = ("'%s' is always detectable as %s (say pick %s)."
+                    % (c.phrase, c.label, c.label))
+            row = rows.get(c.label)
+            conf = row["conf"] if row is not None else 0.0
+            side = row.get("side") if row is not None else None
+            where = (", on the %s" % side) if side in ("left", "right") else ""
+            if row is not None and conf >= CONFIDENT_CONF:
+                out.append("I see a %s (%.2f)%s. %s" % (c.label, conf, where, head))
+            elif row is not None and conf >= MIGHT_BE_CONF:
+                out.append("I might be seeing a %s (low confidence %.2f)%s - not "
+                           "confident enough to pick; look again or closer. %s"
+                           % (c.label, conf, where, head))
+            elif fresh:
+                out.append("I do not see a %s in the current view. %s"
+                           % (c.label, head))
+            else:
+                out.append("I have no fresh camera view to check for a %s. %s"
+                           % (c.label, head))
+        return out
+
+    # -- outcomes -----------------------------------------------------------------
+
+    def _report(self, outcome: GatewayOutcome, labels: List[str],
+                prompts: Dict[str, str], lines: List[str], t0: float
+                ) -> Dict[str, Any]:
+        from brain.agent.tools import fail, ok
+        if outcome.kind == "backend_fixed":
+            with self._lock:
+                self.manager.clear()
+            return fail(" ".join(lines + [
+                "This robot's detector cannot learn new objects right now "
+                "(fixed vocabulary backend)."]))
+        if outcome.kind == "disabled":
+            return fail(" ".join(lines + [
+                "Open-vocabulary detection is switched off on the gateway "
+                "(open_vocab param); this robot cannot learn new objects "
+                "right now."]))
+        if outcome.kind == "busy":
+            return fail(" ".join(lines + [
+                "The robot is moving, so the detector vocabulary was not "
+                "changed; ask me to look for it again once it stops."]))
+        if outcome.kind in ("swap_failed", "bad_request"):
+            # refused set
+            # the node REFUSED this set: drop the labels this call
+            # NEWLY added from desired, so a refused label never
+            # tags along later. A label already in manager.active
+            # (confirmed) that this call only re-requested is KEPT
+            # 'unconfirmed' / 'busy' / 'disabled' keep desired
+            with self._lock:
+                for l in labels:
+                    if l not in self.manager.active:
+                        self.manager.desired.pop(l, None)
+            return fail(" ".join(lines + [
+                "The detector did not change its vocabulary (%s); nothing "
+                "new is being looked for." % outcome.text]))
+        if outcome.kind != "applied":
+            return fail(" ".join(lines + [
+                "Requested %s; perception has not confirmed the change (%s). %s"
+                % (", ".join(labels), outcome.text,
+                   " ".join(_label_line(l, prompts[l], False) for l in labels))]))
+
+        # applied
+        # drop the bank misses and mirror the node's set
+        # (never 'applied' without the extras= echo)
+        with self._lock:
+            for lab, why in outcome.rejected.items():
+                self.manager.desired.pop(lab, None)
+            self.manager.set_active(list(outcome.extras or []))
+            # not applied
+            # neither in extras= nor rejected= means NOT applied:
+            # say so and drop it from desired (same lock)
+            unconfirmed = [l for l in labels if l not in self.manager.active
+                           and l not in outcome.rejected]
+            for l in unconfirmed:
+                self.manager.desired.pop(l, None)
+            look = [l for l in labels if l in self.manager.active]
+        for lab, why in outcome.rejected.items():
+            phrase = prompts.get(lab, lab.replace("_", " "))
+            if why == "not_in_bank":
+                suggestions = self._get_suggestions(phrase)
+                if suggestions:
+                    lines.append("I have no visual description for '%s' - try "
+                                 "another word. Suggestions: %s" % (phrase, suggestions))
+                else:
+                    lines.append("I have no visual description for '%s' - try "
+                                 "another word." % phrase)
+            else:
+                lines.append("Perception refused '%s' (%s)." % (phrase, why))
+        for l in unconfirmed:
+            lines.append("Requested %s; perception has not confirmed it "
+                         "(not in the active list). %s"
+                         % (l, _label_line(l, prompts[l], False)))
+        if not look:
+            # nothing asked for
+            return fail(" ".join(lines) if lines else
+                        "Perception confirmed none of the requested objects.")
+        with self._strict(look, t0):  # only what we looked for
+            rows = self._settle(look, t0)
+        for l in look:
+            lines.append(wording_for(l, prompts[l], rows.get(l)))
+        return ok(" ".join(lines))
+
+    def _strict(self, labels: List[str], t0: float) -> Any:
+        """B8i: a StrictScope for this call (inert when the backend has no
+        yolo_strict verb), its waits capped by the remaining call budget."""
+        from brain.strict_vocab import StrictScope  # imported lazily
+        left = max(0.0, t0 + self.budget_s - self._clock())
+        return StrictScope(self._backend(), list(labels), "look_for",
+                           wait_s=min(3.0, left / 3.0))
+
+    def _settle(self, labels: List[str], t0: float) -> Dict[str, Dict[str, Any]]:
+        """Poll RAW observe rows every poll_s for <= settle_s (bounded by the
+        call budget); best row per label.  Ends early once every label has a
+        confident row."""
+        best: Dict[str, Dict[str, Any]] = {}
+        if not labels:
+            return best
+        deadline = min(self._clock() + self.settle_s, t0 + self.budget_s)
+        while True:
+            for lab, row in best_rows(self._observe(), labels).items():
+                if lab not in best or row["conf"] > best[lab]["conf"]:
+                    best[lab] = row
+            if all(l in best and best[l]["conf"] >= CONFIDENT_CONF
+                   for l in labels):
+                return best
+            if self._clock() + self.poll_s > deadline:
+                return best
+            self._sleep(self.poll_s)
+
