@@ -215,3 +215,7 @@ class Hook:
             return last_ok
         return HookResult.post_pending("re-observe; no post hook produced a verdict")
 
+    @staticmethod
+    def all_pass(results: List[HookResult]) -> bool:
+        return all(r.ok for r in results)
+
