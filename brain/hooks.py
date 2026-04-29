@@ -381,3 +381,5 @@ def confirm_gate_hook(
         return HookResult.pre_denied(f"human did NOT confirm: {_action_display(context)}")
 
     return hook
+
+
