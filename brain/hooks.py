@@ -528,3 +528,40 @@ def safety_checks_hook(
         return HookResult.pre_ok("safety checks passed")
 
     return hook
+
+
+# --------------------------------------------------------------------------
+# The post-hooks that ship in this module
+# --------------------------------------------------------------------------
+
+# platform verbs -> CONTRACTS keys
+# (pick/place/navigate/open_hand/close_hand)
+# no contract = FAIL
+_CONTRACT_FOR_VERB = {
+    "open": "open_hand",
+    "close": "close_hand",
+    "open_left": "open_hand",
+    "close_left": "close_hand",
+    "open_both": "open_hand",
+    "close_both": "close_hand",
+}
+
+#: hint charset
+#: verify_pick's _resolve_target set,
+#: brain/verifier.py:
+#: target_label\s*=\s*([A-Za-z0-9_.\-]+)
+#: same as gateway
+#: _HINT_LABEL_CHARS
+#: why: 'red cup' sent verbatim,
+#: regex cut it to 'red',
+#: nothing matched, pick read SUCCESS,
+#: cup still on the table
+#: outside set -> no hint, never truncated
+#: gated on
+#: optional_tools.hint_charset_refusal
+#: exactly True
+#: off = verbatim, defect included
+_HINT_LABEL_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
+
+
