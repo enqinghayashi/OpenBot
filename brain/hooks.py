@@ -259,3 +259,14 @@ def _action_args(ctx_or_action: Any) -> Dict[str, Any]:
         return _action_args(pending)
     args = getattr(ctx_or_action, "args", None) or getattr(ctx_or_action, "arguments", None)
     return dict(args) if isinstance(args, dict) else {}
+
+
+#: hand-only verbs, no scene geometry
+#: executor sends the platform verb
+#: brain names too, direct callers
+_HAND_ONLY_TOOLS = frozenset({
+    "open_hand", "close_hand",
+    "open", "close", "open_left", "close_left", "open_both", "close_both",
+})
+
+
