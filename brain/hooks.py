@@ -231,3 +231,21 @@ class Hook:
 # --------------------------------------------------------------------------
 
 
+def _action_tool(ctx_or_action: Any) -> Optional[str]:
+    """The pending tool/verb name, whatever the shape of the input:
+    Context (.pending_action / .pending_action_text), PendingAction
+    (.tool), ToolCall (.name), or a free-text line (first token)."""
+    if ctx_or_action is None:
+        return None
+    if isinstance(ctx_or_action, str):
+        first = ctx_or_action.strip().split()
+        return first[0] if first else None
+    pending = getattr(ctx_or_action, "pending_action", None)
+    if pending is not None:
+        return _action_tool(pending)
+    text = getattr(ctx_or_action, "pending_action_text", None)
+    if text:
+        first = str(text).strip().split()
+        return first[0] if first else None
+    tool = getattr(ctx_or_action, "tool", None) or getattr(ctx_or_action, "name", None)
+    return str(tool) if tool else None
