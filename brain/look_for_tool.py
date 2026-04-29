@@ -647,3 +647,187 @@ def classify_outcome(env: Any) -> GatewayOutcome:
 def _label_line(label: str, prompt: str, confident: bool) -> str:
     tail = "" if confident else " once it is seen with confidence"
     return "label: %s (prompt: %s) - say pick %s%s." % (label, prompt, label, tail)
+
+
+def _position_text(row: Dict[str, Any]) -> str:
+    """Generate position text from row fields. Never invent a value; omit absent."""
+    parts = []
+    x = row.get("x")
+    y = row.get("y")
+    z = row.get("z")
+    width_m = row.get("width_m")
+    height_m = row.get("height_m")
+
+    # position: x, y, z
+    pos_parts = []
+    if x is not None:
+        try:
+            x_val = float(x)
+            x_str = "%+.2f" % x_val
+            x_dir = "right" if x_val > 0 else "left" if x_val < 0 else ""
+            if x_dir:
+                pos_parts.append("x=%s m (%s)" % (x_str, x_dir))
+            else:
+                pos_parts.append("x=%s m" % x_str)
+        except (TypeError, ValueError):
+            pass
+    if y is not None:
+        try:
+            y_val = float(y)
+            pos_parts.append("%.2f m ahead" % y_val)
+        except (TypeError, ValueError):
+            pass
+    if z is not None:
+        try:
+            z_val = float(z)
+            z_str = "%+.2f" % z_val
+            pos_parts.append("z=%s m" % z_str)
+        except (TypeError, ValueError):
+            pass
+    if pos_parts:
+        parts.append("at " + ", ".join(pos_parts))
+
+    # width x height
+    if width_m is not None and height_m is not None:
+        try:
+            w = float(width_m)
+            h = float(height_m)
+            # to cm, reads better
+            parts.append("about %d x %d cm" % (int(round(w * 100)), int(round(h * 100))))
+        except (TypeError, ValueError):
+            pass
+
+    return "; ".join(parts) if parts else ""
+
+
+def wording_for(label: str, prompt: str, row: Optional[Dict[str, Any]]) -> str:
+    """Confidence wording for ONE extra from its best raw row (or None)."""
+    if row is not None:
+        conf = float(row.get("conf") or 0.0)
+        side = row.get("side")
+        where = (", on the %s" % side) if side in ("left", "right") else ""
+        pos = _position_text(row)
+        pos_suffix = "; " + pos if pos else ""
+        if conf >= EXTRA_CONF_FLOOR:  # extra floor
+            return "I see a %s (%.2f)%s%s - %s" % (
+                label.replace("_", " "), conf, where, pos_suffix,
+                _label_line(label, prompt, True))
+        if conf >= MIGHT_BE_CONF:
+            return ("I might be seeing a %s (low confidence %.2f)%s%s - not "
+                    "confident enough to pick; look again or closer. %s" % (
+                        label.replace("_", " "), conf, where, pos_suffix,
+                        _label_line(label, prompt, False)))
+    # out of view
+    # a learned word with nothing in view is OUT OF VIEW,
+    # so the model walks to it (the request covers it)
+    return ("Now looking for %s (prompt: %s); nothing matching yet - it is "
+            "NOT in view from here. Do not ask: call navigate(%r) NOW to search "
+            "(turn) and walk to it, then continue the task. %s" % (
+                label, prompt, label, _label_line(label, prompt, False)))
+
+
+def best_rows(obs: Any, labels: Any) -> Dict[str, Dict[str, Any]]:
+    """Best (highest-conf) RAW row per wanted label from a FRESH observation.
+    A stale/absent observation yields nothing (never 'I see' on old data)."""
+    wanted = set(labels)
+    out: Dict[str, Dict[str, Any]] = {}
+    if obs is None or not getattr(obs, "fresh", False):
+        return out
+    for det in list(getattr(obs, "detections", None) or []):
+        base = detection_base_class(det)
+        if base not in wanted:
+            continue
+        if isinstance(det, dict):
+            conf_raw, side = det.get("conf"), det.get("body_side")
+        else:
+            conf_raw = getattr(det, "conf", 0.0)
+            side = getattr(det, "body_side", None)
+        try:
+            conf = float(conf_raw or 0.0)
+        except (TypeError, ValueError):
+            continue
+        prev = out.get(base)
+        if prev is None or conf > prev["conf"]:
+            # position fields
+            row = {"conf": conf, "side": side}
+            for field in ("x", "y", "z", "width_m", "height_m"):
+                if isinstance(det, dict):
+                    val = det.get(field)
+                else:
+                    val = getattr(det, field, None)
+                if val is not None:
+                    row[field] = val
+            out[base] = row
+    return out
+
+
+# =============================================================================
+# the tool itself
+# =============================================================================
+
+#: §5 text
+#: §5 quotes the refusal phrase "not something this
+#: robot can see", contradicting §5.3's pin that the
+#: ON specs carry no such phrase. The phrase is
+#: paraphrased; the instruction is unchanged
+LOOK_FOR_DESCRIPTION = (
+    "Teach perception a new object noun and look for it. Use this when the "
+    "human names something that is NOT in the detectable list (a bin, a box, "
+    "a pencil case) or when the camera image shows an object you have no "
+    "label for: do NOT refuse it as something the robot cannot see — "
+    "call look_for first. nouns: plain English, one object each (\"trash "
+    "can\", \"pencil case\"). The base objects stay detectable. The reply "
+    "names the exact label to use with pick and navigate, and whether it is "
+    "already seen, with confidence; low confidence is reported as \"might "
+    "be\" and is not enough to pick."
+)
+
+LOOK_FOR_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "nouns": {"type": "array", "items": {"type": "string"}},
+        "mode": {"type": "string", "enum": ["add", "forget", "status"]},
+    },
+    "required": ["nouns"],
+}
+
+#: swapped sentence
+#: the one scene_brief sentence replaced when the lane
+#: is ON (verbatim from brain/agent/tools.py)
+SCENE_BRIEF_OLD_SENTENCE = (
+    "When a human names "
+    "something outside this list (a mug, a phone stand, a "
+    "door), do NOT invent a label and do NOT report it as "
+    "merely absent — say plainly that it is not something this "
+    "robot can see, and name the closest real alternative when "
+    "one exists (a mug is not visible to me; I can see cups)."
+)
+SCENE_BRIEF_NEW_SENTENCE = (
+    "When a human names something outside this list, call look_for with that "
+    "noun first; only if look_for cannot learn it say so plainly."
+)
+
+
+class LookFor(object):
+    """look_for's handler: VocabularyManager + backend round-trips."""
+
+    def __init__(self, registry: Any, manager: VocabularyManager,
+                 clock: Callable[[], float] = time.monotonic,
+                 sleep: Callable[[float], None] = time.sleep,
+                 settle_s: float = SETTLE_S, poll_s: float = POLL_S,
+                 budget_s: float = CALL_BUDGET_S) -> None:
+        self.registry = registry
+        self.manager = manager
+        self._clock = clock
+        self._sleep = sleep
+        self.settle_s = float(settle_s)
+        self.poll_s = float(poll_s)
+        self.budget_s = float(budget_s)
+        # one lock
+        # for manager.desired and the sender's snapshot of it
+        # (a Condition lock is an RLock), so no call mutates
+        # the set while message() walks it
+        self._lock = manager._cv
+
+    # -- backend ------------------------------------------------------------------
+
