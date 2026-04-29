@@ -831,3 +831,49 @@ class LookFor(object):
 
     # -- backend ------------------------------------------------------------------
 
+    def _get_suggestions(self, phrase: str) -> str:
+        """Get up to 3 closest bank prompts (difflib.get_close_matches, cutoff 0.6,
+        plus token overlap) as suggestions."""
+        all_prompts = list(self.manager.prompts.values())
+        if not all_prompts:
+            return ""
+        # difflib, cutoff 0.6
+        matches = difflib.get_close_matches(phrase, all_prompts, n=3, cutoff=0.6)
+        if matches:
+            return ", ".join(matches)
+        return ""
+
+    def _backend(self) -> Any:
+        return getattr(self.registry, "backend", None)
+
+    def _verb(self) -> Optional[Callable[[Dict[str, Any]], Any]]:
+        return getattr(self._backend(), "yolo_classes", None)
+
+    def _query(self) -> Optional[GatewayOutcome]:
+        """op:query -> re-seed from the node.  None when no verb exists."""
+        verb = self._verb()
+        if verb is None:
+            return None
+        try:
+            outcome = classify_outcome(verb({"op": "query", "classes": []}))
+        except Exception as exc:  # noqa: BLE001 — never raise out of a tool
+            outcome = GatewayOutcome("unconfirmed", "query failed: %s" % exc)
+        with self._lock:
+            if outcome.kind == "backend_fixed":
+                self.manager.clear()
+                self.manager.queried = True
+            elif outcome.kind == "applied":
+                if outcome.extras is not None:
+                    self.manager.seed_from_node(outcome.extras)
+                self.manager.queried = True
+        return outcome
+
+    def _observe(self) -> Any:
+        backend = self._backend()
+        try:
+            return backend.observe() if backend is not None else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    # -- run ----------------------------------------------------------------------
+
