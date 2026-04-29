@@ -222,3 +222,12 @@ class Hook:
     @staticmethod
     def failures(results: List[HookResult]) -> List[HookResult]:
         return [r for r in results if not r.ok]
+
+
+# --------------------------------------------------------------------------
+# action shapes
+# Context / PendingAction / ToolCall / free text
+# -> (tool, args, display, tool_result)
+# --------------------------------------------------------------------------
+
+
