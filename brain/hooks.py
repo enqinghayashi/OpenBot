@@ -646,3 +646,5 @@ def _runtime_target_hint(action: Any, refuse_charset: bool = False) -> Optional[
             return "target_label=%s" % cand
     # not seen -> no proof it left
     return None
+
+
