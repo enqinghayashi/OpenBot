@@ -312,3 +312,5 @@ def _action_tool_result(ctx_or_action: Any) -> str:
     if pending is not None:
         return _action_tool_result(pending)
     return ""
+
+
