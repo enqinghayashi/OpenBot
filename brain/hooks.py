@@ -249,3 +249,5 @@ def _action_tool(ctx_or_action: Any) -> Optional[str]:
         return first[0] if first else None
     tool = getattr(ctx_or_action, "tool", None) or getattr(ctx_or_action, "name", None)
     return str(tool) if tool else None
+
+
