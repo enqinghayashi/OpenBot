@@ -383,3 +383,148 @@ def confirm_gate_hook(
     return hook
 
 
+def safety_checks_hook(
+    envelope: Optional[object] = None,
+    freshness_s: Optional[float] = None,
+    now_fn: Optional[Callable[[], float]] = None,
+    observation_source: Optional[Callable[[], object]] = None,
+) -> Callable[[Context], HookResult]:
+    """Deterministic pre-motion safety checks (platform facts).
+
+    Checks (all must pass for motion tools):
+      1. A world observation exists at all.
+      2. Detections are fresh (obs.fresh AND age <= freshness_s) — a dead
+         detection node is stale, and stale detections never drive motion.
+         The age law is evaluated at MOTION time: when the context's
+         snapshot has aged past the budget it is re-read once through
+         `observation_source` (the same ObservationSupplier the verifier
+         post-hook uses — both lanes already hand it to default_hooks)
+         before the law applies; a re-read that is also stale still
+         denies honestly.  Without a supplier the original denial stands
+         (B3: the spoken confirm gate blocks INSIDE the pre-pipeline, so
+         a normal confirm round alone would age any pre-gate snapshot
+         past freshness_s — the wire is not the thing that went stale).
+         CARVE-OUT: this law does NOT govern navigate — it is a
+         search-capable verb whose own walk FSM does its own detection
+         (SEARCHING window, stop-on-find, stall law, obstruction freeze,
+         NOT_FOUND terminal) and consumes NO brain-side geometry at motion
+         time, so "walk to X (not currently visible)" dispatches rather
+         than refusing on feed liveness.  navigate keeps the confirm gate
+         and the no-world-observation refusal; only freshness/age relax.
+      3. pick/pick_left z is inside the tabletop envelope — a floor pick
+         is a capability-block: refuse honestly, never attempt.
+    Non-motion tools pass.  `envelope`/`freshness_s` default to
+    Embodiment.defaults().
+    """
+    emb = Embodiment.defaults() if envelope is None else envelope
+    fresh_budget = emb.perception.freshness_s if freshness_s is None else freshness_s
+    now = now_fn or time.time
+
+    def hook(context: Context) -> HookResult:
+        if not _is_motion(context):
+            return HookResult.pre_ok("no motion pending; checks skipped")
+        world = context.world
+        if (
+            world is None
+            or not world.fresh
+            or now() - world.detections_ts > fresh_budget
+        ):
+            # gate ran already
+            # snapshot may be old, wire fine
+            # re-read, then judge the re-read
+            re_obs: Optional[object] = None
+            if observation_source is not None:
+                try:
+                    re_obs = observation_source()
+                except Exception:  # noqa: BLE001 — a wire hiccup denies, never crashes
+                    re_obs = None
+            if (
+                re_obs is not None
+                and getattr(re_obs, "fresh", False)
+            ):
+                re_age = max(0.0, now() - re_obs.detections_ts)
+                if re_age <= fresh_budget:
+                    context.world = re_obs
+                    return HookResult.pre_ok(
+                        "safety checks passed (wire re-observed at motion "
+                        f"time, age {re_age:.1f}s)"
+                    )
+            if re_obs is not None:
+                world = re_obs  # deny uses the new read
+        if world is None:
+            return HookResult.pre_denied(
+                "no world observation; cannot confirm scene before motion"
+            )
+        tool = _action_tool(context)
+        # navigate carve-out
+        # freshness/age only
+        # FSM detects
+        # (SEARCHING, stop-on-find,
+        # stall, obstruction freeze,
+        # NOT_FOUND)
+        # no brain geometry
+        # gate + no-world refusal bind
+        if tool == "navigate":
+            return HookResult.pre_ok(
+                "navigate dispatch allowed (search-capable verb; its walk FSM "
+                "does its own detection); safety checks passed"
+            )
+        age = max(0.0, now() - world.detections_ts)
+        # hand-only carve-out
+        # open/close + bare place: no geometry
+        # xyz place: law on
+        # gate still binds
+        if (not world.fresh or age > fresh_budget) and (
+            tool in _HAND_ONLY_TOOLS
+            or (tool == "place" and not _args_carry_xyz(_action_args(context)))
+        ):
+            return HookResult.pre_ok(
+                f"{tool} dispatch allowed (hand-only motion, no scene geometry "
+                "consumed); safety checks passed"
+            )
+        if not world.fresh:
+            return HookResult.pre_denied(
+                f"stale detections (fresh=False, ts={world.detections_ts:.1f}); "
+                "re-observe before motion"
+            )
+        if age > fresh_budget:
+            return HookResult.pre_denied(
+                f"stale detections (age {age:.1f}s > {fresh_budget:.1f}s); "
+                "re-observe before motion"
+            )
+        args = _action_args(context)
+        if tool in ("pick", "pick_left") and "z" in args:
+            try:
+                z = float(args["z"])
+            except (TypeError, ValueError):
+                return HookResult.pre_denied(
+                    f"pick z is not numeric ({args['z']!r}); cannot safety-check the height"
+                )
+            # floor = shared law
+            # lane off: min unchanged
+            # (refusal byte-identical)
+            # lane on: rescue floor
+            # ceiling untouched
+            floor = effective_pick_floor(emb.envelope)
+            if z < floor:
+                # torso frame: z=0 at torso link
+                if getattr(emb.envelope, "low_workspace_lane", False) is True:
+                    return HookResult.pre_denied(
+                        f"floor pick refused: workspace z={z:.2f} (torso frame) "
+                        f"< descent floor {floor:.2f} m — below the lane-armed "
+                        "low-workspace descent budget; a SIMULATED bound, not "
+                        "a measured body capability — refusing honestly"
+                    )
+                return HookResult.pre_denied(
+                    f"floor pick refused: workspace z={z:.2f} (torso frame) "
+                    f"< min {emb.envelope.pick_min_height_m:.2f} m — the engine "
+                    "is tabletop-only; no ground-pick skill exists "
+                    "(capability-block)"
+                )
+            if z > emb.envelope.pick_max_height_m:
+                return HookResult.pre_denied(
+                    f"pick out of reach: z={z:.2f} > max {emb.envelope.pick_max_height_m:.2f} m"
+                )
+        return HookResult.pre_ok("safety checks passed")
+
+    return hook
