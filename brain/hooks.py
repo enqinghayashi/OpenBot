@@ -317,3 +317,10 @@ def _action_tool_result(ctx_or_action: Any) -> str:
 def _is_motion(ctx_or_action: Any) -> bool:
     tool = _action_tool(ctx_or_action)
     return tool is not None and tool in MOTION_TOOLS
+
+
+# --------------------------------------------------------------------------
+# The pre-hooks that ship in this module
+# --------------------------------------------------------------------------
+
+
