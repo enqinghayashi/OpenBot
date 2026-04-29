@@ -251,3 +251,11 @@ def _action_tool(ctx_or_action: Any) -> Optional[str]:
     return str(tool) if tool else None
 
 
+def _action_args(ctx_or_action: Any) -> Dict[str, Any]:
+    if ctx_or_action is None or isinstance(ctx_or_action, str):
+        return {}
+    pending = getattr(ctx_or_action, "pending_action", None)
+    if pending is not None:
+        return _action_args(pending)
+    args = getattr(ctx_or_action, "args", None) or getattr(ctx_or_action, "arguments", None)
+    return dict(args) if isinstance(args, dict) else {}
