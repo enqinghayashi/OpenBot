@@ -296,3 +296,19 @@ def _action_display(ctx_or_action: Any) -> str:
     return str(ctx_or_action)
 
 
+def _action_tool_result(ctx_or_action: Any) -> str:
+    """The raw tool reply attached to the action (`.tool_result` or
+    `.result`); '' when absent — the verifier maps '' to in_progress
+    ('no tool reply recorded'), never success."""
+    if ctx_or_action is None or isinstance(ctx_or_action, str):
+        return ""
+    result = getattr(ctx_or_action, "tool_result", None)
+    if result is not None:
+        return str(result)
+    result = getattr(ctx_or_action, "result", None)
+    if result is not None:
+        return str(result)
+    pending = getattr(ctx_or_action, "pending_action", None)
+    if pending is not None:
+        return _action_tool_result(pending)
+    return ""
