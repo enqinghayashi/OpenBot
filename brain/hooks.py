@@ -270,3 +270,7 @@ _HAND_ONLY_TOOLS = frozenset({
 })
 
 
+def _args_carry_xyz(args: Dict[str, Any]) -> bool:
+    """True when a pending action carries a workspace coordinate (any of x, y,
+    z with a non-None value): such a place consumes scene geometry."""
+    return any(args.get(k) is not None for k in ("x", "y", "z"))
