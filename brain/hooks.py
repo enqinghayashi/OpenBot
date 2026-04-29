@@ -187,3 +187,31 @@ class Hook:
         """Run every pre hook (each receives the Context); ALL must pass."""
         return [h(context) for h in self.pre_hooks]
 
+    def run_post(self, action: Any, observation: Any = None) -> HookResult:
+        """Run every post hook; return the single aggregate verdict.
+
+        First post_fail wins, else first post_pending, else the last
+        post_ok.  With no post hooks configured the honest answer is
+        post_pending (nothing was verified — never claim success).
+        """
+        if not self.post_hooks:
+            return HookResult.post_pending("re-observe; no post hooks configured")
+        first_fail: Optional[HookResult] = None
+        first_pending: Optional[HookResult] = None
+        last_ok: Optional[HookResult] = None
+        for hook in self.post_hooks:
+            result = hook(action, observation)
+            if result.state == "post_fail" and first_fail is None:
+                first_fail = result
+            elif result.state == "post_pending" and first_pending is None:
+                first_pending = result
+            elif result.state == "post_ok":
+                last_ok = result
+        if first_fail is not None:
+            return first_fail
+        if first_pending is not None:
+            return first_pending
+        if last_ok is not None:
+            return last_ok
+        return HookResult.post_pending("re-observe; no post hook produced a verdict")
+
