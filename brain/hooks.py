@@ -276,3 +276,21 @@ def _args_carry_xyz(args: Dict[str, Any]) -> bool:
     return any(args.get(k) is not None for k in ("x", "y", "z"))
 
 
+def _action_display(ctx_or_action: Any) -> str:
+    """Human-readable description for the confirm prompt."""
+    if ctx_or_action is None:
+        return ""
+    if isinstance(ctx_or_action, str):
+        return ctx_or_action
+    pending = getattr(ctx_or_action, "pending_action", None)
+    if pending is not None:
+        return _action_display(pending)
+    if hasattr(ctx_or_action, "pending_action_text"):
+        return getattr(ctx_or_action, "pending", None) or ""  # Context shape
+    disp = getattr(ctx_or_action, "display", None)
+    if callable(disp):
+        try:
+            return disp()
+        except TypeError:
+            pass
+    return str(ctx_or_action)
