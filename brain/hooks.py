@@ -183,3 +183,7 @@ class Hook:
     pre_hooks: List[Callable[[Context], HookResult]]
     post_hooks: List[Callable[[Any, Any], HookResult]]
 
+    def run_pre(self, context: Context) -> List[HookResult]:
+        """Run every pre hook (each receives the Context); ALL must pass."""
+        return [h(context) for h in self.pre_hooks]
+
