@@ -565,3 +565,84 @@ _HINT_LABEL_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
 
 
+def _runtime_target_hint(action: Any, refuse_charset: bool = False) -> Optional[str]:
+    """``target_label=<label>`` for THIS call, or None when it cannot be honest.
+
+    ``refuse_charset`` (batch-4 D10a switch, default OFF): when True a label
+    outside ``_HINT_LABEL_CHARS`` earns no hint at all; when False the hint
+    is ``"target_label=%s" % cand`` verbatim (base behaviour).
+
+    WHY THIS EXISTS (2026-09-27, MEASURED on Stuart).  ``verify_pick`` names
+    the picked object through ``_resolve_target`` (brain/verifier.py:752),
+    which parses the target out of ``contract.context``.  That string comes
+    from the STATIC ``CONTRACTS`` table (brain/tool_contract.py) — a prose
+    description of the pick engine that carries no ``target=``/``label=``
+    hint — so the verifier NEVER saw the object the call actually named.
+    ``_target_present`` then answered None on any non-empty scene and
+    ``verify_pick`` could only ever return ``in_progress`` 're-observe;
+    cannot confirm object gone (no target ref/label in contract context and
+    scene non-empty)'.
+
+    That is NOT a timing defect: the verdict is identical whenever it is
+    taken, so a pick could not verify success at ANY moment.  MEASURED: that
+    exact string was the tool result the model received at 18:49:43,103 —
+    one second after the pick that in fact SUCCEEDED (engine_grasp.log:
+    ``closure=full delta=7200.0 blocked=True``) — and the brain, told
+    "re-observe", re-observed, found the bottle still on the table (the arm
+    was still moving), and never called ``place``.  Zero place calls in
+    either run.
+
+    FOUR PROPERTIES, each deliberate:
+
+    * LABEL, never a bare ``target=<ref>``.  ``_target_present`` returns None
+      for a ref hint when no detection carries a ref — and perception does
+      not emit refs (``det.ref`` is never set, see
+      [[openbot-label-contract-ref-and-matcher]]) — so a ref hint would
+      reinstate exactly the permanent in_progress this fixes.
+
+    * The ``_<n>`` stem is applied to WHICHEVER field carried the ref, and
+      only as a FALLBACK: the value exactly as given is matched first, so a
+      detection genuinely labelled ``bottle_1`` still beats its own stem and
+      is never re-pointed at a different object.  (Before 2026-09-28 the stem
+      was confined to the ``ref`` branch, so the same string arriving in
+      ``label`` — the shape ``scene_brief``'s own output invites, since it
+      prints the ref as the line's first token — silently earned no hint.)
+
+    * The hint is supplied ONLY when the PRE-action observation already
+      showed that label (``action.world`` — the snapshot the executor took
+      before the tool was called, and never overwritten).  A hint therefore
+      means "this label was on the table BEFORE the call", so its absence
+      from the post-action packet is real evidence the object left the
+      source.  A label that was never seen earns NO hint and the existing
+      honest in_progress stands: a mis-spelled label cannot be turned into
+      a success by this function.
+
+    * The ``CONTRACTS`` entry is never mutated — the caller gets a
+      ``dataclasses.replace`` copy, so one call's target cannot leak into
+      the next (the table is module-level shared state).
+    """
+    pending = getattr(action, "pending_action", None)
+    args = getattr(pending, "args", None)
+    if not isinstance(args, dict):
+        return None
+    raw = str(args.get("label") or args.get("ref") or "").strip()
+    if not raw:
+        return None
+    pre = getattr(action, "world", None)
+    dets = getattr(pre, "detections", None) or []
+    seen = {(getattr(d, "label", None) or "").lower() for d in dets}
+    # scene_brief refs: 'bottle_1'
+    # stem = label
+    # ref can land in label or ref -
+    # prints it as first token
+    # exact first, stem fallback
+    # a real 'bottle_1' never re-pointed
+    for cand in (raw, re.sub(r"_\d+$", "", raw)):
+        if cand and cand.lower() in seen:
+            if refuse_charset is True and not set(cand) <= _HINT_LABEL_CHARS:
+                # refused outright
+                # never truncated
+                return None
+            return "target_label=%s" % cand
+    # not seen -> no proof it left
+    return None
