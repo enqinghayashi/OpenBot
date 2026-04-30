@@ -187,3 +187,5 @@ _EXTRA_LOCK = threading.Lock()
 def extra_classes() -> FrozenSet[str]:
     """Snapshot of the currently registered extra labels."""
     return frozenset(_EXTRA_CLASSES)
+
+
