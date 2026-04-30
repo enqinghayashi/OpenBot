@@ -84,3 +84,29 @@ def describe() -> str:
             + ", ".join(sorted_classes()))
 
 
+def is_detectable(label: str) -> bool:
+    """True when ``label`` is a class the perception lane can publish.
+
+    Case/whitespace-insensitive.  A colour-prefixed form ('red cup') is
+    reduced to its class BEFORE the test, because the colour prefix is a
+    per-instance display adornment, never a class of its own.
+    """
+    if not label:
+        return False
+    text = label.strip().lower()
+    if text in TRACKED_CLASSES:
+        return True
+    # open-vocab extras. lane ON + node
+    # confirmed, else never fires.
+    if text in _EXTRA_CLASSES or EXTRA_ALIASES.get(text) in _EXTRA_CLASSES:
+        return True
+    try:
+        from .observation import label_base_class  # local: keep import light
+    except Exception:  # noqa: BLE001 — if the helper is missing we still must not break the test
+        return False
+    try:
+        base = label_base_class(text)
+        return (base in TRACKED_CLASSES or base in _EXTRA_CLASSES
+                or EXTRA_ALIASES.get(base) in _EXTRA_CLASSES)
+    except Exception:  # noqa: BLE001
+        return False
