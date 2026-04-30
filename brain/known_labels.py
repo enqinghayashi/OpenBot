@@ -110,3 +110,17 @@ def is_detectable(label: str) -> bool:
                 or EXTRA_ALIASES.get(base) in _EXTRA_CLASSES)
     except Exception:  # noqa: BLE001
         return False
+
+
+#: spoken self-references ('me', 'myself', 'i', 'human', 'operator')
+#: map to the tracked class 'person' - one word for the human, so
+#: just language -> class; every target is tested as publishable.
+TARGET_ALIASES: Dict[str, str] = {
+    "me": "person",
+    "myself": "person",
+    "i": "person",
+    "human": "person",
+    "operator": "person",
+}
+
+
