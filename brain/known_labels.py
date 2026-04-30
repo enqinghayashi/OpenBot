@@ -237,3 +237,9 @@ def unregister_extra_classes(names: Iterable[str]) -> None:
             del EXTRA_ALIASES[key]
 
 
+def clear_extra_classes() -> None:
+    """Back to the default (empty) state.  Clears IN PLACE: callers that
+    imported the containers by name keep seeing the live (empty) objects."""
+    with _EXTRA_LOCK:
+        _EXTRA_CLASSES.clear()
+        EXTRA_ALIASES.clear()
