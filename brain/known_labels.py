@@ -71,3 +71,8 @@ _DISPLAY_ORDER: List[str] = [
 ]
 
 
+def sorted_classes() -> List[str]:
+    """The tracked classes in display order (unknown extras appended last)."""
+    known = [c for c in _DISPLAY_ORDER if c in TRACKED_CLASSES]
+    extra = sorted(TRACKED_CLASSES.difference(known))
+    return known + extra
