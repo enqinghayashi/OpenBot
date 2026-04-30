@@ -95,3 +95,112 @@ PERCEPTION_COLOUR_NAMES = (
 _LABEL_ARTICLES = ("the", "a", "an")
 
 
+def detection_base_class(det: Any) -> str:
+    """Bare COCO class of a Detection (or detection-like dict), lowercased.
+
+    ``class_name`` — the bare class perception now emits on every row
+    ('cup') — wins; when it is absent (legacy rows) a colour prefix is
+    stripped off ``label``.  Never raises: a malformed/missing source
+    yields '' (no match), never a guess.
+    """
+    cn = getattr(det, "class_name", None)
+    if not isinstance(cn, str):
+        try:
+            if isinstance(det, dict):
+                cn = det.get("class_name")
+        except Exception:  # noqa: BLE001
+            cn = None
+    if isinstance(cn, str) and cn.strip():
+        return cn.strip().lower()
+    label = getattr(det, "label", None)
+    if not isinstance(label, str):
+        try:
+            if isinstance(det, dict):
+                label = det.get("label")
+        except Exception:  # noqa: BLE001
+            label = None
+    return label_base_class(label)
+
+
+def label_base_class(label: Any) -> str:
+    """Map a query/detection label to its bare COCO class, lowercased.
+
+    Strips a leading article and a leading perception colour word, so
+    'red cup', 'the red cup' and 'cup' all resolve to 'cup'.  A lone colour
+    token is NOT stripped: 'orange' is a COCO class (the fruit) and must
+    not vanish — the colour-prefix rule only fires when a real remainder
+    follows the colour word.
+    """
+    if not isinstance(label, str):
+        return ""
+    toks = label.strip().lower().split()
+    while toks and toks[0] in _LABEL_ARTICLES:
+        toks.pop(0)
+    if toks and toks[0] in PERCEPTION_COLOUR_NAMES and len(toks) > 1:
+        toks.pop(0)
+    return " ".join(toks)
+
+
+def requested_colour(label: Any) -> Optional[str]:
+    """The colour word prefixed on a query label, or None.
+
+    'the red cup' -> 'red'; 'cup' / 'orange' (the fruit) -> None.  Only a
+    leading colour that modifies a real remainder is read as a colour
+    request — a lone colour token is treated as a class name, never a
+    colour qualifier.
+    """
+    if not isinstance(label, str):
+        return None
+    toks = label.strip().lower().split()
+    while toks and toks[0] in _LABEL_ARTICLES:
+        toks.pop(0)
+    if toks and toks[0] in PERCEPTION_COLOUR_NAMES and len(toks) > 1:
+        return toks[0]
+    return None
+
+
+def detection_matches_label(det: Any, label: Any) -> bool:
+    """Does one detection match a query label (class-aware)?
+
+    True when the query is the detection's exact display ``label``
+    ('red cup' == a row labelled 'red cup') OR when the query's base COCO
+    class equals the detection's base COCO class ('cup' matches a row whose
+    class is 'cup' — coloured or bare).  Colour disambiguation among
+    same-class detections is the caller's job via ``color_name``.
+    """
+    if label is None:
+        return False
+    q = str(label).strip().lower()
+    if not q:
+        return False
+    det_label = getattr(det, "label", None)
+    if not isinstance(det_label, str):
+        try:
+            det_label = det.get("label") if isinstance(det, dict) else None
+        except Exception:  # noqa: BLE001
+            det_label = None
+    if isinstance(det_label, str) and det_label.strip().lower() == q:
+        return True
+    base = detection_base_class(det)
+    return bool(base) and base == label_base_class(label)
+
+
+def _num(value: Any, name: str) -> float:
+    """Coerce a payload value to float; raise on anything non-numeric.
+
+    None and bool are REJECTED: a detection missing x/y/z must never
+    become a phantom object at the torso origin, and a bool is not a
+    measurement — silent 0.0 coercion would fabricate world state.
+    NaN/Inf are REJECTED too: a NaN z bypasses the tabletop floor refusal
+    (NaN < -0.35 is False) so a phantom pick could proceed; a non-finite
+    measurement is never a world state.
+    """
+    if value is None or isinstance(value, bool):
+        raise ValueError(f"observation payload: {name} must be numeric, got {value!r}")
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"observation payload: {name} must be numeric, got {value!r}") from exc
+    if not math.isfinite(number):
+        raise ValueError(f"observation payload: {name} must be finite, got {value!r}")
+    return number
