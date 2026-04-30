@@ -1081,3 +1081,100 @@ class LookFor(object):
                 return best
             self._sleep(self.poll_s)
 
+    def _status(self, q: Optional[GatewayOutcome]) -> Dict[str, Any]:
+        from brain.agent.tools import fail, ok
+        if q is not None and q.kind == "backend_fixed":
+            return fail("This robot's detector cannot learn new objects right "
+                        "now (fixed vocabulary backend); only the base objects "
+                        "are detectable.")
+        if q is None or q.kind != "applied":
+            why = q.text if q is not None else "no vocabulary verb"
+            return fail("Perception did not answer the vocabulary query (%s); "
+                        "the active extra objects are unknown." % why)
+        active = list(self.manager.active.items())
+        if not active:
+            return ok("Only the base objects are being looked for; no extra "
+                      "objects are active.")
+        rows = best_rows(self._observe(), [l for l, _ in active])
+        return ok(" ".join(wording_for(l, p, rows.get(l)) for l, p in active))
+
+    def _forget(self, nouns: List[str]) -> Dict[str, Any]:
+        from brain.agent.tools import fail, ok
+        with self._lock:
+            dropped = []
+            for n in nouns:
+                c = self.manager.canon(n)
+                if c.kind == "extra" and c.label in self.manager.desired:
+                    del self.manager.desired[c.label]
+                    dropped.append(c.label)
+            if not dropped:
+                return ok("None of those are being looked for.")
+            gen = self.manager.mark_dirty()
+        try:
+            outcome = classify_outcome(self.manager.send(self._verb(), gen))
+        except Exception as exc:  # noqa: BLE001
+            outcome = GatewayOutcome("unconfirmed", "send failed: %s" % exc)
+        if outcome.kind != "applied":
+            return fail("Asked perception to stop looking for %s; it has not "
+                        "confirmed the change (%s)." % (", ".join(dropped),
+                                                       outcome.text))
+        with self._lock:
+            self.manager.set_active(list(outcome.extras or []))
+        return ok("Stopped looking for %s." % ", ".join(dropped))
+
+
+# =============================================================================
+# the factory (optional_tools convention entry point)
+# =============================================================================
+
+
+def _scene_brief_prime(original: Any) -> Any:
+    """scene_brief' : the ORIGINAL tool's schema/run/timeout/blocking/prepare,
+    description identical except the one refusal sentence."""
+    from brain.agent.tools import Tool
+    desc = original.description
+    if desc.count(SCENE_BRIEF_OLD_SENTENCE) != 1:
+        raise RuntimeError("scene_brief description drifted: the refusal "
+                           "sentence to replace was not found exactly once")
+    return Tool(
+        name=original.name,
+        description=desc.replace(SCENE_BRIEF_OLD_SENTENCE,
+                                 SCENE_BRIEF_NEW_SENTENCE),
+        schema=original.schema,
+        run=original.run,
+        timeout_s=original.timeout_s,
+        blocking=original.blocking,
+        prepare=getattr(original, "_prepare_hook", None),
+    )
+
+
+def make_tools(registry: Any, manager: Optional[VocabularyManager] = None,
+               **handler_kw: Any) -> List[Any]:
+    """[look_for, scene_brief'] for register_optional_tools.
+
+    Synonym seed: ``registry._optional_switches['synonyms']`` (the
+    ``optional_tools`` config section P0 stores on the registry).  Raises on
+    any inconsistency — the convention turns that into a loud FORCED OFF.
+    """
+    from brain.agent.tools import Tool
+    switches = getattr(registry, "_optional_switches", None)
+    synonyms = switches.get("synonyms") if isinstance(switches, dict) else None
+    if manager is None:
+        manager = VocabularyManager(synonyms=synonyms)
+    handler = LookFor(registry, manager, **handler_kw)
+    look_for = Tool(
+        name="look_for",
+        description=LOOK_FOR_DESCRIPTION,
+        schema=LOOK_FOR_SCHEMA,
+        run=handler,
+        timeout_s=LOOK_FOR_TIMEOUT_S,
+    )
+    look_for.handler = handler  # test seam
+    original = registry.snapshot()["scene_brief"]
+    tools = [look_for, _scene_brief_prime(original)]
+    try:  # place/pick go strict
+        from brain import strict_vocab
+        strict_vocab.install(registry)
+    except Exception as exc:  # noqa: BLE001 -- never forces the lane off
+        print("[%s] strict detection not installed (%s)" % (LANE_TAG, exc))
+    return tools
