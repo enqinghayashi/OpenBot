@@ -226,3 +226,5 @@ def register_extra_classes(names: Iterable[str],
             pending[key] = tgt
         _EXTRA_CLASSES.update(clean)
         EXTRA_ALIASES.update(pending)
+
+
