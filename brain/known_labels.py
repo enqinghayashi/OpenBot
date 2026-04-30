@@ -228,3 +228,10 @@ def register_extra_classes(names: Iterable[str],
         EXTRA_ALIASES.update(pending)
 
 
+def unregister_extra_classes(names: Iterable[str]) -> None:
+    """Drop extra labels AND every alias that points at them."""
+    gone = {str(n).strip().lower() for n in names}
+    with _EXTRA_LOCK:
+        _EXTRA_CLASSES.difference_update(gone)
+        for key in [k for k, v in EXTRA_ALIASES.items() if v in gone]:
+            del EXTRA_ALIASES[key]
