@@ -243,3 +243,5 @@ def clear_extra_classes() -> None:
     with _EXTRA_LOCK:
         _EXTRA_CLASSES.clear()
         EXTRA_ALIASES.clear()
+
+
