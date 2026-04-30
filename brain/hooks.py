@@ -684,3 +684,91 @@ def _pick_preaction_hint(action: Any, hint: str) -> str:
     return "\npreaction_dets=" + ";".join(parts)
 
 
+def verifier_post_hook(
+    get_obs: Optional[Callable[[], object]] = None,
+    verifier: Optional[object] = None,
+    hint_charset_refusal: bool = False,
+) -> Callable[[Any, Any], HookResult]:
+    """Post-tool verifier under the fixed contract.
+
+    ``hint_charset_refusal`` (default False = base behaviour) is passed to
+    ``_runtime_target_hint`` as ``refuse_charset`` (batch-4 D10a switch).
+
+    Maps the action's tool name through _CONTRACT_FOR_VERB onto a
+    CONTRACTS key; a missing mapping or missing contract yields
+    HookResult post_fail 'no contract for <verb>' — NEVER a silent ok.
+    The verdict maps one-to-one: 'success' -> post_ok,
+    'in_progress' -> post_pending (ok=False, evidence 're-observe'),
+    'failure' -> post_fail.
+
+    The SkillVerifier instance is constructed ONCE at hook-construction
+    (``verifier`` injects one; None -> a fresh instance) and held for the
+    hook's lifetime: SkillVerifier keeps instance-held state — the
+    navigate same-epoch guard (``_nav_last_success_epoch``) — and a fresh
+    instance per run_post call would reset that state and defeat
+    condition (e) of the navigate epoch gate on the agent lane.  The
+    sibling import stays lazy but moves to construction time; an import
+    failure is remembered and surfaces as post_fail on every run_post
+    (absent -> post_fail loudly, never silent).
+
+    Lazy-imports the sibling modules brain.verifier / brain.tool_contract
+    (SHARED CONTRACT names: SkillVerifier, CONTRACTS) — if they are
+    absent the hook FAILS loudly rather than pretending verification
+    happened.  `get_obs` (an ObservationSupplier: Callable returning
+    WorldObservation) is the fallback when run_post passes no
+    observation.  The raw tool reply is read off the action (`.tool_result`
+    or `.result`); a missing reply verifies as in_progress ('no tool
+    reply recorded').
+    """
+    # one instance, hook's life
+    _verifier: Any = verifier
+    _verifier_import_error: Optional[Exception] = None
+    if _verifier is None:
+        try:
+            from .verifier import SkillVerifier  # noqa: PLC0415 (lazy sibling)
+        except ImportError as exc:
+            _verifier_import_error = exc
+        else:
+            _verifier = SkillVerifier()
+
+    def hook(action: Any, observation: Any) -> HookResult:
+        if _verifier_import_error is not None:
+            return HookResult.post_fail(
+                "verifier unavailable (brain.verifier/tool_contract not "
+                f"importable): {_verifier_import_error}"
+            )
+        try:
+            from .tool_contract import CONTRACTS  # noqa: PLC0415 (lazy sibling)
+        except ImportError as exc:
+            return HookResult.post_fail(
+                f"verifier unavailable (brain.verifier/tool_contract not importable): {exc}"
+            )
+        tool = _action_tool(action)
+        if tool is None:
+            return HookResult.post_fail("no tool named in the pending action; cannot verify")
+        mapped = _CONTRACT_FOR_VERB.get(tool, tool)
+        contract = CONTRACTS.get(mapped)
+        if contract is None:
+            return HookResult.post_fail(f"no contract for {tool!r}")
+        obs = observation if observation is not None else (
+            get_obs() if get_obs is not None else None
+        )
+        # pick only: hint goes FIRST
+        # first match wins
+        if mapped == "pick":
+            # OFF = one-arg call
+            # byte for byte
+            hint = (_runtime_target_hint(action, refuse_charset=True)
+                    if hint_charset_refusal is True
+                    else _runtime_target_hint(action))
+            if hint is not None:
+                hint += _pick_preaction_hint(action, hint)  # bystanders too
+                contract = replace(contract, context=hint + "\n" + contract.context)
+        verdict = _verifier.verify(contract, obs, _action_tool_result(action))
+        if verdict.status == "success":
+            return HookResult.post_ok(verdict.to_string())
+        if verdict.status == "in_progress":
+            return HookResult.post_pending(verdict.to_string())
+        return HookResult.post_fail(verdict.to_string())
+
+    return hook
