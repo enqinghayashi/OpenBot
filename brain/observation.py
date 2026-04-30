@@ -204,3 +204,158 @@ def _num(value: Any, name: str) -> float:
     if not math.isfinite(number):
         raise ValueError(f"observation payload: {name} must be finite, got {value!r}")
     return number
+
+
+def _opt_hue(value: Any) -> Optional[float]:
+    """Parse the optional perception hue (degrees, 0-360) -> float|None.
+
+    Colour is INFORMATION for the model's scene prose (so it can tell "the
+    red cup on the left" from "the green cup on the right") — never a
+    position — so a malformed hue (absent, bool, non-numeric, NaN/Inf, or
+    outside [0, 360]) drops to None instead of raising (unlike ``_num``,
+    which guards world-state positions).  Only finite degrees in [0, 360]
+    pass through.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or not (0.0 <= number <= 360.0):
+        return None
+    return number
+
+
+def _opt_color_name(value: Any) -> Optional[str]:
+    """Parse the optional perception colour band -> str|None.
+
+    A non-string value is None; surrounding whitespace is stripped and a
+    blank string is None (never a guessed colour).  Case is preserved as
+    emitted by perception.
+    """
+    if not isinstance(value, str):
+        return None
+    name = value.strip()
+    return name or None
+
+
+def _opt_instance_id(value: Any) -> Optional[int]:
+    """Parse the optional perception instance id -> int >= 1 | None.
+
+    Batch 4 / G1 (docs/YOLOE_BATCH4_ARCHITECTURE.md §3.1, §3.3): the yolo
+    node emits ``instance_id`` (a session-monotonic track id >= 1) ONLY when
+    ``OPENBOT_INSTANCE_IDS=1``.  Only a real int >= 1 passes; a bool, a str
+    ('7'), a float (7.0), zero or a negative is None — never a guess, an id
+    that is not exactly what the tracker minted binds nothing.  The id is
+    ADVISORY (D6): position + gate stay the authority.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value >= 1 else None
+
+
+def _opt_body_side(value: Any) -> Optional[str]:
+    """Parse the optional perception body-side token -> 'left'|'right'|None.
+
+    Only the two canonical tokens (case-insensitive) pass; anything else —
+    a non-string, a bool, an unknown token — is None (never guessed).  This
+    is which side of the torso line the object sits on (display semantics),
+    never a position.
+    """
+    if not isinstance(value, str):
+        return None
+    side = value.strip().lower()
+    if side in ("left", "right"):
+        return side
+    return None
+
+
+@dataclass
+class Detection:
+    """One torso-frame object detection (yolo-seg + depth projection)."""
+
+    label: str
+    x: float  # torso frame: right (m)
+    y: float  # forward (m)
+    z: float  # up (m)
+    conf: float
+    ref: Optional[str]  # scene-graph id, e.g. 'bottle_3'
+    ts: float  # time.time() stamp
+    #: grasp approach from the depth projector
+    #: 'upright' | 'horizontal' (lying object)
+    #: a lying object must not be picked upright
+    #: absent -> 'upright'
+    orientation: str = "upright"
+    #: extents in metres
+    width_m: Optional[float] = None
+    height_m: Optional[float] = None
+    #: colour + side, for the model's prose
+    #: hue 0-360, body_side left|right
+    #: info only, never a position; None if absent
+    hue: Optional[float] = None
+    color_name: Optional[str] = None
+    body_side: Optional[str] = None
+    #: bare COCO class ('cup')
+    #: None -> fall back to label
+    class_name: Optional[str] = None
+    #: track id, OPENBOT_INSTANCE_IDS=1 only
+    #: last field, positional order safe
+    #: not a ref (refs stay label_N)
+    #: advisory; position + gate decide
+    #: observe reply drops it when None
+    instance_id: Optional[int] = None
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "Detection":
+        """Parse a gateway detection payload.
+
+        Accepts keys: label (or 'labels'), class_name, x, y, z, conf, ref,
+        ts, orientation, width_m, height_m, hue, color_name, body_side,
+        instance_id.
+        Optional keys default: conf 0.0, ref None, ts 0.0, orientation
+        'upright', width_m None, height_m None, hue None, color_name None,
+        body_side None, class_name None, instance_id None (a non-int or
+        an int < 1 is None — never a guess).  An unrecognized orientation value
+        is NOT passed through — it defaults to 'upright' (never a guess at
+        a grasp approach).  A malformed hue/color_name/body_side value drops
+        to None (colour is informational, never a position) — no raise.
+        """
+        label = d.get("label", d.get("labels"))
+        if not isinstance(label, str):
+            raise ValueError(f"detection payload missing string label, got {label!r}")
+        ref = d.get("ref")
+        if ref is not None and not isinstance(ref, str):
+            raise ValueError(f"detection payload ref must be str|None, got {ref!r}")
+        orientation = d.get("orientation")
+        if not isinstance(orientation, str) or orientation not in ("upright", "horizontal"):
+            orientation = "upright"
+        width_m = d.get("width_m")
+        if width_m is not None:
+            width_m = _num(width_m, "width_m")
+        height_m = d.get("height_m")
+        if height_m is not None:
+            height_m = _num(height_m, "height_m")
+        class_name = d.get("class_name")
+        if class_name is not None and not isinstance(class_name, str):
+            class_name = None  # never guess; fall back to label
+        if isinstance(class_name, str):
+            class_name = class_name.strip() or None
+        return cls(
+            label=label,
+            x=_num(d.get("x"), "x"),
+            y=_num(d.get("y"), "y"),
+            z=_num(d.get("z"), "z"),
+            conf=_num(d.get("conf", 0.0), "conf"),
+            ref=ref,
+            ts=_num(d.get("ts", 0.0), "ts"),
+            orientation=orientation,
+            width_m=width_m,
+            height_m=height_m,
+            hue=_opt_hue(d.get("hue")),
+            color_name=_opt_color_name(d.get("color_name")),
+            body_side=_opt_body_side(d.get("body_side")),
+            class_name=class_name,
+            instance_id=_opt_instance_id(d.get("instance_id")),
+        )
+
