@@ -648,3 +648,37 @@ def _runtime_target_hint(action: Any, refuse_charset: bool = False) -> Optional[
     return None
 
 
+def _pick_preaction_hint(action: Any, hint: str) -> str:
+    """``"\\npreaction_dets=<x>,<y>,<hue|->;..."`` for THIS pick, or ``""``.
+
+    B8 (2026-10-06, MEASURED on Stuart): with two cups on the table the
+    verifier's label test matched the OTHER cup after every successful pick
+    ("target still visible").  This appends where every same-label object
+    stood BEFORE the call (``action.world``, the same pre-action snapshot
+    the hint's sighting gate reads) so ``verifier._only_bystanders`` can
+    tell the picked cup from its neighbours.  Any row it cannot serialise
+    voids the whole annotation: the verifier then keeps its old rule.
+    """
+    m = re.match(r"target_label=(.+)$", hint or "")
+    if not m:
+        return ""
+    label = m.group(1).lower()
+    pre = getattr(action, "world", None)
+    parts = []
+    for d in getattr(pre, "detections", None) or []:
+        if (getattr(d, "label", None) or "").lower() != label:
+            continue
+        try:
+            x, y = float(d.x), float(d.y)
+            hue = getattr(d, "hue", None)
+            hue = None if hue is None else float(hue)
+        except (TypeError, ValueError):
+            return ""
+        if x != x or y != y or abs(x) == float("inf") or abs(y) == float("inf"):
+            return ""
+        if hue is not None and (hue != hue or abs(hue) == float("inf")):
+            hue = None
+        parts.append("%.3f,%.3f,%s" % (x, y, "-" if hue is None else "%.1f" % hue))
+    if not parts:
+        return ""
+    return "\npreaction_dets=" + ";".join(parts)
