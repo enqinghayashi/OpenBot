@@ -774,3 +774,45 @@ def verifier_post_hook(
     return hook
 
 
+def default_hooks(
+    observation_source: Optional[Callable[[], "WorldObservation"]] = None,
+    confirm: Optional[Callable[[Any], bool]] = None,
+    envelope: Optional[object] = None,
+    freshness_s: Optional[float] = None,
+    now_fn: Optional[Callable[[], float]] = None,
+    verifier: Optional[object] = None,
+    require_confirm: bool = True,
+    hint_charset_refusal: bool = False,
+) -> Hook:
+    """Standard pipeline: confirm gate + safety checks before motion, and
+    the verifier post-hook AFTER every tool call.
+
+    `observation_source` is the ObservationSupplier (Callable returning
+    WorldObservation) the verifier post-hook falls back to when run_post
+    receives no observation.  `envelope`/`freshness_s` default to
+    Embodiment.defaults().  `verifier` is an optional SkillVerifier
+    instance shared across run_post calls (the navigate same-epoch guard
+    needs instance state); None -> one constructed at hook-construction.
+
+    `require_confirm=False` disables ONLY the ask (see confirm_gate_hook);
+    the safety pre-hooks and the verifier post-hook are unaffected.
+
+    `hint_charset_refusal=True` (batch-4 D10a switch, config
+    ``optional_tools.hint_charset_refusal``) refuses a pick target hint the
+    verifier's parser would truncate; False (default) = base behaviour.
+    """
+    return Hook(
+        pre_hooks=[
+            confirm_gate_hook(confirm=confirm, require_confirm=require_confirm),
+            safety_checks_hook(
+                envelope=envelope,
+                freshness_s=freshness_s,
+                now_fn=now_fn,
+                # gate runs in this pipeline
+                # so the law re-reads the wire
+                observation_source=observation_source,
+            ),
+        ],
+        post_hooks=[verifier_post_hook(get_obs=observation_source, verifier=verifier,
+                                       hint_charset_refusal=hint_charset_refusal)],
+    )
