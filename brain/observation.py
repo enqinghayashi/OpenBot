@@ -507,3 +507,42 @@ class GripState:
         return (f"grip[{self.side}] {state}{avail} "
                 f"joints={[round(j, 3) for j in self.joints]} "
                 f"commanded={[round(j, 3) for j in self.commanded]}")
+
+
+@dataclass
+class WalkStatus:
+    """Navigation FSM phase.  'REACHED' is the only success phase.
+
+    Canonical phases: SEARCHING | APPROACHING | REACHED | IDLE.
+    `from_dict` uppercases/strips the payload string; any unrecognized
+    value is kept as-is so consumers treat it as not-REACHED (conservative:
+    never a false success).
+
+    DATACLASS CHANGE (world-truth round 2, fix 1): ``label`` is the FSM's
+    target label from the walk_status payload (the payload carries no
+    timestamp — the gateway stamps ``ts`` on arrival).  A REACHED whose
+    payload label does not match the requested target must never verify
+    success.  ``from_dict`` tolerates payloads without either field.
+    """
+
+    phase: str
+    label: Optional[str] = None  # FSM target label, lowered
+    ts: float = 0.0  # arrival ts; payload has none
+
+    def __post_init__(self) -> None:
+        self.phase = str(self.phase).strip().upper()
+        if self.label is not None:
+            self.label = str(self.label).strip().lower() or None
+
+    @property
+    def reached(self) -> bool:
+        return self.phase == "REACHED"
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "WalkStatus":
+        phase = d.get("phase", "IDLE")
+        label = d.get("label")
+        if label is not None and not isinstance(label, str):
+            raise ValueError(f"walk payload label must be str|None, got {label!r}")
+        return cls(phase=str(phase), label=label, ts=_num(d.get("ts", 0.0), "ts"))
+
