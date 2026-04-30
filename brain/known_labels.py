@@ -235,3 +235,5 @@ def unregister_extra_classes(names: Iterable[str]) -> None:
         _EXTRA_CLASSES.difference_update(gone)
         for key in [k for k, v in EXTRA_ALIASES.items() if v in gone]:
             del EXTRA_ALIASES[key]
+
+
