@@ -153,3 +153,34 @@ def resolve_alias(label: str) -> str:
         if hit is not None:
             return hit
     return label
+
+
+# --- open-vocab EXTRAS (brain/look_for_tool.py) ---
+#
+# TRACKED_CLASSES above stays the literal
+# the drift guard reads by AST.
+#
+# lane `optional_tools.open_vocab_lane`,
+# default OFF. adds single-token labels
+# ('bin', 'pencil_case') the node
+# CONFIRMED, plus phrases pointing at
+# them ('trash can' -> 'bin'). both
+# containers EMPTY by default; only the
+# lane fills them, so lane OFF behaves
+# byte-for-byte as before (pinned by
+# tests/test_known_labels.py).
+#
+# describe() skips extras: it renders the
+# STATIC capability line.
+
+#: phrase -> extra label.
+#: EMPTY by default.
+EXTRA_ALIASES: Dict[str, str] = {}
+
+#: confirmed extra labels.
+#: EMPTY by default.
+_EXTRA_CLASSES: Set[str] = set()
+
+_EXTRA_LOCK = threading.Lock()
+
+
