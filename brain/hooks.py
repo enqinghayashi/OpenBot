@@ -682,3 +682,5 @@ def _pick_preaction_hint(action: Any, hint: str) -> str:
     if not parts:
         return ""
     return "\npreaction_dets=" + ";".join(parts)
+
+
