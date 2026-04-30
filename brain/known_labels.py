@@ -82,3 +82,5 @@ def describe() -> str:
     """One line naming every detectable class, for the model's context."""
     return ("DETECTABLE (the only labels perception can ever report): "
             + ", ".join(sorted_classes()))
+
+
