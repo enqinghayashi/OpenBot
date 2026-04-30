@@ -124,3 +124,32 @@ TARGET_ALIASES: Dict[str, str] = {
 }
 
 
+def resolve_alias(label: str) -> str:
+    """Map a self-reference ('me') to its tracked class ('person').
+
+    IDENTITY for every other label, INCLUDING its original casing and
+    whitespace: this sits on the target-resolution path for every tool, so it
+    must not quietly rewrite labels it does not own.  Case- and
+    whitespace-insensitive in the LOOKUP only -- the alias arrives from spoken
+    language, where the casing is whatever the model typed.
+    """
+    if not label:
+        return label
+    key = label.strip().lower()
+    hit = TARGET_ALIASES.get(key)
+    if hit is not None:
+        return hit
+    # learned phrases ('trash can' ->
+    # 'bin'). empty by default, so with
+    # lane OFF this is still the identity.
+    # leading article tolerated.
+    if EXTRA_ALIASES:
+        hit = EXTRA_ALIASES.get(key)
+        if hit is None:
+            parts = key.split()
+            while parts and parts[0] in ("the", "a", "an"):
+                parts.pop(0)
+            hit = EXTRA_ALIASES.get(" ".join(parts))
+        if hit is not None:
+            return hit
+    return label
