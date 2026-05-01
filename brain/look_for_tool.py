@@ -299,3 +299,6 @@ class Canon(object):
     def as_tuple(self) -> Tuple[str, Optional[str]]:
         return (self.label, self.prompt)
 
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "Canon(%r, %r, %r, %r)" % (self.kind, self.label, self.prompt,
+                                          self.phrase)
