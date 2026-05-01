@@ -70,3 +70,6 @@ class Locate(object):
     """The tool body.  Reads registry.scene_graph / registry.backend at CALL
     time (lane factories run before the registry is attached)."""
 
+    def __init__(self, registry):
+        self.registry = registry
+
