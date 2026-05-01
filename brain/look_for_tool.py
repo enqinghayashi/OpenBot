@@ -289,3 +289,10 @@ class Canon(object):
 
     __slots__ = ("kind", "label", "prompt", "phrase")
 
+    def __init__(self, kind: str, label: str, prompt: Optional[str],
+                 phrase: str) -> None:
+        self.kind = kind  # base/extra/invalid
+        self.label = label  # base or canonical
+        self.prompt = prompt  # None for base
+        self.phrase = phrase  # normalised phrase
+
