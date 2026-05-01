@@ -271,3 +271,5 @@ def _singular_candidates(phrase: str) -> List[str]:
     if phrase.endswith("s") and not phrase.endswith("ss") and len(phrase) > 2:
         out.append(phrase[:-1])
     return out
+
+
