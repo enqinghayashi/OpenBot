@@ -66,3 +66,7 @@ LOCATE_SCHEMA = {
 LOCATE_TIMEOUT_S = 5.0
 
 
+class Locate(object):
+    """The tool body.  Reads registry.scene_graph / registry.backend at CALL
+    time (lane factories run before the registry is attached)."""
+
