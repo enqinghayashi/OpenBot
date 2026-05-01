@@ -73,3 +73,49 @@ class Locate(object):
     def __init__(self, registry):
         self.registry = registry
 
+    def __call__(self, args):
+        from brain.agent.tools import fail, ok
+        reg = self.registry
+        graph = getattr(reg, "scene_graph", None)
+        if graph is None:
+            return fail("scene graph not wired - cannot locate")
+        if getattr(reg, "backend", None) is not None:
+            obs = reg._observe()
+            if obs is None or not getattr(obs, "fresh", True):
+                return fail("NOT_DETECTED: no fresh observation - perception is "
+                            "not answering; nothing can be located")
+            graph.update(obs)
+        objs = graph.spatial_objects()
+        names = graph._compute_display_names()
+        query = {"label": args.get("label") or "",
+                 "colour": args.get("colour") or None,
+                 "side": args.get("side") or None,
+                 "superlative": args.get("superlative") or None}
+        if args.get("relation") or args.get("anchor_label"):
+            query["relation"] = {"type": args.get("relation") or "near",
+                                 "anchor": {"label": args.get("anchor_label") or "",
+                                            "colour": args.get("anchor_colour") or None}}
+        res = spatial.resolve(objs, query)
+        if res["status"] == "ok":
+            o = res["obj"]
+            deg, side = spatial.bearing(o)
+            name = names.get(o["ref"], res.get("name") or o["ref"])
+            z = ("z=%+.2f" % float(o["z"])) if o.get("z") is not None \
+                else "height not measured"
+            parts = ["%s: %s at x=%+.2f y=%.2f %s m, %.2f m away, %s"
+                     % (name, o.get("label"), float(o["x"]), float(o["y"]), z,
+                        spatial.distance(o), side)]
+            if o.get("colour"):
+                parts.append("colour %s" % o["colour"])
+            parts.append("say pick %s to pick it" % name)
+            return ok("; ".join(parts))
+        if res["status"] == "ambiguous":
+            return fail("ambiguous: %d objects fit (%s) - ask the user which one, "
+                        "or add a colour, side or relation"
+                        % (len(res["candidates"]), ", ".join(res["candidates"])))
+        # bare NOT_DETECTED read as final, so it only apologised
+        # ("I can't see a bottle"). not in view != unavailable
+        label = str(args.get("label") or "").strip() or "it"
+        return fail("NOT_DETECTED: %s. It is not in view right now - this is NOT "
+                    "the end: call navigate('%s') to search the room and walk to "
+                    "it, then pick it." % (res.get("reason", "nothing fits"), label))
