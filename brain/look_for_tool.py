@@ -259,3 +259,15 @@ def _norm_phrase(noun: Any, extract_colour: bool = False) -> Any:
     return phrase
 
 
+def _singular_candidates(phrase: str) -> List[str]:
+    """Lookup-only singular forms ('bins' -> 'bin', 'boxes' -> 'box').
+    Used ONLY to find a phrase in an existing table, never to mint a label
+    (so 'bus' is never shortened to 'bu')."""
+    out = []
+    if phrase.endswith("ies") and len(phrase) > 4:
+        out.append(phrase[:-3] + "y")
+    if phrase.endswith("es") and len(phrase) > 3:
+        out.append(phrase[:-2])
+    if phrase.endswith("s") and not phrase.endswith("ss") and len(phrase) > 2:
+        out.append(phrase[:-1])
+    return out
