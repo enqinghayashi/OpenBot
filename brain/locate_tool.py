@@ -119,3 +119,5 @@ class Locate(object):
         return fail("NOT_DETECTED: %s. It is not in view right now - this is NOT "
                     "the end: call navigate('%s') to search the room and walk to "
                     "it, then pick it." % (res.get("reason", "nothing fits"), label))
+
+
