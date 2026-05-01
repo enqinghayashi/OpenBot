@@ -546,3 +546,80 @@ class WalkStatus:
             raise ValueError(f"walk payload label must be str|None, got {label!r}")
         return cls(phase=str(phase), label=label, ts=_num(d.get("ts", 0.0), "ts"))
 
+    def describe(self) -> str:
+        label = f"[{self.label}]" if self.label else ""
+        return f"walk:{self.phase}{label}"
+
+
+@dataclass
+class WorldObservation:
+    """The normalized snapshot the verifier/graph/hooks read.
+
+    NOTE (STUART fact): detections are event-driven — an EMPTY list is an
+    empty scene, not missing data.  Distinguish a dead detection node by
+    `detections_ts` (old) and `fresh` (False), never by list emptiness.
+    """
+
+    detections: List[Detection] = field(default_factory=list)
+    grip: Optional[GripState] = None
+    walk: Optional[WalkStatus] = None
+    detections_ts: float = 0.0
+    fresh: bool = False
+    #: cached /yolo/classes_state summary
+    #: keys: backend extras seq epoch stamp
+    #: only with open_vocab and a real state
+    #: verifier: a label leaving the vocab
+    #: must not look like a disappearance
+    #: last field
+    vocab: Optional[Dict[str, Any]] = None
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "WorldObservation":
+        dets_raw = d.get("detections", [])
+        if not isinstance(dets_raw, list):
+            raise ValueError(f"observation payload detections must be a list, got {dets_raw!r}")
+        grip_raw = d.get("grip")
+        walk_raw = d.get("walk")
+        vocab_raw = d.get("vocab")
+        return cls(
+            detections=[Detection.from_dict(x) for x in dets_raw],
+            grip=GripState.from_dict(grip_raw) if grip_raw else None,
+            walk=WalkStatus.from_dict(walk_raw) if walk_raw else None,
+            detections_ts=_num(d.get("detections_ts"), "detections_ts"),
+            fresh=bool(d.get("fresh", False)),
+            # copy, not the payload's dict
+            vocab=dict(vocab_raw) if isinstance(vocab_raw, dict) else None,
+        )
+
+    def describe(self) -> str:
+        """One-line summary for the refreshed context section."""
+        parts = [
+            f"detections={len(self.detections)} "
+            + ("[" + ", ".join(x.describe() for x in self.detections[:6]) + "]" if self.detections else "[]"),
+        ]
+        if self.grip is not None:
+            parts.append(self.grip.describe())
+        if self.walk is not None:
+            parts.append(self.walk.describe())
+        parts.append(f"ts={self.detections_ts:.1f}")
+        parts.append("fresh" if self.fresh else "STALE")
+        return " | ".join(parts)
+
+
+def default_world_observation(**overrides: Any) -> WorldObservation:
+    """Deterministic factory for tests and mock transport.
+
+    Empty scene (silence == empty), no grip, walk IDLE, stale — the
+    conservative baseline.  Pass keyword overrides for a populated one:
+
+        default_world_observation(fresh=True, grip=GripState(...), ...)
+    """
+    base: Dict[str, Any] = {
+        "detections": [],
+        "grip": None,
+        "walk": WalkStatus(phase="IDLE"),
+        "detections_ts": 0.0,
+        "fresh": False,
+    }
+    base.update(overrides)
+    return WorldObservation(**base)
