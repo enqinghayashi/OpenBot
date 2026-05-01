@@ -245,3 +245,11 @@ def clear_extra_classes() -> None:
         EXTRA_ALIASES.clear()
 
 
+def seg_node_path() -> str:
+    """Absolute path to the perception node that OWNS the allowlist."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for _name in ("yolo_node_SEG_version.py", "yolo_node_seg.py"):
+        _p = os.path.join(root, "skills", "perception", _name)
+        if os.path.exists(_p):
+            return _p
+    return os.path.join(root, "skills", "perception", "yolo_node_seg.py")
