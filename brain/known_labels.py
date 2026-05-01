@@ -255,3 +255,44 @@ def seg_node_path() -> str:
     return os.path.join(root, "skills", "perception", "yolo_node_seg.py")
 
 
+def load_tracked_classes_from_seg_node() -> FrozenSet[str]:
+    """Re-read ``TRACKED_CLASSES`` from the SEG node by AST parse.
+
+    The node imports ``rclpy``, so it cannot be imported on the laptop or in
+    the brain.  Parsing the literal keeps the drift guard runnable
+    everywhere, and reading the REAL constant means the guard tests the
+    shipped allowlist rather than a restatement of it.
+
+    Raises RuntimeError when the constant is absent — a missing anchor must
+    FAIL the guard, never pass it vacuously.
+    """
+    with open(seg_node_path(), "r", encoding="utf-8") as fh:
+        tree = ast.parse(fh.read(), filename=seg_node_path())
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == "TRACKED_CLASSES":
+                # node writes `frozenset({...})`,
+                # so unwrap that Call. any other
+                # shape raises: a guard that can't
+                # read its subject must fail, never
+                # have to guess.
+                rhs = node.value
+                if (isinstance(rhs, ast.Call)
+                        and isinstance(rhs.func, ast.Name)
+                        and rhs.func.id == "frozenset"
+                        and len(rhs.args) == 1
+                        and not rhs.keywords):
+                    rhs = rhs.args[0]
+                try:
+                    value = ast.literal_eval(rhs)
+                except ValueError as exc:  # pragma: no cover - guard anchor
+                    raise RuntimeError(
+                        "TRACKED_CLASSES in the SEG node is not a literal (nor "
+                        "a frozenset() of one) — the drift guard cannot read "
+                        "it: %s" % exc)
+                return frozenset(value)
+    raise RuntimeError(
+        "TRACKED_CLASSES not found in %s — the drift guard's anchor is "
+        "gone; fix the guard rather than deleting it." % seg_node_path())
