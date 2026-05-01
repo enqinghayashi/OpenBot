@@ -284,3 +284,8 @@ def _mint_label(phrase: str) -> str:
 # =============================================================================
 
 
+class Canon(object):
+    """Result of canonicalising one spoken noun."""
+
+    __slots__ = ("kind", "label", "prompt", "phrase")
+
