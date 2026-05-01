@@ -51,3 +51,64 @@ from typing import List, Union
 Number = Union[int, float]
 
 
+def _clamp(value: float, name: str) -> float:
+    if value < 0.0 or value > 1.0:
+        value = min(1.0, max(0.0, value))
+    return value
+
+
+def ceiling(p: Number, chi: Number) -> float:
+    """Per-step posterior: P(step succeeded | verifier confirmed).
+
+    Bayesian update under a symmetric verifier of reliability `chi`.
+    chi = 0.5 returns p exactly (no-gain); chi = 1 returns 1.0 for p > 0
+    (exponential compression of the per-step failure term).
+    """
+    p = _clamp(float(p), "p")
+    chi = _clamp(float(chi), "chi")
+    if chi == 0.5:
+        return p  # exact here, no float dust
+    denom = p * chi + (1.0 - p) * (1.0 - chi)
+    if denom <= 0.0:
+        # measure-zero corners, symmetric: (chi==1, p==0), (chi==0, p==1)
+        # both condition on an impossible event - 0/0 posterior.
+        # 0.0 either way: no step success, no confirmed success.
+        return 0.0
+    return p * chi / denom
+
+
+def open_loop(p_i: Union[Number, List[Number]]) -> float:
+    """E2E success probability with NO verification: product of per-step p_i.
+
+    Accepts a single scalar (one-step chain) or a list.  Empty chain -> 1.0
+    (no steps, nothing to fail).
+    """
+    if isinstance(p_i, (int, float)):
+        return float(p_i)
+    prod = 1.0
+    for p in p_i:
+        prod *= _clamp(float(p), "p")
+    return prod
+
+
+def harness(p_i: Union[Number, List[Number]], chi: Number, P: Number = 1.0) -> float:
+    """E2E success probability of the verified (harnessed) chain.
+
+    Args:
+        p_i: per-step success probabilities (scalar or list).
+        chi: verifier reliability (0..1; 0.5 = no-gain, 1.0 = perfect).
+        P:   probability of the unverified base condition (goal present /
+             base action), default 1.0.  Pass a detection confidence for
+             goal-presence-aware E2E prediction.
+
+    At chi = 0.5 the verifier adds nothing: harness == open_loop([P] + p_i).
+    """
+    if isinstance(p_i, (int, float)):
+        steps: List[float] = [float(p_i)]
+    else:
+        steps = [float(p) for p in p_i]
+    P = _clamp(float(P), "P")
+    chain = 1.0
+    for p in steps:
+        chain *= ceiling(p, chi)
+    return P * chain
