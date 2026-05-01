@@ -230,3 +230,9 @@ _COLOUR_WORDS = ("red", "orange", "yellow", "green", "cyan", "blue", "purple", "
                  "white", "black", "grey", "gray", "teal", "navy", "maroon")
 
 
+def _strip_colour(phrase: str) -> tuple:
+    """Extract leading colour word and return (colour|None, stripped_phrase)."""
+    toks = phrase.split()
+    if toks and toks[0] in _COLOUR_WORDS:
+        return toks[0], " ".join(toks[1:])
+    return None, phrase
