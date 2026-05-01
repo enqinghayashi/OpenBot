@@ -111,3 +111,122 @@ def _extra_conf_floor(env: Any = None) -> float:
     if v != v or not lo <= v <= hi:
         return EXTRA_CONF_DEFAULT
     return v
+
+
+EXTRA_CONF_FLOOR = _extra_conf_floor()
+MIN_CONF = EXTRA_CONF_FLOOR
+MAX_EXTRAS = 236
+MIN_INTERVAL_S = 1.0
+SETTLE_S = 2.5
+POLL_S = 0.25
+#: call budget
+#: under look_for.timeout_s (10.0), so the reply beats
+#: the generic TIMEOUT envelope
+CALL_BUDGET_S = 9.0
+LOOK_FOR_TIMEOUT_S = 10.0
+
+LABEL_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+PROMPT_RE = re.compile(r"^[a-z][a-z0-9 \-]{0,47}$")
+
+#: base phrases
+#: these NAME a base class, never sent as extras
+#: (base vocab is always on); the reply still names
+#: the label to use. 'wine glass' dropped from the
+#: node allowlist
+BASE_SYNONYMS: Dict[str, str] = {
+    "mug": "cup", "coffee mug": "cup", "glass": "cup", "drinking glass": "cup",
+    "teacup": "cup", "tea cup": "cup", "tumbler": "cup",
+    "phone": "cell phone", "mobile": "cell phone",
+    "mobile phone": "cell phone", "smartphone": "cell phone",
+    "cellphone": "cell phone", "iphone": "cell phone",
+    "plant": "potted plant", "house plant": "potted plant",
+    "houseplant": "potted plant", "pot plant": "potted plant",
+    "ball": "sports ball", "football": "sports ball",
+    "soccer ball": "sports ball", "basketball": "sports ball",
+    "tennis ball": "sports ball",
+    "bag": "handbag", "purse": "handbag",
+    "computer": "laptop", "notebook computer": "laptop",
+    "water bottle": "bottle", "plastic bottle": "bottle",
+    "remote control": "remote", "tv remote": "remote",
+    "computer mouse": "mouse",
+    "rucksack": "backpack", "schoolbag": "backpack", "school bag": "backpack",
+    "luggage": "suitcase",
+    "alarm clock": "clock", "wall clock": "clock",
+    "flower vase": "vase",
+    "textbook": "book", "novel": "book",
+    "schoolbag": "backpack", "school bag": "backpack", "rucksack": "backpack",  # repeat
+    "man": "person", "woman": "person", "people": "person",
+}
+
+#: the seed table
+#: canonical -> (prompt, synonyms)
+#: every prompt MUST be a line of ../assets/vocab_seed.txt
+#: (the laptop bank builder's input)
+#: or the node rejects it 'not_in_bank'
+SEED_TABLE: Dict[str, Tuple[str, Tuple[str, ...]]] = OrderedDict([
+    ("bin", ("trash can", ("bin", "trash can", "rubbish bin", "trash bin",
+                           "garbage can", "garbage bin", "waste bin",
+                           "wastebasket", "waste basket", "dustbin",
+                           "litter bin", "trashcan"))),
+    ("box", ("cardboard box", ("box", "cardboard box", "carton", "parcel",
+                               "package"))),
+    ("pencil_case", ("pencil case", ("pencil case", "pen case",
+                                     "pencil pouch"))),
+    ("basket", ("basket", ("basket", "wicker basket"))),
+    ("tray", ("tray", ("tray", "serving tray"))),
+    ("plate", ("plate", ("plate", "dinner plate", "dish"))),
+    ("spoon", ("spoon", ("spoon", "teaspoon", "tablespoon"))),
+    ("knife", ("knife", ("knife", "kitchen knife", "butter knife"))),
+    ("scissors", ("scissors", ("scissors", "pair of scissors"))),
+    ("pen", ("pen", ("pen", "ballpoint pen", "biro"))),
+    ("pencil", ("pencil", ("pencil",))),
+    ("marker", ("marker pen", ("marker", "marker pen", "felt tip pen",
+                               "highlighter"))),
+    ("notebook", ("notebook", ("notebook", "notepad", "exercise book"))),
+    ("stapler", ("stapler", ("stapler",))),
+    ("tape", ("roll of tape", ("tape", "roll of tape", "sticky tape",
+                               "duct tape", "masking tape"))),
+    ("keys", ("keys", ("keys", "key", "bunch of keys", "keychain",
+                       "key ring"))),
+    ("wallet", ("wallet", ("wallet",))),
+    ("glasses", ("eyeglasses", ("glasses", "eyeglasses", "spectacles"))),
+    ("headphones", ("headphones", ("headphones", "headset", "earphones"))),
+    ("charger", ("phone charger", ("charger", "phone charger"))),
+    ("cable", ("cable", ("cable", "usb cable", "charging cable", "wire"))),
+    ("umbrella", ("umbrella", ("umbrella",))),
+    ("hat", ("hat", ("hat", "cap", "baseball cap"))),
+    ("shoe", ("shoe", ("shoe", "sneaker", "trainer", "boot"))),
+    ("towel", ("towel", ("towel", "hand towel", "tea towel"))),
+    ("sponge", ("sponge", ("sponge", "kitchen sponge"))),
+    ("tissue_box", ("tissue box", ("tissue box", "box of tissues",
+                                   "tissues", "kleenex"))),
+    ("toilet_paper", ("toilet paper roll", ("toilet paper",
+                                            "toilet paper roll",
+                                            "toilet roll", "loo roll"))),
+    ("can", ("drink can", ("can", "drink can", "soda can", "tin can",
+                           "beer can", "coke can"))),
+    ("jar", ("jar", ("jar", "glass jar"))),
+    ("kettle", ("kettle", ("kettle", "electric kettle"))),
+    ("pan", ("frying pan", ("pan", "frying pan", "skillet"))),
+    ("pot", ("cooking pot", ("pot", "cooking pot", "saucepan"))),
+    ("teddy_bear", ("teddy bear", ("teddy bear", "teddy", "stuffed animal",
+                                   "plush toy", "soft toy"))),
+    ("toy", ("toy", ("toy", "toy car", "toy block"))),
+    ("bucket", ("bucket", ("bucket", "pail"))),
+    ("lamp", ("lamp", ("lamp", "desk lamp", "table lamp"))),
+    ("pillow", ("pillow", ("pillow", "cushion"))),
+    ("toolbox", ("toolbox", ("toolbox", "tool box"))),
+    ("screwdriver", ("screwdriver", ("screwdriver",))),
+    ("hammer", ("hammer", ("hammer",))),
+    ("lunchbox", ("lunch box", ("lunchbox", "lunch box"))),
+    ("banana", ("banana", ("banana",))),
+    ("orange", ("orange", ("orange", "orange fruit"))),
+    ("toothbrush", ("toothbrush", ("toothbrush",))),
+])
+
+_ARTICLES = ("a", "an", "the", "some", "my", "your", "this", "that")
+_SIZE_WORDS = ("small", "little", "tiny", "big", "large", "huge", "mini", "medium")
+_COLOUR_WORDS = ("red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink",
+                 "white", "black", "grey", "gray", "teal", "navy", "maroon")
+
+
