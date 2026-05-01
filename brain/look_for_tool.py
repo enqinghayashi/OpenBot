@@ -97,3 +97,17 @@ EXTRA_CONF_DEFAULT = 0.25
 EXTRA_CONF_RANGE = (0.20, 0.90)  # gateway range
 
 
+def _extra_conf_floor(env: Any = None) -> float:
+    """EXTRA admit floor: OPENBOT_EXTRA_CONF_FLOOR when it is a finite number
+    inside EXTRA_CONF_RANGE, else EXTRA_CONF_DEFAULT."""
+    raw = (os.environ if env is None else env).get("OPENBOT_EXTRA_CONF_FLOOR")
+    if raw is None or str(raw).strip() == "":
+        return EXTRA_CONF_DEFAULT
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return EXTRA_CONF_DEFAULT
+    lo, hi = EXTRA_CONF_RANGE
+    if v != v or not lo <= v <= hi:
+        return EXTRA_CONF_DEFAULT
+    return v
