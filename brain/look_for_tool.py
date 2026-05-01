@@ -238,3 +238,22 @@ def _strip_colour(phrase: str) -> tuple:
     return None, phrase
 
 
+def _norm_phrase(noun: Any, extract_colour: bool = False) -> Any:
+    """Lowercase, punctuation -> space, collapse, strip leading articles and
+    size words. If extract_colour is True, return (colour|None, phrase) tuple;
+    otherwise return the normalised phrase (for backward compatibility)."""
+    if not isinstance(noun, str):
+        return (None, "") if extract_colour else ""
+    text = re.sub(r"[^a-z0-9 \-]+", " ", noun.lower())
+    toks = text.split()
+    # leading articles
+    while toks and toks[0] in _ARTICLES:
+        toks.pop(0)
+    # then size words
+    while toks and toks[0] in _SIZE_WORDS:
+        toks.pop(0)
+    phrase = " ".join(toks)
+    if extract_colour:
+        colour, stripped = _strip_colour(phrase)
+        return colour, stripped
+    return phrase
