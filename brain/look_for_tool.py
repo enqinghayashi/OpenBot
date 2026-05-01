@@ -277,3 +277,10 @@ def _mint_label(phrase: str) -> str:
     """The canonical token of an UNSEEDED phrase: the FULL phrase, never a
     shortened guess ('widget holder' -> 'widget_holder')."""
     return re.sub(r"[^a-z0-9]+", "_", phrase).strip("_")
+
+
+# =============================================================================
+# VocabularyManager - pure state, canonicalisation, and the coalescing sender
+# =============================================================================
+
+
