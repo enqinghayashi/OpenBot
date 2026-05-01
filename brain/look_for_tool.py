@@ -236,3 +236,5 @@ def _strip_colour(phrase: str) -> tuple:
     if toks and toks[0] in _COLOUR_WORDS:
         return toks[0], " ".join(toks[1:])
     return None, phrase
+
+
