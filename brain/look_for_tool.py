@@ -257,3 +257,5 @@ def _norm_phrase(noun: Any, extract_colour: bool = False) -> Any:
         colour, stripped = _strip_colour(phrase)
         return colour, stripped
     return phrase
+
+
