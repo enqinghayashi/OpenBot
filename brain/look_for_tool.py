@@ -296,3 +296,6 @@ class Canon(object):
         self.prompt = prompt  # None for base
         self.phrase = phrase  # normalised phrase
 
+    def as_tuple(self) -> Tuple[str, Optional[str]]:
+        return (self.label, self.prompt)
+
