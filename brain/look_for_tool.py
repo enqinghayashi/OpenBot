@@ -304,3 +304,12 @@ class Canon(object):
                                           self.phrase)
 
 
+class VocabularyManager(object):
+    """Brain-side open-vocabulary state.  No ROS; time and sleep injectable.
+
+    ``desired``: canonical -> prompt, what the brain asks perception to look
+    for (<= MAX_EXTRAS).  ``active``: the subset the node CONFIRMED
+    (``DONE:applied``); only confirmed labels are registered in
+    ``known_labels`` so pick/navigate never resolve an unconfirmed noun.
+    """
+
