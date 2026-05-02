@@ -399,3 +399,21 @@ class VocabularyManager(object):
 
     # -- canonicalisation --------------------------------------------------------
 
+    @staticmethod
+    def _base_of(phrase: str) -> Optional[str]:
+        """The base TRACKED class a phrase names, or None."""
+        tracked = known_labels.TRACKED_CLASSES
+        if phrase in tracked:
+            return phrase
+        if phrase in BASE_SYNONYMS:
+            return BASE_SYNONYMS[phrase]
+        alias = known_labels.TARGET_ALIASES.get(phrase)
+        if alias in tracked:
+            return alias
+        stripped = label_base_class(phrase)  # colour prefix
+        if stripped in tracked:
+            return stripped
+        if stripped in BASE_SYNONYMS:
+            return BASE_SYNONYMS[stripped]
+        return None
+
