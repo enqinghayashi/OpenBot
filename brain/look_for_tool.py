@@ -370,3 +370,32 @@ class VocabularyManager(object):
             except Exception:  # noqa: BLE001
                 pass
 
+    def _seed_from_config(self, synonyms: Any) -> None:
+        if synonyms is None:
+            return
+        if not isinstance(synonyms, Mapping):
+            self._log("[%s] optional_tools.synonyms ignored: expected a mapping "
+                      "with inline lists (bin: [trash can, rubbish bin]), got "
+                      "%s %r" % (LANE_TAG, type(synonyms).__name__, synonyms))
+            return
+        for raw_label, phrases in synonyms.items():
+            label = _mint_label(_norm_phrase(str(raw_label), extract_colour=False))
+            if (not isinstance(phrases, list) or not phrases
+                    or not all(isinstance(p, str) for p in phrases)):
+                self._log("[%s] optional_tools.synonyms.%s ignored: expected an "
+                          "inline list of phrases ([a, b]), got %r (the block-list "
+                          "form is unsupported)" % (LANE_TAG, raw_label, phrases))
+                continue
+            norm = [_norm_phrase(p, extract_colour=False) for p in phrases]
+            norm = [p for p in norm if p]
+            if (not LABEL_RE.match(label) or label in known_labels.TRACKED_CLASSES
+                    or not norm or not all(PROMPT_RE.match(p) for p in norm)
+                    or any(self._base_of(p) for p in norm)):
+                self._log("[%s] optional_tools.synonyms.%s ignored: invalid label "
+                          "or phrase (or a phrase that names a base class)"
+                          % (LANE_TAG, raw_label))
+                continue
+            self._learn(label, self.prompts.get(label, norm[0]), norm)
+
+    # -- canonicalisation --------------------------------------------------------
+
