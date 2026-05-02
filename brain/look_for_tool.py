@@ -417,3 +417,25 @@ class VocabularyManager(object):
             return BASE_SYNONYMS[stripped]
         return None
 
+    def canon(self, noun: Any) -> Canon:
+        colour, phrase = _norm_phrase(noun, extract_colour=True)
+        if not phrase:
+            return Canon("invalid", "", None, (colour or "") + (" " if colour else "") + phrase)
+        # colour is perception's decoration
+        core = label_base_class(phrase) or phrase
+        # lookup: synonyms, prompts, stripped, singular, last words
+        lookup_candidates = [core] + _singular_candidates(core) + self._last_n_words(core, 2) + self._last_n_words(core, 1)
+        for cand in lookup_candidates:
+            if not cand:
+                continue
+            base = self._base_of(cand)
+            if base is not None:
+                return Canon("base", base, None, phrase)
+            label = self.phrase_to_label.get(cand)
+            if label is not None:
+                return Canon("extra", label, self.prompts[label], phrase)
+        label = _mint_label(core)
+        if not LABEL_RE.match(label) or not PROMPT_RE.match(core):
+            return Canon("invalid", label, None, phrase)
+        return Canon("extra", label, core, phrase)
+
