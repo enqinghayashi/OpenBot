@@ -448,3 +448,8 @@ class VocabularyManager(object):
 
     # -- known_labels mirror -----------------------------------------------------
 
+    def _aliases_for(self, labels: Any) -> Dict[str, str]:
+        wanted = set(labels)
+        return {p: l for p, l in self.phrase_to_label.items()
+                if l in wanted and p != l}
+
