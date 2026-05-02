@@ -439,3 +439,12 @@ class VocabularyManager(object):
             return Canon("invalid", label, None, phrase)
         return Canon("extra", label, core, phrase)
 
+    def _last_n_words(self, phrase: str, n: int) -> List[str]:
+        """Return list of last n words from phrase."""
+        toks = phrase.split()
+        if len(toks) <= n:
+            return []
+        return [" ".join(toks[-n:])]
+
+    # -- known_labels mirror -----------------------------------------------------
+
