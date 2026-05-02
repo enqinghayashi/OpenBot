@@ -313,3 +313,37 @@ class VocabularyManager(object):
     ``known_labels`` so pick/navigate never resolve an unconfirmed noun.
     """
 
+    def __init__(self, synonyms: Any = None,
+                 clock: Callable[[], float] = time.monotonic,
+                 sleep: Callable[[float], None] = time.sleep,
+                 min_interval_s: float = MIN_INTERVAL_S,
+                 max_extras: int = MAX_EXTRAS,
+                 min_conf: float = MIN_CONF,
+                 log: Callable[[str], None] = print) -> None:
+        self._clock = clock
+        self._sleep = sleep
+        self.min_interval_s = float(min_interval_s)
+        self.max_extras = int(max_extras)
+        self.min_conf = float(min_conf)
+        self._log = log
+        # canonical -> prompt
+        self.prompts: Dict[str, str] = OrderedDict()
+        self.phrase_to_label: Dict[str, str] = {}
+        self.vocab_prompts: Dict[str, str] = {}  # prompt -> label
+        for label, (prompt, phrases) in SEED_TABLE.items():
+            self._learn(label, prompt, phrases)
+        self._load_vocab_prompts()
+        self._seed_from_config(synonyms)
+        self.desired: Dict[str, str] = OrderedDict()
+        self.active: Dict[str, str] = OrderedDict()
+        self.queried = False
+        # sender state
+        self._cv = threading.Condition()
+        self._gen = 0
+        self._sent_gen = 0
+        self._sending = False
+        self._last_send_t: Optional[float] = None
+        self._last_result: Any = None
+
+    # -- seed -------------------------------------------------------------------
+
