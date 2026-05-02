@@ -470,3 +470,16 @@ class VocabularyManager(object):
         self.desired = OrderedDict()
         self.set_active([])
 
+    def seed_from_node(self, labels: Any) -> None:
+        """op:query answer: the node's extras become desired AND active."""
+        clean = [l for l in labels
+                 if LABEL_RE.match(l) and l not in known_labels.TRACKED_CLASSES]
+        self.desired = OrderedDict(
+            (l, self.prompts.get(l) or l.replace("_", " ")) for l in clean)
+        for l, p in self.desired.items():
+            self.phrase_to_label.setdefault(p, l)
+            self.prompts.setdefault(l, p)
+        self.set_active(clean)
+
+    # -- message -----------------------------------------------------------------
+
