@@ -302,3 +302,5 @@ class Canon(object):
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return "Canon(%r, %r, %r, %r)" % (self.kind, self.label, self.prompt,
                                           self.phrase)
+
+
