@@ -347,3 +347,12 @@ class VocabularyManager(object):
 
     # -- seed -------------------------------------------------------------------
 
+    def _learn(self, label: str, prompt: str, phrases: Any) -> None:
+        self.prompts.setdefault(label, prompt)
+        self.phrase_to_label[label.replace("_", " ")] = label
+        self.phrase_to_label[prompt] = label
+        for p in phrases:
+            norm = _norm_phrase(p, extract_colour=False)
+            if norm:
+                self.phrase_to_label[norm] = label
+
