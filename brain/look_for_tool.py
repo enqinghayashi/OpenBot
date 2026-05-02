@@ -466,3 +466,7 @@ class VocabularyManager(object):
             known_labels.register_extra_classes(
                 list(self.active), aliases=self._aliases_for(self.active))
 
+    def clear(self) -> None:
+        self.desired = OrderedDict()
+        self.set_active([])
+
