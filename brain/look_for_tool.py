@@ -356,3 +356,17 @@ class VocabularyManager(object):
             if norm:
                 self.phrase_to_label[norm] = label
 
+    def _load_vocab_prompts(self) -> None:
+        """Load the vocabulary prompts file if it exists."""
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        vocab_file = os.path.join(repo_root, "brain", "vocab_prompts.txt")
+        if os.path.isfile(vocab_file):
+            try:
+                with open(vocab_file, "r", encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if line:
+                            self.vocab_prompts[line] = line
+            except Exception:  # noqa: BLE001
+                pass
+
