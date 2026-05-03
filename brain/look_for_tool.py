@@ -637,3 +637,10 @@ def classify_outcome(env: Any) -> GatewayOutcome:
     # publish_failed, state_error, transport errors:
     # NOT confirmed
     return GatewayOutcome("unconfirmed", text)
+
+
+# =============================================================================
+# how the reply is worded
+# =============================================================================
+
+
