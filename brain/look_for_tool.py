@@ -483,3 +483,14 @@ class VocabularyManager(object):
 
     # -- message -----------------------------------------------------------------
 
+    def message(self) -> Dict[str, Any]:
+        """ONE request carrying the FULL extras set (idempotent replace)."""
+        if not self.desired:
+            return {"op": "reset", "classes": []}
+        return {"op": "set",
+                "classes": [{"label": l, "prompt": p}
+                            for l, p in self.desired.items()],
+                "min_conf": self.min_conf}
+
+    # -- coalescing sender ---------------------------------------------------------
+
