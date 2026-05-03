@@ -698,3 +698,5 @@ def _position_text(row: Dict[str, Any]) -> str:
             pass
 
     return "; ".join(parts) if parts else ""
+
+
