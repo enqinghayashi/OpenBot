@@ -494,3 +494,10 @@ class VocabularyManager(object):
 
     # -- coalescing sender ---------------------------------------------------------
 
+    def mark_dirty(self) -> int:
+        """Record that ``desired`` changed (or was re-requested); returns the
+        generation the caller must see sent."""
+        with self._cv:
+            self._gen += 1
+            return self._gen
+
