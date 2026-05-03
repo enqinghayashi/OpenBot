@@ -759,3 +759,52 @@ def best_rows(obs: Any, labels: Any) -> Dict[str, Dict[str, Any]]:
                     row[field] = val
             out[base] = row
     return out
+
+
+# =============================================================================
+# the tool itself
+# =============================================================================
+
+#: §5 text
+#: §5 quotes the refusal phrase "not something this
+#: robot can see", contradicting §5.3's pin that the
+#: ON specs carry no such phrase. The phrase is
+#: paraphrased; the instruction is unchanged
+LOOK_FOR_DESCRIPTION = (
+    "Teach perception a new object noun and look for it. Use this when the "
+    "human names something that is NOT in the detectable list (a bin, a box, "
+    "a pencil case) or when the camera image shows an object you have no "
+    "label for: do NOT refuse it as something the robot cannot see — "
+    "call look_for first. nouns: plain English, one object each (\"trash "
+    "can\", \"pencil case\"). The base objects stay detectable. The reply "
+    "names the exact label to use with pick and navigate, and whether it is "
+    "already seen, with confidence; low confidence is reported as \"might "
+    "be\" and is not enough to pick."
+)
+
+LOOK_FOR_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "nouns": {"type": "array", "items": {"type": "string"}},
+        "mode": {"type": "string", "enum": ["add", "forget", "status"]},
+    },
+    "required": ["nouns"],
+}
+
+#: swapped sentence
+#: the one scene_brief sentence replaced when the lane
+#: is ON (verbatim from brain/agent/tools.py)
+SCENE_BRIEF_OLD_SENTENCE = (
+    "When a human names "
+    "something outside this list (a mug, a phone stand, a "
+    "door), do NOT invent a label and do NOT report it as "
+    "merely absent — say plainly that it is not something this "
+    "robot can see, and name the closest real alternative when "
+    "one exists (a mug is not visible to me; I can see cups)."
+)
+SCENE_BRIEF_NEW_SENTENCE = (
+    "When a human names something outside this list, call look_for with that "
+    "noun first; only if look_for cannot learn it say so plainly."
+)
+
+
