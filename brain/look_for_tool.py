@@ -582,3 +582,58 @@ class GatewayOutcome(object):
         self.rejected = rejected or {}
 
 
+def classify_outcome(env: Any) -> GatewayOutcome:
+    success, text, value = _env_text(env)
+    if isinstance(value, dict):  # classes_state, structured
+        rejected = {str(k): str(v) for k, v in
+                    dict(value.get("rejected") or {}).items()}
+        extras = [str(x) for x in (value.get("extras") or [])]
+        if value.get("backend") == "yolo":
+            return GatewayOutcome("backend_fixed", text, [], rejected)
+        if value.get("error"):
+            return GatewayOutcome("swap_failed", str(value.get("error")))
+        if success and value.get("backend") == "yoloe":
+            return GatewayOutcome("applied", text, extras, rejected)
+        return GatewayOutcome("unconfirmed", text)
+    stripped = text.lstrip()
+    # confirmed shapes
+    # gateway_node.py _yolo_reply:
+    #   set/reset -> "DONE:applied seq=N active=B+K extras=..."
+    #   query     -> "DONE:state seq=N backend=<b> active=..."
+    # checked first, only on those prefixes, so a label
+    # echoed in extras= ('busy_board') is never a keyword
+    if success and (stripped.startswith("DONE:applied")
+                    or stripped.startswith("DONE:state")):
+        if stripped.startswith("DONE:state"):
+            m = _BACKEND_RE.search(stripped)
+            backend = m.group(1) if m else None
+            if backend == "yolo":
+                return GatewayOutcome("backend_fixed", text, [], {})
+            if backend != "yoloe":
+                return GatewayOutcome("unconfirmed", text)
+        m = _EXTRAS_RE.search(stripped)
+        if m is None:
+            # no extras= echo = not confirmed
+            # never assume a label got active
+            return GatewayOutcome("unconfirmed", text)
+        extras = [x for x in m.group(1).split(",") if x]
+        rejected = {}
+        m = _REJECTED_RE.search(stripped)
+        if m:
+            for item in m.group(1).split(","):
+                if ":" in item:
+                    k, v = item.split(":", 1)
+                    rejected[k] = v
+        return GatewayOutcome("applied", text, extras, rejected)
+    # refusals
+    # only the gateway's own token picks the kind
+    # 'ERROR:yolo_classes <kind>'
+    # (gateway_node.py _do_yolo_classes)
+    m = _REFUSAL_RE.match(stripped)
+    if m is not None and m.group(1) in _REFUSAL_KINDS:
+        return GatewayOutcome(_REFUSAL_KINDS[m.group(1)], text)
+    # unconfirmed
+    # DONE:requested, no_ack, no_subscriber,
+    # publish_failed, state_error, transport errors:
+    # NOT confirmed
+    return GatewayOutcome("unconfirmed", text)
