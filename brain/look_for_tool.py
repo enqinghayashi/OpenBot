@@ -574,3 +574,9 @@ class GatewayOutcome(object):
 
     __slots__ = ("kind", "text", "extras", "rejected")
 
+    def __init__(self, kind: str, text: str, extras: Optional[List[str]] = None,
+                 rejected: Optional[Dict[str, str]] = None) -> None:
+        self.kind = kind  # applied|unconfirmed|backend_fixed|busy|
+        self.text = text  # disabled|swap_failed|bad_request|no_verb
+        self.extras = extras  # confirmed extras
+        self.rejected = rejected or {}
