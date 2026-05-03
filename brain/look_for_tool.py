@@ -724,3 +724,5 @@ def wording_for(label: str, prompt: str, row: Optional[Dict[str, Any]]) -> str:
             "NOT in view from here. Do not ask: call navigate(%r) NOW to search "
             "(turn) and walk to it, then continue the task. %s" % (
                 label, prompt, label, _label_line(label, prompt, False)))
+
+
