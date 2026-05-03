@@ -569,3 +569,8 @@ def _env_text(env: Any) -> Tuple[Optional[bool], str, Any]:
     return success, text if isinstance(text, str) else str(text), value
 
 
+class GatewayOutcome(object):
+    """Classified result of one yolo_classes round-trip."""
+
+    __slots__ = ("kind", "text", "extras", "rejected")
+
