@@ -647,3 +647,5 @@ def classify_outcome(env: Any) -> GatewayOutcome:
 def _label_line(label: str, prompt: str, confident: bool) -> str:
     tail = "" if confident else " once it is seen with confidence"
     return "label: %s (prompt: %s) - say pick %s%s." % (label, prompt, label, tail)
+
+
