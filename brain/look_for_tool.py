@@ -580,3 +580,5 @@ class GatewayOutcome(object):
         self.text = text  # disabled|swap_failed|bad_request|no_verb
         self.extras = extras  # confirmed extras
         self.rejected = rejected or {}
+
+
