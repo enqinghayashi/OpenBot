@@ -649,3 +649,52 @@ def _label_line(label: str, prompt: str, confident: bool) -> str:
     return "label: %s (prompt: %s) - say pick %s%s." % (label, prompt, label, tail)
 
 
+def _position_text(row: Dict[str, Any]) -> str:
+    """Generate position text from row fields. Never invent a value; omit absent."""
+    parts = []
+    x = row.get("x")
+    y = row.get("y")
+    z = row.get("z")
+    width_m = row.get("width_m")
+    height_m = row.get("height_m")
+
+    # position: x, y, z
+    pos_parts = []
+    if x is not None:
+        try:
+            x_val = float(x)
+            x_str = "%+.2f" % x_val
+            x_dir = "right" if x_val > 0 else "left" if x_val < 0 else ""
+            if x_dir:
+                pos_parts.append("x=%s m (%s)" % (x_str, x_dir))
+            else:
+                pos_parts.append("x=%s m" % x_str)
+        except (TypeError, ValueError):
+            pass
+    if y is not None:
+        try:
+            y_val = float(y)
+            pos_parts.append("%.2f m ahead" % y_val)
+        except (TypeError, ValueError):
+            pass
+    if z is not None:
+        try:
+            z_val = float(z)
+            z_str = "%+.2f" % z_val
+            pos_parts.append("z=%s m" % z_str)
+        except (TypeError, ValueError):
+            pass
+    if pos_parts:
+        parts.append("at " + ", ".join(pos_parts))
+
+    # width x height
+    if width_m is not None and height_m is not None:
+        try:
+            w = float(width_m)
+            h = float(height_m)
+            # to cm, reads better
+            parts.append("about %d x %d cm" % (int(round(w * 100)), int(round(h * 100))))
+        except (TypeError, ValueError):
+            pass
+
+    return "; ".join(parts) if parts else ""
