@@ -538,3 +538,18 @@ class VocabularyManager(object):
                 self._last_result = result
                 self._cv.notify_all()
         return result
+
+
+# =============================================================================
+# making sense of the gateway reply
+# =============================================================================
+
+_EXTRAS_RE = re.compile(r"\bextras=([a-z0-9_,]*)")
+_REJECTED_RE = re.compile(r"\brejected=(\S*)")
+_BACKEND_RE = re.compile(r"\bbackend=(\S+)")
+_REFUSAL_RE = re.compile(r"ERROR:\s*yolo_classes\s+([a-z_]+)")
+_REFUSAL_KINDS = {"backend_fixed": "backend_fixed", "busy": "busy",
+                  "disabled": "disabled", "swap_failed": "swap_failed",
+                  "bad_request": "bad_request"}
+
+
