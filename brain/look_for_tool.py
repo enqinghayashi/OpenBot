@@ -700,3 +700,27 @@ def _position_text(row: Dict[str, Any]) -> str:
     return "; ".join(parts) if parts else ""
 
 
+def wording_for(label: str, prompt: str, row: Optional[Dict[str, Any]]) -> str:
+    """Confidence wording for ONE extra from its best raw row (or None)."""
+    if row is not None:
+        conf = float(row.get("conf") or 0.0)
+        side = row.get("side")
+        where = (", on the %s" % side) if side in ("left", "right") else ""
+        pos = _position_text(row)
+        pos_suffix = "; " + pos if pos else ""
+        if conf >= EXTRA_CONF_FLOOR:  # extra floor
+            return "I see a %s (%.2f)%s%s - %s" % (
+                label.replace("_", " "), conf, where, pos_suffix,
+                _label_line(label, prompt, True))
+        if conf >= MIGHT_BE_CONF:
+            return ("I might be seeing a %s (low confidence %.2f)%s%s - not "
+                    "confident enough to pick; look again or closer. %s" % (
+                        label.replace("_", " "), conf, where, pos_suffix,
+                        _label_line(label, prompt, False)))
+    # out of view
+    # a learned word with nothing in view is OUT OF VIEW,
+    # so the model walks to it (the request covers it)
+    return ("Now looking for %s (prompt: %s); nothing matching yet - it is "
+            "NOT in view from here. Do not ask: call navigate(%r) NOW to search "
+            "(turn) and walk to it, then continue the task. %s" % (
+                label, prompt, label, _label_line(label, prompt, False)))
