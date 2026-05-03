@@ -808,3 +808,6 @@ SCENE_BRIEF_NEW_SENTENCE = (
 )
 
 
+class LookFor(object):
+    """look_for's handler: VocabularyManager + backend round-trips."""
+
