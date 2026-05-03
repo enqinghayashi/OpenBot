@@ -553,3 +553,17 @@ _REFUSAL_KINDS = {"backend_fixed": "backend_fixed", "busy": "busy",
                   "bad_request": "bad_request"}
 
 
+def _env_text(env: Any) -> Tuple[Optional[bool], str, Any]:
+    """(success, text, raw value) from an envelope of either shape:
+    {'success', 'value'|'reason'} (brain envelope) or {'ok', 'text'}."""
+    if not isinstance(env, dict):
+        return None, str(env), env
+    success = env.get("success", env.get("ok"))
+    value = env.get("value")
+    if value is None:
+        value = env.get("text", env.get("reply"))
+    if success is False or value is None:
+        text = env.get("reason") or value or ""
+    else:
+        text = value
+    return success, text if isinstance(text, str) else str(text), value
