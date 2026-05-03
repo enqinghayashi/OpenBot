@@ -501,3 +501,40 @@ class VocabularyManager(object):
             self._gen += 1
             return self._gen
 
+    def send(self, transmit: Callable[[Dict[str, Any]], Any], gen: int) -> Any:
+        """Send the FULL set once generation ``gen`` is covered.
+
+        A call inside ``min_interval_s`` of the last send waits for the window
+        to close; every generation recorded while it waited rides on the same
+        single send (coalescing).  A caller whose generation was already
+        covered by another thread's send returns that send's result without
+        transmitting.  There is deliberately NO 'set unchanged -> skip'
+        short-circuit (critic B-M1).
+        """
+        while True:
+            with self._cv:
+                if self._sent_gen >= gen:
+                    return self._last_result
+                if self._sending:
+                    self._cv.wait(0.05)
+                    continue
+                wait_s = 0.0
+                if self._last_send_t is not None:
+                    wait_s = self._last_send_t + self.min_interval_s - self._clock()
+                if wait_s <= 0:
+                    self._sending = True
+                    covered = self._gen
+                    msg = self.message()
+                    break
+            self._sleep(min(wait_s, 0.05))
+        result = None
+        try:
+            result = transmit(msg)
+        finally:
+            with self._cv:
+                self._sending = False
+                self._sent_gen = covered
+                self._last_send_t = self._clock()
+                self._last_result = result
+                self._cv.notify_all()
+        return result
