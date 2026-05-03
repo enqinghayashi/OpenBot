@@ -726,3 +726,36 @@ def wording_for(label: str, prompt: str, row: Optional[Dict[str, Any]]) -> str:
                 label, prompt, label, _label_line(label, prompt, False)))
 
 
+def best_rows(obs: Any, labels: Any) -> Dict[str, Dict[str, Any]]:
+    """Best (highest-conf) RAW row per wanted label from a FRESH observation.
+    A stale/absent observation yields nothing (never 'I see' on old data)."""
+    wanted = set(labels)
+    out: Dict[str, Dict[str, Any]] = {}
+    if obs is None or not getattr(obs, "fresh", False):
+        return out
+    for det in list(getattr(obs, "detections", None) or []):
+        base = detection_base_class(det)
+        if base not in wanted:
+            continue
+        if isinstance(det, dict):
+            conf_raw, side = det.get("conf"), det.get("body_side")
+        else:
+            conf_raw = getattr(det, "conf", 0.0)
+            side = getattr(det, "body_side", None)
+        try:
+            conf = float(conf_raw or 0.0)
+        except (TypeError, ValueError):
+            continue
+        prev = out.get(base)
+        if prev is None or conf > prev["conf"]:
+            # position fields
+            row = {"conf": conf, "side": side}
+            for field in ("x", "y", "z", "width_m", "height_m"):
+                if isinstance(det, dict):
+                    val = det.get(field)
+                else:
+                    val = getattr(det, field, None)
+                if val is not None:
+                    row[field] = val
+            out[base] = row
+    return out
