@@ -95,3 +95,28 @@ PERCEPTION_COLOUR_NAMES = (
 _LABEL_ARTICLES = ("the", "a", "an")
 
 
+def detection_base_class(det: Any) -> str:
+    """Bare COCO class of a Detection (or detection-like dict), lowercased.
+
+    ``class_name`` — the bare class perception now emits on every row
+    ('cup') — wins; when it is absent (legacy rows) a colour prefix is
+    stripped off ``label``.  Never raises: a malformed/missing source
+    yields '' (no match), never a guess.
+    """
+    cn = getattr(det, "class_name", None)
+    if not isinstance(cn, str):
+        try:
+            if isinstance(det, dict):
+                cn = det.get("class_name")
+        except Exception:  # noqa: BLE001
+            cn = None
+    if isinstance(cn, str) and cn.strip():
+        return cn.strip().lower()
+    label = getattr(det, "label", None)
+    if not isinstance(label, str):
+        try:
+            if isinstance(det, dict):
+                label = det.get("label")
+        except Exception:  # noqa: BLE001
+            label = None
+    return label_base_class(label)
