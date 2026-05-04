@@ -1146,3 +1146,5 @@ def _scene_brief_prime(original: Any) -> Any:
         blocking=original.blocking,
         prepare=getattr(original, "_prepare_hook", None),
     )
+
+
