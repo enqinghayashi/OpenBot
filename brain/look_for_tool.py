@@ -1081,3 +1081,20 @@ class LookFor(object):
                 return best
             self._sleep(self.poll_s)
 
+    def _status(self, q: Optional[GatewayOutcome]) -> Dict[str, Any]:
+        from brain.agent.tools import fail, ok
+        if q is not None and q.kind == "backend_fixed":
+            return fail("This robot's detector cannot learn new objects right "
+                        "now (fixed vocabulary backend); only the base objects "
+                        "are detectable.")
+        if q is None or q.kind != "applied":
+            why = q.text if q is not None else "no vocabulary verb"
+            return fail("Perception did not answer the vocabulary query (%s); "
+                        "the active extra objects are unknown." % why)
+        active = list(self.manager.active.items())
+        if not active:
+            return ok("Only the base objects are being looked for; no extra "
+                      "objects are active.")
+        rows = best_rows(self._observe(), [l for l, _ in active])
+        return ok(" ".join(wording_for(l, p, rows.get(l)) for l, p in active))
+
