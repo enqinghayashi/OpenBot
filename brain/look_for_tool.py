@@ -843,3 +843,6 @@ class LookFor(object):
             return ", ".join(matches)
         return ""
 
+    def _backend(self) -> Any:
+        return getattr(self.registry, "backend", None)
+
