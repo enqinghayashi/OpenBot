@@ -849,3 +849,22 @@ class LookFor(object):
     def _verb(self) -> Optional[Callable[[Dict[str, Any]], Any]]:
         return getattr(self._backend(), "yolo_classes", None)
 
+    def _query(self) -> Optional[GatewayOutcome]:
+        """op:query -> re-seed from the node.  None when no verb exists."""
+        verb = self._verb()
+        if verb is None:
+            return None
+        try:
+            outcome = classify_outcome(verb({"op": "query", "classes": []}))
+        except Exception as exc:  # noqa: BLE001 — never raise out of a tool
+            outcome = GatewayOutcome("unconfirmed", "query failed: %s" % exc)
+        with self._lock:
+            if outcome.kind == "backend_fixed":
+                self.manager.clear()
+                self.manager.queried = True
+            elif outcome.kind == "applied":
+                if outcome.extras is not None:
+                    self.manager.seed_from_node(outcome.extras)
+                self.manager.queried = True
+        return outcome
+
