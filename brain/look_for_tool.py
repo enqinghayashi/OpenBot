@@ -1098,3 +1098,26 @@ class LookFor(object):
         rows = best_rows(self._observe(), [l for l, _ in active])
         return ok(" ".join(wording_for(l, p, rows.get(l)) for l, p in active))
 
+    def _forget(self, nouns: List[str]) -> Dict[str, Any]:
+        from brain.agent.tools import fail, ok
+        with self._lock:
+            dropped = []
+            for n in nouns:
+                c = self.manager.canon(n)
+                if c.kind == "extra" and c.label in self.manager.desired:
+                    del self.manager.desired[c.label]
+                    dropped.append(c.label)
+            if not dropped:
+                return ok("None of those are being looked for.")
+            gen = self.manager.mark_dirty()
+        try:
+            outcome = classify_outcome(self.manager.send(self._verb(), gen))
+        except Exception as exc:  # noqa: BLE001
+            outcome = GatewayOutcome("unconfirmed", "send failed: %s" % exc)
+        if outcome.kind != "applied":
+            return fail("Asked perception to stop looking for %s; it has not "
+                        "confirmed the change (%s)." % (", ".join(dropped),
+                                                       outcome.text))
+        with self._lock:
+            self.manager.set_active(list(outcome.extras or []))
+        return ok("Stopped looking for %s." % ", ".join(dropped))
