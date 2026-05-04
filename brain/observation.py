@@ -141,3 +141,19 @@ def label_base_class(label: Any) -> str:
     return " ".join(toks)
 
 
+def requested_colour(label: Any) -> Optional[str]:
+    """The colour word prefixed on a query label, or None.
+
+    'the red cup' -> 'red'; 'cup' / 'orange' (the fruit) -> None.  Only a
+    leading colour that modifies a real remainder is read as a colour
+    request — a lone colour token is treated as a class name, never a
+    colour qualifier.
+    """
+    if not isinstance(label, str):
+        return None
+    toks = label.strip().lower().split()
+    while toks and toks[0] in _LABEL_ARTICLES:
+        toks.pop(0)
+    if toks and toks[0] in PERCEPTION_COLOUR_NAMES and len(toks) > 1:
+        return toks[0]
+    return None
