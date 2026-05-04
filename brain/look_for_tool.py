@@ -846,3 +846,6 @@ class LookFor(object):
     def _backend(self) -> Any:
         return getattr(self.registry, "backend", None)
 
+    def _verb(self) -> Optional[Callable[[Dict[str, Any]], Any]]:
+        return getattr(self._backend(), "yolo_classes", None)
+
