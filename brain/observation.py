@@ -157,3 +157,5 @@ def requested_colour(label: Any) -> Optional[str]:
     if toks and toks[0] in PERCEPTION_COLOUR_NAMES and len(toks) > 1:
         return toks[0]
     return None
+
+
