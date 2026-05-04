@@ -617,3 +617,68 @@ class SceneGraph:
             "display_name": None,
         }
 
+    @staticmethod
+    def _refresh(e: dict, d: Detection, ts: float) -> None:
+        e["x"], e["y"], e["z"], e["conf"], e["last_seen"] = d.x, d.y, d.z, d.conf, ts
+        for _k in ("hue", "width_m", "height_m"):          # keep last value
+            if getattr(d, _k, None) is not None:
+                e[_k] = getattr(d, _k)
+        # Colour/side follow the LAST KNOWN
+        # non-None value: a detection that omits
+        # colour must not erase what's already on
+        # this ref's identity.
+        if d.color_name is not None:
+            e["color_name"] = d.color_name
+            # keep the last 7
+            vote = e.get("colour_vote", [])
+            if not isinstance(vote, list):
+                vote = []
+            vote.append(d.color_name)
+            if len(vote) > 7:
+                vote = vote[-7:]
+            e["colour_vote"] = vote
+        if d.body_side is not None:
+            e["body_side"] = d.body_side
+
+    # -- instance ids (advisory; position and gate still rule) ------------------
+
+    def _instance_match(self, d: Detection, label: str) -> Optional[str]:
+        """The ref whose entry carries this row's ``instance_id`` AND the same
+        normalized label, at ANY distance (the object moved with the camera —
+        docs/YOLOE_BATCH4_ARCHITECTURE.md §6), or None.
+
+        The label must match: the ref key embeds the label (``cup_1``), so an
+        id never re-labels a ref.  A row without an id (every row today, and
+        every row with OPENBOT_INSTANCE_IDS off) returns None and association
+        falls through to today's same-label nearest <= assoc_distance_m.
+        """
+        iid = getattr(d, "instance_id", None)
+        if iid is None:
+            return None
+        for key, e in self.refs.items():
+            if e.get("instance_id") == iid and e["label"] == label:
+                return key
+        return None
+
+    def _claim_instance(self, e: dict, d: Detection) -> dict:
+        """Record the row's ``instance_id`` on entry ``e`` and return ``e``.
+
+        REFRESH semantics: on a label+distance association the entry's id is
+        OVERWRITTEN with the row's id (a stale id from an evicted track is
+        replaced) -- but _associate never offers such an entry when its id is
+        still carried by another row of the same packet (round 3: no
+        flip-flop between two in-gate tracks); a new entry records it.
+        The ``d.ref`` pre-assigned branch records no id (inert: every
+        perception row has ref=None, gateway/assemble.py).  An id belongs to ONE ref: any
+        other entry still holding it loses the key.  A row without an id
+        leaves ``e`` untouched (no key is ever added — entry dicts stay
+        byte-identical to today's when ids are off).
+        """
+        iid = getattr(d, "instance_id", None)
+        if iid is None:
+            return e
+        for other in self.refs.values():
+            if other is not e and other.get("instance_id") == iid:
+                del other["instance_id"]
+        e["instance_id"] = iid
+        return e
