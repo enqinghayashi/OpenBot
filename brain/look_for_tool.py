@@ -1054,3 +1054,11 @@ class LookFor(object):
             lines.append(wording_for(l, prompts[l], rows.get(l)))
         return ok(" ".join(lines))
 
+    def _strict(self, labels: List[str], t0: float) -> Any:
+        """B8i: a StrictScope for this call (inert when the backend has no
+        yolo_strict verb), its waits capped by the remaining call budget."""
+        from brain.strict_vocab import StrictScope  # imported lazily
+        left = max(0.0, t0 + self.budget_s - self._clock())
+        return StrictScope(self._backend(), list(labels), "look_for",
+                           wait_s=min(3.0, left / 3.0))
+
