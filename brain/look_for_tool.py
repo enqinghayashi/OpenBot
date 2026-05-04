@@ -1121,3 +1121,10 @@ class LookFor(object):
         with self._lock:
             self.manager.set_active(list(outcome.extras or []))
         return ok("Stopped looking for %s." % ", ".join(dropped))
+
+
+# =============================================================================
+# the factory (optional_tools convention entry point)
+# =============================================================================
+
+
