@@ -868,3 +868,12 @@ class LookFor(object):
                 self.manager.queried = True
         return outcome
 
+    def _observe(self) -> Any:
+        backend = self._backend()
+        try:
+            return backend.observe() if backend is not None else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    # -- run ----------------------------------------------------------------------
+
