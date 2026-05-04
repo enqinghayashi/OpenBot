@@ -811,3 +811,23 @@ SCENE_BRIEF_NEW_SENTENCE = (
 class LookFor(object):
     """look_for's handler: VocabularyManager + backend round-trips."""
 
+    def __init__(self, registry: Any, manager: VocabularyManager,
+                 clock: Callable[[], float] = time.monotonic,
+                 sleep: Callable[[float], None] = time.sleep,
+                 settle_s: float = SETTLE_S, poll_s: float = POLL_S,
+                 budget_s: float = CALL_BUDGET_S) -> None:
+        self.registry = registry
+        self.manager = manager
+        self._clock = clock
+        self._sleep = sleep
+        self.settle_s = float(settle_s)
+        self.poll_s = float(poll_s)
+        self.budget_s = float(budget_s)
+        # one lock
+        # for manager.desired and the sender's snapshot of it
+        # (a Condition lock is an RLock), so no call mutates
+        # the set while message() walks it
+        self._lock = manager._cv
+
+    # -- backend ------------------------------------------------------------------
+
