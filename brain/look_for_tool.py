@@ -831,3 +831,15 @@ class LookFor(object):
 
     # -- backend ------------------------------------------------------------------
 
+    def _get_suggestions(self, phrase: str) -> str:
+        """Get up to 3 closest bank prompts (difflib.get_close_matches, cutoff 0.6,
+        plus token overlap) as suggestions."""
+        all_prompts = list(self.manager.prompts.values())
+        if not all_prompts:
+            return ""
+        # difflib, cutoff 0.6
+        matches = difflib.get_close_matches(phrase, all_prompts, n=3, cutoff=0.6)
+        if matches:
+            return ", ".join(matches)
+        return ""
+
