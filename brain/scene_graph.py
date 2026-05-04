@@ -546,3 +546,74 @@ class SceneGraph:
                         "instance_id": e.get("instance_id")})
         return out
 
+    def _compute_display_names(self) -> Dict[str, str]:
+        """ref -> colour_objectname display name (B7) over every ref that is
+        not in hand (stale ones included, so a name never changes because an
+        object was briefly unseen)."""
+        if not self.refs:
+            return {}
+        objs = self.spatial_objects(include_stale=True)
+        names = spatial.display_names(objs)
+        # No measured colour -> keep the ref key
+        # as the name: a second 'cup_2' would
+        # collide with another cup's key.
+        for o in objs:
+            if not o.get("colour"):
+                names[o["ref"]] = o["ref"]
+        return names
+
+    @staticmethod
+    def _normalize(label: str) -> str:
+        return label.strip().lower()
+
+    @staticmethod
+    def _sanitize(label: str) -> str:
+        clean = re.sub(r"[^a-z0-9_]+", "_", label).strip("_")
+        return clean or "object"
+
+    def _new_ref(self, label: str) -> str:
+        """Allocate label_<n> with n strictly increasing, skipping ANY key
+        that already exists in self.refs.
+
+        The ref key namespace is shared with refs the gateway pre-assigns
+        (Detection.ref can arrive non-null, e.g. 'bottle_1' from a prior
+        turn).  Counting from 0 without an existence check would silently
+        OVERWRITE a pre-assigned key (pose replaced, holding/container state
+        lost) on the next unassigned same-label detection.  Loop until a key
+        not already in self.refs is found -- never overwrite an existing ref.
+        """
+        base = self._sanitize(label)
+        while True:
+            n = self._counters.get(label, 0) + 1
+            self._counters[label] = n
+            key = f"{base}_{n}"
+            if key not in self.refs:
+                return key
+
+    def _new_entry(self, d: Detection, ts: float, label: str) -> dict:
+        return {
+            "label": label,
+            "x": d.x,
+            "y": d.y,
+            "z": d.z,
+            "conf": d.conf,
+            "last_seen": ts,
+            "holding": False,
+            "in_container": None,
+            # Perception colour + body side for brief
+            # prose (None = unknown). Model information,
+            # never world state -- the verifier never
+            # reads this graph.
+            "color_name": d.color_name,
+            "body_side": d.body_side,
+            # colour vote: last 7, first obs too
+            "colour_vote": [d.color_name] if d.color_name is not None else [],
+            # Measured hue / extents for spatial
+            # reasoning (None = never measured).
+            "hue": getattr(d, "hue", None),
+            "width_m": getattr(d, "width_m", None),
+            "height_m": getattr(d, "height_m", None),
+            # from spatial.display_names
+            "display_name": None,
+        }
+
