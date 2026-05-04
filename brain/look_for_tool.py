@@ -946,3 +946,31 @@ class LookFor(object):
         prompts = dict((c.label, c.prompt) for c in new_extras)
         return self._report(outcome, labels, prompts, lines, t0)
 
+    def _base_lines(self, bases: List[Canon]) -> List[str]:
+        obs = self._observe()
+        fresh = obs is not None and bool(getattr(obs, "fresh", False))
+        rows = best_rows(obs, [c.label for c in bases])
+        out = []
+        for c in bases:
+            head = ("'%s' is always detectable as %s (say pick %s)."
+                    % (c.phrase, c.label, c.label))
+            row = rows.get(c.label)
+            conf = row["conf"] if row is not None else 0.0
+            side = row.get("side") if row is not None else None
+            where = (", on the %s" % side) if side in ("left", "right") else ""
+            if row is not None and conf >= CONFIDENT_CONF:
+                out.append("I see a %s (%.2f)%s. %s" % (c.label, conf, where, head))
+            elif row is not None and conf >= MIGHT_BE_CONF:
+                out.append("I might be seeing a %s (low confidence %.2f)%s - not "
+                           "confident enough to pick; look again or closer. %s"
+                           % (c.label, conf, where, head))
+            elif fresh:
+                out.append("I do not see a %s in the current view. %s"
+                           % (c.label, head))
+            else:
+                out.append("I have no fresh camera view to check for a %s. %s"
+                           % (c.label, head))
+        return out
+
+    # -- outcomes -----------------------------------------------------------------
+
