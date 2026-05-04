@@ -877,3 +877,72 @@ class LookFor(object):
 
     # -- run ----------------------------------------------------------------------
 
+    def __call__(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        from brain.agent.tools import fail, ok  # manager stays pure
+        t0 = self._clock()
+        nouns = args.get("nouns") or []
+        if not isinstance(nouns, list) or not all(isinstance(n, str) for n in nouns):
+            return fail("look_for: nouns must be a list of strings")
+        mode = args.get("mode") or "add"
+        if self._verb() is None:
+            return fail("The gateway on this robot has no vocabulary verb "
+                        "(deploy the batch 4 gateway); I cannot learn new "
+                        "objects yet.")
+        lines: List[str] = []
+        if mode == "status" or not self.manager.queried:
+            q = self._query()
+            if mode == "status":
+                return self._status(q)
+        if mode == "forget":
+            return self._forget(nouns)
+
+        canons = [self.manager.canon(n) for n in nouns]
+        new_extras: List[Canon] = []
+        refused: List[Canon] = []
+        bases: List[Canon] = []
+        seen_labels = set()
+        with self._lock:
+            for c in canons:
+                if c.kind == "base":
+                    bases.append(c)
+                elif c.kind == "invalid":
+                    lines.append("'%s' is not a usable object name; say it "
+                                 "as a plain noun." % (c.phrase,))
+                elif c.label in seen_labels:
+                    continue
+                elif (c.label in self.manager.desired
+                      or len(self.manager.desired) < self.manager.max_extras):
+                    seen_labels.add(c.label)
+                    self.manager.desired[c.label] = c.prompt
+                    new_extras.append(c)
+                else:
+                    refused.append(c)
+            gen = self.manager.mark_dirty() if new_extras else None
+        if bases:
+            # base nouns
+            # a base noun is never sent, but the reply still LOOKS
+            # around: best FRESH row, so 'can you see the cup?'
+            # answers from the camera
+            if gen is None:  # base-only look is strict
+                with self._strict([c.label for c in bases], t0):
+                    lines = self._base_lines(bases) + lines
+            else:
+                lines = self._base_lines(bases) + lines
+        if refused:
+            lines.append(
+                "I can only look for %d extra objects at once; not added: %s. "
+                "Use mode forget to drop some first."
+                % (self.manager.max_extras,
+                   ", ".join(c.phrase for c in refused)))
+        if gen is None:
+            return ok(" ".join(lines) if lines else "Nothing to look for.")
+
+        try:
+            raw = self.manager.send(self._verb(), gen)
+            outcome = classify_outcome(raw)
+        except Exception as exc:  # noqa: BLE001
+            outcome = GatewayOutcome("unconfirmed", "send failed: %s" % exc)
+        labels = [c.label for c in new_extras]
+        prompts = dict((c.label, c.prompt) for c in new_extras)
+        return self._report(outcome, labels, prompts, lines, t0)
+
