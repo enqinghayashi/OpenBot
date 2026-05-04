@@ -120,3 +120,5 @@ def detection_base_class(det: Any) -> str:
         except Exception:  # noqa: BLE001
             label = None
     return label_base_class(label)
+
+
