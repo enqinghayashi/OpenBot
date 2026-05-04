@@ -139,3 +139,5 @@ def label_base_class(label: Any) -> str:
     if toks and toks[0] in PERCEPTION_COLOUR_NAMES and len(toks) > 1:
         toks.pop(0)
     return " ".join(toks)
+
+
