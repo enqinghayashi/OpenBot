@@ -122,3 +122,20 @@ def detection_base_class(det: Any) -> str:
     return label_base_class(label)
 
 
+def label_base_class(label: Any) -> str:
+    """Map a query/detection label to its bare COCO class, lowercased.
+
+    Strips a leading article and a leading perception colour word, so
+    'red cup', 'the red cup' and 'cup' all resolve to 'cup'.  A lone colour
+    token is NOT stripped: 'orange' is a COCO class (the fruit) and must
+    not vanish — the colour-prefix rule only fires when a real remainder
+    follows the colour word.
+    """
+    if not isinstance(label, str):
+        return ""
+    toks = label.strip().lower().split()
+    while toks and toks[0] in _LABEL_ARTICLES:
+        toks.pop(0)
+    if toks and toks[0] in PERCEPTION_COLOUR_NAMES and len(toks) > 1:
+        toks.pop(0)
+    return " ".join(toks)
