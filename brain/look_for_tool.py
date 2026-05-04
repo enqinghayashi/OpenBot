@@ -1062,3 +1062,22 @@ class LookFor(object):
         return StrictScope(self._backend(), list(labels), "look_for",
                            wait_s=min(3.0, left / 3.0))
 
+    def _settle(self, labels: List[str], t0: float) -> Dict[str, Dict[str, Any]]:
+        """Poll RAW observe rows every poll_s for <= settle_s (bounded by the
+        call budget); best row per label.  Ends early once every label has a
+        confident row."""
+        best: Dict[str, Dict[str, Any]] = {}
+        if not labels:
+            return best
+        deadline = min(self._clock() + self.settle_s, t0 + self.budget_s)
+        while True:
+            for lab, row in best_rows(self._observe(), labels).items():
+                if lab not in best or row["conf"] > best[lab]["conf"]:
+                    best[lab] = row
+            if all(l in best and best[l]["conf"] >= CONFIDENT_CONF
+                   for l in labels):
+                return best
+            if self._clock() + self.poll_s > deadline:
+                return best
+            self._sleep(self.poll_s)
+
