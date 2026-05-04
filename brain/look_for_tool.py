@@ -1148,3 +1148,33 @@ def _scene_brief_prime(original: Any) -> Any:
     )
 
 
+def make_tools(registry: Any, manager: Optional[VocabularyManager] = None,
+               **handler_kw: Any) -> List[Any]:
+    """[look_for, scene_brief'] for register_optional_tools.
+
+    Synonym seed: ``registry._optional_switches['synonyms']`` (the
+    ``optional_tools`` config section P0 stores on the registry).  Raises on
+    any inconsistency — the convention turns that into a loud FORCED OFF.
+    """
+    from brain.agent.tools import Tool
+    switches = getattr(registry, "_optional_switches", None)
+    synonyms = switches.get("synonyms") if isinstance(switches, dict) else None
+    if manager is None:
+        manager = VocabularyManager(synonyms=synonyms)
+    handler = LookFor(registry, manager, **handler_kw)
+    look_for = Tool(
+        name="look_for",
+        description=LOOK_FOR_DESCRIPTION,
+        schema=LOOK_FOR_SCHEMA,
+        run=handler,
+        timeout_s=LOOK_FOR_TIMEOUT_S,
+    )
+    look_for.handler = handler  # test seam
+    original = registry.snapshot()["scene_brief"]
+    tools = [look_for, _scene_brief_prime(original)]
+    try:  # place/pick go strict
+        from brain import strict_vocab
+        strict_vocab.install(registry)
+    except Exception as exc:  # noqa: BLE001 -- never forces the lane off
+        print("[%s] strict detection not installed (%s)" % (LANE_TAG, exc))
+    return tools
