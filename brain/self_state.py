@@ -65,3 +65,36 @@ def _cancel_phase_unproven(blob: str) -> bool:
             if cancel_hand_state(w) != "empty":
                 return True
     return False
+
+
+def _reason_field(text: str) -> str:
+    """The ``Reason:`` field of a full verdict line, else the text itself."""
+    i = text.rfind("|Reason:")
+    return text[i + len("|Reason:"):].strip() if i >= 0 else text.strip()
+
+
+def _is_cancel(reason: str, evidence: str) -> bool:
+    """A cancelled pick, on either the short or the full-verdict-line shape."""
+    if _reason_field(reason).startswith("cancelled_by_operator"):
+        return True
+    blob = reason + "\n" + evidence
+    return ("cancelled_by_operator" in blob
+            or _CANCEL_WHERE_RE.search(blob) is not None)
+
+
+def parse_cancel_where(text: Any) -> Optional[str]:
+    """The ``<where>`` of an engine ``CANCELLED:<where>`` reply, or None."""
+    m = _CANCEL_WHERE_RE.search(str(text or ""))
+    return m.group(1) if m else None
+
+
+def cancel_hand_state(where: Optional[str]) -> str:
+    """'empty' only for a PROVEN pre-close phase; EVERYTHING else (including
+    an unparseable or unknown phase) is 'unknown'."""
+    return "empty" if where in PRE_CLOSE_WHERE else "unknown"
+
+
+def _norm(label: Any) -> str:
+    if not label:
+        return ""
+    return str(known_labels.resolve_alias(str(label))).strip().lower()
