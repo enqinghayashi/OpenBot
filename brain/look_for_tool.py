@@ -974,3 +974,83 @@ class LookFor(object):
 
     # -- outcomes -----------------------------------------------------------------
 
+    def _report(self, outcome: GatewayOutcome, labels: List[str],
+                prompts: Dict[str, str], lines: List[str], t0: float
+                ) -> Dict[str, Any]:
+        from brain.agent.tools import fail, ok
+        if outcome.kind == "backend_fixed":
+            with self._lock:
+                self.manager.clear()
+            return fail(" ".join(lines + [
+                "This robot's detector cannot learn new objects right now "
+                "(fixed vocabulary backend)."]))
+        if outcome.kind == "disabled":
+            return fail(" ".join(lines + [
+                "Open-vocabulary detection is switched off on the gateway "
+                "(open_vocab param); this robot cannot learn new objects "
+                "right now."]))
+        if outcome.kind == "busy":
+            return fail(" ".join(lines + [
+                "The robot is moving, so the detector vocabulary was not "
+                "changed; ask me to look for it again once it stops."]))
+        if outcome.kind in ("swap_failed", "bad_request"):
+            # refused set
+            # the node REFUSED this set: drop the labels this call
+            # NEWLY added from desired, so a refused label never
+            # tags along later. A label already in manager.active
+            # (confirmed) that this call only re-requested is KEPT
+            # 'unconfirmed' / 'busy' / 'disabled' keep desired
+            with self._lock:
+                for l in labels:
+                    if l not in self.manager.active:
+                        self.manager.desired.pop(l, None)
+            return fail(" ".join(lines + [
+                "The detector did not change its vocabulary (%s); nothing "
+                "new is being looked for." % outcome.text]))
+        if outcome.kind != "applied":
+            return fail(" ".join(lines + [
+                "Requested %s; perception has not confirmed the change (%s). %s"
+                % (", ".join(labels), outcome.text,
+                   " ".join(_label_line(l, prompts[l], False) for l in labels))]))
+
+        # applied
+        # drop the bank misses and mirror the node's set
+        # (never 'applied' without the extras= echo)
+        with self._lock:
+            for lab, why in outcome.rejected.items():
+                self.manager.desired.pop(lab, None)
+            self.manager.set_active(list(outcome.extras or []))
+            # not applied
+            # neither in extras= nor rejected= means NOT applied:
+            # say so and drop it from desired (same lock)
+            unconfirmed = [l for l in labels if l not in self.manager.active
+                           and l not in outcome.rejected]
+            for l in unconfirmed:
+                self.manager.desired.pop(l, None)
+            look = [l for l in labels if l in self.manager.active]
+        for lab, why in outcome.rejected.items():
+            phrase = prompts.get(lab, lab.replace("_", " "))
+            if why == "not_in_bank":
+                suggestions = self._get_suggestions(phrase)
+                if suggestions:
+                    lines.append("I have no visual description for '%s' - try "
+                                 "another word. Suggestions: %s" % (phrase, suggestions))
+                else:
+                    lines.append("I have no visual description for '%s' - try "
+                                 "another word." % phrase)
+            else:
+                lines.append("Perception refused '%s' (%s)." % (phrase, why))
+        for l in unconfirmed:
+            lines.append("Requested %s; perception has not confirmed it "
+                         "(not in the active list). %s"
+                         % (l, _label_line(l, prompts[l], False)))
+        if not look:
+            # nothing asked for
+            return fail(" ".join(lines) if lines else
+                        "Perception confirmed none of the requested objects.")
+        with self._strict(look, t0):  # only what we looked for
+            rows = self._settle(look, t0)
+        for l in look:
+            lines.append(wording_for(l, prompts[l], rows.get(l)))
+        return ok(" ".join(lines))
+
