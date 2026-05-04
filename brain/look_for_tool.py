@@ -1128,3 +1128,21 @@ class LookFor(object):
 # =============================================================================
 
 
+def _scene_brief_prime(original: Any) -> Any:
+    """scene_brief' : the ORIGINAL tool's schema/run/timeout/blocking/prepare,
+    description identical except the one refusal sentence."""
+    from brain.agent.tools import Tool
+    desc = original.description
+    if desc.count(SCENE_BRIEF_OLD_SENTENCE) != 1:
+        raise RuntimeError("scene_brief description drifted: the refusal "
+                           "sentence to replace was not found exactly once")
+    return Tool(
+        name=original.name,
+        description=desc.replace(SCENE_BRIEF_OLD_SENTENCE,
+                                 SCENE_BRIEF_NEW_SENTENCE),
+        schema=original.schema,
+        run=original.run,
+        timeout_s=original.timeout_s,
+        blocking=original.blocking,
+        prepare=getattr(original, "_prepare_hook", None),
+    )
