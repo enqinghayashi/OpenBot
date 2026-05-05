@@ -240,3 +240,16 @@ def _opt_color_name(value: Any) -> Optional[str]:
     return name or None
 
 
+def _opt_instance_id(value: Any) -> Optional[int]:
+    """Parse the optional perception instance id -> int >= 1 | None.
+
+    Batch 4 / G1 (docs/YOLOE_BATCH4_ARCHITECTURE.md §3.1, §3.3): the yolo
+    node emits ``instance_id`` (a session-monotonic track id >= 1) ONLY when
+    ``OPENBOT_INSTANCE_IDS=1``.  Only a real int >= 1 passes; a bool, a str
+    ('7'), a float (7.0), zero or a negative is None — never a guess, an id
+    that is not exactly what the tracker minted binds nothing.  The id is
+    ADVISORY (D6): position + gate stay the authority.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value >= 1 else None
