@@ -443,3 +443,52 @@ class GripState:
     left_is_open: Optional[bool] = None  # left measured-open
     commanded: List[float] = field(default_factory=list)  # last_q; diagnostic
 
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "GripState":
+        side = d.get("side", "right")
+        joints_raw = d.get("joints", [])
+        if not isinstance(joints_raw, list):
+            raise ValueError(f"grip payload joints must be a list, got {joints_raw!r}")
+        joints = [_num(j, "joint") for j in joints_raw]
+        commanded_raw = d.get("commanded", [])
+        if not isinstance(commanded_raw, list):
+            raise ValueError(f"grip payload commanded must be a list, got {commanded_raw!r}")
+        commanded = [_num(j, "commanded") for j in commanded_raw]
+        left_contact = d.get("left_contact")
+        if left_contact is not None and not isinstance(left_contact, bool):
+            raise ValueError(f"grip payload left_contact must be bool|None, got {left_contact!r}")
+        left_available = d.get("left_available")
+        if left_available is not None and not isinstance(left_available, bool):
+            raise ValueError(f"grip payload left_available must be bool|None, got {left_available!r}")
+
+        def _opt_bool(key: str) -> Optional[bool]:
+            """Round-3 optional bool field: None|bool, else raise (never guess)."""
+            value = d.get(key)
+            if value is not None and not isinstance(value, bool):
+                raise ValueError(
+                    f"grip payload {key} must be bool|None, got {value!r}")
+            return value
+
+        def _opt_ts(key: str) -> Optional[float]:
+            """Round-3 optional timestamp field: None|finite float, else raise."""
+            value = d.get(key)
+            if value is None:
+                return None
+            return _num(value, key)
+
+        return cls(
+            side=str(side),
+            joints=joints,
+            contact=bool(d.get("contact", False)),
+            available=bool(d.get("available", True)),
+            left_contact=left_contact,
+            left_available=left_available,
+            stale_ts=_opt_ts("stale_ts"),
+            contact_ts=_opt_ts("contact_ts"),
+            is_open=_opt_bool("is_open"),
+            left_stale_ts=_opt_ts("left_stale_ts"),
+            left_contact_ts=_opt_ts("left_contact_ts"),
+            left_is_open=_opt_bool("left_is_open"),
+            commanded=commanded,
+        )
+
