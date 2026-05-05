@@ -204,3 +204,5 @@ def _num(value: Any, name: str) -> float:
     if not math.isfinite(number):
         raise ValueError(f"observation payload: {name} must be finite, got {value!r}")
     return number
+
+
