@@ -817,3 +817,54 @@ class SelfState:
 
     # -- queries -----------------------------------------------------------
 
+    def holds(self, label: Any) -> bool:
+        h = self.holding
+        if h is None:
+            return False
+        a, b = _norm(label), h.get("label") or ""
+        if not a or not b:
+            return False
+        if a == b:
+            return True
+        wa, wb = _words(a), _words(b)
+        return (b in wa) or (a in wb) or (
+            bool(wa) and bool(wb) and
+            (" ".join(wb) in " ".join(wa) or " ".join(wa) in " ".join(wb)))
+
+    def may_hold(self, label: Any) -> bool:
+        """True when the hand is believed OR possibly holding ``label`` (a
+        hold, or an unknown-hand pick of the same label)."""
+        if self.holds(label):
+            return True
+        u = self.hand_unknown
+        if u is None:
+            return False
+        a, b = _norm(label), u.get("label") or ""
+        return bool(a and b and (a == b or b in _words(a) or a in _words(b)))
+
+    @staticmethod
+    def _label_match(label: Any, stored: Any) -> bool:
+        """The may_hold word rule (unknown-hand branch)."""
+        a, b = _norm(label), stored or ""
+        return bool(a and b and (a == b or b in _words(a) or a in _words(b)))
+
+    def _last_pick_of(self, label: Any) -> bool:
+        m = self.last_motion
+        return (m is not None and m.get("tool") == "pick"
+                and self._label_match(label, m.get("label")))
+
+    def held_hint_due(self, label: Any) -> bool:
+        """BR-4: the 'probably in your hand, do NOT navigate' hint for an
+        ABSENT label whose hand state is UNKNOWN / release-unconfirmed is
+        given only right after a pick of that label, and only ONCE per pick
+        result (a second ask gets the generic navigate recovery)."""
+        if self.hand_unknown is None and self.release_unconfirmed is None:
+            return False
+        if not self.may_hold(label) or not self._last_pick_of(label):
+            return False
+        ts = self.last_motion["ts"]
+        if self._held_hint_ts == ts:
+            return False
+        self._held_hint_ts = ts
+        return True
+
