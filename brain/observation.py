@@ -185,3 +185,22 @@ def detection_matches_label(det: Any, label: Any) -> bool:
     return bool(base) and base == label_base_class(label)
 
 
+def _num(value: Any, name: str) -> float:
+    """Coerce a payload value to float; raise on anything non-numeric.
+
+    None and bool are REJECTED: a detection missing x/y/z must never
+    become a phantom object at the torso origin, and a bool is not a
+    measurement — silent 0.0 coercion would fabricate world state.
+    NaN/Inf are REJECTED too: a NaN z bypasses the tabletop floor refusal
+    (NaN < -0.35 is False) so a phantom pick could proceed; a non-finite
+    measurement is never a world state.
+    """
+    if value is None or isinstance(value, bool):
+        raise ValueError(f"observation payload: {name} must be numeric, got {value!r}")
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"observation payload: {name} must be numeric, got {value!r}") from exc
+    if not math.isfinite(number):
+        raise ValueError(f"observation payload: {name} must be finite, got {value!r}")
+    return number
