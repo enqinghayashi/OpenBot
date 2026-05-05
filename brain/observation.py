@@ -159,3 +159,27 @@ def requested_colour(label: Any) -> Optional[str]:
     return None
 
 
+def detection_matches_label(det: Any, label: Any) -> bool:
+    """Does one detection match a query label (class-aware)?
+
+    True when the query is the detection's exact display ``label``
+    ('red cup' == a row labelled 'red cup') OR when the query's base COCO
+    class equals the detection's base COCO class ('cup' matches a row whose
+    class is 'cup' — coloured or bare).  Colour disambiguation among
+    same-class detections is the caller's job via ``color_name``.
+    """
+    if label is None:
+        return False
+    q = str(label).strip().lower()
+    if not q:
+        return False
+    det_label = getattr(det, "label", None)
+    if not isinstance(det_label, str):
+        try:
+            det_label = det.get("label") if isinstance(det, dict) else None
+        except Exception:  # noqa: BLE001
+            det_label = None
+    if isinstance(det_label, str) and det_label.strip().lower() == q:
+        return True
+    base = detection_base_class(det)
+    return bool(base) and base == label_base_class(label)
