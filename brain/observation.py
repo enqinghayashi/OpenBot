@@ -255,3 +255,17 @@ def _opt_instance_id(value: Any) -> Optional[int]:
     return value if value >= 1 else None
 
 
+def _opt_body_side(value: Any) -> Optional[str]:
+    """Parse the optional perception body-side token -> 'left'|'right'|None.
+
+    Only the two canonical tokens (case-insensitive) pass; anything else —
+    a non-string, a bool, an unknown token — is None (never guessed).  This
+    is which side of the torso line the object sits on (display semantics),
+    never a position.
+    """
+    if not isinstance(value, str):
+        return None
+    side = value.strip().lower()
+    if side in ("left", "right"):
+        return side
+    return None
