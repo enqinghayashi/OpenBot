@@ -271,3 +271,38 @@ def _opt_body_side(value: Any) -> Optional[str]:
     return None
 
 
+@dataclass
+class Detection:
+    """One torso-frame object detection (yolo-seg + depth projection)."""
+
+    label: str
+    x: float  # torso frame: right (m)
+    y: float  # forward (m)
+    z: float  # up (m)
+    conf: float
+    ref: Optional[str]  # scene-graph id, e.g. 'bottle_3'
+    ts: float  # time.time() stamp
+    #: grasp approach from the depth projector
+    #: 'upright' | 'horizontal' (lying object)
+    #: a lying object must not be picked upright
+    #: absent -> 'upright'
+    orientation: str = "upright"
+    #: extents in metres
+    width_m: Optional[float] = None
+    height_m: Optional[float] = None
+    #: colour + side, for the model's prose
+    #: hue 0-360, body_side left|right
+    #: info only, never a position; None if absent
+    hue: Optional[float] = None
+    color_name: Optional[str] = None
+    body_side: Optional[str] = None
+    #: bare COCO class ('cup')
+    #: None -> fall back to label
+    class_name: Optional[str] = None
+    #: track id, OPENBOT_INSTANCE_IDS=1 only
+    #: last field, positional order safe
+    #: not a ref (refs stay label_N)
+    #: advisory; position + gate decide
+    #: observe reply drops it when None
+    instance_id: Optional[int] = None
+
