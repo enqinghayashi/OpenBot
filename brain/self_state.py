@@ -548,3 +548,272 @@ class SelfState:
                 "pick, fetch or bring it"
                 % (" to '%s'" % dest if dest else ""))
 
+    def _place_turn_live(self) -> bool:
+        """The last verified place finished the CURRENT request: same turn
+        (hook live), or within POST_PLACE_GUARD_S (no hook)."""
+        p = self.last_place
+        if p is None:
+            return False
+        if self.utterance_seq > 0:
+            return p.get("seq") == self.utterance_seq
+        return (self._clock() - p["ts"]) <= POST_PLACE_GUARD_S
+
+    def _placed_this_turn(self, label: Any) -> bool:
+        p = self.last_place
+        # a released-but-unconfirmed place never blocks a re-pick
+        return (p is not None and p.get("verdict") != "released"
+                and self._place_turn_live()
+                and self._label_match(label, p.get("label")))
+
+    def post_place_refusal(self, label: Any) -> Optional[str]:
+        """B4 (S3b, run21 F2): a verified place of ``label`` finished the
+        request - no re-pick of it in the same turn (no hook: within
+        POST_PLACE_GUARD_S).  A NEW request (a new turn) is never refused."""
+        if not self._placed_this_turn(label):
+            return None
+        p = self.last_place
+        self.pending_pick = None
+        return ("pick refused: '%s' was placed %ds ago and that finished the "
+                "operator's request - the task is DONE. Report it and stop; a "
+                "new pick needs a new request from the operator"
+                % (p.get("label"), self._age(p["ts"])))
+
+    def stale_after_cancel(self, det: Any) -> Optional[str]:
+        """B6 (S3d): after a cancel, the detection a re-pick binds must be
+        NEWER than the cancel (det.ts > last_cancel_ts)."""
+        if self.last_cancel_ts is None or det is None:
+            return None
+        try:
+            ts = float(getattr(det, "ts", None))
+        except (TypeError, ValueError):
+            return None
+        if ts <= self.last_cancel_ts:
+            return ("pick refused: the freshest '%s' detection predates the "
+                    "cancel - re-observe (scene_brief) and pick again"
+                    % (_norm(getattr(det, "label", "")) or "target"))
+        return None
+
+    def _pick_after_arrival(self, target: Any, now: float) -> tuple:
+        """B5: (label, source) to pick right after a verified navigate, or
+        (None, None).  ``source`` is 'attempt' when a previous PICK attempt
+        of it is pending (the brain initiated it) and 'request' when THIS
+        utterance's own words asked for the pick (the voice hook path); the
+        render text differs because only the second proves operator intent
+        (review r1 MEDIUM)."""
+        if self.holding is not None or self._turn_is_walk():
+            return (None, None)
+        want, src = None, None
+        pp = self.pending_pick
+        if (pp is not None and self._label_match(target, pp.get("label"))
+                and (now - pp["ts"]) <= PENDING_PICK_TTL_S):
+            want, src = pp.get("label"), "attempt"
+        else:
+            r = self.request
+            if (self.utterance_seq > 0 and r is not None
+                    and r.get("seq") == self.utterance_seq
+                    and r.get("verb") in ("pick", "pick_place")
+                    and self._label_match(target, r.get("pick_label"))):
+                want, src = r.get("pick_label"), "request"
+        if not want or want == "person" or self._placed_this_turn(want):
+            return (None, None)
+        cb = self.cross_body
+        if (cb is not None and cb.get("tool") == "pick"
+                and (now - cb["ts"]) <= CROSS_BODY_BLOCK_S
+                and self._label_match(want, cb.get("label"))):
+            # walking won't help
+            return (None, None)
+        return (want, src)
+
+    # -- the only writer of beliefs -----------------------------------------
+
+    def record(self, verdict: Any, tool: str, args: Optional[dict]) -> None:
+        if verdict is None:
+            return
+        args = args or {}
+        status = getattr(verdict, "status", None)
+        now = self._clock()
+        # before returns
+        self.last_motion = {
+            "tool": tool,
+            "label": _norm(args.get("label") or args.get("target")),
+            "ts": now,
+        }
+        # cancel stamp
+        # any cancel stamps last_cancel_ts
+        # never cleared, even by open_hand
+        # and it ends the pending plan
+        _ev = str(getattr(verdict, "evidence", "") or "")
+        _rs = str(getattr(verdict, "failure_reason", "") or "")
+        if status in ("failure", "in_progress") and _is_cancel(_rs, _ev):
+            self.last_cancel_ts = now
+            self.pending_pick = None
+            self.next_step = None
+        # set before returns
+        # every executed pick/place replaces it
+        # so no stale cross-body guidance
+        if tool in ("pick", "place", "place_at_spot"):
+            if (status == "failure"
+                    and _SELF_COLLISION_RE.search(_rs + "\n" + _ev)):
+                self.cross_body = dict(
+                    _cross_body_detail(_rs + "\n" + _ev),
+                    tool="pick" if tool == "pick" else "place",
+                    label=_norm(args.get("label")) or None, ts=now)
+                self.next_step = None
+            else:
+                self.cross_body = None
+        if tool == "pick":
+            label = _norm(args.get("label"))
+            self.next_step = None
+            # pending ends
+            # unless the failure's recovery is navigate + the same pick
+            if not (status == "failure"
+                    and _NAV_RECOVERY_RE.search(_rs + "\n" + _ev)):
+                self.pending_pick = None
+            if status == "success":
+                arm = args.get("arm")
+                # hold, with caveat
+                # 'blocked, no tactile' still a hold
+                conf = ("blocked_no_tactile"
+                        if "grasp_evidence=blocked_no_tactile" in _ev
+                        else "inferred")
+                # fingers blocked
+                # the post-lift check measured them held off their close command
+                if "pick_outcome=held_after_lift" in _ev:
+                    conf = "fingers_blocked"
+                self.holding = {
+                    "label": label,
+                    "side": arm if arm in ("left", "right") else "auto",
+                    "verdict": "success",
+                    "ts": now,
+                    "confidence": conf,
+                    "height_m": args.get("height_m"),  # lift height
+                }
+                self.pick_unconfirmed = None
+                self.release_unconfirmed = None
+                self.hand_unknown = None
+                self.empty_known = False
+            elif status == "in_progress":
+                self.pick_unconfirmed = {"label": label, "ts": now}
+                self.empty_known = False
+            elif status == "failure":
+                self.pick_unconfirmed = None
+                reason = _rs
+                evidence = _ev
+                # reason shape
+                # on the real path reason is the whole verdict line, on the unit
+                # path the bare token: classify on the Reason field and the
+                # whole text, never by equality
+                blob = reason + "\n" + evidence
+                states = _HAND_STATE_RE.findall(blob)
+                # 'empty' needs no 'unknown'
+                proven_empty = bool(states) and all(s == "empty"
+                                                    for s in states)
+                is_cancel = _is_cancel(reason, evidence)
+                if is_cancel:
+                    # empty needs proof
+                    # explicit hand_state=empty and no named non-pre-close phase;
+                    # an unparseable or unknown cancel stays unknown
+                    proven_empty = (proven_empty
+                                    and not _cancel_phase_unproven(blob))
+                    unknown = not proven_empty
+                else:
+                    # keep-closed press
+                    # a self-collision refusal there leaves the hand closed, and it
+                    # may hold the object
+                    unknown = ("grasp_failed" in blob
+                               or "unknown" in states
+                               or "stage=keep-repress" in blob)
+                if (not unknown and not proven_empty
+                        and not is_cancel
+                        and self.hand_unknown is not None):
+                    # don't clear unknown
+                    # a later failure that never touched the hand (unreachable / not
+                    # detected / plan failure) cannot prove it empty: an earlier
+                    # unknown stays until a pick / place / open_hand success
+                    return
+                if unknown:
+                    # hand may be closed
+                    # (a cancel during lift or carry_tuck, grasp_failed keep-closed)
+                    self.hand_unknown = {"label": label, "ts": now,
+                                         "why": reason or "failure"}
+                    if is_cancel:
+                        # the point the cancelled pick aimed at
+                        pt = _finite_point(args)
+                        if pt is not None:
+                            self.hand_unknown["point"] = pt
+                    if self.holding is None:
+                        self.empty_known = False
+                else:
+                    self.hand_unknown = None
+                    if self.holding is None:
+                        self.empty_known = True
+        elif tool in ("place", "place_at_spot"):
+            if status == "in_progress" and PLACE_RELEASED_MARK in _ev:
+                # release passed
+                # engine measured the hand open
+                # so only the landing is unconfirmed
+                # no second place here
+                placed = ((self.holding or {}).get("label")
+                          or _norm(args.get("label")) or None)
+                self.pending_pick = None
+                self.next_step = None
+                self.release_unconfirmed = None
+                self.holding = None
+                self.pick_unconfirmed = None
+                self.hand_unknown = None
+                self.empty_known = True
+                self.last_place = {
+                    "target": (args.get("into") or args.get("spot")
+                               or args.get("destination") or "release"),
+                    "ts": now,
+                    "verdict": "released",
+                    "label": placed,
+                    "seq": self.utterance_seq,
+                }
+            elif status == "in_progress":
+                self.release_unconfirmed = {"tool": tool, "ts": now}
+            elif status == "success":
+                # label + turn
+                placed = ((self.holding or {}).get("label")
+                          or _norm(args.get("label")) or None)
+                self.pending_pick = None
+                self.next_step = None
+                self.release_unconfirmed = None
+                self.holding = None
+                self.pick_unconfirmed = None
+                self.hand_unknown = None
+                self.empty_known = True
+                self.last_place = {
+                    "target": (args.get("into") or args.get("spot")
+                               or args.get("destination") or "release"),
+                    "ts": now,
+                    "verdict": "success",
+                    "label": placed,
+                    "seq": self.utterance_seq,
+                }
+        elif tool == "open_hand":
+            if status == "in_progress":
+                self.release_unconfirmed = {"tool": tool, "ts": now}
+            elif status == "success":
+                side = args.get("side")
+                h = self.holding
+                if (side in (None, "both") or h is None
+                        or h.get("side") in ("auto", side)):
+                    self.pending_pick = None
+                    self.holding = None
+                    self.pick_unconfirmed = None
+                    self.release_unconfirmed = None
+                    self.hand_unknown = None
+                    self.empty_known = True
+        elif tool == "navigate":
+            if status == "success":
+                self.last_navigate = {
+                    "label": args.get("target"), "ts": now,
+                    "verdict": "success"}
+                # arrival != done
+                want, src = self._pick_after_arrival(args.get("target"), now)
+                if want:
+                    self.next_step = ("pick", want, src)
+
+    # -- queries -----------------------------------------------------------
+
