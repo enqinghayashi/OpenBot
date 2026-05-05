@@ -492,3 +492,18 @@ class GripState:
             commanded=commanded,
         )
 
+    def describe(self) -> str:
+        if self.contact is True:
+            state = "CONTACT"
+        elif self.is_open is True:
+            state = "OPEN"
+        elif self.is_open is False:
+            state = "CLOSED"
+        else:
+            state = "open"
+        avail = "" if self.available else " (UNAVAILABLE)"
+        # joints measured, commanded last_q
+        # mismatched = latched hand
+        return (f"grip[{self.side}] {state}{avail} "
+                f"joints={[round(j, 3) for j in self.joints]} "
+                f"commanded={[round(j, 3) for j in self.commanded]}")
