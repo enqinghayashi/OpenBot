@@ -98,3 +98,107 @@ def _norm(label: Any) -> str:
     if not label:
         return ""
     return str(known_labels.resolve_alias(str(label))).strip().lower()
+
+
+def _words(s: str) -> list:
+    return re.findall(r"[a-z0-9_]+", s)
+
+
+# ---- operator-request classifier ----
+#: no-hook guard
+#: re-picks land 34 s and 41 s after the place
+#: 60 s covers both
+POST_PLACE_GUARD_S = 60.0
+#: pending pick TTL
+#: a navigate sweep gives up after ~73 s, doubled plus margin
+PENDING_PICK_TTL_S = 180.0
+
+#: cross-body refusal
+#: the engine's self-collision token:
+#: `ERROR:self_collision verb=.. side=.. x=..m y=..m ... stage=..`
+_SELF_COLLISION_RE = re.compile(r"\bself_collision\b")
+_SC_FIELDS_RE = re.compile(
+    r"side=(left|right) x=(-?[\d.]+)m y=(-?[\d.]+)m .*?move_right_m=([\d.]+)")
+#: cross-body TTL
+#: no later call clears it, so it lapses on its own
+CROSS_BODY_BLOCK_S = 120.0
+_ARTICLE_RE = re.compile(r"^(?:the|a|an)\s+", re.I)
+
+#: hint window
+#: unconfirmed pick: the hint stays alive this long
+#: re-picks land 8-60 s after the pick
+#: fires every time, not one-shot
+UNCONFIRMED_ABSENT_S = 120.0
+#: turn window
+#: a place destination / release request stays usable this many turns
+REQUEST_TURNS_LIVE = 1
+#: release words
+#: no bare 'hand': it also matches "with your right hand"
+_RELEASE_ASK_RE = re.compile(
+    r"\b(?:open(?:s|ed|ing)?|releas(?:e|es|ed|ing)|let(?:ting)?\s+(?:it\s+|that\s+)?go|"
+    r"drop(?:s|ped|ping)?|give|gives|giving|hand\s+(?:it|that|them)\s+over|"
+    r"(?:put|set)\s+(?:it|that|them)\s+down|fingers?)\b")
+#: place target
+#: "in / into / inside / on / onto <label>", as the operator named it
+_DEST_PREP_RE = re.compile(r"\b(?:in|into|inside|on|onto)\b")
+#: beside = landmark
+#: "in front of the bowl" names no container: the arm can drop only
+#: on or into an object, so that is no destination
+_DEST_BESIDE_RE = re.compile(
+    r"\b(?:next\s+to|beside|near(?:by)?|by|left\s+of|right\s+of|front\s+of|"
+    r"behind|around|between|(?:side|back)\s+of|opposite)\b")
+
+
+def _cross_body_detail(text: str) -> Dict[str, Any]:
+    """side / cm from the engine line; {} when absent or not sane.  (No turn
+    angle here: this module stays stdlib-light -- re/time/typing -- and the
+    pick reason's own hint already names the angle.)"""
+    out: Dict[str, Any] = {}
+    m = _SC_FIELDS_RE.search(text or "")
+    if not m:
+        return out
+    try:
+        out["side"] = m.group(1)
+        mv = float(m.group(4))
+        if 0.0 < mv < float("inf"):
+            out["cm"] = int(round(mv * 100.0))
+    except (TypeError, ValueError):
+        pass
+    return out
+
+_PICK_VERB_RE = re.compile(
+    r"\b(?:pick(?:s|ing|ed)?|pickup|grab(?:s|bing|bed)?|"
+    r"grasp(?:s|ing|ed)?|take|takes|taking|fetch(?:es|ing|ed)?|"
+    r"gets|getting|get|bring(?:s|ing)?|hand(?:s|ing|ed)?|"
+    r"gives|giving|give|lift(?:s|ing|ed)?|collect(?:s|ing|ed)?|"
+    r"holds|holding|hold|retriev(?:e|es|ing|ed))\b")
+_PLACE_VERB_RE = re.compile(r"\b(place|put|drop|set\s+down|release)\b")
+#: fetch to me
+#: "go get me a bottle", "hand me that". A directed 'get' is
+#: neutralised to 'go' first
+_FETCH_TO_ME_RE = re.compile(
+    r"\b(?:get|fetch|bring|grab|give|hand|pass|deliver|carry|take|retrieve)\b"
+    r"[^.?!]{0,80}?\b(?:me|us)\b"
+    r"|\b(?:bring|fetch|retrieve|get|grab)\b[^.?!]{0,80}?\b(?:here|over)\b"
+    r"|\bgo\s+(?:and\s+)?(?:get|fetch|grab|bring)\b"
+    r"|\b(?:fetch|retrieve)\b"
+    r"|\b(?:can|could|may)\s+(?:i|we)\s+(?:have|get)\b"
+    r"|\bhand\s+(?:it|that|this|them)\s+over\b")
+#: "take me to the bowl" = walk
+_FETCH_NOT_RE = re.compile(
+    r"\bgive\s+(?:me|us)\s+(?:a|one|some)\s+(?:second|sec|moment|minute|min|break|hand|"
+    r"chance|try|go)\b|\b(?:take|carry|bring|get)\s+(?:me|us)\s+(?:to|towards?|closer|"
+    r"over|back|home|there|here)\b|\bcarry\s+(?:me|us)\b")
+
+
+def is_fetch_request(text: Any) -> bool:
+    """B8l F7: True for a request to bring something to the speaker."""
+    t = _GET_WALK_RE.sub("go ", str(text or "").lower())
+    if _FETCH_TO_ME_RE.search(t) is None or _FETCH_NOT_RE.search(t) is not None:
+        return False
+    # transport, not a fetch
+    pm = _PLACE_VERB_RE.search(t)
+    if pm is not None and _DEST_PREP_RE.search(t, pm.end()) is not None \
+            and re.search(r"\b(?:me|us)\b", t[pm.end():]) is None:
+        return False
+    return True
