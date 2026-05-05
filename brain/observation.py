@@ -238,3 +238,5 @@ def _opt_color_name(value: Any) -> Optional[str]:
         return None
     name = value.strip()
     return name or None
+
+
