@@ -393,3 +393,98 @@ def _strong_pick_label(text: Any) -> Optional[str]:
     if not spans:
         return None
     return _pick_object_label(t, m, spans)
+
+
+def _finite_point(args: Dict[str, Any]) -> Optional[tuple]:
+    """(x, y, z) from a pick's args when all three are finite, else None."""
+    try:
+        pt = tuple(float(args.get(k)) for k in ("x", "y", "z"))
+    except (TypeError, ValueError):
+        return None
+    # no math import
+    if all(v == v and abs(v) != float("inf") for v in pt):
+        return pt
+    return None
+
+
+class SelfState:
+    def __init__(self, clock: Callable[[], float] = time.time) -> None:
+        self._clock = clock
+        self.holding: Optional[Dict[str, Any]] = None
+        self.last_place: Optional[Dict[str, Any]] = None
+        self.last_navigate: Optional[Dict[str, Any]] = None
+        self.pick_unconfirmed: Optional[Dict[str, Any]] = None
+        self.empty_known: bool = False
+        # maybe released
+        # an in_progress place/open_hand is uncertified,
+        # so the pick guard must not refuse
+        self.release_unconfirmed: Optional[Dict[str, Any]] = None
+        # hand unprovable
+        # cancelled / grasp_failed pick: neither "holding X" nor "known empty"
+        self.hand_unknown: Optional[Dict[str, Any]] = None
+        # last motion
+        # last verb recorded, plus the hint ts
+        # already given (one-shot)
+        self.last_motion: Optional[Dict[str, Any]] = None
+        self._held_hint_ts: Optional[float] = None
+        # turn state
+        # utterance_seq: one per utterance
+        # 0 = no hook: guards are inert or fall back to a TTL
+        # request: last task request + its turn
+        # an 'other' utterance starts a new turn,
+        # so turn-scoped checks lapse
+        # pending_pick / next_step: the pick plan
+        # last_cancel_ts: never cleared
+        self.utterance_seq: int = 0
+        self.request: Optional[Dict[str, Any]] = None
+        self.pending_pick: Optional[Dict[str, Any]] = None
+        self.next_step: Optional[tuple] = None
+        self.last_cancel_ts: Optional[float] = None
+        # cross-body
+        # last cross-body refusal (ERROR:self_collision)
+        # of a pick or place, rendered once
+        # on the refusing tool's own reply
+        # (the SELF_STATE tail is model-facing)
+        # replaced by the next executed pick/place
+        # blocks arrival -> pick for CROSS_BODY_BLOCK_S;
+        # walking closer does not help
+        self.cross_body: Optional[Dict[str, Any]] = None
+        # operator words
+        # words_seq counts utterances for the words path only, not
+        # utterance_seq: the turn guards key off that one, and the voice
+        # hook leaves it 0 on purpose. release_asked_seq / dest_request are
+        # written by note_operator_words / note_utterance and read by
+        # request_destination, release_asked, open_hand_refusal
+        self.words_seq: int = 0
+        #: fetch seq
+        #: words_seq of the last fetch-to-me request, plus the last other task
+        #: (pick / place / walk that is not a fetch): a later task ends the
+        #: fetch; chit-chat and a 'yes' never do
+        self.fetch_seq: Optional[int] = None
+        self.task_seq: Optional[int] = None
+        self.release_asked_seq: Optional[int] = None
+        self.dest_request: Optional[Dict[str, Any]] = None
+
+    # -- operator-request turn (not verdicts) --
+
+    def _note_words(self, text: Any) -> tuple:
+        """B8h: record the operator's words for the destination fallback and
+        the open_hand guard.  Touches ONLY words_seq, release_asked_seq,
+        dest_request and (B8l F7) fetch_seq / task_seq.  Returns (verb, dest)."""
+        self.words_seq += 1
+        # before 'other'
+        # record a release ask here: "open your fingers" has no pick/place verb
+        if _RELEASE_ASK_RE.search(str(text or "").lower()):
+            self.release_asked_seq = self.words_seq
+        verb = classify_utterance(text)
+        if is_fetch_request(text):  # fetch-to-me
+            self.fetch_seq = self.words_seq
+        elif verb != "other":
+            self.task_seq = self.words_seq
+        if verb == "other":
+            return (verb, None)
+        dest = (_place_dest_label(text)
+                if verb in ("place", "pick_place") else None)
+        self.dest_request = {"dest": dest, "seq": self.words_seq}
+        return (verb, dest)
+
