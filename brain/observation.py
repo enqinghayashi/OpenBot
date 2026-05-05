@@ -227,3 +227,14 @@ def _opt_hue(value: Any) -> Optional[float]:
     return number
 
 
+def _opt_color_name(value: Any) -> Optional[str]:
+    """Parse the optional perception colour band -> str|None.
+
+    A non-string value is None; surrounding whitespace is stripped and a
+    blank string is None (never a guessed colour).  Case is preserved as
+    emitted by perception.
+    """
+    if not isinstance(value, str):
+        return None
+    name = value.strip()
+    return name or None
