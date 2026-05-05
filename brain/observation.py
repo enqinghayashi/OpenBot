@@ -359,3 +359,6 @@ class Detection:
             instance_id=_opt_instance_id(d.get("instance_id")),
         )
 
+    def describe(self) -> str:
+        ref = self.ref or "-"
+        return f"{self.label}[{ref}]@({self.x:.3f},{self.y:.3f},{self.z:.3f})"
