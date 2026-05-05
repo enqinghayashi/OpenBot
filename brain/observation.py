@@ -364,3 +364,82 @@ class Detection:
         return f"{self.label}[{ref}]@({self.x:.3f},{self.y:.3f},{self.z:.3f})"
 
 
+@dataclass
+class GripState:
+    """Dex-3 gripper state as reported by the grip server `state` verb.
+
+    DATACLASS CHANGE (world-truth round 2, fix 5): ``left_contact`` /
+    ``left_available`` expose the LEFT hand's folded state when this
+    GripState describes the RIGHT (active) side — a both-hands command
+    (open_both / close_both) must verify the LEFT hand too; the world
+    truth runs on both sides.  They are None when this GripState is the
+    left hand itself (no self-reference) or when the left hand was never
+    observed.  ``from_dict`` tolerates payloads without them.
+
+    CONTACT LAW (world-truth round 4): ``contact`` is ONLY the literal
+    ``close_adaptive`` verdict (DONE:contact) — it is NEVER derived from
+    joints, and this dataclass exposes NO derived-contact field (the
+    ``state_contact`` field of round 3 is REMOVED: a closed hand — e.g. one
+    that booted mid-grasp — must never produce a contact claim for an EMPTY
+    hand).  ``contact_ts`` carries the verdict's own timestamp so folded
+    contact can be aged by its own window (CLOSE_CONTACT_WINDOW_S); None
+    when no contact verdict is on file.
+
+    CAUSAL OPEN REFERENCE (world-truth round 5 — the round-4 boot-window
+    path is DELETED): ``is_open`` (True/False; None = the reference has not
+    formed yet) judges joints in MEASURED joint space against the side's
+    measured-open reference.  The reference forms ONLY from a double-read
+    agreement (two CONSECUTIVE qualifying reads within tolerance) taken
+    AFTER a gateway-dispatched open command for that side that ACTUALLY RAN
+    (a DONE grip reply this session): open / open_left / open_both, or a
+    successful drop (which opens both hands).  Reads taken before ANY open
+    command — boot reads, however agreeing, closed- or open-shaped — NEVER
+    qualify (the boot window is deleted: a robot that boots mid-grasp /
+    powers down with closed hands would otherwise make the CLOSED shape the
+    'open' reference).  NO single-first-read bootstrap; an untrusted read
+    can never form or update a reference.  FIRST OPEN OF A SESSION: the
+    verifying ``state`` read after the open command is the FIRST of the two
+    required reads; the second agreeing read arrives on the next re-observe
+    (one re-observe confirms — the natural workflow open -> verify ->
+    (re-observe) -> pick -> drop -> place makes the path real).
+
+    DATACLASS CHANGE (world-truth round 3, fixes 1-5, retained): the state
+    READ ages — ``stale_ts`` is the timestamp of the last successful
+    ``state`` read (None = never read); a read older than
+    GRIP_STATE_MAX_AGE_S, or one whose read errored, is reported with
+    ``available=False`` so a daemon'd grip can never confirm forever.
+    ``left_contact`` / ``left_contact_ts`` / ``left_available`` /
+    ``left_stale_ts`` / ``left_is_open`` are the folded LEFT equivalents
+    when side == 'right'.
+    ``from_dict`` tolerates payloads without any of the new fields.
+
+    MEASURED-SPACE CONTRACT (round 7 — the confirmed HIGH 'release confirmed
+    in COMMANDED space while the tier that authorises it is MEASURED'):
+    ``joints`` is the MEASURED motor q — the grip reply's ``actual`` mapping,
+    ordered by joint id 0..6 — and is EMPTY when the reply omits or malforms
+    ``actual``.  It is NEVER faked from the commanded values: the grip
+    server omits ``actual`` precisely so a caller can tell 'no state' from
+    'open', and its own docstring says a comparison against ``last_q``
+    'would pass unconditionally' (skills/arm/grip_server.py:1036-1048).
+    ``commanded`` is that ``last_q`` — the reply's top-level per-joint keys
+    — kept for diagnostics only.  ``is_open`` and the CAUSAL OPEN REFERENCE
+    are judged on ``joints`` (measured space), so a latched motor
+    (mode 0 — it never moves) that stays CLOSED while ``last_q`` advances to
+    the open preset can never verify as an open hand; with ``actual``
+    absent, ``is_open`` is None (no reference) or False, never True.
+    """
+
+    side: str  # 'right' | 'left'
+    joints: List[float]  # measured q ('actual')
+    contact: bool  # real contact only
+    available: bool  # False = unreachable
+    left_contact: Optional[bool] = None  # left contact
+    left_available: Optional[bool] = None  # left available?
+    stale_ts: Optional[float] = None  # last good read
+    contact_ts: Optional[float] = None  # close verdict ts
+    is_open: Optional[bool] = None  # None = no ref yet
+    left_stale_ts: Optional[float] = None  # left read ts
+    left_contact_ts: Optional[float] = None  # left close ts
+    left_is_open: Optional[bool] = None  # left measured-open
+    commanded: List[float] = field(default_factory=list)  # last_q; diagnostic
+
