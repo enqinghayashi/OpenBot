@@ -225,3 +225,5 @@ def _opt_hue(value: Any) -> Optional[float]:
     if not math.isfinite(number) or not (0.0 <= number <= 360.0):
         return None
     return number
+
+
