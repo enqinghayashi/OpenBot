@@ -206,3 +206,22 @@ def _num(value: Any, name: str) -> float:
     return number
 
 
+def _opt_hue(value: Any) -> Optional[float]:
+    """Parse the optional perception hue (degrees, 0-360) -> float|None.
+
+    Colour is INFORMATION for the model's scene prose (so it can tell "the
+    red cup on the left" from "the green cup on the right") — never a
+    position — so a malformed hue (absent, bool, non-numeric, NaN/Inf, or
+    outside [0, 360]) drops to None instead of raising (unlike ``_num``,
+    which guards world-state positions).  Only finite degrees in [0, 360]
+    pass through.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or not (0.0 <= number <= 360.0):
+        return None
+    return number
