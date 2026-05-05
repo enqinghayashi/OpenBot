@@ -958,3 +958,70 @@ class SelfState:
         no unverified release is outstanding."""
         return self.holding is not None and self.release_unconfirmed is None
 
+    def pick_refusal(self, label: Any) -> str:
+        held = (self.holding or {}).get("label") or "an object"
+        if self.hold_measured():
+            # measured hold
+            # a bare "call place or open_hand first" invites an open_hand that
+            # drops a verified pick
+            return ("you are holding '%s' (picked %ds ago; the fingers were "
+                    "held off their close command by an object after the "
+                    "lift, MEASURED) - do not pick again. Call place if the "
+                    "operator asked you to put it somewhere; open_hand only "
+                    "if the operator asks you to let go"
+                    % (held, self._age(self.holding["ts"])))
+        return ("you may be holding '%s' — call place or open_hand first"
+                % held)
+
+    def place_refusal(self) -> Optional[str]:
+        if (self.holding is None and self.empty_known is True
+                and self.pick_unconfirmed is None):
+            p = self.last_place
+            if p is not None and self._place_turn_live():
+                what = p.get("label") or "the object"
+                if p.get("verdict") == "released":
+                    return ("place refused: '%s' was already RELEASED %ds ago "
+                            "over '%s' (the engine MEASURED the hand open at "
+                            "the release) - the hand is empty; do not place "
+                            "again. Tell the operator it was released and that "
+                            "the landing is not confirmed by measurement; say "
+                            "what you SEE on the camera"
+                            % (what, self._age(p["ts"]), p.get("target")))
+                return ("place refused: '%s' was already placed into '%s' %ds "
+                        "ago (verified) - the hand is empty and the request is "
+                        "DONE: report it and stop"
+                        % (what, p.get("target"), self._age(p["ts"])))
+            return ("you do not appear to be holding anything (last release "
+                    "or failed pick was verified) — pick something first")
+        return None
+
+    # -- words --
+
+    def unconfirmed_absent(self, label: Any) -> bool:
+        """B8h: an ABSENT ``label`` whose pick came back UNCONFIRMED less than
+        UNCONFIRMED_ABSENT_S ago.  The camera cannot see an object that is in
+        the hand (MEASURED: detections go silent after a lift), so the pick's
+        NOT_DETECTED must not say 'navigate' or 'open_hand'.  Applies EVERY
+        time inside the window (no one-shot)."""
+        u = self.pick_unconfirmed
+        if u is None or not self._label_match(label, u.get("label")):
+            return False
+        return 0.0 <= (self._clock() - u["ts"]) <= UNCONFIRMED_ABSENT_S
+
+    def hold_measured(self) -> bool:
+        """B8h: the hold is the verifier's MEASURED one (the fingers were held
+        off their close command by an object after the lift)."""
+        h = self.holding
+        return h is not None and h.get("confidence") == "fingers_blocked"
+
+    def request_destination(self) -> Optional[str]:
+        """B8h: the place target the operator NAMED in this turn's or the
+        previous turn's place request ('put it in the bowl' -> 'bowl'), else
+        None.  Never without the voice hook (words_seq 0)."""
+        r = self.dest_request
+        if self.words_seq == 0 or r is None or not r.get("dest"):
+            return None
+        if self.words_seq - int(r.get("seq") or 0) > REQUEST_TURNS_LIVE:
+            return None
+        return r.get("dest")
+
