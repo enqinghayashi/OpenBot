@@ -326,3 +326,70 @@ def utterance_label(text: Any, verb: Optional[str] = None) -> Optional[str]:
         after = [l for (i, l) in spans if m is not None and i >= m.end()]
         return after[0] if after else None
     return spans[-1][1]
+
+
+def _place_dest_label(text: Any) -> Optional[str]:
+    """B8h: the known class the operator NAMED as the place target ("put it
+    in the bowl" -> 'bowl'), else None.  Only a request with a place verb has
+    one, and only a preposition AFTER the first place verb counts, so "pick up
+    the cup on the table" names no destination."""
+    t = str(text or "").lower()
+    tp = _GET_WALK_RE.sub("go ", t)
+    pm = _PLACE_VERB_RE.search(tp)
+    if pm is None:
+        return None
+    spans = [(i, l) for (i, l) in _label_spans(t, aliases=False)
+             if l != "person"]
+    for m in _DEST_PREP_RE.finditer(t):
+        if m.start() < pm.start():
+            continue
+        wm = re.match(r"(?:\W+[a-z0-9_]+){1,4}", t[m.end():])
+        reach = m.end() + (wm.end() if wm else 0)
+        for (i, lab) in spans:
+            if m.end() <= i < reach:
+                if _DEST_BESIDE_RE.search(t[m.end():i]):
+                    continue
+                return lab
+    return None
+
+
+#: object pronouns
+#: bind a pick verb to a class named earlier ('pick it up'), never
+#: forward. 'me'/'us' are absent: people, not objects. Demonstratives
+#: also work as determiners ('pick that bottle' -> forward)
+_OBJECT_PRONOUNS = frozenset(("it", "them", "that", "this", "those", "these"))
+_DEMONSTRATIVES = frozenset(("that", "this", "those", "these"))
+
+
+def _pick_object_label(t: str, m, spans: list) -> Optional[str]:
+    """The class a pick-verb match ``m`` in ``t`` is about, from ``spans``.
+
+    A pronoun object binds to the first class named BEFORE the verb ('Find
+    the bottle, pick it up, ...' -> 'bottle'), unless a determiner directly
+    heads that class ('pick that bottle' -> forward).  None when a pronoun
+    refers to nothing named; otherwise the first class after the verb, else
+    the last one named."""
+    after = [l for (i, l) in spans if i >= m.end()]
+    words = re.findall(r"[a-z]+", t[m.end():])
+    if words and words[0] in _OBJECT_PRONOUNS:
+        forward = (words[0] in _DEMONSTRATIVES and len(words) > 1
+                   and any(words[1] in (l, l + "s") for (_, l) in spans))
+        if not forward:
+            before = [l for (i, l) in spans if i < m.start()]
+            return before[0] if before else None
+    return after[0] if after else spans[-1][1]
+
+
+def _strong_pick_label(text: Any) -> Optional[str]:
+    """B5 hook path: the class the first STRONG pick verb is about (never
+    'person', never an alias), else None.  A directed 'get' is a walk, so it
+    is not a strong verb here (review r1 MEDIUM)."""
+    t = str(text or "").lower()
+    m = _STRONG_PICK_VERB_RE.search(t)
+    if m is None:
+        return None
+    spans = [(i, l) for (i, l) in _label_spans(t, aliases=False)
+             if l != "person"]
+    if not spans:
+        return None
+    return _pick_object_label(t, m, spans)
