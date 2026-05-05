@@ -488,3 +488,63 @@ class SelfState:
         self.dest_request = {"dest": dest, "seq": self.words_seq}
         return (verb, dest)
 
+    def note_operator_words(self, text: Any) -> None:
+        """B8h: the NARROW voice hook (voice/app.py on_utterance).  Records
+        only what request_destination() and open_hand_refusal() read.  It does
+        NOT advance utterance_seq, set ``request``, clear next_step or lift
+        the cross-body block, so the walk-only refusal, the task-done
+        (post-place) refusal, the pending-pick next step and the other turn
+        guards stay exactly as inert as before the hook was wired.  Use this
+        OR note_utterance for one utterance, never both (each counts a turn)."""
+        self._note_words(text)
+
+    def note_utterance(self, text: Any) -> None:
+        """One operator utterance = one new turn (voice hook, B3/B4/B5)."""
+        self.utterance_seq += 1
+        # clears next step
+        self.next_step = None
+        # lifts the block
+        # a new utterance lifts the cross-body block (if nothing moved, the
+        # engine precheck just refuses again before motion)
+        self.cross_body = None
+        verb, dest = self._note_words(text)
+        if verb == "other":
+            return
+        self.request = {
+            "verb": verb,
+            "label": utterance_label(text, verb),
+            "pick_label": (_strong_pick_label(text)
+                           if verb in ("pick", "pick_place") else None),
+            "dest": dest,
+            "ts": self._clock(),
+            "seq": self.utterance_seq,
+        }
+
+    def note_pick_attempt(self, label: Any) -> None:
+        """B5: the model asked for a pick of ``label`` (pick.prepare, after
+        alias resolution; a prepare-time NOT_DETECTED never reaches
+        ``record``, so this is the only place the attempt is seen)."""
+        self.pending_pick = {"label": _norm(label), "ts": self._clock()}
+        self.next_step = None
+
+    def _turn_is_walk(self) -> bool:
+        """The CURRENT turn's request is walk-only."""
+        r = self.request
+        return (r is not None and r.get("verb") == "walk"
+                and r.get("seq") == self.utterance_seq)
+
+    def walk_only_refusal(self, label: Any) -> Optional[str]:
+        """B3 (S3a, run22 'walk to X' picked): refuse a pick while the
+        CURRENT request is walk-only.  Never without the hook."""
+        if self.utterance_seq == 0:
+            return None
+        if not self._turn_is_walk():
+            return None
+        self.pending_pick = None
+        dest = self.request.get("label")
+        return ("pick refused: the operator asked only to WALK%s (this "
+                "request) - navigate is the whole task. Report that you "
+                "arrived and stop; pick only if the operator asks you to "
+                "pick, fetch or bring it"
+                % (" to '%s'" % dest if dest else ""))
+
