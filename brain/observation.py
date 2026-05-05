@@ -362,3 +362,5 @@ class Detection:
     def describe(self) -> str:
         ref = self.ref or "-"
         return f"{self.label}[{ref}]@({self.x:.3f},{self.y:.3f},{self.z:.3f})"
+
+
