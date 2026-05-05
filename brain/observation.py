@@ -306,3 +306,56 @@ class Detection:
     #: observe reply drops it when None
     instance_id: Optional[int] = None
 
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "Detection":
+        """Parse a gateway detection payload.
+
+        Accepts keys: label (or 'labels'), class_name, x, y, z, conf, ref,
+        ts, orientation, width_m, height_m, hue, color_name, body_side,
+        instance_id.
+        Optional keys default: conf 0.0, ref None, ts 0.0, orientation
+        'upright', width_m None, height_m None, hue None, color_name None,
+        body_side None, class_name None, instance_id None (a non-int or
+        an int < 1 is None — never a guess).  An unrecognized orientation value
+        is NOT passed through — it defaults to 'upright' (never a guess at
+        a grasp approach).  A malformed hue/color_name/body_side value drops
+        to None (colour is informational, never a position) — no raise.
+        """
+        label = d.get("label", d.get("labels"))
+        if not isinstance(label, str):
+            raise ValueError(f"detection payload missing string label, got {label!r}")
+        ref = d.get("ref")
+        if ref is not None and not isinstance(ref, str):
+            raise ValueError(f"detection payload ref must be str|None, got {ref!r}")
+        orientation = d.get("orientation")
+        if not isinstance(orientation, str) or orientation not in ("upright", "horizontal"):
+            orientation = "upright"
+        width_m = d.get("width_m")
+        if width_m is not None:
+            width_m = _num(width_m, "width_m")
+        height_m = d.get("height_m")
+        if height_m is not None:
+            height_m = _num(height_m, "height_m")
+        class_name = d.get("class_name")
+        if class_name is not None and not isinstance(class_name, str):
+            class_name = None  # never guess; fall back to label
+        if isinstance(class_name, str):
+            class_name = class_name.strip() or None
+        return cls(
+            label=label,
+            x=_num(d.get("x"), "x"),
+            y=_num(d.get("y"), "y"),
+            z=_num(d.get("z"), "z"),
+            conf=_num(d.get("conf", 0.0), "conf"),
+            ref=ref,
+            ts=_num(d.get("ts", 0.0), "ts"),
+            orientation=orientation,
+            width_m=width_m,
+            height_m=height_m,
+            hue=_opt_hue(d.get("hue")),
+            color_name=_opt_color_name(d.get("color_name")),
+            body_side=_opt_body_side(d.get("body_side")),
+            class_name=class_name,
+            instance_id=_opt_instance_id(d.get("instance_id")),
+        )
+
