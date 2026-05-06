@@ -66,3 +66,5 @@ def _as_float(value: Any, key: str, violations: list) -> float:
     except (TypeError, ValueError):
         violations.append("%s must be numeric, got %r" % (key, value))
         return float("nan")
+
+
