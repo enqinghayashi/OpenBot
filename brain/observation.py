@@ -538,3 +538,11 @@ class WalkStatus:
     def reached(self) -> bool:
         return self.phase == "REACHED"
 
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "WalkStatus":
+        phase = d.get("phase", "IDLE")
+        label = d.get("label")
+        if label is not None and not isinstance(label, str):
+            raise ValueError(f"walk payload label must be str|None, got {label!r}")
+        return cls(phase=str(phase), label=label, ts=_num(d.get("ts", 0.0), "ts"))
+
