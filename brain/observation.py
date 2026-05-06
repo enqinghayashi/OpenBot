@@ -606,3 +606,20 @@ class WorldObservation:
         return " | ".join(parts)
 
 
+def default_world_observation(**overrides: Any) -> WorldObservation:
+    """Deterministic factory for tests and mock transport.
+
+    Empty scene (silence == empty), no grip, walk IDLE, stale — the
+    conservative baseline.  Pass keyword overrides for a populated one:
+
+        default_world_observation(fresh=True, grip=GripState(...), ...)
+    """
+    base: Dict[str, Any] = {
+        "detections": [],
+        "grip": None,
+        "walk": WalkStatus(phase="IDLE"),
+        "detections_ts": 0.0,
+        "fresh": False,
+    }
+    base.update(overrides)
+    return WorldObservation(**base)
