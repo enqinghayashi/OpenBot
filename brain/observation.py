@@ -529,3 +529,8 @@ class WalkStatus:
     label: Optional[str] = None  # FSM target label, lowered
     ts: float = 0.0  # arrival ts; payload has none
 
+    def __post_init__(self) -> None:
+        self.phase = str(self.phase).strip().upper()
+        if self.label is not None:
+            self.label = str(self.label).strip().lower() or None
+
