@@ -534,3 +534,7 @@ class WalkStatus:
         if self.label is not None:
             self.label = str(self.label).strip().lower() or None
 
+    @property
+    def reached(self) -> bool:
+        return self.phase == "REACHED"
+
