@@ -551,3 +551,25 @@ class WalkStatus:
         return f"walk:{self.phase}{label}"
 
 
+@dataclass
+class WorldObservation:
+    """The normalized snapshot the verifier/graph/hooks read.
+
+    NOTE (STUART fact): detections are event-driven — an EMPTY list is an
+    empty scene, not missing data.  Distinguish a dead detection node by
+    `detections_ts` (old) and `fresh` (False), never by list emptiness.
+    """
+
+    detections: List[Detection] = field(default_factory=list)
+    grip: Optional[GripState] = None
+    walk: Optional[WalkStatus] = None
+    detections_ts: float = 0.0
+    fresh: bool = False
+    #: cached /yolo/classes_state summary
+    #: keys: backend extras seq epoch stamp
+    #: only with open_vocab and a real state
+    #: verifier: a label leaving the vocab
+    #: must not look like a disappearance
+    #: last field
+    vocab: Optional[Dict[str, Any]] = None
+
