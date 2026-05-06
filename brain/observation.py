@@ -573,3 +573,21 @@ class WorldObservation:
     #: last field
     vocab: Optional[Dict[str, Any]] = None
 
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "WorldObservation":
+        dets_raw = d.get("detections", [])
+        if not isinstance(dets_raw, list):
+            raise ValueError(f"observation payload detections must be a list, got {dets_raw!r}")
+        grip_raw = d.get("grip")
+        walk_raw = d.get("walk")
+        vocab_raw = d.get("vocab")
+        return cls(
+            detections=[Detection.from_dict(x) for x in dets_raw],
+            grip=GripState.from_dict(grip_raw) if grip_raw else None,
+            walk=WalkStatus.from_dict(walk_raw) if walk_raw else None,
+            detections_ts=_num(d.get("detections_ts"), "detections_ts"),
+            fresh=bool(d.get("fresh", False)),
+            # copy, not the payload's dict
+            vocab=dict(vocab_raw) if isinstance(vocab_raw, dict) else None,
+        )
+
