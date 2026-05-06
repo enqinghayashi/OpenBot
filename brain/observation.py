@@ -623,3 +623,7 @@ def default_world_observation(**overrides: Any) -> WorldObservation:
     }
     base.update(overrides)
     return WorldObservation(**base)
+
+
+# alias for tests
+DefaultWorldObservation = default_world_observation
