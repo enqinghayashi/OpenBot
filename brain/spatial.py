@@ -123,3 +123,90 @@ def colour_match(obj, word, tol_deg=15):
                 return True
 
     return False
+
+
+# ── Names to show ─────────────────────────────────────────────────────────────
+
+def display_names(objs):
+    """Generate display names for objects.
+
+    Returns:
+        {ref: name}: '<colour>_<label>' (spaces -> _) when colour known,
+        else '<label>'; numeric suffix _1, _2 ... only when two objects
+        would share a name (ordered left to right by x).
+    """
+    # left to right by x
+    sorted_objs = sorted(objs or [], key=lambda o: float(o.get('x') or 0))
+
+    # base names first
+    base_names = {}
+    for obj in sorted_objs:
+        ref = obj.get('ref')
+        label = str(obj.get('label') or '').replace(' ', '_')
+        colour = obj.get('colour')
+
+        if colour:
+            colour_str = str(colour).strip().lower().replace(' ', '_')
+            base_name = f"{colour_str}_{label}"
+        else:
+            base_name = label
+
+        base_names[ref] = base_name
+
+    # duplicate name counts
+    name_counts = {}
+    for name in base_names.values():
+        name_counts[name] = name_counts.get(name, 0) + 1
+
+    # _1, _2 on the repeats
+    result = {}
+    name_indices = {}
+    for obj in sorted_objs:
+        ref = obj.get('ref')
+        base_name = base_names[ref]
+
+        if name_counts[base_name] > 1:
+            idx = name_indices.get(base_name, 0) + 1
+            name_indices[base_name] = idx
+            result[ref] = f"{base_name}_{idx}"
+        else:
+            result[ref] = base_name
+
+    return result
+
+
+# ── Relating objects ──────────────────────────────────────────────────────────
+
+def bearing(obj):
+    """Compute bearing to object.
+
+    Returns:
+        (deg, direction) where direction is 'left', 'ahead', or 'right'.
+        Ahead when |atan2(x,y)| < 10 deg.
+    """
+    x = float(obj.get('x') or 0)
+    y = float(obj.get('y') or 0)
+
+    angle_rad = math.atan2(x, y)
+    angle_deg = math.degrees(angle_rad)
+
+    if abs(angle_deg) < 10:
+        direction = 'ahead'
+    elif angle_deg < 0:
+        direction = 'left'
+    else:
+        direction = 'right'
+
+    return (angle_deg, direction)
+
+
+def distance(obj):
+    """Planar distance to object (hypot of x and y)."""
+    x = float(obj.get('x') or 0)
+    y = float(obj.get('y') or 0)
+    return math.hypot(x, y)
+
+
+def left_of(a, b):
+    """Is a left of b? (a.x < b.x - 0.03)"""
+    return float(a.get('x') or 0) < float(b.get('x') or 0) - 0.03
