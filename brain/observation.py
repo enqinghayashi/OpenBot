@@ -549,3 +549,5 @@ class WalkStatus:
     def describe(self) -> str:
         label = f"[{self.label}]" if self.label else ""
         return f"walk:{self.phase}{label}"
+
+
