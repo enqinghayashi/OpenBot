@@ -507,3 +507,5 @@ class GripState:
         return (f"grip[{self.side}] {state}{avail} "
                 f"joints={[round(j, 3) for j in self.joints]} "
                 f"commanded={[round(j, 3) for j in self.commanded]}")
+
+
