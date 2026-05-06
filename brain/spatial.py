@@ -210,3 +210,39 @@ def distance(obj):
 def left_of(a, b):
     """Is a left of b? (a.x < b.x - 0.03)"""
     return float(a.get('x') or 0) < float(b.get('x') or 0) - 0.03
+
+
+def right_of(a, b):
+    """Is a right of b? (a.x > b.x + 0.03)"""
+    return float(a.get('x') or 0) > float(b.get('x') or 0) + 0.03
+
+
+def in_front_of(a, b):
+    """Is a in front of b (closer to robot)? (a.y < b.y - 0.03)"""
+    return float(a.get('y') or 0) < float(b.get('y') or 0) - 0.03
+
+
+def behind(a, b):
+    """Is a behind b (farther from robot)? (a.y > b.y + 0.03)"""
+    return float(a.get('y') or 0) > float(b.get('y') or 0) + 0.03
+
+
+def above(a, b):
+    """Is a above b? (|dz| > 0.05 and planar distance < 0.10)"""
+    dz = abs(float(a.get('z') or 0) - float(b.get('z') or 0))
+    dx = float(a.get('x') or 0) - float(b.get('x') or 0)
+    dy = float(a.get('y') or 0) - float(b.get('y') or 0)
+    planar_dist = math.hypot(dx, dy)
+    return dz > 0.05 and planar_dist < 0.10
+
+
+def below(a, b):
+    """Is a below b? (|dz| > 0.05 and planar distance < 0.10)"""
+    return above(b, a)
+
+
+def near(a, b):
+    """Are a and b near? (planar distance <= 0.25)"""
+    dx = float(a.get('x') or 0) - float(b.get('x') or 0)
+    dy = float(a.get('y') or 0) - float(b.get('y') or 0)
+    return math.hypot(dx, dy) <= 0.25
