@@ -604,3 +604,5 @@ class WorldObservation:
         parts.append(f"ts={self.detections_ts:.1f}")
         parts.append("fresh" if self.fresh else "STALE")
         return " | ".join(parts)
+
+
