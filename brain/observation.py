@@ -591,3 +591,16 @@ class WorldObservation:
             vocab=dict(vocab_raw) if isinstance(vocab_raw, dict) else None,
         )
 
+    def describe(self) -> str:
+        """One-line summary for the refreshed context section."""
+        parts = [
+            f"detections={len(self.detections)} "
+            + ("[" + ", ".join(x.describe() for x in self.detections[:6]) + "]" if self.detections else "[]"),
+        ]
+        if self.grip is not None:
+            parts.append(self.grip.describe())
+        if self.walk is not None:
+            parts.append(self.walk.describe())
+        parts.append(f"ts={self.detections_ts:.1f}")
+        parts.append("fresh" if self.fresh else "STALE")
+        return " | ".join(parts)
