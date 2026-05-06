@@ -59,3 +59,10 @@ _REQUIRED_KEYS = (
 )
 
 
+def _as_float(value: Any, key: str, violations: list) -> float:
+    """Coerce a resource value to float; a non-numeric value is a violation."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        violations.append("%s must be numeric, got %r" % (key, value))
+        return float("nan")
