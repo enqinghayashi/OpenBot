@@ -546,3 +546,6 @@ class WalkStatus:
             raise ValueError(f"walk payload label must be str|None, got {label!r}")
         return cls(phase=str(phase), label=label, ts=_num(d.get("ts", 0.0), "ts"))
 
+    def describe(self) -> str:
+        label = f"[{self.label}]" if self.label else ""
+        return f"walk:{self.phase}{label}"
