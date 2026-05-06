@@ -246,3 +246,24 @@ def near(a, b):
     dx = float(a.get('x') or 0) - float(b.get('x') or 0)
     dy = float(a.get('y') or 0) - float(b.get('y') or 0)
     return math.hypot(dx, dy) <= 0.25
+
+
+def next_to(a, b):
+    """Are a and b next to each other? (planar distance <= 0.25)"""
+    return near(a, b)
+
+
+# ── Picking extremes ─────────────────────────────────────────────────────────
+
+def leftmost(candidates):
+    """Return leftmost object (min x)."""
+    if not candidates:
+        return None
+    return min(candidates, key=lambda o: float(o.get('x') or 0))
+
+
+def rightmost(candidates):
+    """Return rightmost object (max x)."""
+    if not candidates:
+        return None
+    return max(candidates, key=lambda o: float(o.get('x') or 0))
