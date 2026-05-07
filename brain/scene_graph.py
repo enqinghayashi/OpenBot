@@ -79,3 +79,55 @@ class SceneGraph:
     Pure Python, deterministic, zero ROS.
     """
 
+    def __init__(self, assoc_distance_m: float = 0.25, stale_age_s: float = 5.0,
+                 conf_floor: float = 0.0,
+                 pick_reach_advise_m: float = PICK_REACH_ADVISE_M,
+                 target_disambiguation: bool = False):
+        self.assoc_distance_m = assoc_distance_m
+        # Default off. When exactly True,
+        # _bind_target narrows same-class rows
+        # by spoken colour and REFUSES a bare
+        # label naming several objects
+        # ("ambiguous: N cups ..."). Off keeps
+        # freshest-first binding, pick and place into:.
+        # Read as getattr(sg, "target_disambiguation",
+        # False) is True.
+        self.target_disambiguation = target_disambiguation
+        self.stale_age_s = stale_age_s
+        # Below this: no ref, no pose refresh,
+        # no brief line (#109: a conf-0.234
+        # phantom became a referent). Code
+        # default 0.0; shipped 0.35 from
+        # PerceptionConfig.det_conf_floor.
+        # Non-zero would change every existing
+        # SceneGraph(). BRAIN-ONLY: the verifier
+        # reads raw detections. Move this upstream
+        # of its obs and a table object reads
+        # 'gone', so verify_pick certifies a grasp.
+        self.conf_floor = conf_floor
+        # Planar standoff (m) that flags a line
+        # OUT-OF-REACH. Constructor arg so tests
+        # pin the boundary. SCENE-BRIEF ONLY:
+        # tail text, gates no motion.
+        self.pick_reach_advise_m = pick_reach_advise_m
+        self.refs: Dict[str, dict] = {}
+        self._counters: Dict[str, int] = {}  # per-label ref counters
+        self._clock: float = 0.0  # newest observation ts
+        #: Observations merged. Zero = never heard from
+        #: perception, not "the scene is empty".
+        #:
+        #: Can't say "the lane died since": failed
+        #: observations never get here. Every update()
+        #: call site guards on
+        #: `obs is not None and obs.fresh and detections_ts > 0`
+        #: (brain/agent/tool_executor.py and
+        #: brain/agent/agent.py), so update(None) is tests
+        #: only. One success pins it at 1 forever.
+        #: Liveness is the reader's job (brain/agent/tools.py
+        #: make_scene_brief re-observes and refuses).
+        self._updates: int = 0
+        #: self memory per label, from verdicts only
+        self.self_state = SelfState()
+
+    # -- taking in ---------------------------------------------------------
+
