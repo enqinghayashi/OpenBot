@@ -198,3 +198,49 @@ class SceneGraph:
 
     # -- mutation only after a verdict ------------------------------------
 
+    def apply_verdict(self, verdict: Optional[Verdict], tool: str,
+                      ref: Optional[str], *, label: Optional[str] = None,
+                      args: Optional[dict] = None) -> None:
+        """Flip holding/edges ONLY on a verifier-CONFIRMED success for pick/place.
+
+        in_progress and failure verdicts leave the graph untouched. 'pick'
+        success sets holding=True (object leaves any container belief);
+        'place' success sets holding=False and in_container=True as the
+        graph's task-level belief -- but only when ``args`` names a container
+        (into_ref/into_label); a bare release-only place mints no
+        IN-CONTAINER belief.  ``args=None`` (direct callers) keeps the old
+        unconditional behaviour.  Unknown refs and other tools are no-ops.
+
+        H1 (BRAIN B3d): the real detection shape carries ref=None, so a falsy
+        ``ref`` is resolved from ``label`` WITHOUT guessing across
+        instances (see _resolve_for_verdict).
+        """
+        if verdict is None:
+            return
+        if verdict.status != "success":
+            # A place whose release chain PASSED
+            # (verifier's released note) is out of
+            # hand though containment is unconfirmed;
+            # no in_container belief minted.
+            if (tool in ("place", "place_at_spot")
+                    and verdict.status == "in_progress"
+                    and PLACE_RELEASED_MARK in (verdict.evidence or "")):
+                if not ref and label:
+                    ref = self._resolve_for_verdict(tool, label, args)
+                e = self.refs.get(ref) if ref else None
+                if e is not None:
+                    e["holding"] = False
+            return
+        if not ref and label:
+            ref = self._resolve_for_verdict(tool, label, args)
+        e = self.refs.get(ref) if ref else None
+        if e is None:
+            return
+        if tool == "pick":
+            e["holding"] = True
+            e["in_container"] = False
+        elif tool in ("place", "place_at_spot"):
+            e["holding"] = False
+            if args is None or args.get("into_ref") or args.get("into_label"):
+                e["in_container"] = True
+
