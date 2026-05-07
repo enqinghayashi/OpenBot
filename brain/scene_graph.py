@@ -244,3 +244,34 @@ class SceneGraph:
             if args is None or args.get("into_ref") or args.get("into_label"):
                 e["in_container"] = True
 
+    def _resolve_for_verdict(self, tool: str, label: str,
+                             args: Optional[dict]) -> Optional[str]:
+        lab = self._normalize(str(label))
+        same = [k for k, e in self.refs.items() if e["label"] == lab]
+        if tool == "pick":
+            if not same:
+                return None
+            args = args or {}
+            try:
+                x, y, z = (float(args["x"]), float(args["y"]), float(args["z"]))
+                finite = all(math.isfinite(v) for v in (x, y, z))
+            except (KeyError, TypeError, ValueError):
+                finite = False
+            if finite:
+                best, best_d = None, None
+                for k in same:
+                    e = self.refs[k]
+                    d = math.sqrt((e["x"] - x) ** 2 + (e["y"] - y) ** 2
+                                  + (e["z"] - z) ** 2)
+                    if best_d is None or d < best_d:
+                        best, best_d = k, d
+                if best_d is not None and best_d <= 2 * self.assoc_distance_m:
+                    return best
+            return same[0] if len(same) == 1 else None
+        if tool in ("place", "place_at_spot"):
+            held = [k for k in same if self.refs[k]["holding"]]
+            return held[0] if len(held) == 1 else None
+        return None
+
+    # -- lookups -----------------------------------------------------------
+
