@@ -66,3 +66,111 @@ class StrictScope(object):
         except Exception as exc:  # noqa: BLE001 -- no strict here, and it must never crash
             return "yolo_strict raised %s" % (exc,)
 
+    def __enter__(self) -> "StrictScope":
+        if getattr(self.backend, "yolo_strict", None) is None or not self.labels:
+            return self
+        text = self._call({"op": "begin", "labels": list(self.labels),
+                           "owner": self.owner})
+        m = _BEGIN_RE.match(text)
+        if m is None:
+            self._log("[strict] %s %s: full vocabulary kept (%s)"
+                      % (self.owner, ",".join(self.labels), text[:160]))
+            return self
+        self.hold, self.applied_ts = int(m.group(1)), float(m.group(2))
+        return self
+
+    def __exit__(self, et: Any, ev: Any, tb: Any) -> bool:
+        if self.hold is None:
+            return False
+        hold, self.hold = self.hold, None
+        m = _END_RE.match(self._call({"op": "end", "hold": hold}))
+        self.released_ts = float(m.group(1)) if m else None
+        return False                      # never swallow the body's error
+
+
+def strict_class(registry: Any, text: Any) -> Optional[str]:
+    """The ONE detector class ``text`` names, else None (then no strict).
+    'the trash can' -> 'bin' (an active extra's alias), 'bowl_1' -> 'bowl',
+    'red cup' -> 'cup', 'me' -> 'person'; free text -> None."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    t = known_labels.resolve_alias(text.strip())
+    try:
+        t = registry._walk_label(t)
+    except Exception:  # noqa: BLE001 -- the translation is just best effort
+        pass
+    if not isinstance(t, str):
+        return None
+    extras = known_labels.extra_classes()
+    for cand in (t.strip().lower(), label_base_class(t)):
+        if not cand:
+            continue
+        if cand in known_labels.TRACKED_CLASSES or cand in extras:
+            return cand
+        hit = known_labels.EXTRA_ALIASES.get(cand)
+        if hit:
+            return hit
+    return None
+
+
+def place_strict_labels(registry: Any, args: dict) -> List[str]:
+    """The classes a place may resolve its container to: 'into', then
+    'destination' (same cleaning as _place_destination_target), then the
+    operator's named destination; unique, in that order.  [] when the
+    self-state already refuses the place (no strict cycle for a refusal)."""
+    ss = getattr(getattr(registry, "scene_graph", None), "self_state", None)
+    if ss is not None and hasattr(ss, "place_refusal") and ss.place_refusal():
+        return []
+    texts = []
+    into = args.get("into")
+    if isinstance(into, str) and into.strip():
+        texts.append(into.strip())
+    dest = args.get("destination")
+    if isinstance(dest, str) and dest.strip():
+        d = dest.strip().rstrip(".!? ")
+        if (d.lower() not in registry._PLACE_HERE_WORDS
+                and not registry._PLACE_BESIDE_RE.search(d)):
+            d = registry._PLACE_ON_IN_RE.sub("", d, count=1)
+            d = re.sub(r"^(?:the|a|an|that|this)\s+", "", d.strip(),
+                       flags=re.I).strip()
+            if d:
+                texts.append(d)
+    if ss is not None and hasattr(ss, "request_destination"):
+        try:
+            op = ss.request_destination()
+        except Exception:  # noqa: BLE001
+            op = None
+        if isinstance(op, str) and op.strip():
+            texts.append(op.strip())
+    out = []
+    for t in texts:
+        c = strict_class(registry, t)
+        if c and c not in out:
+            out.append(c)
+    return out
+
+
+def _wrap(registry: Any, name: str, labels_fn: Callable, owner: str,
+          enabled: Callable[[], bool]) -> bool:
+    tool = registry.snapshot().get(name) if hasattr(registry, "snapshot") else None
+    original = getattr(tool, "_prepare_hook", None)
+    if tool is None or original is None or getattr(original, "_b8i_strict", False):
+        return False
+
+    def prepare(args: dict):
+        backend = getattr(registry, "backend", None)
+        if getattr(backend, "yolo_strict", None) is None or not enabled():
+            return original(args)
+        try:
+            labels = labels_fn(registry, args)
+        except Exception:  # noqa: BLE001 -- the labels are just best effort
+            labels = []
+        if not labels:
+            return original(args)
+        with StrictScope(backend, labels, owner):
+            return original(args)
+
+    prepare._b8i_strict = True
+    prepare._b8i_original = original
+    tool._prepare_hook = prepare
+    return True
