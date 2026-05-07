@@ -31,3 +31,38 @@ _BEGIN_RE = re.compile(r"^DONE:strict hold=(\d+) owner=\S+ applied_ts=(\d+(?:\.\
 _END_RE = re.compile(r"^DONE:strict released hold=\d+ released_ts=(\d+(?:\.\d+)?)")
 
 
+def pick_strict_on(environ: Any = None) -> bool:
+    env = os.environ if environ is None else environ
+    return env.get(PICK_SWITCH) == "1"
+
+
+def _reply_text(env: Any) -> str:
+    if isinstance(env, dict):
+        v = env.get("value") if env.get("success") else env.get("reason")
+        return v if isinstance(v, str) else ""
+    return env if isinstance(env, str) else ""
+
+
+class StrictScope(object):
+    """``with StrictScope(backend, ['bin'], 'place'): <resolve the target>``"""
+
+    def __init__(self, backend: Any, labels: List[str], owner: str,
+                 log: Callable[[str], None] = print,
+                 wait_s: Optional[float] = None) -> None:
+        self.backend = backend
+        self.labels = [l for l in (labels or []) if isinstance(l, str) and l]
+        self.owner = owner
+        self._log = log
+        self.wait_s = wait_s              # None = gateway picks bounds
+        self.hold = None                  # int while the hold is open
+        self.applied_ts = None
+        self.released_ts = None
+
+    def _call(self, req: dict) -> str:
+        if self.wait_s is not None:
+            req["wait_s"] = round(max(0.0, min(5.0, float(self.wait_s))), 2)
+        try:
+            return _reply_text(self.backend.yolo_strict(req))
+        except Exception as exc:  # noqa: BLE001 -- no strict here, and it must never crash
+            return "yolo_strict raised %s" % (exc,)
+
