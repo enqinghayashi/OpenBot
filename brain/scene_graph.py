@@ -58,3 +58,7 @@ ARM_REACH_LAW_M = 0.382
 REACH_REFUSE_POS_M = 0.15
 
 
+def reach_residual(x: float, y: float, z: float) -> float:
+    """Predicted pick residual (m) of the right arm for a torso-frame target."""
+    sx, sy, sz = RIGHT_SHOULDER_XYZ
+    return math.sqrt((x - sx) ** 2 + (y - sy) ** 2 + (z - sz) ** 2) - ARM_REACH_LAW_M
