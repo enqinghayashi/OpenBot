@@ -57,3 +57,21 @@ def _clamp(value: float, name: str) -> float:
     return value
 
 
+def ceiling(p: Number, chi: Number) -> float:
+    """Per-step posterior: P(step succeeded | verifier confirmed).
+
+    Bayesian update under a symmetric verifier of reliability `chi`.
+    chi = 0.5 returns p exactly (no-gain); chi = 1 returns 1.0 for p > 0
+    (exponential compression of the per-step failure term).
+    """
+    p = _clamp(float(p), "p")
+    chi = _clamp(float(chi), "chi")
+    if chi == 0.5:
+        return p  # exact here, no float dust
+    denom = p * chi + (1.0 - p) * (1.0 - chi)
+    if denom <= 0.0:
+        # measure-zero corners, symmetric: (chi==1, p==0), (chi==0, p==1)
+        # both condition on an impossible event - 0/0 posterior.
+        # 0.0 either way: no step success, no confirmed success.
+        return 0.0
+    return p * chi / denom
