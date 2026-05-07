@@ -355,3 +355,173 @@ class SceneGraph:
             return holding[0]
         return max(cands, key=lambda k: self.refs[k]["last_seen"])
 
+    def scene_brief(self, lane_stale_s: Optional[float] = None) -> str:
+        """Compact one-line-per-ref summary with pose, state and freshness.
+
+        The placed-state label reads 'IN-CONTAINER (task-inferred)' so the
+        model context never mistakes the graph's task-level belief for a
+        sensor claim (verifier v2 region-verifies into: places when the
+        evidence allows, but this flag is the graph's task-level inference,
+        not a sensor claim).
+
+        ``lane_stale_s`` is the READER's wall-clock dead time since the last
+        fresh detection, supplied ONLY when the lane has gone quiet (None =
+        the lane is live, and the output is byte-identical to before).  It
+        exists because this class cannot see its own silence: ``_clock`` is
+        observation-derived and advances only inside update(), so a dead lane
+        FREEZES it at the final fresh frame -- and a ref merged from that very
+        frame then reads age 0.0, i.e. a position that looks current while
+        being minutes old.  That is not hypothetical: run8 (2026-09-28) went
+        stale at ts=1790594754.0 with the bottle merged from that exact frame,
+        so the old line would have read '0.0s' beside a lane silent for 221 s.
+        Adding the reader's dead time is a CORRECTION to the one clock, not a
+        second clock: true age = (now - _clock) + (_clock - last_seen), and
+        the reader's clock is the same one detections_ts is stamped from
+        (gateway/assemble.py:412 stamps it from time.time(); brain/hooks.py:466
+        subtracts the same way against a 2.0 s budget).
+        """
+        if not self.refs:
+            if self._updates == 0:
+                # Never heard from perception -> "empty"
+                # would claim something from zero evidence.
+                # A dead lane looks the same as an empty
+                # one, so this names the lane instead.
+                # Absence of evidence is not evidence
+                # of absence.
+                return ("SCENE: unavailable — no observation has EVER been "
+                        "received (the perception/gateway lane is not "
+                        "answering). This is NOT an empty scene: nothing is "
+                        "known about the world. Do not plan motion.")
+            return "SCENE: empty"
+        # stash display names
+        display_names_dict = self._compute_display_names()
+        for ref, name in display_names_dict.items():
+            if ref in self.refs:
+                self.refs[ref]["display_name"] = name
+        lines: List[str] = []
+        for ref, e in sorted(
+            self.refs.items(),
+            key=lambda kv: (kv[1]["holding"], kv[1]["last_seen"]),
+            reverse=True,
+        ):
+            age = self._clock - e["last_seen"]
+            # A stale lane ages every ref: the graph
+            # clock froze at the last frame, so add
+            # the reader's dead time -- true wall age,
+            # and STALE can fire on its own.
+            lane_stale = bool(lane_stale_s and lane_stale_s > 0.0)
+            if lane_stale:
+                age += float(lane_stale_s)
+            parts = []
+            if e["holding"]:
+                parts.append("IN-HAND")
+            if e["in_container"] is True:
+                parts.append("IN-CONTAINER (task-inferred)")
+            parts.append(
+                f"STALE {age:.0f}s"
+                if (lane_stale or age > self.stale_age_s)
+                else f"{age:.1f}s"
+            )
+            if lane_stale:
+                # LAST-KNOWN rides the free-text TAIL:
+                # `_SCENE_BRIEF_LINE` ends in
+                # `(?P<parts>.*)$`, so the spoken lane
+                # parses it. A separate note line would
+                # not -- the robot would read its own
+                # detection log aloud.
+                parts.append("LAST-KNOWN")
+            # REACH ADVISORY. The brief is the brain's
+            # only object truth, so each line carries a
+            # reach token: without one a far target
+            # looks as good as a near one, and the model
+            # may pick a target the engine refuses.
+            # Standoff is hypot(x, y) of the torso pose;
+            # see PICK_REACH_ADVISE_M.
+            #
+            # Rides the TAIL like LAST-KNOWN: prefix
+            # through conf=<d.d> untouched, so
+            # `_SCENE_BRIEF_LINE` still matches and
+            # scene_brief_prose restructures. Tokens
+            # dodge the spoken flags ('IN-HAND',
+            # 'IN-CONTAINER', 'STALE <n>s').
+            #
+            # Non-finite x/y emits no token:
+            # 'reach=nanm' would be a lie.
+            _x, _y, _z = e.get("x"), e.get("y"), e.get("z")
+            if (isinstance(_x, (int, float)) and isinstance(_y, (int, float))
+                    and math.isfinite(_x) and math.isfinite(_y)):
+                reach_m = math.hypot(_x, _y)
+                parts.append(f"reach={reach_m:.2f}m")
+                if isinstance(_z, (int, float)) and math.isfinite(_z):
+                    # right-arm law (RIGHT_SHOULDER_XYZ)
+                    out = reach_residual(_x, _y, _z) > REACH_REFUSE_POS_M
+                else:
+                    out = reach_m > self.pick_reach_advise_m   # no height: legacy
+                if out:
+                    parts.append("OUT-OF-REACH (navigate to it first)")
+            # Colour + side suffix when present, so
+            # the model can tell "the red cup on the
+            # left" from "the green cup on the right".
+            # Absent fields leave the line byte-identical.
+            colour_side = ""
+            if e.get("color_name"):
+                colour_side += " (%s)" % e["color_name"]
+            if e.get("body_side"):
+                colour_side += ", %s of body" % e["body_side"]
+            # WIRE FORMAT, NOT COSMETICS -- do not
+            # reorder (label first), never prepend a
+            # header. The OFFLINE lane reads this aloud:
+            # scene_brief_prose parses each line with a
+            # STRICT full-line regex (`_SCENE_BRIEF_LINE`)
+            # wanting exactly `ref: label x= y= z= conf=`.
+            # A miss -> byte-identical echo, robot reads
+            # its own log aloud.
+            # The ref is the model's handle by POSITION;
+            # bad targets get fixed in the prompts.
+            # name, distance, bearing, neighbours
+            display_name = e.get("display_name")
+            if display_name:
+                parts.append(f"name={display_name}")
+            # distance + bearing
+            try:
+                dist = spatial.distance(e)
+                bearing_deg, bearing_dir = spatial.bearing(e)
+                parts.append(f"distance={dist:.2f}m")
+                parts.append(f"bearing={bearing_dir}")
+            except Exception:
+                pass  # no spatial info
+            # nearest 2
+            try:
+                other_refs = [k for k in self.refs.keys() if k != ref]
+                if other_refs:
+                    others = [self.refs[k] for k in other_refs]
+                    # dist to each other ref
+                    dists = []
+                    for other_ref, other_e in zip(other_refs, others):
+                        dx = float(other_e.get("x") or 0) - float(e.get("x") or 0)
+                        dy = float(other_e.get("y") or 0) - float(e.get("y") or 0)
+                        pair_dist = math.hypot(dx, dy)
+                        # which way it lies
+                        if abs(dx) < 0.03:
+                            direction = 'ahead' if dy > 0 else 'behind'
+                        elif dx < 0:
+                            direction = 'left'
+                        else:
+                            direction = 'right'
+                        other_display = display_names_dict.get(other_ref, other_ref)
+                        dists.append((pair_dist, other_display, direction))
+                    # nearest 2
+                    dists.sort(key=lambda x: x[0])
+                    for pair_dist, other_name, direction in dists[:2]:
+                        parts.append(f"{other_name} {pair_dist:.2f}m {direction}")
+            except Exception:
+                pass  # no neighbours
+
+            lines.append(
+                f"{ref}: {e['label']} x={e['x']:.2f} y={e['y']:.2f} z={e['z']:.2f} "
+                f"conf={e['conf']:.2f} {' '.join(parts)}{colour_side}"
+            )
+        return "\n".join(lines)
+
+    # -- machinery ---------------------------------------------------------
+
