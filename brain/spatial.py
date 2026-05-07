@@ -382,3 +382,287 @@ def _read_name(text, objs, names):
         if squashed.startswith(w) and squashed[len(w):] and squashed[len(w):] in labels:
             return squashed[len(w):], word, None
     return text, None, None
+
+
+def resolve(objs, query):
+    """Resolve a spatial query over objects.
+
+    Args:
+        objs: list of object dicts
+        query: {label, colour?, side?, relation?: {type, anchor: {label, colour?}},
+                superlative?}
+
+    Returns:
+        {'status':'ok','ref','name','obj'} |
+        {'status':'ambiguous','candidates':[names]} |
+        {'status':'none','reason'}
+
+    Label match is case/space-insensitive. With several anchors, the
+    (candidate, anchor) pair with the smallest planar distance wins; a tie
+    within 0.03 m is ambiguous.
+    """
+    # needs real x/y -- never place at 0
+    # that would be inventing a location
+    objs = [o for o in (objs or []) if _has_xy(o)]
+    if not objs:
+        return {'status': 'none', 'reason': 'no objects with a measured position'}
+
+    # clean the query
+    names = display_names(objs)
+    _qlab, _qcol, _qobj = _read_name(query.get('label'), objs, names)   # model-written name
+    query_label = _norm_label(_qlab)
+    query_colour = query.get('colour') or _qcol
+    query_side = query.get('side')
+    query_relation = query.get('relation')
+    query_superlative = query.get('superlative')
+
+    # narrow by label
+    label_matches = []
+    for obj in objs:
+        if _norm_label(obj.get('label')) == query_label:
+            label_matches.append(obj)
+    if _qobj is not None:   # model named one object
+        label_matches = [_qobj]
+        query_colour = None
+
+    if not label_matches:
+        return {'status': 'none', 'reason': f'no {query_label} found'}
+
+    # narrow by colour
+    candidates = label_matches
+    if query_colour:
+        candidates = [o for o in candidates if colour_match(o, query_colour)]
+
+    if not candidates:
+        return {'status': 'none', 'reason': f'no {query_label} with colour {query_colour}'}
+
+    # by side
+    if query_side:
+        query_side = str(query_side).strip().lower()
+        # measured bearing; not a stored side field
+        candidates = [o for o in candidates
+                      if _has_xy(o) and bearing(o)[1] == query_side]
+
+    if not candidates:
+        return {'status': 'none', 'reason': f'no {query_label} on {query_side}'}
+
+    # relation / anchor
+    if query_relation:
+        relation_type = query_relation.get('type') or 'near'   # e.g. 'the cup by the bowl'
+        anchor_dict = query_relation.get('anchor', {})
+        _alab, _acol, _aobj = _read_name(anchor_dict.get('label'), objs, names)   # model-written name
+        anchor_label = _norm_label(_alab)
+        anchor_colour = anchor_dict.get('colour') or _acol
+
+        # possible anchors
+        anchors = []
+        for obj in objs:
+            if _norm_label(obj.get('label')) == anchor_label:
+                if anchor_colour is None or colour_match(obj, anchor_colour):
+                    anchors.append(obj)
+        if _aobj is not None:   # model named one anchor
+            anchors = [_aobj]
+
+        if not anchors:
+            return {'status': 'none', 'reason': f'no anchor {anchor_label} found'}
+
+        # keep candidates that relate
+        relation_candidates = []
+        if relation_type == 'left_of':
+            for c in candidates:
+                for a in anchors:
+                    if left_of(c, a):
+                        relation_candidates.append((c, a))
+        elif relation_type == 'right_of':
+            for c in candidates:
+                for a in anchors:
+                    if right_of(c, a):
+                        relation_candidates.append((c, a))
+        elif relation_type == 'in_front_of':
+            for c in candidates:
+                for a in anchors:
+                    if in_front_of(c, a):
+                        relation_candidates.append((c, a))
+        elif relation_type == 'behind':
+            for c in candidates:
+                for a in anchors:
+                    if behind(c, a):
+                        relation_candidates.append((c, a))
+        elif relation_type == 'above':
+            for c in candidates:
+                for a in anchors:
+                    if above(c, a):
+                        relation_candidates.append((c, a))
+        elif relation_type == 'below':
+            for c in candidates:
+                for a in anchors:
+                    if below(c, a):
+                        relation_candidates.append((c, a))
+        elif relation_type == 'near' or relation_type == 'next_to':
+            for c in candidates:
+                for a in anchors:
+                    if near(c, a):
+                        relation_candidates.append((c, a))
+
+        if not relation_candidates:
+            return {'status': 'none', 'reason': f'no {query_label} {relation_type} {anchor_label}'}
+
+        # nearest pair wins
+        best_pair = None
+        best_dist = None
+        for candidate, anchor in relation_candidates:
+            cx = float(candidate.get('x') or 0)
+            cy = float(candidate.get('y') or 0)
+            ax = float(anchor.get('x') or 0)
+            ay = float(anchor.get('y') or 0)
+            d = math.hypot(cx - ax, cy - ay)
+            if best_dist is None or d < best_dist:
+                best_dist = d
+                best_pair = (candidate, anchor)
+
+        # within 0.03 m = tie
+        tied = []
+        for candidate, anchor in relation_candidates:
+            cx = float(candidate.get('x') or 0)
+            cy = float(candidate.get('y') or 0)
+            ax = float(anchor.get('x') or 0)
+            ay = float(anchor.get('y') or 0)
+            d = math.hypot(cx - ax, cy - ay)
+            if abs(d - best_dist) <= 0.03:
+                tied.append((candidate, anchor))
+
+        if len(tied) > 1:
+            # dedupe tied candidates
+            tied_candidates = []
+            for c, a in tied:
+                if c not in tied_candidates:
+                    tied_candidates.append(c)
+            return {
+                'status': 'ambiguous',
+                'candidates': [names.get(c.get('ref'), str(c.get('ref') or ''))
+                               for c in tied_candidates]
+            }
+
+        candidate = best_pair[0]
+        candidates = [candidate]
+
+    # superlative
+    if query_superlative:
+        superlative = str(query_superlative).strip().lower()
+        if superlative == 'leftmost':
+            candidates = [leftmost(candidates)]
+        elif superlative == 'rightmost':
+            candidates = [rightmost(candidates)]
+        elif superlative == 'nearest':
+            candidates = [nearest(candidates)]
+        elif superlative == 'farthest':
+            candidates = [farthest(candidates)]
+        elif superlative == 'highest':
+            candidates = [highest(candidates)]
+        elif superlative == 'lowest':
+            candidates = [lowest(candidates)]
+        elif superlative == 'largest':
+            candidates = [largest(candidates)]
+        elif superlative == 'smallest':
+            candidates = [smallest(candidates)]
+
+    if not candidates:
+        return {'status': 'none', 'reason': 'no candidates after filtering'}
+
+    if len(candidates) == 1:
+        obj = candidates[0]
+        return {
+            'status': 'ok',
+            'ref': obj.get('ref'),
+            'name': names.get(obj.get('ref'), str(obj.get('ref') or '')),
+            'obj': obj
+        }
+
+    # several left -> ambiguous
+    return {
+        'status': 'ambiguous',
+        'candidates': [names.get(o.get('ref'), str(o.get('ref') or ''))
+                       for o in candidates]
+    }
+
+
+# ── Scene text ────────────────────────────────────────────────────────────────
+
+def scene_lines(objs):
+    """Generate scene description lines for objects.
+
+    Returns:
+        list of strings, one per object: name, label, colour, x/y/z, distance,
+        bearing, size, and its 2 nearest neighbours with direction words and
+        distances.
+    """
+    if not objs:
+        return []
+
+    # display names
+    names_dict = display_names(objs)
+
+    lines = []
+    for obj in objs:
+        ref = obj.get('ref')
+        name = names_dict.get(ref, str(ref))
+        label = obj.get('label')
+        colour = obj.get('colour')
+        x = float(obj.get('x') or 0)
+        y = float(obj.get('y') or 0)
+        z = float(obj.get('z') or 0)
+        width_m = obj.get('width_m')
+        height_m = obj.get('height_m')
+
+        # basics
+        parts = [name, str(label) if label else '?']
+        if colour:
+            parts.append(str(colour))
+
+        parts.append(f"x={x:.2f} y={y:.2f} z={z:.2f}")
+
+        # distance + direction
+        d = distance(obj)
+        b_deg, b_dir = bearing(obj)
+        parts.append(f"d={d:.2f} bearing={b_dir}")
+
+        # Dimensions
+        if width_m is not None and height_m is not None:
+            w = float(width_m)
+            h = float(height_m)
+            parts.append(f"size={w:.2f}x{h:.2f}")
+
+        # Closest neighbours
+        other_objs = [o for o in objs if o.get('ref') != ref]
+        if other_objs:
+            # distance to every other object
+            dists = []
+            for other in other_objs:
+                other_dist = distance(other)
+                dx = float(other.get('x') or 0) - x
+                dy = float(other.get('y') or 0) - y
+                pair_dist = math.hypot(dx, dy)
+
+                # Which way is it
+                if abs(dx) < 0.03:
+                    direction = 'ahead' if dy > 0 else 'behind'
+                elif dx < 0:
+                    direction = 'left'
+                else:
+                    direction = 'right'
+
+                other_name = names_dict.get(other.get('ref'), str(other.get('ref')))
+                dists.append((pair_dist, other_name, direction))
+
+            # closest 2, sorted
+            dists.sort(key=lambda x: x[0])
+            for pair_dist, other_name, direction in dists[:2]:
+                parts.append(f"{other_name} {pair_dist:.2f}m {direction}")
+
+        lines.append(' '.join(parts))
+
+    return lines
+
+
+if __name__ == '__main__':
+    raise SystemExit('spatial.py is a library; run tests instead.')
