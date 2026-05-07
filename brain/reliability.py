@@ -55,3 +55,5 @@ def _clamp(value: float, name: str) -> float:
     if value < 0.0 or value > 1.0:
         value = min(1.0, max(0.0, value))
     return value
+
+
