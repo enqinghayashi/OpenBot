@@ -275,3 +275,83 @@ class SceneGraph:
 
     # -- lookups -----------------------------------------------------------
 
+    def resolve_ref(self, text: str) -> Optional[str]:
+        """Resolve a phrase ('the red cup', 'grab bottle_3', 'red_cup_2') to a ref key, or None.
+
+        Matching is deliberately simple (no embeddings): (1) an EXACT ref
+        key match wins first -- the whole (trimmed, lowercased) text equal
+        to a ref key resolves to it before any substring logic runs, so
+        with refs {bottle_1, bottle_10} the query 'bottle_10' returns
+        bottle_10 (a substring scan would match bottle_1 first and look
+        ambiguous); (1b) else a query that ITSELF matches the ref syntax
+        ('label_<n>', e.g. 'bottle_10') is treated as an EXACT-REF query:
+        exact key match only, NO fall-through to the substring tier -- a
+        nonexistent 'bottle_10' must return None, never silently resolve
+        to the prefix-colliding 'bottle_1' (the substring tier would match
+        'bottle_1' inside 'bottle_10'); (1c) else ANY ref-syntax TOKEN
+        embedded in the phrase ('grab bottle_10') is an exact-ref
+        candidate too -- a whole-token key hit wins over every fuzzy tier
+        below, and a ref-syntax token with NO exact key resolves to None
+        ('grab bottle_10' with refs {bottle_1} must not alias bottle_1);
+        two+ distinct exact ref-syntax tokens are genuine ambiguity ->
+        None; (2) else a ref key that appears in the
+        text wins, with multiple key matches resolving to None (genuine
+        ambiguity -- the caller asks rather than acting on the wrong
+        object); (3) else an exact token match on label or display name (WP-B2);
+        (4) else a substring match on label.  Multiple label candidates resolve
+        deterministically: a single holding ref wins (the in-hand object
+        is the most salient referent), otherwise the most recently seen
+        ref.  Stale refs stay resolvable -- identity survives the walk.
+        None on genuine ambiguity.
+        """
+        if not text:
+            return None
+        t = text.strip().lower()
+        if t in self.refs:  # exact key wins
+            return t
+        # Exact DISPLAY NAME ('red_cup_2',
+        # 'red cup 2') names one ref. Checked
+        # before the ref-syntax tier: it looks
+        # like '<label>_<n>' and would be
+        # refused as a missing key.
+        _tn = "_".join(re.findall(r"[a-z0-9]+", t))
+        _named = [k for k, n in self._compute_display_names().items() if n == _tn]
+        if len(_named) == 1:
+            return _named[0]
+        if _REF_SYNTAX_RE.match(t):
+            # ref-syntax ask, no exact key: None.
+            # A missing ref must NOT alias a prefix-
+            # colliding one: resolve_ref('bottle_10')
+            # with refs {bottle_1}.
+            return None
+        # Ref-syntax token inside a phrase counts
+        # too: whole-token match; an exact hit
+        # beats the fuzzy tiers; no hit -> None,
+        # no substring alias.
+        ref_tokens = [
+            tok for tok in set(re.findall(r"[a-z0-9_]+", t))
+            if _REF_SYNTAX_RE.match(tok)
+        ]
+        if ref_tokens:
+            exact = [tok for tok in ref_tokens if tok in self.refs]
+            if len(exact) == 1 and len(exact) == len(ref_tokens):
+                return exact[0]
+            return None  # none, or several
+        keys = [k for k in self.refs if k in t]
+        if len(keys) == 1:
+            return keys[0]
+        if len(keys) > 1:
+            return None
+        words = set(re.findall(r"[a-z0-9_]+", t))
+        cands = [k for k, e in self.refs.items() if e["label"] in words]
+        if not cands:  # substring fallback
+            cands = [k for k, e in self.refs.items() if e["label"] in t]
+        if not cands:
+            return None
+        if len(cands) == 1:
+            return cands[0]
+        holding = [k for k in cands if self.refs[k]["holding"]]
+        if len(holding) == 1:
+            return holding[0]
+        return max(cands, key=lambda k: self.refs[k]["last_seen"])
+
