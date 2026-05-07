@@ -64,3 +64,18 @@ def reach_residual(x: float, y: float, z: float) -> float:
     return math.sqrt((x - sx) ** 2 + (y - sy) ** 2 + (z - sz) ** 2) - ARM_REACH_LAW_M
 
 
+class SceneGraph:
+    """Tracks persistent object refs (label_<n>) across detection batches.
+
+    update() associates each detection with the nearest ref of the same label
+    within assoc_distance_m (3D euclidean, torso frame), creating label_<n>
+    refs as needed. A detection below conf_floor (default 0.0 = disabled) is
+    filtered in the loop: no ref, no refresh, no brief entry. Refs are NEVER
+    deleted eagerly: an object unseen for
+    stale_age_s is marked STALE in the brief, but its identity survives walks
+    and detection silence (event-driven detections: silence == empty scene,
+    not empty world). apply_verdict() mutates ref edges (holding /
+    in_container) ONLY on a verifier-confirmed success verdict for pick/place.
+    Pure Python, deterministic, zero ROS.
+    """
+
