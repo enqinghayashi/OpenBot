@@ -91,3 +91,24 @@ def open_loop(p_i: Union[Number, List[Number]]) -> float:
     return prod
 
 
+def harness(p_i: Union[Number, List[Number]], chi: Number, P: Number = 1.0) -> float:
+    """E2E success probability of the verified (harnessed) chain.
+
+    Args:
+        p_i: per-step success probabilities (scalar or list).
+        chi: verifier reliability (0..1; 0.5 = no-gain, 1.0 = perfect).
+        P:   probability of the unverified base condition (goal present /
+             base action), default 1.0.  Pass a detection confidence for
+             goal-presence-aware E2E prediction.
+
+    At chi = 0.5 the verifier adds nothing: harness == open_loop([P] + p_i).
+    """
+    if isinstance(p_i, (int, float)):
+        steps: List[float] = [float(p_i)]
+    else:
+        steps = [float(p) for p in p_i]
+    P = _clamp(float(P), "P")
+    chain = 1.0
+    for p in steps:
+        chain *= ceiling(p, chi)
+    return P * chain
