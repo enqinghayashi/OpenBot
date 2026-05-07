@@ -267,3 +267,53 @@ def rightmost(candidates):
     if not candidates:
         return None
     return max(candidates, key=lambda o: float(o.get('x') or 0))
+
+
+def nearest(candidates):
+    """Return nearest object (min planar distance)."""
+    if not candidates:
+        return None
+    return min(candidates, key=distance)
+
+
+def farthest(candidates):
+    """Return farthest object (max planar distance)."""
+    if not candidates:
+        return None
+    return max(candidates, key=distance)
+
+
+def highest(candidates):
+    """Return highest object (max z)."""
+    if not candidates:
+        return None
+    return max(candidates, key=lambda o: float(o.get('z') or 0))
+
+
+def lowest(candidates):
+    """Return lowest object (min z)."""
+    if not candidates:
+        return None
+    return min(candidates, key=lambda o: float(o.get('z') or 0))
+
+
+def largest(candidates):
+    """Return largest object (max area = width_m * height_m)."""
+    if not candidates:
+        return None
+    def area(o):
+        w = float(o.get('width_m') or 0)
+        h = float(o.get('height_m') or 0)
+        return w * h
+    return max(candidates, key=area)
+
+
+def smallest(candidates):
+    """Return smallest object (min area = width_m * height_m)."""
+    if not candidates:
+        return None
+    def area(o):
+        w = float(o.get('width_m') or 0)
+        h = float(o.get('height_m') or 0)
+        return w * h
+    return min(candidates, key=area)
