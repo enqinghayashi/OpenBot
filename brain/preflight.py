@@ -68,3 +68,74 @@ def _as_float(value: Any, key: str, violations: list) -> float:
         return float("nan")
 
 
+def preflight_resource_gate(inputs: Dict[str, Any]) -> Tuple[bool, str]:
+    """Pure resource gate: ``(ok, reason)`` for one resource snapshot.
+
+    Required keys fail-loud when missing: ``(False, "missing input: <key>")``.
+    ``other_rss_bytes`` is optional; when present the writer must be STRICTLY
+    below its largest value (writer-never-largest).  Every violation is one
+    line of the reason; ok iff zero violations.
+    """
+    for key in _REQUIRED_KEYS:
+        if key not in inputs or inputs[key] is None:
+            return False, "missing input: %s" % key
+
+    violations: list = []
+
+    available = _as_float(inputs["available_mem_bytes"], "available_mem_bytes",
+                          violations)
+    writer = _as_float(inputs["writer_rss_bytes"], "writer_rss_bytes",
+                       violations)
+    load = _as_float(inputs["load_avg"], "load_avg", violations)
+    depth = _as_float(inputs["depth_rss_bytes"], "depth_rss_bytes", violations)
+
+    # spare-RAM law
+    if available < MIN_AVAILABLE_MEM_BYTES:
+        violations.append(
+            "available memory %.2f GiB < %.2f GiB (MIN_AVAILABLE_MEM_BYTES)"
+            % (available / 1024 ** 3, MIN_AVAILABLE_MEM_BYTES / 1024 ** 3))
+
+    if load >= LOAD_AVG_MAX:
+        violations.append(
+            "load average %.2f >= %.1f (LOAD_AVG_MAX, D2 gate)"
+            % (load, LOAD_AVG_MAX))
+
+    if depth > DEPTH_RSS_MAX_BYTES:
+        violations.append(
+            "depth RSS %.2f MiB > %.2f MiB (DEPTH_RSS_MAX_BYTES)"
+            % (depth / 1024 ** 2, DEPTH_RSS_MAX_BYTES / 1024 ** 2))
+
+    # writer-never-largest, only if other_rss_bytes is given
+    # absent -> skip it; never guess a target
+    writer_note: str = ""
+    others = inputs.get("other_rss_bytes")
+    if isinstance(others, dict) and others:
+        other_values = [v for v in others.values()
+                        if isinstance(v, (int, float)) and v is not None]
+        if other_values:
+            max_other = max(other_values)
+            if not (writer < max_other):
+                violations.append(
+                    "writer RSS %.2f MiB is NOT strictly below the largest "
+                    "other resident %.2f MiB (writer-never-largest law)"
+                    % (writer / 1024 ** 2, max_other / 1024 ** 2))
+            else:
+                writer_note = (
+                    "; writer-not-largest ok (largest other %.2f MiB)"
+                    % (max_other / 1024 ** 2))
+        else:
+            writer_note = ("; writer-never-largest skipped (other_rss_bytes "
+                           "carries no numeric bytes values)")
+    else:
+        writer_note = ("; writer-never-largest skipped (other_rss_bytes "
+                       "absent)")
+
+    if violations:
+        return False, "; ".join(violations)
+
+    ok_reason = (
+        "resources within plan thresholds: available %.2f GiB, "
+        "writer %.2f MiB, load %.2f, depth %.2f MiB"
+        % (available / 1024 ** 3, writer / 1024 ** 2, load, depth / 1024 ** 2)
+    )
+    return True, ok_reason + writer_note
