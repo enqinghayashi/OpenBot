@@ -77,3 +77,15 @@ def ceiling(p: Number, chi: Number) -> float:
     return p * chi / denom
 
 
+def open_loop(p_i: Union[Number, List[Number]]) -> float:
+    """E2E success probability with NO verification: product of per-step p_i.
+
+    Accepts a single scalar (one-step chain) or a list.  Empty chain -> 1.0
+    (no steps, nothing to fail).
+    """
+    if isinstance(p_i, (int, float)):
+        return float(p_i)
+    prod = 1.0
+    for p in p_i:
+        prod *= _clamp(float(p), "p")
+    return prod
