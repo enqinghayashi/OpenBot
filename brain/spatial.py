@@ -317,3 +317,68 @@ def smallest(candidates):
         h = float(o.get('height_m') or 0)
         return w * h
     return min(candidates, key=area)
+
+
+# ── Resolving queries ─────────────────────────────────────────────────────────
+
+#: how people say it -> detector class
+LABEL_ALIASES = {
+    'schoolbag': 'backpack', 'school bag': 'backpack', 'rucksack': 'backpack',
+    'mug': 'cup', 'glass': 'cup', 'phone': 'cell phone', 'mobile': 'cell phone',
+    'mobile phone': 'cell phone', 'smartphone': 'cell phone', 'plant': 'potted plant',
+    'ball': 'sports ball', 'computer': 'laptop', 'tv remote': 'remote',
+    'remote control': 'remote', 'teddy': 'teddy bear',
+}
+
+
+def _has_xy(obj):
+    """True when the object has finite measured x and y (never assume 0)."""
+    try:
+        return math.isfinite(float(obj.get('x'))) and math.isfinite(float(obj.get('y')))
+    except (TypeError, ValueError):
+        return False
+
+
+def _norm_label(text):
+    t = ' '.join(str(text or '').strip().lower().replace('_', ' ').split())
+    return LABEL_ALIASES.get(t, t).replace(' ', '')
+
+
+_COLOUR_WORDS = tuple(sorted(
+    set(COLOUR_BAND_BY_NAME) | set(COLOUR_SYNONYMS) | set(ACHROMATIC_WORDS),
+    key=len, reverse=True))
+
+
+def _read_name(text, objs, names):
+    """B8b: a model-written object word -> (label, colour|None, obj|None).
+
+    MEASURED on Stuart 2026-10-07: the model named the anchor 'bottle2' and
+    'redbottle' (the scene names it reads are 'bottle_2' / 'red_bottle');
+    _norm_label kept the digit and the colour, matched nothing, and every
+    "closest to the bottle" query failed - so the robot picked a cup it
+    could not confirm and then released it.  Accepted, in order:
+      1. an object's ref key or display name ('bottle_2', 'cyan_cup',
+         'red_cup_2', spaces/underscores/case ignored) -> exactly that object;
+      2. a trailing number dropped ('bottle2', 'bottle 2');
+      3. a leading colour word split off ('red bottle', 'redbottle') ONLY
+         when the rest is the label of an object in the scene.
+    Anything else is returned unchanged (today's behaviour).
+    """
+    raw = str(text or '').strip().lower()
+    key = re.sub(r'[\s_]+', '', raw)
+    if key:
+        for o in objs:
+            ref = o.get('ref')
+            for cand in (ref, names.get(ref)):
+                if cand and re.sub(r'[\s_]+', '', str(cand).lower()) == key:
+                    return o.get('label'), None, o
+    labels = set(_norm_label(o.get('label')) for o in objs)
+    base = re.sub(r'[\s_]*\d+$', '', raw)
+    if _norm_label(base) in labels:
+        return base, None, None
+    squashed = re.sub(r'[\s_]+', '', base)
+    for word in _COLOUR_WORDS:
+        w = word.replace(' ', '')
+        if squashed.startswith(w) and squashed[len(w):] and squashed[len(w):] in labels:
+            return squashed[len(w):], word, None
+    return text, None, None
