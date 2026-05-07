@@ -162,3 +162,39 @@ class SceneGraph:
             self._associate(d, d.ts if d.ts > 0.0 else self._clock,
                             live_ids=live_ids)
 
+    def _associate(self, d: Detection, ts: float, live_ids=None) -> str:
+        """Return the ref key for this detection, creating or refreshing it.
+
+        ``live_ids`` (set of (label, instance_id), default None = none): an
+        entry whose id differs from this row's and is carried by another row
+        of the SAME packet is not a label+distance candidate for this row.
+        """
+        label = self._normalize(d.label)
+        if d.ref:  # from the gateway
+            key = d.ref
+            if key not in self.refs:
+                self.refs[key] = self._new_entry(d, ts, label)
+            else:
+                self._refresh(self.refs[key], d, ts)
+            return key
+        best, best_d2 = self._instance_match(d, label), None  # id first
+        iid = getattr(d, "instance_id", None)
+        for key, e in (self.refs.items() if best is None else ()):
+            if e["label"] != label:
+                continue
+            held = e.get("instance_id")
+            if (iid is not None and held is not None and held != iid
+                    and live_ids and (label, held) in live_ids):
+                continue  # owned elsewhere
+            d2 = (e["x"] - d.x) ** 2 + (e["y"] - d.y) ** 2 + (e["z"] - d.z) ** 2
+            if d2 <= self.assoc_distance_m ** 2 and (best_d2 is None or d2 < best_d2):
+                best, best_d2 = key, d2
+        if best is None:
+            key = self._new_ref(label)
+            self.refs[key] = self._claim_instance(self._new_entry(d, ts, label), d)
+        else:
+            self._refresh(self._claim_instance(self.refs[best], d), d, ts)
+        return key if best is None else best
+
+    # -- mutation only after a verdict ------------------------------------
+
