@@ -131,3 +131,34 @@ class SceneGraph:
 
     # -- taking in ---------------------------------------------------------
 
+    def update(self, obs: Optional[WorldObservation]) -> None:
+        """Merge one WorldObservation's detections into the persistent refs."""
+        if obs is None:
+            return
+        self._updates += 1
+        now_ts = max([obs.detections_ts] + [d.ts for d in obs.detections] + [0.0])
+        if now_ts <= 0.0:
+            now_ts = time.time()
+        self._clock = max(self._clock, now_ts)
+        # The (label, instance_id) pairs this packet
+        # carries. A live id in the same packet
+        # belongs to that row, so another row can't
+        # steal it by label+distance (two tracks in
+        # the 0.25 m gate flipped ids every frame).
+        # Empty -> plain association.
+        live_ids = {(self._normalize(d.label), d.instance_id)
+                    for d in obs.detections
+                    if getattr(d, "instance_id", None) is not None
+                    and not d.ref and d.conf >= self.conf_floor}
+        for d in obs.detections:
+            # CONF-FLOOR FILTER (#109): no ref, no pose,
+            # no brief. In the LOOP, not _associate --
+            # that's typed `-> str`, so an early bare
+            # return gives None (update() drops it
+            # anyway). The verifier never reads this
+            # graph, so only the model's channel loses it.
+            if d.conf < self.conf_floor:
+                continue
+            self._associate(d, d.ts if d.ts > 0.0 else self._clock,
+                            live_ids=live_ids)
+
