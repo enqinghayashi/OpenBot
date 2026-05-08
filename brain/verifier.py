@@ -432,3 +432,179 @@ PICK_BYSTANDER_SAME_PLACE_M = 0.06
 PICK_BYSTANDER_MIN_HUE_DEG = 60.0
 
 
+def _parse_preaction_dets(*texts):
+    """[(x, y, hue|None)] from the first ``preaction_dets=`` annotation.
+
+    A malformed entry voids the WHOLE list (returns []): half a pre-pick
+    scene could hide the target, and [] keeps the old rule.
+    """
+    for text in texts:
+        if not text:
+            continue
+        m = _PREACTION_DETS_RE.search(text)
+        if not m:
+            continue
+        out = []
+        for part in m.group(1).split(";"):
+            part = part.strip()
+            if not part:
+                continue
+            f = [p.strip() for p in part.split(",")]
+            if len(f) != 3:
+                return []
+            try:
+                x, y = float(f[0]), float(f[1])
+                hue = None if f[2] == "-" else float(f[2])
+            except ValueError:
+                return []
+            if not (math.isfinite(x) and math.isfinite(y)) or (
+                    hue is not None and not math.isfinite(hue)):
+                return []
+            out.append((x, y, hue))
+        return out
+    return []
+
+
+def _hue_gap(a, b):
+    """Circular distance in degrees between two hues, None if either is unknown."""
+    if a is None or b is None:
+        return None
+    d = abs(float(a) % 360.0 - float(b) % 360.0)
+    return min(d, 360.0 - d)
+
+
+def _only_bystanders(obs, label, pick_point, pre):
+    """True iff EVERY same-label detection in ``obs`` is provably another object.
+
+    ``pre`` = the pre-pick same-label detections [(x, y, hue|None)].  False
+    (= the old 'target still visible') when the pick point is unknown, no
+    pre-pick detection lies within PICK_BYSTANDER_TARGET_GATE_M of it, no
+    same-label detection is seen now, or any one of them is either within
+    PICK_BYSTANDER_MIN_FROM_PICK_M of the pick point or matches neither
+    bystander test (stood where a pre-pick NON-target stood / hue far from
+    the target's).
+    """
+    if pick_point is None or label is None or not pre:
+        return False
+    px, py = pick_point[0], pick_point[1]
+    dist = [math.hypot(x - px, y - py) for x, y, _h in pre]
+    ti = min(range(len(pre)), key=dist.__getitem__)
+    if dist[ti] > PICK_BYSTANDER_TARGET_GATE_M:
+        return False
+    target_hue = pre[ti][2]
+    others = [p for i, p in enumerate(pre) if i != ti]
+    match = [d for d in (getattr(obs, "detections", None) or [])
+             if (d.label or "").lower() == label.lower()]
+    if not match:
+        return False
+    for d in match:
+        try:
+            x, y = float(d.x), float(d.y)
+        except (TypeError, ValueError):
+            return False
+        if not (math.isfinite(x) and math.isfinite(y)):
+            return False
+        if math.hypot(x - px, y - py) < PICK_BYSTANDER_MIN_FROM_PICK_M:
+            return False
+        hue = getattr(d, "hue", None)
+        try:
+            gap = _hue_gap(target_hue, hue)
+        except (TypeError, ValueError):
+            gap = None
+        if gap is not None and math.isfinite(gap) and gap > PICK_BYSTANDER_MIN_HUE_DEG:
+            continue
+        if any(math.hypot(x - ox, y - oy) <= PICK_BYSTANDER_SAME_PLACE_M
+               for ox, oy, _h in others):
+            continue
+        return False
+    return True
+
+
+def _target_lifted_with_hand(obs, label, ref, pick_point):
+    """(True, worst) iff EVERY detection matching the target sits at least
+    PICK_INHAND_MIN_DISPLACEMENT_M from the pick point AND at least
+    PICK_INHAND_MIN_RISE_M above it; worst = (min distance, min rise).
+    (False, None) otherwise — any single matching detection near the pick
+    point, or not risen, keeps the conservative 'still visible' answer."""
+    if pick_point is None:
+        return False, None
+    px, py, pz = pick_point
+    dets = getattr(obs, "detections", None) or []
+    if ref is not None:
+        match = [d for d in dets if d.ref == ref]
+    elif label is not None:
+        match = [d for d in dets
+                 if (d.label or "").lower() == label.lower()]
+    else:
+        return False, None
+    if not match:
+        return False, None
+    dists, rises = [], []
+    for d in match:
+        try:
+            dx, dy, dz = float(d.x) - px, float(d.y) - py, float(d.z) - pz
+        except (TypeError, ValueError):
+            return False, None
+        dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+        if not (math.isfinite(dist) and dist >= PICK_INHAND_MIN_DISPLACEMENT_M
+                and dz >= PICK_INHAND_MIN_RISE_M):
+            return False, None
+        dists.append(dist)
+        rises.append(dz)
+    return True, (min(dists), min(rises))
+
+
+#: an object near the pick point but risen, with the fingers held open, is
+#: the held object still in view
+PICK_HELD_IN_VIEW_MAX_XY_M = 0.25
+PICK_HELD_IN_VIEW_MIN_RISE_M = 0.03
+#: non-risen and this close means it is still on the table
+#: farther out is another object (a second apple 0.14 m off, the held one
+#: 0.17 m off and risen 0.10 m)
+PICK_HELD_IN_VIEW_TABLE_XY_M = 0.06
+
+
+def _target_held_in_view(obs, label, ref, pick_point):
+    """(True, (xy distance, rise) of the held detection) iff at least one
+    detection matching the target lies within PICK_HELD_IN_VIEW_MAX_XY_M
+    (horizontal) of the pick point AND at least PICK_HELD_IN_VIEW_MIN_RISE_M
+    above it (the object in the raised hand, in view), and NO non-risen
+    matching detection sits within PICK_HELD_IN_VIEW_TABLE_XY_M of the pick
+    point (the target still on the table).  Only meaningful when the fingers
+    are measured held by an object (the caller checks).  (False, None)
+    otherwise."""
+    if pick_point is None:
+        return False, None
+    px, py, pz = pick_point
+    dets = getattr(obs, "detections", None) or []
+    if ref is not None:
+        match = [d for d in dets if d.ref == ref]
+    elif label is not None:
+        match = [d for d in dets
+                 if (d.label or "").lower() == label.lower()]
+    else:
+        return False, None
+    held = None
+    for d in match:
+        try:
+            dx, dy, dz = float(d.x) - px, float(d.y) - py, float(d.z) - pz
+        except (TypeError, ValueError):
+            return False, None
+        dxy = math.sqrt(dx * dx + dy * dy)
+        if not math.isfinite(dxy):
+            return False, None
+        if dz >= PICK_HELD_IN_VIEW_MIN_RISE_M:
+            if dxy <= PICK_HELD_IN_VIEW_MAX_XY_M and (
+                    held is None or dxy < held[0]):
+                held = (dxy, dz)
+        elif dxy <= PICK_HELD_IN_VIEW_TABLE_XY_M:
+            return False, None      # the target is still on the table
+    if held is None:
+        # nothing risen and nothing same-label on the pick point while the
+        # fingers are held: the object went into the hand and out of view
+        # (a bystander 0.15 m off is not near the point); rise 0.0 = not seen
+        # in the hand
+        near = min(math.sqrt((float(d.x) - px) ** 2 + (float(d.y) - py) ** 2)
+                   for d in match)
+        return True, (near, 0.0)
+    return True, held
