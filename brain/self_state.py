@@ -73,3 +73,10 @@ def _reason_field(text: str) -> str:
     return text[i + len("|Reason:"):].strip() if i >= 0 else text.strip()
 
 
+def _is_cancel(reason: str, evidence: str) -> bool:
+    """A cancelled pick, on either the short or the full-verdict-line shape."""
+    if _reason_field(reason).startswith("cancelled_by_operator"):
+        return True
+    blob = reason + "\n" + evidence
+    return ("cancelled_by_operator" in blob
+            or _CANCEL_WHERE_RE.search(blob) is not None)
