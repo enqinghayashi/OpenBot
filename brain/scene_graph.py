@@ -660,3 +660,25 @@ class SceneGraph:
                 return key
         return None
 
+    def _claim_instance(self, e: dict, d: Detection) -> dict:
+        """Record the row's ``instance_id`` on entry ``e`` and return ``e``.
+
+        REFRESH semantics: on a label+distance association the entry's id is
+        OVERWRITTEN with the row's id (a stale id from an evicted track is
+        replaced) -- but _associate never offers such an entry when its id is
+        still carried by another row of the same packet (round 3: no
+        flip-flop between two in-gate tracks); a new entry records it.
+        The ``d.ref`` pre-assigned branch records no id (inert: every
+        perception row has ref=None, gateway/assemble.py).  An id belongs to ONE ref: any
+        other entry still holding it loses the key.  A row without an id
+        leaves ``e`` untouched (no key is ever added — entry dicts stay
+        byte-identical to today's when ids are off).
+        """
+        iid = getattr(d, "instance_id", None)
+        if iid is None:
+            return e
+        for other in self.refs.values():
+            if other is not e and other.get("instance_id") == iid:
+                del other["instance_id"]
+        e["instance_id"] = iid
+        return e
