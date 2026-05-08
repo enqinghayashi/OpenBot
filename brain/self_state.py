@@ -92,3 +92,5 @@ def cancel_hand_state(where: Optional[str]) -> str:
     """'empty' only for a PROVEN pre-close phase; EVERYTHING else (including
     an unparseable or unknown phase) is 'unknown'."""
     return "empty" if where in PRE_CLOSE_WHERE else "unknown"
+
+
