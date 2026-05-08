@@ -590,3 +590,30 @@ class SceneGraph:
             if key not in self.refs:
                 return key
 
+    def _new_entry(self, d: Detection, ts: float, label: str) -> dict:
+        return {
+            "label": label,
+            "x": d.x,
+            "y": d.y,
+            "z": d.z,
+            "conf": d.conf,
+            "last_seen": ts,
+            "holding": False,
+            "in_container": None,
+            # Perception colour + body side for brief
+            # prose (None = unknown). Model information,
+            # never world state -- the verifier never
+            # reads this graph.
+            "color_name": d.color_name,
+            "body_side": d.body_side,
+            # colour vote: last 7, first obs too
+            "colour_vote": [d.color_name] if d.color_name is not None else [],
+            # Measured hue / extents for spatial
+            # reasoning (None = never measured).
+            "hue": getattr(d, "hue", None),
+            "width_m": getattr(d, "width_m", None),
+            "height_m": getattr(d, "height_m", None),
+            # from spatial.display_names
+            "display_name": None,
+        }
+
