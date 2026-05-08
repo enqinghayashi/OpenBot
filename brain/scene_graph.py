@@ -562,3 +562,7 @@ class SceneGraph:
                 names[o["ref"]] = o["ref"]
         return names
 
+    @staticmethod
+    def _normalize(label: str) -> str:
+        return label.strip().lower()
+
