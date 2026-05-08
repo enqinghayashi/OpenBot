@@ -346,3 +346,89 @@ def _parse_nav_epoch(tool_result: str | None) -> float | None:
 
 def _parse_latest_walk_ts(tool_result: str | None) -> float | None:
     return _parse_float_field(_LATEST_WALK_TS_RE, tool_result)
+
+
+def _parse_phases_seen(tool_result: str | None) -> list[str]:
+    """Phases observed since the dispatch epoch (uppercased, in order)."""
+    if not tool_result:
+        return []
+    m = _PHASES_SEEN_RE.search(tool_result)
+    if not m or not m.group(1):
+        return []
+    return [p.strip().upper() for p in m.group(1).split(",") if p.strip()]
+
+
+def _parse_walk_wait(tool_result: str | None) -> str | None:
+    """The gateway's WALK_WAIT token, or None when the result carries none."""
+    if not tool_result:
+        return None
+    m = _WALK_WAIT_RE.search(tool_result)
+    return m.group(1) if m else None
+
+
+def _walk_was_cancelled(tool_result: str | None) -> bool:
+    """True when the operator cancelled this navigate while it was running.
+
+    STOP-KILLS-TASK (C5, 2026-10-01).  Distinct from every timeout token:
+    ``timeout_after_walk`` means the FSM never reported, while this means the
+    operator ended the task on purpose.  The distinction is the whole point —
+    run12 returned the former and the model, reasonably, tried again.
+    """
+    return _parse_walk_wait(tool_result) == "cancelled_by_operator"
+
+
+_ENGINE_CANCELLED_RE = re.compile(r"engine_reply=CANCELLED:|^\s*CANCELLED[: ]")
+_ENGINE_REPLY_RE = re.compile(r"engine_reply=([^\r\n]*)")
+
+# the point the arm is sent to, as `pick_point=<x>,<y>,<z>` in the torso frame
+# absent: the lift checks are skipped
+# away and above the pick point = in the hand
+_PICK_POINT_RE = re.compile(
+    r"pick_point=\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*,"
+    r"\s*(-?\d+(?:\.\d+)?)")
+
+#: min 3-D distance from the pick point for an object in the hand
+#: a miss is re-detected 0.027-0.041 m away, an in-hand object 0.23-0.29 m
+#: 0.10 sits between the two
+PICK_INHAND_MIN_DISPLACEMENT_M = 0.10
+#: min rise above the pick point
+#: in-hand objects rise +0.157 to +0.278 m, missed ones +0.006 to +0.020 m
+#: a knocked-over object never rises, and a flat one stays 'visible'
+#: 0.08 separates the two
+PICK_INHAND_MIN_RISE_M = 0.08
+
+
+def _parse_pick_point(*texts):
+    """(x, y, z) from the first ``pick_point=`` annotation, else None."""
+    for text in texts:
+        if not text:
+            continue
+        m = _PICK_POINT_RE.search(text)
+        if m:
+            try:
+                pt = tuple(float(v) for v in m.groups())
+            except ValueError:
+                continue
+            if all(math.isfinite(v) for v in pt):
+                return pt
+    return None
+
+
+# a label match cannot tell the picked object from a second object of the same
+# label, so every same-label detection must be provably another object
+# the pick context carries a preaction_dets= pre-pick snapshot to compare
+# against
+# any doubt keeps the conservative 'target still visible' answer
+_PREACTION_DETS_RE = re.compile(r"preaction_dets=([^\n]*)")
+#: closer than this to the pick point = the target is still there
+PICK_BYSTANDER_MIN_FROM_PICK_M = 0.08
+#: the pre-pick target is the detection nearest the pick point
+#: within this distance
+PICK_BYSTANDER_TARGET_GATE_M = 0.05
+#: this close to a pre-pick non-target = that object
+PICK_BYSTANDER_SAME_PLACE_M = 0.06
+#: or a hue this far off the target's pre-pick hue (circular degrees):
+#: a red cup is not the cyan cup
+PICK_BYSTANDER_MIN_HUE_DEG = 60.0
+
+
