@@ -642,3 +642,21 @@ class SceneGraph:
 
     # -- instance ids (advisory; position and gate still rule) ------------------
 
+    def _instance_match(self, d: Detection, label: str) -> Optional[str]:
+        """The ref whose entry carries this row's ``instance_id`` AND the same
+        normalized label, at ANY distance (the object moved with the camera —
+        docs/YOLOE_BATCH4_ARCHITECTURE.md §6), or None.
+
+        The label must match: the ref key embeds the label (``cup_1``), so an
+        id never re-labels a ref.  A row without an id (every row today, and
+        every row with OPENBOT_INSTANCE_IDS off) returns None and association
+        falls through to today's same-label nearest <= assoc_distance_m.
+        """
+        iid = getattr(d, "instance_id", None)
+        if iid is None:
+            return None
+        for key, e in self.refs.items():
+            if e.get("instance_id") == iid and e["label"] == label:
+                return key
+        return None
+
