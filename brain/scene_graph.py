@@ -546,3 +546,19 @@ class SceneGraph:
                         "instance_id": e.get("instance_id")})
         return out
 
+    def _compute_display_names(self) -> Dict[str, str]:
+        """ref -> colour_objectname display name (B7) over every ref that is
+        not in hand (stale ones included, so a name never changes because an
+        object was briefly unseen)."""
+        if not self.refs:
+            return {}
+        objs = self.spatial_objects(include_stale=True)
+        names = spatial.display_names(objs)
+        # No measured colour -> keep the ref key
+        # as the name: a second 'cup_2' would
+        # collide with another cup's key.
+        for o in objs:
+            if not o.get("colour"):
+                names[o["ref"]] = o["ref"]
+        return names
+
