@@ -67,3 +67,7 @@ def _cancel_phase_unproven(blob: str) -> bool:
     return False
 
 
+def _reason_field(text: str) -> str:
+    """The ``Reason:`` field of a full verdict line, else the text itself."""
+    i = text.rfind("|Reason:")
+    return text[i + len("|Reason:"):].strip() if i >= 0 else text.strip()
