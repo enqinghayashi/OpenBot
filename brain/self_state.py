@@ -80,3 +80,5 @@ def _is_cancel(reason: str, evidence: str) -> bool:
     blob = reason + "\n" + evidence
     return ("cancelled_by_operator" in blob
             or _CANCEL_WHERE_RE.search(blob) is not None)
+
+
