@@ -571,3 +571,22 @@ class SceneGraph:
         clean = re.sub(r"[^a-z0-9_]+", "_", label).strip("_")
         return clean or "object"
 
+    def _new_ref(self, label: str) -> str:
+        """Allocate label_<n> with n strictly increasing, skipping ANY key
+        that already exists in self.refs.
+
+        The ref key namespace is shared with refs the gateway pre-assigns
+        (Detection.ref can arrive non-null, e.g. 'bottle_1' from a prior
+        turn).  Counting from 0 without an existence check would silently
+        OVERWRITE a pre-assigned key (pose replaced, holding/container state
+        lost) on the next unassigned same-label detection.  Loop until a key
+        not already in self.refs is found -- never overwrite an existing ref.
+        """
+        base = self._sanitize(label)
+        while True:
+            n = self._counters.get(label, 0) + 1
+            self._counters[label] = n
+            key = f"{base}_{n}"
+            if key not in self.refs:
+                return key
+
