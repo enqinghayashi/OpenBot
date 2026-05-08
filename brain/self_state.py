@@ -57,3 +57,11 @@ _PHASE_RE = re.compile(r"\(phase\s+([A-Za-z0-9_?]+)\)")
 _HAND_STATE_RE = re.compile(r"hand_state=(empty|unknown)")
 
 
+def _cancel_phase_unproven(blob: str) -> bool:
+    """True when the text NAMES a cancel phase that is not a proven pre-close
+    phase: such a cancel can never be 'empty', whatever else the text says."""
+    for rx in (_CANCEL_WHERE_RE, _PHASE_RE):
+        for w in rx.findall(blob):
+            if cancel_hand_state(w) != "empty":
+                return True
+    return False
