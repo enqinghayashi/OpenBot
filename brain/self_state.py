@@ -86,3 +86,5 @@ def parse_cancel_where(text: Any) -> Optional[str]:
     """The ``<where>`` of an engine ``CANCELLED:<where>`` reply, or None."""
     m = _CANCEL_WHERE_RE.search(str(text or ""))
     return m.group(1) if m else None
+
+
