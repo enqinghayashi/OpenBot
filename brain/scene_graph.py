@@ -566,3 +566,8 @@ class SceneGraph:
     def _normalize(label: str) -> str:
         return label.strip().lower()
 
+    @staticmethod
+    def _sanitize(label: str) -> str:
+        clean = re.sub(r"[^a-z0-9_]+", "_", label).strip("_")
+        return clean or "object"
+
