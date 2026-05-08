@@ -525,3 +525,24 @@ class SceneGraph:
 
     # -- machinery ---------------------------------------------------------
 
+    def spatial_objects(self, include_stale: bool = False) -> List[dict]:
+        """B7: the refs as brain.spatial object dicts -- FRESH (seen within
+        stale_age_s of the graph clock) and NOT in hand, unless include_stale;
+        colour = the majority vote of the last 7 measured names; hue / extents
+        as last measured (None when never measured)."""
+        out = []
+        for ref, e in self.refs.items():
+            if e.get("holding"):
+                continue
+            if not include_stale and (self._clock - e["last_seen"]) > self.stale_age_s:
+                continue
+            votes = [v for v in (e.get("colour_vote") or []) if v]
+            colour = (max(set(votes), key=lambda v: (votes.count(v), -votes[::-1].index(v)))
+                      if votes else None)
+            out.append({"ref": ref, "label": e.get("label", "object"), "colour": colour,
+                        "hue": e.get("hue"), "x": e.get("x"), "y": e.get("y"),
+                        "z": e.get("z"), "width_m": e.get("width_m"),
+                        "height_m": e.get("height_m"), "conf": e.get("conf"),
+                        "instance_id": e.get("instance_id")})
+        return out
+
