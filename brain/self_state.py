@@ -100,3 +100,5 @@ def _norm(label: Any) -> str:
     return str(known_labels.resolve_alias(str(label))).strip().lower()
 
 
+def _words(s: str) -> list:
+    return re.findall(r"[a-z0-9_]+", s)
