@@ -94,3 +94,7 @@ def cancel_hand_state(where: Optional[str]) -> str:
     return "empty" if where in PRE_CLOSE_WHERE else "unknown"
 
 
+def _norm(label: Any) -> str:
+    if not label:
+        return ""
+    return str(known_labels.resolve_alias(str(label))).strip().lower()
