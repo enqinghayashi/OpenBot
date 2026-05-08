@@ -617,3 +617,28 @@ class SceneGraph:
             "display_name": None,
         }
 
+    @staticmethod
+    def _refresh(e: dict, d: Detection, ts: float) -> None:
+        e["x"], e["y"], e["z"], e["conf"], e["last_seen"] = d.x, d.y, d.z, d.conf, ts
+        for _k in ("hue", "width_m", "height_m"):          # keep last value
+            if getattr(d, _k, None) is not None:
+                e[_k] = getattr(d, _k)
+        # Colour/side follow the LAST KNOWN
+        # non-None value: a detection that omits
+        # colour must not erase what's already on
+        # this ref's identity.
+        if d.color_name is not None:
+            e["color_name"] = d.color_name
+            # keep the last 7
+            vote = e.get("colour_vote", [])
+            if not isinstance(vote, list):
+                vote = []
+            vote.append(d.color_name)
+            if len(vote) > 7:
+                vote = vote[-7:]
+            e["colour_vote"] = vote
+        if d.body_side is not None:
+            e["body_side"] = d.body_side
+
+    # -- instance ids (advisory; position and gate still rule) ------------------
+
