@@ -361,3 +361,20 @@ _OBJECT_PRONOUNS = frozenset(("it", "them", "that", "this", "those", "these"))
 _DEMONSTRATIVES = frozenset(("that", "this", "those", "these"))
 
 
+def _pick_object_label(t: str, m, spans: list) -> Optional[str]:
+    """The class a pick-verb match ``m`` in ``t`` is about, from ``spans``.
+
+    A pronoun object binds to the first class named BEFORE the verb ('Find
+    the bottle, pick it up, ...' -> 'bottle'), unless a determiner directly
+    heads that class ('pick that bottle' -> forward).  None when a pronoun
+    refers to nothing named; otherwise the first class after the verb, else
+    the last one named."""
+    after = [l for (i, l) in spans if i >= m.end()]
+    words = re.findall(r"[a-z]+", t[m.end():])
+    if words and words[0] in _OBJECT_PRONOUNS:
+        forward = (words[0] in _DEMONSTRATIVES and len(words) > 1
+                   and any(words[1] in (l, l + "s") for (_, l) in spans))
+        if not forward:
+            before = [l for (i, l) in spans if i < m.start()]
+            return before[0] if before else None
+    return after[0] if after else spans[-1][1]
