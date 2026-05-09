@@ -351,3 +351,13 @@ def _place_dest_label(text: Any) -> Optional[str]:
                     continue
                 return lab
     return None
+
+
+#: object pronouns
+#: bind a pick verb to a class named earlier ('pick it up'), never
+#: forward. 'me'/'us' are absent: people, not objects. Demonstratives
+#: also work as determiners ('pick that bottle' -> forward)
+_OBJECT_PRONOUNS = frozenset(("it", "them", "that", "this", "those", "these"))
+_DEMONSTRATIVES = frozenset(("that", "this", "those", "these"))
+
+
