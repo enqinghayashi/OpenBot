@@ -393,3 +393,5 @@ def _strong_pick_label(text: Any) -> Optional[str]:
     if not spans:
         return None
     return _pick_object_label(t, m, spans)
+
+
