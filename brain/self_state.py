@@ -273,3 +273,27 @@ def classify_utterance(text: Any) -> str:
     return "other"
 
 
+def _label_spans(t: str, aliases: bool = True) -> list:
+    """[(start, label)] for every known class named in ``t`` (an optional
+    plural 's').  Aliases ('me' -> 'person') only when ``aliases`` and no
+    class is named, so 'bring me the bottle' names the bottle."""
+    classes = set(known_labels.TRACKED_CLASSES)
+    try:
+        classes |= set(known_labels.extra_classes())
+    except Exception:  # noqa: BLE001 - extras are optional
+        pass
+    out = []
+    for c in classes:
+        c = str(c).strip().lower()
+        if not c:
+            continue
+        for m in re.finditer(r"\b%ss?\b" % re.escape(c), t):
+            out.append((m.start(), c))
+    if not out and aliases:
+        for a in known_labels.TARGET_ALIASES:
+            if len(a) < 2:  # skip 'i'
+                continue
+            for m in re.finditer(r"\b%s\b" % re.escape(a), t):
+                out.append((m.start(), known_labels.resolve_alias(a)))
+    out.sort()
+    return out
