@@ -149,3 +149,19 @@ _DEST_BESIDE_RE = re.compile(
     r"behind|around|between|(?:side|back)\s+of|opposite)\b")
 
 
+def _cross_body_detail(text: str) -> Dict[str, Any]:
+    """side / cm from the engine line; {} when absent or not sane.  (No turn
+    angle here: this module stays stdlib-light -- re/time/typing -- and the
+    pick reason's own hint already names the angle.)"""
+    out: Dict[str, Any] = {}
+    m = _SC_FIELDS_RE.search(text or "")
+    if not m:
+        return out
+    try:
+        out["side"] = m.group(1)
+        mv = float(m.group(4))
+        if 0.0 < mv < float("inf"):
+            out["cm"] = int(round(mv * 100.0))
+    except (TypeError, ValueError):
+        pass
+    return out
