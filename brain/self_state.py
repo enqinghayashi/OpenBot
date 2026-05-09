@@ -191,3 +191,14 @@ _FETCH_NOT_RE = re.compile(
     r"over|back|home|there|here)\b|\bcarry\s+(?:me|us)\b")
 
 
+def is_fetch_request(text: Any) -> bool:
+    """B8l F7: True for a request to bring something to the speaker."""
+    t = _GET_WALK_RE.sub("go ", str(text or "").lower())
+    if _FETCH_TO_ME_RE.search(t) is None or _FETCH_NOT_RE.search(t) is not None:
+        return False
+    # transport, not a fetch
+    pm = _PLACE_VERB_RE.search(t)
+    if pm is not None and _DEST_PREP_RE.search(t, pm.end()) is not None \
+            and re.search(r"\b(?:me|us)\b", t[pm.end():]) is None:
+        return False
+    return True
