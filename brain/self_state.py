@@ -299,3 +299,30 @@ def _label_spans(t: str, aliases: bool = True) -> list:
     return out
 
 
+def utterance_label(text: Any, verb: Optional[str] = None) -> Optional[str]:
+    """The object a request is about, or None.
+
+    pick / pick_place: the class the first pick verb is about - the first
+    class named AFTER it, except that a pronoun object ('pick it up') binds
+    to the class named BEFORE the verb, never the container after a later
+    'place/put' ('Find the bottle, pick it up, and place it in the bowl.'
+    -> 'bottle'; review r1 MEDIUM).
+    walk: the first label named after the walk phrase ('come back to me' ->
+    'person'), else None.  Otherwise: the last label named."""
+    t = str(text or "").lower()
+    if verb in ("pick", "pick_place"):
+        spans = _label_spans(t, aliases=False)
+        if not spans:
+            return None
+        m = _PICK_VERB_RE.search(t)
+        if m is None:
+            return spans[-1][1]
+        return _pick_object_label(t, m, spans)
+    spans = _label_spans(t)
+    if not spans:
+        return None
+    if verb == "walk":
+        m = _walk_match(t)
+        after = [l for (i, l) in spans if m is not None and i >= m.end()]
+        return after[0] if after else None
+    return spans[-1][1]
