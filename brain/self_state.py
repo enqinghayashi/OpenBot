@@ -250,3 +250,24 @@ def _walk_match(t: str):
     return None
 
 
+def classify_utterance(text: Any) -> str:
+    """'pick_place' | 'pick' | 'place' | 'walk' | 'other' (deterministic).
+
+    Any pick verb beats walk ('walk to the bottle and pick it up' is a pick);
+    'walk' needs a walk-only phrase and no pick/place verb.  A DIRECTED 'get'
+    is neutralised to 'go' for the verb search, so 'get to the bottle' and
+    'get me closer to the bottle' are walks, while a bare 'get the bottle'
+    stays a pick (review r1 MEDIUM)."""
+    t = str(text or "").lower()
+    tp = _GET_WALK_RE.sub("go ", t)
+    pick = _PICK_VERB_RE.search(tp) is not None
+    place = _PLACE_VERB_RE.search(tp) is not None
+    if pick and place:
+        return "pick_place"
+    if pick:
+        return "pick"
+    if place:
+        return "place"
+    if _walk_match(t) is not None:
+        return "walk"
+    return "other"
