@@ -297,3 +297,5 @@ def _label_spans(t: str, aliases: bool = True) -> list:
                 out.append((m.start(), known_labels.resolve_alias(a)))
     out.sort()
     return out
+
+
