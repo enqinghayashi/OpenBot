@@ -202,3 +202,39 @@ def is_fetch_request(text: Any) -> bool:
             and re.search(r"\b(?:me|us)\b", t[pm.end():]) is None:
         return False
     return True
+#: strong pick verbs: may drive navigate -> pick
+#: narrower than _PICK_VERB_RE: 'take me to the bowl' and
+#: 'hold on' must never become a pick. 'get' is not here:
+#: a directed get is a walk, while grasp/retrieve/pickup
+#: are real pick requests
+_STRONG_PICK_VERB_RE = re.compile(
+    r"\b(?:pick(?:s|ing|ed)?|pickup|grab(?:s|bing|bed)?|"
+    r"grasp(?:s|ing|ed)?|fetch(?:es|ing|ed)?|bring(?:s|ing)?|"
+    r"gives|giving|give|hand(?:s|ing|ed)?|retriev(?:e|es|ing|ed))\b")
+#: walk phrase
+#: walk verb, up to two fillers, then to / toward(s) / over; or
+#: 'come here'. A gap word outside _WALK_FILLER ('move the bottle to
+#: the bowl') makes it a transport, never a walk-only request
+_WALK_RE = re.compile(
+    r"\b(?:walk|go|come|move|head|get)\b(?P<gap>(?:\s+\w+){0,2}?)\s+"
+    r"(?:to|towards?|over)\b|\bcome\s+here\b")
+#: directed 'get'
+#: a walk, not a pick. It is neutralised to 'go' before the verb
+#: search; a bare 'get the bottle' is still a pick
+_GET_WALK_RE = re.compile(
+    r"\bget\s+(?:me\s+|us\s+)?(?=to\b|towards?\b|closer\b|near\b|over\b|"
+    r"back\b|here\b|there\b)")
+_WALK_FILLER = frozenset((
+    "over", "back", "closer", "up", "right", "straight", "forward",
+    "forwards", "with", "me", "us", "please", "now", "just", "on", "down",
+    "there", "here", "away", "along", "all"))
+#: nav recovery
+#: pick failures whose recovery is navigate + the same pick:
+#: NOT_DETECTED (prepare), the reach refusal, the reach hint text,
+#: a transport failure
+_NAV_RECOVERY_RE = re.compile(
+    r"NOT_DETECTED|reach_ceiling|OUT OF REACH|transport:")
+_VERB_WORDS = {"pick_place": "pick and place", "pick": "pick",
+               "place": "place"}
+
+
