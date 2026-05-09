@@ -165,3 +165,29 @@ def _cross_body_detail(text: str) -> Dict[str, Any]:
     except (TypeError, ValueError):
         pass
     return out
+
+_PICK_VERB_RE = re.compile(
+    r"\b(?:pick(?:s|ing|ed)?|pickup|grab(?:s|bing|bed)?|"
+    r"grasp(?:s|ing|ed)?|take|takes|taking|fetch(?:es|ing|ed)?|"
+    r"gets|getting|get|bring(?:s|ing)?|hand(?:s|ing|ed)?|"
+    r"gives|giving|give|lift(?:s|ing|ed)?|collect(?:s|ing|ed)?|"
+    r"holds|holding|hold|retriev(?:e|es|ing|ed))\b")
+_PLACE_VERB_RE = re.compile(r"\b(place|put|drop|set\s+down|release)\b")
+#: fetch to me
+#: "go get me a bottle", "hand me that". A directed 'get' is
+#: neutralised to 'go' first
+_FETCH_TO_ME_RE = re.compile(
+    r"\b(?:get|fetch|bring|grab|give|hand|pass|deliver|carry|take|retrieve)\b"
+    r"[^.?!]{0,80}?\b(?:me|us)\b"
+    r"|\b(?:bring|fetch|retrieve|get|grab)\b[^.?!]{0,80}?\b(?:here|over)\b"
+    r"|\bgo\s+(?:and\s+)?(?:get|fetch|grab|bring)\b"
+    r"|\b(?:fetch|retrieve)\b"
+    r"|\b(?:can|could|may)\s+(?:i|we)\s+(?:have|get)\b"
+    r"|\bhand\s+(?:it|that|this|them)\s+over\b")
+#: "take me to the bowl" = walk
+_FETCH_NOT_RE = re.compile(
+    r"\bgive\s+(?:me|us)\s+(?:a|one|some)\s+(?:second|sec|moment|minute|min|break|hand|"
+    r"chance|try|go)\b|\b(?:take|carry|bring|get)\s+(?:me|us)\s+(?:to|towards?|closer|"
+    r"over|back|home|there|here)\b|\bcarry\s+(?:me|us)\b")
+
+
