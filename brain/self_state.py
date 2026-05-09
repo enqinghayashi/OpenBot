@@ -378,3 +378,5 @@ def _pick_object_label(t: str, m, spans: list) -> Optional[str]:
             before = [l for (i, l) in spans if i < m.start()]
             return before[0] if before else None
     return after[0] if after else spans[-1][1]
+
+
