@@ -328,3 +328,26 @@ def utterance_label(text: Any, verb: Optional[str] = None) -> Optional[str]:
     return spans[-1][1]
 
 
+def _place_dest_label(text: Any) -> Optional[str]:
+    """B8h: the known class the operator NAMED as the place target ("put it
+    in the bowl" -> 'bowl'), else None.  Only a request with a place verb has
+    one, and only a preposition AFTER the first place verb counts, so "pick up
+    the cup on the table" names no destination."""
+    t = str(text or "").lower()
+    tp = _GET_WALK_RE.sub("go ", t)
+    pm = _PLACE_VERB_RE.search(tp)
+    if pm is None:
+        return None
+    spans = [(i, l) for (i, l) in _label_spans(t, aliases=False)
+             if l != "person"]
+    for m in _DEST_PREP_RE.finditer(t):
+        if m.start() < pm.start():
+            continue
+        wm = re.match(r"(?:\W+[a-z0-9_]+){1,4}", t[m.end():])
+        reach = m.end() + (wm.end() if wm else 0)
+        for (i, lab) in spans:
+            if m.end() <= i < reach:
+                if _DEST_BESIDE_RE.search(t[m.end():i]):
+                    continue
+                return lab
+    return None
