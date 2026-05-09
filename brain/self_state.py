@@ -326,3 +326,5 @@ def utterance_label(text: Any, verb: Optional[str] = None) -> Optional[str]:
         after = [l for (i, l) in spans if m is not None and i >= m.end()]
         return after[0] if after else None
     return spans[-1][1]
+
+
