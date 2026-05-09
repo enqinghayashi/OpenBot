@@ -102,3 +102,50 @@ def _norm(label: Any) -> str:
 
 def _words(s: str) -> list:
     return re.findall(r"[a-z0-9_]+", s)
+
+
+# ---- operator-request classifier ----
+#: no-hook guard
+#: re-picks land 34 s and 41 s after the place
+#: 60 s covers both
+POST_PLACE_GUARD_S = 60.0
+#: pending pick TTL
+#: a navigate sweep gives up after ~73 s, doubled plus margin
+PENDING_PICK_TTL_S = 180.0
+
+#: cross-body refusal
+#: the engine's self-collision token:
+#: `ERROR:self_collision verb=.. side=.. x=..m y=..m ... stage=..`
+_SELF_COLLISION_RE = re.compile(r"\bself_collision\b")
+_SC_FIELDS_RE = re.compile(
+    r"side=(left|right) x=(-?[\d.]+)m y=(-?[\d.]+)m .*?move_right_m=([\d.]+)")
+#: cross-body TTL
+#: no later call clears it, so it lapses on its own
+CROSS_BODY_BLOCK_S = 120.0
+_ARTICLE_RE = re.compile(r"^(?:the|a|an)\s+", re.I)
+
+#: hint window
+#: unconfirmed pick: the hint stays alive this long
+#: re-picks land 8-60 s after the pick
+#: fires every time, not one-shot
+UNCONFIRMED_ABSENT_S = 120.0
+#: turn window
+#: a place destination / release request stays usable this many turns
+REQUEST_TURNS_LIVE = 1
+#: release words
+#: no bare 'hand': it also matches "with your right hand"
+_RELEASE_ASK_RE = re.compile(
+    r"\b(?:open(?:s|ed|ing)?|releas(?:e|es|ed|ing)|let(?:ting)?\s+(?:it\s+|that\s+)?go|"
+    r"drop(?:s|ped|ping)?|give|gives|giving|hand\s+(?:it|that|them)\s+over|"
+    r"(?:put|set)\s+(?:it|that|them)\s+down|fingers?)\b")
+#: place target
+#: "in / into / inside / on / onto <label>", as the operator named it
+_DEST_PREP_RE = re.compile(r"\b(?:in|into|inside|on|onto)\b")
+#: beside = landmark
+#: "in front of the bowl" names no container: the arm can drop only
+#: on or into an object, so that is no destination
+_DEST_BESIDE_RE = re.compile(
+    r"\b(?:next\s+to|beside|near(?:by)?|by|left\s+of|right\s+of|front\s+of|"
+    r"behind|around|between|(?:side|back)\s+of|opposite)\b")
+
+
