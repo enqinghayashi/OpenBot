@@ -380,3 +380,16 @@ def _pick_object_label(t: str, m, spans: list) -> Optional[str]:
     return after[0] if after else spans[-1][1]
 
 
+def _strong_pick_label(text: Any) -> Optional[str]:
+    """B5 hook path: the class the first STRONG pick verb is about (never
+    'person', never an alias), else None.  A directed 'get' is a walk, so it
+    is not a strong verb here (review r1 MEDIUM)."""
+    t = str(text or "").lower()
+    m = _STRONG_PICK_VERB_RE.search(t)
+    if m is None:
+        return None
+    spans = [(i, l) for (i, l) in _label_spans(t, aliases=False)
+             if l != "person"]
+    if not spans:
+        return None
+    return _pick_object_label(t, m, spans)
