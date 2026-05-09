@@ -238,3 +238,13 @@ _VERB_WORDS = {"pick_place": "pick and place", "pick": "pick",
                "place": "place"}
 
 
+def _walk_match(t: str):
+    """The first WALK_RE match whose gap is all filler (a walk-only phrase),
+    else None."""
+    for m in _WALK_RE.finditer(t):
+        gap = m.group("gap")
+        if gap is None:  # 'come here'
+            return m
+        if all(w in _WALK_FILLER for w in gap.split()):
+            return m
+    return None
