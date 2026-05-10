@@ -467,3 +467,24 @@ class SelfState:
 
     # -- operator-request turn (not verdicts) --
 
+    def _note_words(self, text: Any) -> tuple:
+        """B8h: record the operator's words for the destination fallback and
+        the open_hand guard.  Touches ONLY words_seq, release_asked_seq,
+        dest_request and (B8l F7) fetch_seq / task_seq.  Returns (verb, dest)."""
+        self.words_seq += 1
+        # before 'other'
+        # record a release ask here: "open your fingers" has no pick/place verb
+        if _RELEASE_ASK_RE.search(str(text or "").lower()):
+            self.release_asked_seq = self.words_seq
+        verb = classify_utterance(text)
+        if is_fetch_request(text):  # fetch-to-me
+            self.fetch_seq = self.words_seq
+        elif verb != "other":
+            self.task_seq = self.words_seq
+        if verb == "other":
+            return (verb, None)
+        dest = (_place_dest_label(text)
+                if verb in ("place", "pick_place") else None)
+        self.dest_request = {"dest": dest, "seq": self.words_seq}
+        return (verb, dest)
+
