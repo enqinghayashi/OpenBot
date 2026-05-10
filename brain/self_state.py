@@ -853,3 +853,18 @@ class SelfState:
         return (m is not None and m.get("tool") == "pick"
                 and self._label_match(label, m.get("label")))
 
+    def held_hint_due(self, label: Any) -> bool:
+        """BR-4: the 'probably in your hand, do NOT navigate' hint for an
+        ABSENT label whose hand state is UNKNOWN / release-unconfirmed is
+        given only right after a pick of that label, and only ONCE per pick
+        result (a second ask gets the generic navigate recovery)."""
+        if self.hand_unknown is None and self.release_unconfirmed is None:
+            return False
+        if not self.may_hold(label) or not self._last_pick_of(label):
+            return False
+        ts = self.last_motion["ts"]
+        if self._held_hint_ts == ts:
+            return False
+        self._held_hint_ts = ts
+        return True
+
