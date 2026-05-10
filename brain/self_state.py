@@ -831,3 +831,14 @@ class SelfState:
             bool(wa) and bool(wb) and
             (" ".join(wb) in " ".join(wa) or " ".join(wa) in " ".join(wb)))
 
+    def may_hold(self, label: Any) -> bool:
+        """True when the hand is believed OR possibly holding ``label`` (a
+        hold, or an unknown-hand pick of the same label)."""
+        if self.holds(label):
+            return True
+        u = self.hand_unknown
+        if u is None:
+            return False
+        a, b = _norm(label), u.get("label") or ""
+        return bool(a and b and (a == b or b in _words(a) or a in _words(b)))
+
