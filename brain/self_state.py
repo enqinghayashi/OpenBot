@@ -498,3 +498,25 @@ class SelfState:
         OR note_utterance for one utterance, never both (each counts a turn)."""
         self._note_words(text)
 
+    def note_utterance(self, text: Any) -> None:
+        """One operator utterance = one new turn (voice hook, B3/B4/B5)."""
+        self.utterance_seq += 1
+        # clears next step
+        self.next_step = None
+        # lifts the block
+        # a new utterance lifts the cross-body block (if nothing moved, the
+        # engine precheck just refuses again before motion)
+        self.cross_body = None
+        verb, dest = self._note_words(text)
+        if verb == "other":
+            return
+        self.request = {
+            "verb": verb,
+            "label": utterance_label(text, verb),
+            "pick_label": (_strong_pick_label(text)
+                           if verb in ("pick", "pick_place") else None),
+            "dest": dest,
+            "ts": self._clock(),
+            "seq": self.utterance_seq,
+        }
+
