@@ -527,3 +527,9 @@ class SelfState:
         self.pending_pick = {"label": _norm(label), "ts": self._clock()}
         self.next_step = None
 
+    def _turn_is_walk(self) -> bool:
+        """The CURRENT turn's request is walk-only."""
+        r = self.request
+        return (r is not None and r.get("verb") == "walk"
+                and r.get("seq") == self.utterance_seq)
+
