@@ -817,3 +817,17 @@ class SelfState:
 
     # -- queries -----------------------------------------------------------
 
+    def holds(self, label: Any) -> bool:
+        h = self.holding
+        if h is None:
+            return False
+        a, b = _norm(label), h.get("label") or ""
+        if not a or not b:
+            return False
+        if a == b:
+            return True
+        wa, wb = _words(a), _words(b)
+        return (b in wa) or (a in wb) or (
+            bool(wa) and bool(wb) and
+            (" ".join(wb) in " ".join(wa) or " ".join(wa) in " ".join(wb)))
+
