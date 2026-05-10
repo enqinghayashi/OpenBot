@@ -407,3 +407,4 @@ def _finite_point(args: Dict[str, Any]) -> Optional[tuple]:
     return None
 
 
+class SelfState:
