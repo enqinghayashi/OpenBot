@@ -395,3 +395,13 @@ def _strong_pick_label(text: Any) -> Optional[str]:
     return _pick_object_label(t, m, spans)
 
 
+def _finite_point(args: Dict[str, Any]) -> Optional[tuple]:
+    """(x, y, z) from a pick's args when all three are finite, else None."""
+    try:
+        pt = tuple(float(args.get(k)) for k in ("x", "y", "z"))
+    except (TypeError, ValueError):
+        return None
+    # no math import
+    if all(v == v and abs(v) != float("inf") for v in pt):
+        return pt
+    return None
