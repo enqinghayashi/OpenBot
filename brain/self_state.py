@@ -593,3 +593,36 @@ class SelfState:
                     % (_norm(getattr(det, "label", "")) or "target"))
         return None
 
+    def _pick_after_arrival(self, target: Any, now: float) -> tuple:
+        """B5: (label, source) to pick right after a verified navigate, or
+        (None, None).  ``source`` is 'attempt' when a previous PICK attempt
+        of it is pending (the brain initiated it) and 'request' when THIS
+        utterance's own words asked for the pick (the voice hook path); the
+        render text differs because only the second proves operator intent
+        (review r1 MEDIUM)."""
+        if self.holding is not None or self._turn_is_walk():
+            return (None, None)
+        want, src = None, None
+        pp = self.pending_pick
+        if (pp is not None and self._label_match(target, pp.get("label"))
+                and (now - pp["ts"]) <= PENDING_PICK_TTL_S):
+            want, src = pp.get("label"), "attempt"
+        else:
+            r = self.request
+            if (self.utterance_seq > 0 and r is not None
+                    and r.get("seq") == self.utterance_seq
+                    and r.get("verb") in ("pick", "pick_place")
+                    and self._label_match(target, r.get("pick_label"))):
+                want, src = r.get("pick_label"), "request"
+        if not want or want == "person" or self._placed_this_turn(want):
+            return (None, None)
+        cb = self.cross_body
+        if (cb is not None and cb.get("tool") == "pick"
+                and (now - cb["ts"]) <= CROSS_BODY_BLOCK_S
+                and self._label_match(want, cb.get("label"))):
+            # walking won't help
+            return (None, None)
+        return (want, src)
+
+    # -- the only writer of beliefs -----------------------------------------
+
