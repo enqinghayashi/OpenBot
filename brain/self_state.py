@@ -548,3 +548,13 @@ class SelfState:
                 "pick, fetch or bring it"
                 % (" to '%s'" % dest if dest else ""))
 
+    def _place_turn_live(self) -> bool:
+        """The last verified place finished the CURRENT request: same turn
+        (hook live), or within POST_PLACE_GUARD_S (no hook)."""
+        p = self.last_place
+        if p is None:
+            return False
+        if self.utterance_seq > 0:
+            return p.get("seq") == self.utterance_seq
+        return (self._clock() - p["ts"]) <= POST_PLACE_GUARD_S
+
