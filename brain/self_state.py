@@ -578,3 +578,18 @@ class SelfState:
                 "new pick needs a new request from the operator"
                 % (p.get("label"), self._age(p["ts"])))
 
+    def stale_after_cancel(self, det: Any) -> Optional[str]:
+        """B6 (S3d): after a cancel, the detection a re-pick binds must be
+        NEWER than the cancel (det.ts > last_cancel_ts)."""
+        if self.last_cancel_ts is None or det is None:
+            return None
+        try:
+            ts = float(getattr(det, "ts", None))
+        except (TypeError, ValueError):
+            return None
+        if ts <= self.last_cancel_ts:
+            return ("pick refused: the freshest '%s' detection predates the "
+                    "cancel - re-observe (scene_brief) and pick again"
+                    % (_norm(getattr(det, "label", "")) or "target"))
+        return None
+
