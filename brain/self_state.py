@@ -533,3 +533,18 @@ class SelfState:
         return (r is not None and r.get("verb") == "walk"
                 and r.get("seq") == self.utterance_seq)
 
+    def walk_only_refusal(self, label: Any) -> Optional[str]:
+        """B3 (S3a, run22 'walk to X' picked): refuse a pick while the
+        CURRENT request is walk-only.  Never without the hook."""
+        if self.utterance_seq == 0:
+            return None
+        if not self._turn_is_walk():
+            return None
+        self.pending_pick = None
+        dest = self.request.get("label")
+        return ("pick refused: the operator asked only to WALK%s (this "
+                "request) - navigate is the whole task. Report that you "
+                "arrived and stop; pick only if the operator asks you to "
+                "pick, fetch or bring it"
+                % (" to '%s'" % dest if dest else ""))
+
