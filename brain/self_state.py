@@ -558,3 +558,10 @@ class SelfState:
             return p.get("seq") == self.utterance_seq
         return (self._clock() - p["ts"]) <= POST_PLACE_GUARD_S
 
+    def _placed_this_turn(self, label: Any) -> bool:
+        p = self.last_place
+        # a released-but-unconfirmed place never blocks a re-pick
+        return (p is not None and p.get("verdict") != "released"
+                and self._place_turn_live()
+                and self._label_match(label, p.get("label")))
+
