@@ -565,3 +565,16 @@ class SelfState:
                 and self._place_turn_live()
                 and self._label_match(label, p.get("label")))
 
+    def post_place_refusal(self, label: Any) -> Optional[str]:
+        """B4 (S3b, run21 F2): a verified place of ``label`` finished the
+        request - no re-pick of it in the same turn (no hook: within
+        POST_PLACE_GUARD_S).  A NEW request (a new turn) is never refused."""
+        if not self._placed_this_turn(label):
+            return None
+        p = self.last_place
+        self.pending_pick = None
+        return ("pick refused: '%s' was placed %ds ago and that finished the "
+                "operator's request - the task is DONE. Report it and stop; a "
+                "new pick needs a new request from the operator"
+                % (p.get("label"), self._age(p["ts"])))
+
