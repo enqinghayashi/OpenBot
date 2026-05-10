@@ -848,3 +848,8 @@ class SelfState:
         a, b = _norm(label), stored or ""
         return bool(a and b and (a == b or b in _words(a) or a in _words(b)))
 
+    def _last_pick_of(self, label: Any) -> bool:
+        m = self.last_motion
+        return (m is not None and m.get("tool") == "pick"
+                and self._label_match(label, m.get("label")))
+
