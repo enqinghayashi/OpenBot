@@ -842,3 +842,9 @@ class SelfState:
         a, b = _norm(label), u.get("label") or ""
         return bool(a and b and (a == b or b in _words(a) or a in _words(b)))
 
+    @staticmethod
+    def _label_match(label: Any, stored: Any) -> bool:
+        """The may_hold word rule (unknown-hand branch)."""
+        a, b = _norm(label), stored or ""
+        return bool(a and b and (a == b or b in _words(a) or a in _words(b)))
+
