@@ -488,3 +488,13 @@ class SelfState:
         self.dest_request = {"dest": dest, "seq": self.words_seq}
         return (verb, dest)
 
+    def note_operator_words(self, text: Any) -> None:
+        """B8h: the NARROW voice hook (voice/app.py on_utterance).  Records
+        only what request_destination() and open_hand_refusal() read.  It does
+        NOT advance utterance_seq, set ``request``, clear next_step or lift
+        the cross-body block, so the walk-only refusal, the task-done
+        (post-place) refusal, the pending-pick next step and the other turn
+        guards stay exactly as inert as before the hook was wired.  Use this
+        OR note_utterance for one utterance, never both (each counts a turn)."""
+        self._note_words(text)
+
