@@ -868,3 +868,27 @@ class SelfState:
         self._held_hint_ts = ts
         return True
 
+    def _grip_measured(self, grip: Any) -> Optional[str]:
+        """B6 (review r1 R6/R3): the verifier's finger measurement of a grip
+        read: 'empty', 'held', or None when no gate allows a verdict.  Gates:
+        the grip is available, RIGHT-hand (the left Dex3 is out of service -
+        an open LEFT read must never clear the right hand), taken AFTER the
+        last motion was recorded, and fresh.  'empty' = measured-open or the
+        fingers reached their close command; 'held' = fingers held off the
+        command by an object; None = the 1-3 lagging-joint band (NO verdict)."""
+        if grip is None or getattr(grip, "available", False) is not True:
+            return None
+        if getattr(grip, "side", None) != "right":
+            return None
+        from brain import verifier as _verifier  # circular import
+        ts = getattr(grip, "stale_ts", None)
+        if not _verifier._ts_fresh(ts, self._clock()):
+            return None
+        m = self.last_motion
+        if m is not None and ts <= m.get("ts", 0.0):
+            return None  # stale read
+        if getattr(grip, "is_open", None) is True:
+            return "empty"
+        lag = _verifier.classify_finger_lag(grip)
+        return lag if lag in ("empty", "held") else None
+
