@@ -408,3 +408,62 @@ def _finite_point(args: Dict[str, Any]) -> Optional[tuple]:
 
 
 class SelfState:
+    def __init__(self, clock: Callable[[], float] = time.time) -> None:
+        self._clock = clock
+        self.holding: Optional[Dict[str, Any]] = None
+        self.last_place: Optional[Dict[str, Any]] = None
+        self.last_navigate: Optional[Dict[str, Any]] = None
+        self.pick_unconfirmed: Optional[Dict[str, Any]] = None
+        self.empty_known: bool = False
+        # maybe released
+        # an in_progress place/open_hand is uncertified,
+        # so the pick guard must not refuse
+        self.release_unconfirmed: Optional[Dict[str, Any]] = None
+        # hand unprovable
+        # cancelled / grasp_failed pick: neither "holding X" nor "known empty"
+        self.hand_unknown: Optional[Dict[str, Any]] = None
+        # last motion
+        # last verb recorded, plus the hint ts
+        # already given (one-shot)
+        self.last_motion: Optional[Dict[str, Any]] = None
+        self._held_hint_ts: Optional[float] = None
+        # turn state
+        # utterance_seq: one per utterance
+        # 0 = no hook: guards are inert or fall back to a TTL
+        # request: last task request + its turn
+        # an 'other' utterance starts a new turn,
+        # so turn-scoped checks lapse
+        # pending_pick / next_step: the pick plan
+        # last_cancel_ts: never cleared
+        self.utterance_seq: int = 0
+        self.request: Optional[Dict[str, Any]] = None
+        self.pending_pick: Optional[Dict[str, Any]] = None
+        self.next_step: Optional[tuple] = None
+        self.last_cancel_ts: Optional[float] = None
+        # cross-body
+        # last cross-body refusal (ERROR:self_collision)
+        # of a pick or place, rendered once
+        # on the refusing tool's own reply
+        # (the SELF_STATE tail is model-facing)
+        # replaced by the next executed pick/place
+        # blocks arrival -> pick for CROSS_BODY_BLOCK_S;
+        # walking closer does not help
+        self.cross_body: Optional[Dict[str, Any]] = None
+        # operator words
+        # words_seq counts utterances for the words path only, not
+        # utterance_seq: the turn guards key off that one, and the voice
+        # hook leaves it 0 on purpose. release_asked_seq / dest_request are
+        # written by note_operator_words / note_utterance and read by
+        # request_destination, release_asked, open_hand_refusal
+        self.words_seq: int = 0
+        #: fetch seq
+        #: words_seq of the last fetch-to-me request, plus the last other task
+        #: (pick / place / walk that is not a fetch): a later task ends the
+        #: fetch; chit-chat and a 'yes' never do
+        self.fetch_seq: Optional[int] = None
+        self.task_seq: Optional[int] = None
+        self.release_asked_seq: Optional[int] = None
+        self.dest_request: Optional[Dict[str, Any]] = None
+
+    # -- operator-request turn (not verdicts) --
+
