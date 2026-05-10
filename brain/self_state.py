@@ -520,3 +520,10 @@ class SelfState:
             "seq": self.utterance_seq,
         }
 
+    def note_pick_attempt(self, label: Any) -> None:
+        """B5: the model asked for a pick of ``label`` (pick.prepare, after
+        alias resolution; a prepare-time NOT_DETECTED never reaches
+        ``record``, so this is the only place the attempt is seen)."""
+        self.pending_pick = {"label": _norm(label), "ts": self._clock()}
+        self.next_step = None
+
