@@ -405,3 +405,5 @@ def _finite_point(args: Dict[str, Any]) -> Optional[tuple]:
     if all(v == v and abs(v) != float("inf") for v in pt):
         return pt
     return None
+
+
