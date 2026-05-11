@@ -205,3 +205,5 @@ def distance(obj):
     x = float(obj.get('x') or 0)
     y = float(obj.get('y') or 0)
     return math.hypot(x, y)
+
+
