@@ -198,3 +198,5 @@ def bearing(obj):
         direction = 'right'
 
     return (angle_deg, direction)
+
+
