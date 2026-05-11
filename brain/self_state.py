@@ -1073,3 +1073,128 @@ class SelfState:
     def _age(self, ts: float) -> int:
         return max(0, int(round(self._clock() - ts)))
 
+    def render(self) -> str:
+        parts = []
+        cb = self.cross_body
+        lm = self.last_motion
+        if (cb is not None and not cb.get("shown")
+                and lm is not None and lm.get("ts") == cb.get("ts")):
+            # shown once
+            # on the refusing tool's own reply: record() stamps
+            # last_motion and the record with one clock read,
+            # and render() runs right after it. Later replies
+            # never carry it
+            cb["shown"] = True
+            verb = cb.get("tool") or "pick"
+            if verb == "place":
+                what, said = "the drop point", "the drop point"
+            elif cb.get("label"):
+                what = "'%s'" % cb["label"]
+                said = "the %s" % _ARTICLE_RE.sub("", cb["label"])
+            else:
+                what, said = "the object", "the object"
+            if cb.get("side") == "right":
+                pos, spos = ("too close to the robot's centre line",
+                             "too close to your centre line")
+            else:
+                pos, spos = "on the robot's LEFT side", "on your left side"
+            ask = "move it to your right side"
+            if cb.get("cm"):
+                ask += " (about %d cm further right)" % cb["cm"]
+            ask += " or to turn you to the left"
+            parts.append(
+                "CROSS-BODY: the %s %ds ago was REFUSED because %s is %s - "
+                "the right arm would have to reach across the body and press "
+                "into the torso or the tucked left arm; walking closer does "
+                "NOT help: do NOT call navigate for it and do NOT %s it there "
+                "again until the human says it has been moved or the robot has "
+                "been turned; tell the human in one sentence that %s is %s and "
+                "ask them to %s, then wait"
+                % (verb, self._age(cb["ts"]), what, pos, verb, said, spos, ask))
+        ns = self.next_step
+        if ns is not None and ns[0] == "pick":
+            # hook path only
+            # only 'request' proves the operator asked;
+            # the attempt path says what is known
+            if len(ns) > 2 and ns[2] == "attempt":
+                parts.append(
+                    "next step: call pick('%s') now - you tried to pick it "
+                    "before this navigate; if the operator asked for a pick, "
+                    "arrival is not the end of the request" % ns[1])
+            else:
+                parts.append(
+                    "next step: call pick('%s') now - the operator asked you "
+                    "to PICK it and you have arrived; arrival is not the end "
+                    "of the task" % ns[1])
+        h = self.holding
+        if h is not None and h.get("confidence") == "fingers_blocked":
+            parts.append(
+                "you may be holding '%s' (%s hand, picked %ds ago; the fingers "
+                "were still held off their close command by an object after "
+                "the lift, MEASURED; no tactile sensor)"
+                % (h["label"], h["side"], self._age(h["ts"])))
+        elif h is not None and h.get("confidence") == "blocked_no_tactile":
+            parts.append(
+                "you may be holding '%s' (%s hand, picked %ds ago; inferred "
+                "from fingers blocked by an object, no tactile confirmation)"
+                % (h["label"], h["side"], self._age(h["ts"])))
+        elif h is not None:
+            parts.append(
+                "you may be holding '%s' (%s hand, picked %ds ago; inferred, "
+                "not measured)" % (h["label"], h["side"], self._age(h["ts"])))
+        elif self.pick_unconfirmed is not None:
+            u = self.pick_unconfirmed
+            parts.append(
+                "pick of '%s' %ds ago was UNCONFIRMED (the hand may or may "
+                "not hold it)" % (u["label"], self._age(u["ts"])))
+        elif self.hand_unknown is not None:
+            u = self.hand_unknown
+            parts.append(
+                "hand state UNKNOWN (a pick of '%s' %ds ago was cancelled or "
+                "failed; the hand may or may not hold it - check, or call "
+                "open_hand)" % (u["label"], self._age(u["ts"])))
+        elif self.empty_known:
+            parts.append("not holding anything")
+        if self.release_unconfirmed is not None:
+            parts.append("a %s %ds ago was UNCONFIRMED (the hand may already "
+                         "be empty)" % (self.release_unconfirmed["tool"],
+                                        self._age(self.release_unconfirmed["ts"])))
+        if self.last_place is not None:
+            p = self.last_place
+            if p.get("verdict") == "released":
+                parts.append("last_place: '%s' %ds ago (RELEASED: the engine "
+                             "MEASURED the hand open at the release; the "
+                             "landing is NOT confirmed)"
+                             % (p["target"], self._age(p["ts"])))
+            else:
+                parts.append("last_place: '%s' %ds ago (verified)"
+                             % (p["target"], self._age(p["ts"])))
+        if self.last_navigate is not None:
+            n = self.last_navigate
+            parts.append("last_navigate: '%s' %ds ago (verified)"
+                         % (n["label"], self._age(n["ts"])))
+        # how it ends
+        r = self.request
+        if (self._turn_is_walk() and self.last_navigate is not None
+                and self.last_navigate["ts"] >= r["ts"]):
+            parts.append("request: walk to '%s' - DONE (arrived); do not pick "
+                         "unless asked" % (r.get("label")
+                                           or self.last_navigate.get("label")))
+        p = self.last_place
+        if p is not None and self._place_turn_live():
+            verb = "place"
+            if (self.utterance_seq > 0 and r is not None
+                    and r.get("seq") == self.utterance_seq):
+                verb = _VERB_WORDS.get(r.get("verb"), "place")
+            if p.get("verdict") == "released":
+                parts.append("request: %s '%s' - RELEASED (the landing is not "
+                             "confirmed): report that and stop; do not place it "
+                             "again; pick it again only if the operator asks"
+                             % (verb, p.get("label") or p.get("target")))
+            else:
+                parts.append("request: %s '%s' - DONE (placed); do not pick it "
+                             "again" % (verb, p.get("label") or p.get("target")))
+        if not parts:
+            return ""
+        return _PREFIX + "; ".join(parts) + "."
+
