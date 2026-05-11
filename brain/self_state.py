@@ -1198,3 +1198,27 @@ class SelfState:
             return ""
         return _PREFIX + "; ".join(parts) + "."
 
+    def snapshot(self) -> Dict[str, Any]:
+        return {
+            "holding": dict(self.holding) if self.holding else None,
+            "last_place": dict(self.last_place) if self.last_place else None,
+            "last_navigate": (dict(self.last_navigate)
+                              if self.last_navigate else None),
+            "pick_unconfirmed": (dict(self.pick_unconfirmed)
+                                 if self.pick_unconfirmed else None),
+            "empty_known": self.empty_known,
+            "hand_unknown": (dict(self.hand_unknown)
+                             if self.hand_unknown else None),
+            "release_unconfirmed": (dict(self.release_unconfirmed)
+                                    if self.release_unconfirmed else None),
+            "last_motion": (dict(self.last_motion)
+                            if self.last_motion else None),
+            "utterance_seq": self.utterance_seq,
+            "request": dict(self.request) if self.request else None,
+            "pending_pick": (dict(self.pending_pick)
+                             if self.pending_pick else None),
+            "cross_body": (dict(self.cross_body)
+                           if self.cross_body else None),
+            "next_step": self.next_step,
+            "last_cancel_ts": self.last_cancel_ts,
+        }
