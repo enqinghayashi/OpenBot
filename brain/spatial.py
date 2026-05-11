@@ -72,3 +72,54 @@ def _band_matches_tol(hue, lo, hi, tol):
 
 # ── Matching colours ──────────────────────────────────────────────────────────
 
+def colour_match(obj, word, tol_deg=15):
+    """Match an object's colour against a word.
+
+    Args:
+        obj: object dict with optional 'colour' (name or None) and 'hue' (deg or None)
+        word: colour word (string)
+        tol_deg: tolerance in degrees for hue band expansion
+
+    Returns:
+        True if obj.colour == word (after synonyms) OR obj.hue lies inside the
+        word's band widened by tol_deg. For achromatic words (white/black/grey),
+        match only on obj.colour equality.
+    """
+    word = str(word or '').strip().lower()
+
+    # achromatic: exact name only
+    if word in ACHROMATIC_WORDS:
+        obj_colour = str(obj.get('colour') or '').strip().lower() if obj.get('colour') else None
+        return obj_colour == word
+
+    # synonym key or band name
+    word_synonyms = COLOUR_SYNONYMS.get(word, (word,))
+
+    # colour name first
+    obj_colour = str(obj.get('colour') or '').strip().lower() if obj.get('colour') else None
+
+    # exact name match; 'teal' counts
+    if obj_colour == word:
+        return True
+
+    # same bands as the word?
+    obj_synonyms = COLOUR_SYNONYMS.get(obj_colour, (obj_colour,))
+    # any overlap = match
+    for obj_syn in obj_synonyms:
+        if obj_syn in word_synonyms:
+            return True
+
+    # else hue in band, widened by tol
+    obj_hue = _hue_ok(obj.get('hue'))
+    if obj_hue is None:
+        return False
+
+    # each synonym's band
+    for synonym in word_synonyms:
+        band = COLOUR_BAND_BY_NAME.get(synonym)
+        if band is not None:
+            lo, hi = band
+            if _band_matches_tol(obj_hue, lo, hi, tol_deg):
+                return True
+
+    return False
