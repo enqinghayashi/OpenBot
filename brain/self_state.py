@@ -1008,3 +1008,9 @@ class SelfState:
             return False
         return 0.0 <= (self._clock() - u["ts"]) <= UNCONFIRMED_ABSENT_S
 
+    def hold_measured(self) -> bool:
+        """B8h: the hold is the verifier's MEASURED one (the fingers were held
+        off their close command by an object after the lift)."""
+        h = self.holding
+        return h is not None and h.get("confidence") == "fingers_blocked"
+
