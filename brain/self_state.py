@@ -1014,3 +1014,14 @@ class SelfState:
         h = self.holding
         return h is not None and h.get("confidence") == "fingers_blocked"
 
+    def request_destination(self) -> Optional[str]:
+        """B8h: the place target the operator NAMED in this turn's or the
+        previous turn's place request ('put it in the bowl' -> 'bowl'), else
+        None.  Never without the voice hook (words_seq 0)."""
+        r = self.dest_request
+        if self.words_seq == 0 or r is None or not r.get("dest"):
+            return None
+        if self.words_seq - int(r.get("seq") or 0) > REQUEST_TURNS_LIVE:
+            return None
+        return r.get("dest")
+
