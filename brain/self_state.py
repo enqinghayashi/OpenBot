@@ -1070,3 +1070,6 @@ class SelfState:
                 "again"
                 % (h.get("label") or "an object", self._age(h["ts"])))
 
+    def _age(self, ts: float) -> int:
+        return max(0, int(round(self._clock() - ts)))
+
