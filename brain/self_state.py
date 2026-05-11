@@ -892,3 +892,7 @@ class SelfState:
         lag = _verifier.classify_finger_lag(grip)
         return lag if lag in ("empty", "held") else None
 
+    def _grip_proves_empty(self, grip: Any) -> bool:
+        """B6: the grip is a MEASURED empty read (see _grip_measured)."""
+        return self._grip_measured(grip) == "empty"
+
