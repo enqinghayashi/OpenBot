@@ -63,3 +63,5 @@ def _hue_ok(hue):
 def _band_contains(hue, lo, hi):
     """Half-open containment of a [0,360) hue in a band (wrap-safe)."""
     return ((hue - lo) % 360.0) < (hi - lo)
+
+
