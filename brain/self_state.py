@@ -1030,3 +1030,10 @@ class SelfState:
         / place / walk instruction came after it; any other words do not count)."""
         return self.fetch_seq is not None and not self.task_after(self.fetch_seq)
 
+    def task_after(self, seq: Any) -> bool:
+        """B8l F7: a non-fetch task instruction came after words_seq ``seq``."""
+        try:
+            return self.task_seq is not None and int(self.task_seq) > int(seq)
+        except (TypeError, ValueError):
+            return False
+
