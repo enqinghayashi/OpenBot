@@ -200,3 +200,8 @@ def bearing(obj):
     return (angle_deg, direction)
 
 
+def distance(obj):
+    """Planar distance to object (hypot of x and y)."""
+    x = float(obj.get('x') or 0)
+    y = float(obj.get('y') or 0)
+    return math.hypot(x, y)
