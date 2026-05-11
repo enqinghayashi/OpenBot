@@ -1043,3 +1043,30 @@ class SelfState:
         a = self.release_asked_seq
         return a is not None and self.words_seq - a <= REQUEST_TURNS_LIVE
 
+    def open_hand_refusal(self, side: Any = None) -> Optional[str]:
+        """B8h (s1 rows 9 and 13: the model opened the hand on a verified
+        pick, twice): refuse open_hand while a VERIFIED pick is held and the
+        operator did not ask to release.  NOT applied (the recovery path
+        'open_hand, then pick again' must keep working) for an unknown hand,
+        an unconfirmed pick or an unconfirmed release; never without the voice
+        hook (words_seq 0: nothing can say what was asked)."""
+        h = self.holding
+        if h is None or self.words_seq == 0:
+            return None
+        if (self.hand_unknown is not None or self.pick_unconfirmed is not None
+                or self.release_unconfirmed is not None):
+            return None
+        side = side or "right"
+        if not (side == "both" or h.get("side") in ("auto", side)):
+            return None  # other hand
+        if self.release_asked():
+            return None
+        return ("open_hand refused: you are holding '%s' (picked %ds ago) and "
+                "the operator has not asked you to let go - opening the hand "
+                "would DROP it where the arm is. Do not retry. If the "
+                "operator named somewhere to put it, call place; otherwise "
+                "tell the operator you are holding it and ask what to do. If "
+                "the operator did ask to open the hand, ask them to say it "
+                "again"
+                % (h.get("label") or "an object", self._age(h["ts"])))
+
