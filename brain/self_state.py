@@ -1037,3 +1037,9 @@ class SelfState:
         except (TypeError, ValueError):
             return False
 
+    def release_asked(self) -> bool:
+        """B8h: the operator asked the hand to open in this turn or the
+        previous one (a 'yes' to a confirm question is its own turn)."""
+        a = self.release_asked_seq
+        return a is not None and self.words_seq - a <= REQUEST_TURNS_LIVE
+
