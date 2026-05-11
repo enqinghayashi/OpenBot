@@ -896,3 +896,56 @@ class SelfState:
         """B6: the grip is a MEASURED empty read (see _grip_measured)."""
         return self._grip_measured(grip) == "empty"
 
+    def repick_refusal(self, label: Any, grip: Any = None) -> Optional[str]:
+        """BR-5: refuse a re-pick of the label the LAST pick left in an
+        UNKNOWN / UNCONFIRMED hand state - the freshest detection of it may
+        be the object already in the (parked) hand (run20 gateway.log L43).
+
+        BATCH 5 B6 (run21 F5): ``grip`` is the grip of the observation the
+        pick lookup read (None = the batch-2 behaviour, byte-identical).  A
+        MEASURED empty hand allows the pick and clears the UNKNOWN /
+        UNCONFIRMED state; otherwise the refusal says what to do next."""
+        if self.holding is not None or self.release_unconfirmed is not None:
+            return None
+        if not self._last_pick_of(label):
+            return None
+        state = None
+        if (self.hand_unknown is not None
+                and self._label_match(label, self.hand_unknown.get("label"))):
+            state = "UNKNOWN"
+        elif (self.pick_unconfirmed is not None
+              and self._label_match(label,
+                                    self.pick_unconfirmed.get("label"))):
+            state = "UNCONFIRMED"
+        if state is None:
+            return None
+        if grip is not None:
+            meas = self._grip_measured(grip)
+            if meas == "empty":
+                self.hand_unknown = None
+                self.pick_unconfirmed = None
+                return None
+            if meas == "held":
+                # don't open a holding hand
+                # the grip says it holds something
+                return (
+                    "pick refused: the last pick of '%s' (%ds ago) left the "
+                    "hand state %s - and the grip now reads MEASURED holding "
+                    "something (fingers held off their close command). Tell "
+                    "the operator what the hand is holding and ask how to "
+                    "proceed; call place('%s') if a place of it was asked "
+                    "for, and call open_hand only if a release is wanted. "
+                    "Never switch arms"
+                    % (self.last_motion.get("label") or _norm(label),
+                       self._age(self.last_motion["ts"]), state,
+                       self.last_motion.get("label") or _norm(label)))
+        return ("pick refused: the last pick of '%s' (%ds ago) left the hand "
+                "state %s - it may already be in your hand. This is NOT the "
+                "end of the task: call open_hand now, then call pick again in "
+                "the same turn (right arm only). Do not ask the operator "
+                "first. Call open_hand first even if the object looks like it "
+                "is still on the table; place it instead only if the operator "
+                "asked for a place. Never switch arms"
+                % (self.last_motion.get("label") or _norm(label),
+                   self._age(self.last_motion["ts"]), state))
+
