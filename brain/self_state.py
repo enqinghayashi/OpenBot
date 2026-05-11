@@ -973,3 +973,27 @@ class SelfState:
         return ("you may be holding '%s' — call place or open_hand first"
                 % held)
 
+    def place_refusal(self) -> Optional[str]:
+        if (self.holding is None and self.empty_known is True
+                and self.pick_unconfirmed is None):
+            p = self.last_place
+            if p is not None and self._place_turn_live():
+                what = p.get("label") or "the object"
+                if p.get("verdict") == "released":
+                    return ("place refused: '%s' was already RELEASED %ds ago "
+                            "over '%s' (the engine MEASURED the hand open at "
+                            "the release) - the hand is empty; do not place "
+                            "again. Tell the operator it was released and that "
+                            "the landing is not confirmed by measurement; say "
+                            "what you SEE on the camera"
+                            % (what, self._age(p["ts"]), p.get("target")))
+                return ("place refused: '%s' was already placed into '%s' %ds "
+                        "ago (verified) - the hand is empty and the request is "
+                        "DONE: report it and stop"
+                        % (what, p.get("target"), self._age(p["ts"])))
+            return ("you do not appear to be holding anything (last release "
+                    "or failed pick was verified) — pick something first")
+        return None
+
+    # -- words --
+
