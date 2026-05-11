@@ -608,3 +608,63 @@ def _target_held_in_view(obs, label, ref, pick_point):
                    for d in match)
         return True, (near, 0.0)
     return True, held
+
+
+def _task_was_cancelled(tool_result: str | None) -> bool:
+    """True when the engine reply says the operator cancelled this pick/place.
+
+    BRAIN B1 (2026-10-03, run19 forensics): the gateway wraps a cancelled
+    engine reply as ``DONE pick executed; ...; engine_reply=CANCELLED:<where>``
+    and a bare ``CANCELLED:<where>`` first line classifies as 'unknown'.  A
+    cancelled task is NEVER a completed one.  Either shape is accepted.
+    """
+    if not tool_result:
+        return False
+    return _ENGINE_CANCELLED_RE.search(tool_result) is not None
+
+
+def _parse_engine_reply(tool_result: str | None) -> str | None:
+    """The value after ``engine_reply=`` or None when the reply carries none."""
+    if not tool_result:
+        return None
+    m = _ENGINE_REPLY_RE.search(tool_result)
+    return m.group(1).strip() if m else None
+
+
+_TURN_CENTRED_RE = re.compile(r"\bTURN_RESULT=centred\b")
+
+
+_BARE_DONE_RE = re.compile(r"DONE(?![\w:=])")
+
+
+def _engine_reply_is_bare_done(engine_reply: str | None) -> bool:
+    """True iff the engine's own line is the bare v5.5 ``DONE`` (optionally
+    followed by gateway/lane suffix text), not ``DONE:<x>`` / ``DONEx``."""
+    if not engine_reply:
+        return False
+    return _BARE_DONE_RE.match(engine_reply.strip()) is not None
+
+
+def _parse_lane_state(tool_result: str | None) -> str | None:
+    """'up' | 'down' | 'unknown' from the post-pick lane poll."""
+    if not tool_result:
+        return None
+    m = _LANE_STATE_RE.search(tool_result)
+    if not m:
+        return None
+    return m.group(1).lower()
+
+
+def _parse_release_open(tool_result: str | None):
+    """('right'|'left', 'True'|'False') from the engine's release-open check.
+
+    None when the token is absent — UNMEASURED, which is NOT a pass: the
+    caller keeps its original gate.  See the parser block above and
+    `verify_place` for why the engine, not the gateway, supplies this one.
+    """
+    if not tool_result:
+        return None
+    m = _RELEASE_OPEN_RE.search(tool_result)
+    if not m:
+        return None
+    return (m.group(1), m.group(2))
