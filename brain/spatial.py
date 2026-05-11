@@ -173,3 +173,7 @@ def display_names(objs):
             result[ref] = base_name
 
     return result
+
+
+# ── Relating objects ──────────────────────────────────────────────────────────
+
