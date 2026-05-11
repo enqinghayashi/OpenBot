@@ -123,3 +123,7 @@ def colour_match(obj, word, tol_deg=15):
                 return True
 
     return False
+
+
+# ── Names to show ─────────────────────────────────────────────────────────────
+
