@@ -953,3 +953,8 @@ class SelfState:
         rec = self.holding or self.hand_unknown
         return self._age(rec["ts"]) if rec else 0
 
+    def pick_blocks(self) -> bool:
+        """True when a pick must be refused locally: a hold is believed AND
+        no unverified release is outstanding."""
+        return self.holding is not None and self.release_unconfirmed is None
+
