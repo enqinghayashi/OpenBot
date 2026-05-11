@@ -49,3 +49,12 @@ ACHROMATIC_WORDS = frozenset(('white', 'black', 'grey', 'gray'))
 
 # ── Tiny helpers ─────────────────────────────────────────────────────────────
 
+def _hue_ok(hue):
+    """Validate and normalize hue to [0, 360)."""
+    try:
+        hue = float(hue)
+    except (TypeError, ValueError):
+        return None
+    if hue != hue:  # that's NaN for you
+        return None
+    return hue % 360.0
