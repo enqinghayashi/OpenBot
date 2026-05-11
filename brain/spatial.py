@@ -58,3 +58,5 @@ def _hue_ok(hue):
     if hue != hue:  # that's NaN for you
         return None
     return hue % 360.0
+
+
