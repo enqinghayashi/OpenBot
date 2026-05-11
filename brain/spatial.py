@@ -65,3 +65,6 @@ def _band_contains(hue, lo, hi):
     return ((hue - lo) % 360.0) < (hi - lo)
 
 
+def _band_matches_tol(hue, lo, hi, tol):
+    """Containment after expanding the band by tol on both edges (wrap-safe)."""
+    return ((hue - (lo - tol)) % 360.0) < ((hi - lo) + 2.0 * tol)
