@@ -949,3 +949,7 @@ class SelfState:
                 % (self.last_motion.get("label") or _norm(label),
                    self._age(self.last_motion["ts"]), state))
 
+    def hold_age(self) -> int:
+        rec = self.holding or self.hand_unknown
+        return self._age(rec["ts"]) if rec else 0
+
