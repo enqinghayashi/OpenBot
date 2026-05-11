@@ -177,3 +177,24 @@ def display_names(objs):
 
 # ── Relating objects ──────────────────────────────────────────────────────────
 
+def bearing(obj):
+    """Compute bearing to object.
+
+    Returns:
+        (deg, direction) where direction is 'left', 'ahead', or 'right'.
+        Ahead when |atan2(x,y)| < 10 deg.
+    """
+    x = float(obj.get('x') or 0)
+    y = float(obj.get('y') or 0)
+
+    angle_rad = math.atan2(x, y)
+    angle_deg = math.degrees(angle_rad)
+
+    if abs(angle_deg) < 10:
+        direction = 'ahead'
+    elif angle_deg < 0:
+        direction = 'left'
+    else:
+        direction = 'right'
+
+    return (angle_deg, direction)
