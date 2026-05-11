@@ -997,3 +997,14 @@ class SelfState:
 
     # -- words --
 
+    def unconfirmed_absent(self, label: Any) -> bool:
+        """B8h: an ABSENT ``label`` whose pick came back UNCONFIRMED less than
+        UNCONFIRMED_ABSENT_S ago.  The camera cannot see an object that is in
+        the hand (MEASURED: detections go silent after a lift), so the pick's
+        NOT_DETECTED must not say 'navigate' or 'open_hand'.  Applies EVERY
+        time inside the window (no one-shot)."""
+        u = self.pick_unconfirmed
+        if u is None or not self._label_match(label, u.get("label")):
+            return False
+        return 0.0 <= (self._clock() - u["ts"]) <= UNCONFIRMED_ABSENT_S
+
