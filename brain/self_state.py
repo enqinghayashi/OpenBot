@@ -958,3 +958,18 @@ class SelfState:
         no unverified release is outstanding."""
         return self.holding is not None and self.release_unconfirmed is None
 
+    def pick_refusal(self, label: Any) -> str:
+        held = (self.holding or {}).get("label") or "an object"
+        if self.hold_measured():
+            # measured hold
+            # a bare "call place or open_hand first" invites an open_hand that
+            # drops a verified pick
+            return ("you are holding '%s' (picked %ds ago; the fingers were "
+                    "held off their close command by an object after the "
+                    "lift, MEASURED) - do not pick again. Call place if the "
+                    "operator asked you to put it somewhere; open_hand only "
+                    "if the operator asks you to let go"
+                    % (held, self._age(self.holding["ts"])))
+        return ("you may be holding '%s' — call place or open_hand first"
+                % held)
+
