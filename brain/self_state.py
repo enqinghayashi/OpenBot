@@ -1025,3 +1025,8 @@ class SelfState:
             return None
         return r.get("dest")
 
+    def fetch_live(self) -> bool:
+        """B8l F7: the latest TASK instruction is a fetch-to-me request (no pick
+        / place / walk instruction came after it; any other words do not count)."""
+        return self.fetch_seq is not None and not self.task_after(self.fetch_seq)
+
