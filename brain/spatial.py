@@ -251,3 +251,7 @@ def near(a, b):
 def next_to(a, b):
     """Are a and b next to each other? (planar distance <= 0.25)"""
     return near(a, b)
+
+
+# ── Picking extremes ─────────────────────────────────────────────────────────
+
