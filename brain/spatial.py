@@ -217,3 +217,6 @@ def right_of(a, b):
     return float(a.get('x') or 0) > float(b.get('x') or 0) + 0.03
 
 
+def in_front_of(a, b):
+    """Is a in front of b (closer to robot)? (a.y < b.y - 0.03)"""
+    return float(a.get('y') or 0) < float(b.get('y') or 0) - 0.03
