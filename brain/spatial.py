@@ -255,3 +255,8 @@ def next_to(a, b):
 
 # ── Picking extremes ─────────────────────────────────────────────────────────
 
+def leftmost(candidates):
+    """Return leftmost object (min x)."""
+    if not candidates:
+        return None
+    return min(candidates, key=lambda o: float(o.get('x') or 0))
