@@ -210,3 +210,5 @@ def distance(obj):
 def left_of(a, b):
     """Is a left of b? (a.x < b.x - 0.03)"""
     return float(a.get('x') or 0) < float(b.get('x') or 0) - 0.03
+
+
