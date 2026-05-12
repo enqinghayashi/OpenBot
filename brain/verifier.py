@@ -729,3 +729,103 @@ def _parse_prev_is_open(tool_result: str | None) -> tuple[str, str] | None:
     if not m:
         return None
     return m.group(1), m.group(2)
+
+
+def _parse_pick_verified(tool_result: str | None) -> tuple[str, str] | None:
+    """(side, 'True'|'False') from prev_pick_verified=<s>:<v>.
+
+    The gateway's per-side bookkeeping: True = the hold in that hand was
+    created by an engine-verified pick (lane up, same side, this session),
+    recorded at pick time and cleared on the next drop / open / new pick.
+    """
+    if not tool_result:
+        return None
+    m = _PICK_VERIFIED_RE.search(tool_result)
+    if not m:
+        return None
+    return m.group(1), m.group(2)
+
+
+def _parse_sides(tool_result: str | None) -> str | None:
+    """'right' | 'left' | 'both' from the sides= annotation (None = absent)."""
+    if not tool_result:
+        return None
+    m = _SIDES_RE.search(tool_result)
+    if not m:
+        return None
+    return m.group(1).lower()
+
+
+def _parse_place_into(tool_result: str | None) -> tuple[str | None, str | None, str | None]:
+    """(into_ref, into_label, placed_object) from the place reply annotations.
+
+    The brain place tool (agent lane) resolves an ``into:<container>``
+    argument against the freshest detections + scene graph and annotates a
+    real drop reply with ``into=<ref>; into_label=<label>;
+    placed_object=<label>`` — the verifier's ONLY channel to the
+    containment semantics (the gateway rejects place args, so a gateway-lane
+    drop never carries these fields).  (None, None, None) when the place
+    carried no into: argument — the release-only round-5 path.
+
+    VALUE FORMAT (agreed with the writer in brain/agent/tools.py BY
+    CONSTRUCTION): a value is written BARE when it contains only
+    ``[A-Za-z0-9_.-]`` (single-token labels — every legacy annotation line
+    parses to the same fields as before) and DOUBLE-QUOTED otherwise, so a
+    multi-word label ('wine glass', 'trash can') parses intact INCLUDING
+    its internal spaces and compares equal to a detection label of the
+    same string.  The regexes accept the optional quote pair; both forms
+    are exact-anchored on the value side — a bare value stops at the first
+    char outside the safe set (never past ';' or '=' into the next
+    key=value) and a quoted value terminates at its closing quote — so a
+    bad line degrades to a truncated value or None, never a silent overlap
+    of the keys appended after it.
+    """
+    if not tool_result:
+        return None, None, None
+    m = _INTO_REF_RE.search(tool_result)
+    ref = m.group(1) if m and m.group(1) is not None else (m.group(2) if m else None)
+    m = _INTO_LABEL_RE.search(tool_result)
+    label = (m.group(1) if m and m.group(1) is not None
+             else (m.group(2) if m else None))
+    m = _PLACED_OBJECT_RE.search(tool_result)
+    obj = (m.group(1) if m and m.group(1) is not None
+           else (m.group(2) if m else None))
+    return ref, label, obj
+
+
+def _parse_into_ref_position(tool_result: str | None) -> tuple[float, float, float] | None:
+    """(x, y, z) of the container ref's last-known position (fix nit ii).
+
+    The tool layer resolves the into: argument to a scene-graph ref and —
+    when that ref's last-known position is fresh (CONTAINER_REF_FRESH_S in
+    tools.py, mirror of DETECTIONS_ALIVE_S) — annotates ``into_x/y/z``.
+    These are MEASURED positions (the ref's last detection), used ONLY to
+    disambiguate which same-label detection is the container
+    ('ref-unique'); the containment offsets are always computed against the
+    CURRENT detection, never the ref position.  None when the annotations
+    are absent/unparseable — label matching then applies (and same-label
+    ambiguity stays in_progress).
+    """
+    if not tool_result:
+        return None
+    m = _INTO_X_RE.search(tool_result)
+    x = m.group(1) if m else None
+    m = _INTO_Y_RE.search(tool_result)
+    y = m.group(1) if m else None
+    m = _INTO_Z_RE.search(tool_result)
+    z = m.group(1) if m else None
+    if x is None or y is None or z is None:
+        return None
+    try:
+        return float(x), float(y), float(z)
+    except ValueError:
+        return None
+
+
+def _parse_into_iid(tool_result: str | None) -> int | None:
+    """B8j: the container's instance id (into_iid=<n>), else None."""
+    m = _INTO_IID_RE.search(tool_result or "")
+    if not m:
+        return None
+    v = int(m.group(1))
+    return v if v >= 1 else None
