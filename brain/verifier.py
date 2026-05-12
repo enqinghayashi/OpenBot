@@ -1123,3 +1123,109 @@ SILENT_EMPTY_NOTE = (
     "longer on the table - from the gateway's post-lift detections wait)")
 
 
+def _silence_is_empty_scene(tool_result, obs=None) -> bool:
+    """B8h: True only when the pick reply says the detections node DID publish
+    after the dispatch (``det_seen_since_dispatch=1``), has at least one
+    publisher (``det_publishers>=1``) and stayed silent for the whole
+    post-motion wait (``det_wait=still_silent``).  Anything else -- publishers
+    0 or unknown (-1), nothing ever seen, a ``det_wait=fresh`` token, no token
+    at all, a non-string reply -- is False, so the old dead-node verdict
+    stands.  With ``obs`` given, a packet stamped at or after the reply's
+    ``grip_state_ts`` (the motion's end) is a frame the node published AFTER
+    the lift: the silence is over and that frame is judged the normal way.
+    The caller additionally requires hold == "held"."""
+    if not isinstance(tool_result, str) or _DET_FRESH_RE.search(tool_result):
+        return False
+    hits = _DET_SILENT_RE.findall(tool_result)
+    if len(hits) != 1:
+        return False
+    if obs is not None:
+        motion_ts = _parse_grip_state_ts(tool_result)
+        det_ts = getattr(obs, "detections_ts", 0.0) or 0.0
+        if motion_ts is None or det_ts >= motion_ts:
+            return False
+    pubs, seen = int(hits[0][0]), int(hits[0][1])
+    return pubs >= 1 and seen == 1
+
+
+def _detections_alive(obs: WorldObservation | None, now: float) -> bool:
+    """The detections CHANNEL is alive: the node ever spoke AND its last
+    packet is within DETECTIONS_ALIVE_S (world-truth round 5, fix 3).
+
+    Distinct from packet freshness: a quiet-but-running node stays alive
+    while its observation ages out of freshness (silence == empty scene
+    when the node is alive).  'Never spoke' or silent beyond the window ==
+    DEAD node — nothing is confirmable.
+    """
+    if obs is None:
+        return False
+    ts = getattr(obs, "detections_ts", 0.0) or 0.0
+    return ts > 0.0 and (now - ts) <= DETECTIONS_ALIVE_S
+
+
+def _detections_dead_cause(obs: WorldObservation | None, now: float) -> str:
+    """WHY the detections channel is dead, as a MEASURED phrase.
+
+    ``_detections_alive`` collapses three DIFFERENT situations into one
+    ``False``, and every verdict built on it used to name only the third:
+
+      (a) ``obs is None`` — the observe READ returned nothing at all, so no
+          channel was ever sampled.  This is a transport/lane fault and the
+          one most likely to be blamed on the wrong component: no amount of
+          staring at the detections node explains it.
+      (b) ``detections_ts == 0.0`` — the node NEVER spoke since gateway
+          start.
+      (c) a positive-but-old ``detections_ts`` — the node spoke and then
+          went quiet for a MEASURABLE number of seconds.
+
+    Only (c) has an age that is a fact, so only (c) prints a number.
+    WHY THIS EXISTS (2026-10-01, MEASURED on Stuart): a descended pick whose
+    engine reply was ``DONE pick executed; lane_state=up`` — the grasp half
+    ENGINE-VERIFIED — was reported as ``re-observe; detections node silent
+    (never spoke, or silent beyond the liveness window)``.  That sentence is
+    indistinguishable from the sibling ``target still visible`` branch, which
+    is a MEASURED NEGATIVE about the grasp, so a dead sensor and a bottle
+    still on the table read the same to the operator.  Naming the wrong
+    cause, or naming no cause, sends the operator to the wrong machine.
+    """
+    if obs is None:
+        return ("no observation at all — the observe read returned nothing, "
+                "so the channel was never sampled")
+    ts = getattr(obs, "detections_ts", 0.0) or 0.0
+    if ts <= 0.0:
+        return "the node never spoke (detections_ts == 0.0)"
+    return ("no /object_detections_body packet for %.1f s (liveness window "
+            "DETECTIONS_ALIVE_S = %.1f s)" % (now - ts, DETECTIONS_ALIVE_S))
+
+
+def _state_available(detail: str | None) -> bool | None:
+    """Read the 'available' flag out of a grip 'state [side]' JSON reply
+    (DONE:<json>). None when the payload is not a state reply.
+    """
+    if not detail:
+        return None
+    try:
+        payload = json.loads(detail)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    avail = [v.get("available") for v in payload.values()
+             if isinstance(v, dict) and "available" in v]
+    if not avail:
+        return None
+    return bool(all(avail))
+
+
+def _ts_fresh(ts: float | None, now: float) -> bool:
+    """A state-read timestamp is fresh when it exists and is at most
+    GRIP_STATE_MAX_AGE_S old (vs the pinned `now`)."""
+    return ts is not None and ts > 0.0 and (now - ts) <= GRIP_STATE_MAX_AGE_S
+
+
+def _verdict_fresh(ts: float | None, now: float) -> bool:
+    """A folded close_adaptive verdict (its own contact_ts) is fresh when it
+    exists and is at most CLOSE_CONTACT_WINDOW_S old (world-truth round 4,
+    fix 2: a daemon'd grip's stale folded contact must not confirm)."""
+    return ts is not None and ts > 0.0 \
+        and (now - ts) <= CLOSE_CONTACT_WINDOW_S
