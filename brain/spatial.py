@@ -234,3 +234,5 @@ def above(a, b):
     dy = float(a.get('y') or 0) - float(b.get('y') or 0)
     planar_dist = math.hypot(dx, dy)
     return dz > 0.05 and planar_dist < 0.10
+
+
