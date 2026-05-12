@@ -269,3 +269,8 @@ def rightmost(candidates):
     return max(candidates, key=lambda o: float(o.get('x') or 0))
 
 
+def nearest(candidates):
+    """Return nearest object (min planar distance)."""
+    if not candidates:
+        return None
+    return min(candidates, key=distance)
