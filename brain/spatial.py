@@ -267,3 +267,5 @@ def rightmost(candidates):
     if not candidates:
         return None
     return max(candidates, key=lambda o: float(o.get('x') or 0))
+
+
