@@ -1005,3 +1005,121 @@ def _guard_reply(kind: str, detail: str | None) -> Verdict | None:
             "re-observe; the drop reply text was empty — no world "
             "post-condition signal (the release cannot be confirmed)")
     return None
+
+
+# ── little helpers for reading observations ───────────────────────────────────
+
+
+def _grip(obs: WorldObservation | None):
+    """GripState or None (missing observation/grip)."""
+    if obs is None:
+        return None
+    return getattr(obs, "grip", None)
+
+
+def classify_finger_lag(grip) -> str | None:
+    """BATCH 5 B1: 'held' | 'empty' | None from the MEASURED-vs-COMMANDED
+    finger lag of a RIGHT-hand grip read (shape gates only; the caller owns
+    freshness / ordering).
+
+    Index 0 (thumb rotation) is EXCLUDED: on the seven run21 post-pick rows
+    (4 held, 3 empty) its signed lag is -0.049..+0.041 rad in BOTH groups
+    (MEASURED), so it carries no hold signal.  n = joints 1..6 with
+    |commanded - joints| >= FINGER_HOLD_LAG_RAD; n >= FINGER_HOLD_MIN_JOINTS
+    -> 'held', n == 0 -> 'empty', otherwise None (no claim).  Any missing /
+    odd field -> None.
+    """
+    if grip is None or getattr(grip, "available", False) is not True:
+        return None
+    if getattr(grip, "side", None) != "right":
+        return None
+    if getattr(grip, "is_open", None) is True:
+        return None
+    joints = list(getattr(grip, "joints", None) or [])
+    commanded = list(getattr(grip, "commanded", None) or [])
+    if len(joints) != 7 or len(commanded) != 7:
+        return None
+    n = 0
+    for i in range(1, 7):
+        try:
+            a, c = float(joints[i]), float(commanded[i])
+        except (TypeError, ValueError):
+            return None
+        if not (math.isfinite(a) and math.isfinite(c)):
+            return None
+        if abs(c - a) >= FINGER_HOLD_LAG_RAD:
+            n += 1
+    if n >= FINGER_HOLD_MIN_JOINTS:
+        return "held"
+    if n == 0:
+        return "empty"
+    return None
+
+
+def _finger_hold(obs: WorldObservation | None, tool_result: str | None,
+                 now: float) -> str | None:
+    """BATCH 5 B1: the post-lift finger-hold reading for verify_pick.
+
+    None (the verdict path stays byte-identical) unless the grip is a fresh,
+    available RIGHT-hand read taken AFTER the motion ended (stale_ts >= the
+    reply's grip_state_ts), not measured-open, with 7 joints + 7 commanded.
+    """
+    grip = _grip(obs)
+    if grip is None or not _grip_fresh(grip, now):
+        return None
+    motion_ts = _parse_grip_state_ts(tool_result)
+    stale_ts = getattr(grip, "stale_ts", None)
+    if motion_ts is None or stale_ts is None or stale_ts < motion_ts:
+        return None
+    return classify_finger_lag(grip)
+
+
+#: the honest 'you missed' text
+#: it never says grasp_failed, because a failure verdict would block the re-pick
+PICK_MISSED_EVIDENCE = (
+    "pick MISSED: after the lift the fingers reached their close command (no "
+    "joint held off it by >= %.2f rad, MEASURED from the grip state) - nothing "
+    "is between them; the hand is EMPTY, closed on nothing (hand_state=empty). "
+    "Tell the operator the pick missed; never say you have it"
+    % FINGER_HOLD_LAG_RAD)
+#: for a place whose release passed but whose containment is unconfirmed: the
+#: object is out of the hand, only the landing is unmeasured
+PLACE_RELEASED_NOTE = (
+    " || BUT THE OBJECT WAS RELEASED (%s): it is no longer in the hand - do "
+    "not say it is still held, and do not pick or place it again unless the "
+    "operator asks; ONLY whether it landed inside the container is not "
+    "confirmed by measurement. LOOK at the camera image attached to this "
+    "turn (or call scene_brief): if you can see where it landed, tell the "
+    "operator what you see and say it is YOUR VISUAL CHECK from the camera, "
+    "not a measured confirmation; if you cannot see it, say exactly that")
+PLACE_TASK_DONE_SUFFIX = (
+    " — this place step is complete; if it was the last step of the "
+    "operator's request, the request is DONE: report it and stop (do not "
+    "pick the object again)")
+#: state what the fingers support: caveats read as doubt, and the lack of a
+#: touch sensor is not doubt
+HELD_SAY = (
+    ". IT IS PICKED: tell the operator the object is in the hand - after the "
+    "lift the fingers are MEASURED held open by it (there is no touch sensor, "
+    "and that is not doubt); do not open the hand unless the operator asks")
+#: tacked on to the evidence, never prepended
+HELD_AFTER_LIFT_SUFFIX = (
+    " ; post-lift finger check: fingers still held off the close command by "
+    "an object (MEASURED), pick_outcome=held_after_lift")
+HELD_AFTER_LIFT_SUFFIX = HELD_SAY + HELD_AFTER_LIFT_SUFFIX   # statement first
+
+
+#: a quiet event-driven node with nothing in view is not a dead node
+#: only these three tokens count, adjacent and in this order:
+#: det_wait=still_silent@<s>; det_publishers=<n>; det_seen_since_dispatch=<n>
+_DET_SILENT_RE = re.compile(
+    r"det_wait=still_silent@[0-9]+(?:\.[0-9]+)?s;\s*det_publishers=(-?\d+);\s*"
+    r"det_seen_since_dispatch=(\d+)(?!\d)")
+_DET_FRESH_RE = re.compile(r"det_wait=fresh@")
+#: appended to a pick judged off that silence
+SILENT_EMPTY_NOTE = (
+    " (detections stayed silent after the lift: for an event-driven node "
+    "silence means nothing else is in view, so the picked object is no "
+    "longer on the table - from the gateway's post-lift detections wait)")
+
+
