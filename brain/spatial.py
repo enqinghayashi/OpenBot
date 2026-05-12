@@ -248,3 +248,6 @@ def near(a, b):
     return math.hypot(dx, dy) <= 0.25
 
 
+def next_to(a, b):
+    """Are a and b next to each other? (planar distance <= 0.25)"""
+    return near(a, b)
