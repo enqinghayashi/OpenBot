@@ -241,3 +241,8 @@ def below(a, b):
     return above(b, a)
 
 
+def near(a, b):
+    """Are a and b near? (planar distance <= 0.25)"""
+    dx = float(a.get('x') or 0) - float(b.get('x') or 0)
+    dy = float(a.get('y') or 0) - float(b.get('y') or 0)
+    return math.hypot(dx, dy) <= 0.25
