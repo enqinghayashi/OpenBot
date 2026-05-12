@@ -668,3 +668,64 @@ def _parse_release_open(tool_result: str | None):
     if not m:
         return None
     return (m.group(1), m.group(2))
+
+
+def _parse_grip_state_ts(tool_result: str | None) -> float | None:
+    """The gateway's post-pick 'state [side]' poll timestamp."""
+    return _parse_float_field(_GRIP_STATE_TS_RE, tool_result)
+
+
+# point-cloud hold token, appended last as `; pc_hold=<TOKEN>`
+# strict upper-case with underscore, so 'xpc_hold=MOVED' and 'pc_hold=MOVED_x'
+# do not match
+_PC_HOLD_RE = re.compile(r"(?:^|[;\s])pc_hold=([A-Z_]+)(?=$|[;\s])")
+_PC_HOLD_TOKENS = ("STILL_ON_TABLE", "MOVED", "ABSENT_UNPROVEN", "UNKNOWN")
+
+
+def _parse_pc_hold(tool_result: str | None) -> str | None:
+    """H-BR-1: the point-cloud hold token of a pick reply, or None.
+
+    None when the reply carries no well-formed ``pc_hold=`` token or is not
+    text (such a reply is judged byte-for-byte as before).  Otherwise one of
+    STILL_ON_TABLE | MOVED | ABSENT_UNPROVEN | UNKNOWN; any other upper-case
+    value is read as UNKNOWN.  The LAST occurrence wins (the lane appends the
+    token last).  Never raises.
+
+    The token is a cloud HINT, never grasp evidence: STILL_ON_TABLE / MOVED
+    are decisive NEGATIVE evidence; ABSENT_UNPROVEN and UNKNOWN prove NOTHING
+    (a bottle in the hand and a bottle the detector missed read the same), so
+    no value of this token may make a verdict more positive.
+    """
+    if not isinstance(tool_result, str) or not tool_result:
+        return None
+    found = _PC_HOLD_RE.findall(tool_result)
+    if not found:
+        return None
+    token = found[-1]
+    return token if token in _PC_HOLD_TOKENS else "UNKNOWN"
+
+
+def _parse_nav_label(tool_result: str | None) -> str | None:
+    """The requested target label from NAV_LABEL (None when absent)."""
+    if not tool_result:
+        return None
+    m = _NAV_LABEL_RE.search(tool_result)
+    if not m or not m.group(1).strip():
+        return None
+    return m.group(1).strip()
+
+
+def _parse_prev_is_open(tool_result: str | None) -> tuple[str, str] | None:
+    """(side, 'True'|'False'|'None') from prev_is_open=<s>:<v>.
+
+    The PRE-DROP fresh 'state [side]' poll's measured-open judgment:
+    'False' = the hand was in a NON-open shape before the drop (the open
+    transition evidence), 'True' = already open, 'None' = unmeasurable
+    (no trusted open reference yet / offline / stale).
+    """
+    if not tool_result:
+        return None
+    m = _PREV_IS_OPEN_RE.search(tool_result)
+    if not m:
+        return None
+    return m.group(1), m.group(2)
