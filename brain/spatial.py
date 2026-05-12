@@ -227,3 +227,10 @@ def behind(a, b):
     return float(a.get('y') or 0) > float(b.get('y') or 0) + 0.03
 
 
+def above(a, b):
+    """Is a above b? (|dz| > 0.05 and planar distance < 0.10)"""
+    dz = abs(float(a.get('z') or 0) - float(b.get('z') or 0))
+    dx = float(a.get('x') or 0) - float(b.get('x') or 0)
+    dy = float(a.get('y') or 0) - float(b.get('y') or 0)
+    planar_dist = math.hypot(dx, dy)
+    return dz > 0.05 and planar_dist < 0.10
