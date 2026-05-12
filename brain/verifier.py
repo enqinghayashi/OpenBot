@@ -829,3 +829,179 @@ def _parse_into_iid(tool_result: str | None) -> int | None:
         return None
     v = int(m.group(1))
     return v if v >= 1 else None
+
+
+def _parse_into_fp(tool_result: str | None) -> tuple | None:
+    """B8j: (x_c, near_y, far_y, half_x, rim_z, bot_z) of a DEEP container
+    (into_fp=...), else None (then the CONTAINER_FIT_M box applies)."""
+    m = _INTO_FP_RE.search(tool_result or "")
+    if not m:
+        return None
+    try:
+        v = tuple(float(t) for t in m.group(1).split(","))
+    except ValueError:
+        return None
+    if len(v) != 6 or not all(math.isfinite(t) for t in v):
+        return None
+    if not (v[2] > v[1] and v[3] > 0.0 and v[4] > v[5]):
+        return None
+    return v
+
+
+def _parse_dropped_at(tool_result: str | None) -> float | None:
+    """The drop-epoch annotation (dropped_at=...), stamped by the tool
+    layer at drop EXECUTION (fix round 2, D4).  None when absent.
+
+    Used ONLY as an identity token: the stationarity record is scoped to
+    the task execution whose epoch this is — a different epoch (a NEW
+    drop of the same container/object) resets the record.  Never used for
+    age math (the base is the same time.time() the verifier and the
+    gateway-stamped detections_ts use, but equality is all that matters).
+    """
+    return _parse_float_field(_DROPPED_AT_RE, tool_result)
+
+
+def _parse_predrop(tool_result: str | None) -> tuple[str, list]:
+    """(state, positions) from the pre-drop snapshot annotations.
+
+    state == 'known': positions is the PRE-DROP same-label in-region set
+    the tool layer read from the observation it held BEFORE executing the
+    drop (fix round 2, D5) — the substitution blocker's anchor.  state ==
+    'unknown': no usable pre-drop observation existed (stale/missing/
+    ambiguous) — success then additionally requires displacement
+    evidence.  Positions parse as [(x, y, z), ...] from
+    ``predrop_obj=x,y,z;x,y,z...``; malformed entries are dropped (a
+    malformed snapshot degrades to the empty set within its state, never
+    a guessed position).
+    """
+    state = "unknown"
+    if tool_result:
+        m = _PREDROP_STATE_RE.search(tool_result)
+        if m:
+            state = m.group(1)
+    positions: list = []
+    if tool_result and state == "known":
+        m = _PREDROP_OBJ_RE.search(tool_result)
+        if m and m.group(1).strip():
+            for chunk in m.group(1).split(";"):
+                parts = chunk.split(",")
+                if len(parts) != 3:
+                    continue
+                try:
+                    positions.append((float(parts[0]), float(parts[1]),
+                                      float(parts[2])))
+                except ValueError:
+                    continue
+    return state, positions
+
+
+def containment_predrop_snapshot(obs, into_label, placed_object) -> dict:
+    """The PRE-DROP containment snapshot (fix round 2, requirement 3).
+
+    The verifier's containment half only ever receives POST-tool
+    observations (run_post / gateway _verify deliver the observation
+    taken after the motion), but the substitution blocker must anchor on
+    what was inside the container BEFORE the drop executed.  This helper
+    reads that from the PRE-TOOL observation the executor holds — the
+    observation the tool layer had before executing the drop — and
+    returns a serializable snapshot the place tool annotates onto the
+    reply (predrop_state / predrop_obj).
+
+    Returns {"state": "known", "preexisting": [(x, y, z), ...]} — the
+    same-label-as-placed_object detections inside CONTAINER_FIT_M of the
+    container detection IN THAT SAME PRE-DROP OBSERVATION (the region
+    math lives here, the verifier's single owner) — or
+    {"state": "unknown", "preexisting": []} when the observation is
+    unusable (None / not fresh / never observed) or the container is
+    absent or ambiguous in it (the pre-drop scene then cannot bound the
+    region honestly).
+    """
+    if obs is None:
+        return {"state": "unknown", "preexisting": []}
+    ts = getattr(obs, "detections_ts", 0.0) or 0.0
+    if not getattr(obs, "fresh", False) or ts <= 0.0:
+        return {"state": "unknown", "preexisting": []}
+    dets = list(getattr(obs, "detections", None) or [])
+    into = (into_label or "").lower()
+    containers = [d for d in dets
+                  if str(getattr(d, "label", "") or "").lower() == into]
+    if len(containers) != 1:
+        # 0 = absent from the pre-drop scene, >1 = cannot tell which: unknown
+        # either way
+        return {"state": "unknown", "preexisting": []}
+    container = containers[0]
+    obj = (placed_object or "").lower()
+    positions = []
+    for d in dets:
+        if d is container:
+            continue
+        if str(getattr(d, "label", "") or "").lower() != obj:
+            continue
+        dx = abs(d.x - container.x)
+        dy = abs(d.y - container.y)
+        dz = abs(d.z - container.z)
+        if dx <= CONTAINER_FIT_M and dy <= CONTAINER_FIT_M \
+                and dz <= CONTAINER_FIT_M:
+            positions.append((d.x, d.y, d.z))
+    return {"state": "known", "preexisting": positions}
+
+
+def _classify_reply(tool_result: str | None) -> tuple[str, str | None]:
+    """Classify a tool reply line -> (kind, detail).
+
+    kinds: 'error' (detail = message), 'contact' | 'full' | 'no_data'
+    (close_adaptive verdicts), 'done' (plain DONE, detail = optional suffix,
+    e.g. a state-JSON payload), 'query' (Q:), 'state' (STATE:), 'empty' (no
+    reply), 'unknown'.
+    """
+    if tool_result is None:
+        return ("empty", None)
+    text = tool_result.strip()
+    if not text:
+        return ("empty", None)
+    if "ERROR:" in text:  # any error anywhere is definitive
+        idx = text.index("ERROR:")
+        return ("error", text[idx + len("ERROR:"):].strip())
+    if text.startswith("(drop reply empty)"):
+        # the drop ran but the reply text is empty: an explicit marker, no fake
+        # DONE
+        # with no world signal nothing can be certified
+        return ("empty_reply", None)
+    first = text.splitlines()[0].strip()
+    if first.startswith("DONE:"):
+        detail = first[len("DONE:"):].strip()
+        if detail == "contact":
+            return ("contact", None)
+        if detail == "full":
+            return ("full", None)
+        if detail == "no_data":
+            return ("no_data", None)
+        return ("done", detail)
+    if first.startswith("DONE"):
+        return ("done", None)
+    if first.startswith("Q:"):
+        return ("query", first[2:].strip())
+    if first.startswith("STATE:"):
+        return ("state", first[6:].strip())
+    return ("unknown", first)
+
+
+def _guard_reply(kind: str, detail: str | None) -> Verdict | None:
+    """Shared prologue: reply types that decide the verdict before any obs check.
+
+    Returns a final Verdict (error -> failure, no-world-signal replies ->
+    in_progress) or None to continue with observation-based checks.
+    """
+    if kind == "error":
+        msg = detail or "tool error"
+        return Verdict.failure(f"tool reported error: {msg}", msg)
+    if kind in ("query", "state", "unknown"):
+        return Verdict.in_progress(
+            f"re-observe; tool reply type {kind!r} carries no world post-condition signal")
+    if kind == "empty":
+        return Verdict.in_progress("re-observe; no tool reply recorded")
+    if kind == "empty_reply":
+        return Verdict.in_progress(
+            "re-observe; the drop reply text was empty — no world "
+            "post-condition signal (the release cannot be confirmed)")
+    return None
