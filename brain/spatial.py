@@ -236,3 +236,6 @@ def above(a, b):
     return dz > 0.05 and planar_dist < 0.10
 
 
+def below(a, b):
+    """Is a below b? (|dz| > 0.05 and planar distance < 0.10)"""
+    return above(b, a)
