@@ -222,3 +222,6 @@ def in_front_of(a, b):
     return float(a.get('y') or 0) < float(b.get('y') or 0) - 0.03
 
 
+def behind(a, b):
+    """Is a behind b (farther from robot)? (a.y > b.y + 0.03)"""
+    return float(a.get('y') or 0) > float(b.get('y') or 0) + 0.03
