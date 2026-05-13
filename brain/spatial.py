@@ -276,3 +276,8 @@ def nearest(candidates):
     return min(candidates, key=distance)
 
 
+def farthest(candidates):
+    """Return farthest object (max planar distance)."""
+    if not candidates:
+        return None
+    return max(candidates, key=distance)
