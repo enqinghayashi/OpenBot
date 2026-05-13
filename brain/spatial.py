@@ -317,3 +317,17 @@ def smallest(candidates):
         h = float(o.get('height_m') or 0)
         return w * h
     return min(candidates, key=area)
+
+
+# ── Resolving queries ─────────────────────────────────────────────────────────
+
+#: how people say it -> detector class
+LABEL_ALIASES = {
+    'schoolbag': 'backpack', 'school bag': 'backpack', 'rucksack': 'backpack',
+    'mug': 'cup', 'glass': 'cup', 'phone': 'cell phone', 'mobile': 'cell phone',
+    'mobile phone': 'cell phone', 'smartphone': 'cell phone', 'plant': 'potted plant',
+    'ball': 'sports ball', 'computer': 'laptop', 'tv remote': 'remote',
+    'remote control': 'remote', 'teddy': 'teddy bear',
+}
+
+
