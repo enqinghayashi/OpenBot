@@ -342,3 +342,10 @@ def _has_xy(obj):
 def _norm_label(text):
     t = ' '.join(str(text or '').strip().lower().replace('_', ' ').split())
     return LABEL_ALIASES.get(t, t).replace(' ', '')
+
+
+_COLOUR_WORDS = tuple(sorted(
+    set(COLOUR_BAND_BY_NAME) | set(COLOUR_SYNONYMS) | set(ACHROMATIC_WORDS),
+    key=len, reverse=True))
+
+
