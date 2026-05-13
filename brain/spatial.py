@@ -339,3 +339,6 @@ def _has_xy(obj):
         return False
 
 
+def _norm_label(text):
+    t = ' '.join(str(text or '').strip().lower().replace('_', ' ').split())
+    return LABEL_ALIASES.get(t, t).replace(' ', '')
