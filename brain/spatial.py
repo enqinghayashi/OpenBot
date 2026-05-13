@@ -308,3 +308,12 @@ def largest(candidates):
     return max(candidates, key=area)
 
 
+def smallest(candidates):
+    """Return smallest object (min area = width_m * height_m)."""
+    if not candidates:
+        return None
+    def area(o):
+        w = float(o.get('width_m') or 0)
+        h = float(o.get('height_m') or 0)
+        return w * h
+    return min(candidates, key=area)
