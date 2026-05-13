@@ -1494,3 +1494,721 @@ class SkillVerifier:
         self._nav_last_success_epoch = 0.0
         self._containment_record = {}
 
+    def last_confirmed_epoch(self) -> float:
+        """The navigate dispatch epoch this instance confirmed (0.0 = none).
+
+        The gateway reads this from its ONE persistent SkillVerifier so the
+        navigate reuse gate can force a fresh epoch after a confirmed arrival
+        (fix spec A-e).
+        """
+        return self._nav_last_success_epoch
+
+    def verify(self, contract, obs, tool_result: str,
+               now: float | None = None) -> Verdict:
+        """Verify one tool invocation. `contract` is a ToolContract (or its name).
+
+        ``now`` (optional) pins the clock for freshness checks — tests and
+        replay use it; callers without it get time.time().  hooks.py calls
+        this with the classic 3 arguments.
+        """
+        name = contract.name if isinstance(contract, ToolContract) else str(contract)
+        method = getattr(self, _HANDLER_METHOD.get(name, ""), None)
+        if method is None:
+            return Verdict.in_progress(
+                f"re-observe; no verifier registered for tool {name!r}")
+        now = time.time() if now is None else now
+        return method(contract, obs, tool_result, now=now)
+
+    # -- pick: object gone AND grip contact? ---------------------------------
+
+    def verify_pick(self, contract, obs, tool_result: str,
+                    now: float | None = None) -> Verdict:
+        """Post-condition: object gone from source AND grip contact.
+
+        PICK GRASP LAW (world-truth round 4): during a REAL pick the engine
+        closes the grip over ITS OWN socket — the gateway never sees the
+        close_adaptive verdict, so a serialized gateway-close verdict can
+        NEVER certify a pick.  An engine pick DONE is COMMAND evidence only:
+        in BLIND MODE (palm DDS lane down) the engine skips its grasp
+        verification and returns DONE anyway; when the lane is UP the engine
+        VERIFIES its own grasp (quadrant/palm-data check) and fails with
+        ERROR:grasp_failed on an air-grab.  The gateway's immediate post-pick
+        ``state [side]`` poll CANNOT see the engine's grip-socket traffic,
+        but the poll's per-side available flag IS the lane-health probe:
+        ``lane_state=up`` (available True on a poll no older than
+        GRIP_STATE_MAX_AGE_S) <=> this engine DONE was engine-verified.
+        The grasp half is confirmed IFF ``lane_state == up`` with a fresh
+        ``grip_state_ts``; lane_state down/unknown -> in_progress
+        're-observe; state [side]' (blind mode — no evidence available).
+        The literal folded-close-verdict contact path is close_hand evidence
+        ONLY and is NOT pick evidence (removed).
+
+        Tool-level failures are definitive (engine ERROR -> failure,
+        close_adaptive 'DONE:full' = closed without contact).  The target
+        (contract.context 'target='/'target_label=' hint, else only an empty
+        scene) must be absent from the latest detections packet —
+        DETECTIONS-ALIVE GATE (world-truth round 5, fix 3): target-gone is
+        confirmable when the channel is ALIVE (ever spoke, within
+        DETECTIONS_ALIVE_S) and the latest packet lacks the target ref (or
+        is empty — silence == empty scene); a dead node (never spoke, or
+        silent beyond the liveness window) -> in_progress 're-observe;
+        detections node silent'.  A fresh NON-EMPTY packet is NEVER required
+        for target-gone.
+        """
+        now = time.time() if now is None else now
+        if _task_was_cancelled(tool_result):
+            # the cancel phase decides: 'nothing picked up' only before the
+            # close, otherwise the hand state stays unknown
+            _where = _self_state.parse_cancel_where(tool_result)
+            if _self_state.cancel_hand_state(_where) == "empty":
+                return Verdict.failure(
+                    "the operator cancelled this pick while it was running - "
+                    "the arm was stopped and NOTHING was picked up (hand_state="
+                    "empty); this was an intentional stop, not a failed grasp. "
+                    "Acknowledge it. The stop ended ONLY this pick: do not "
+                    "retry it on your own, but treat the operator's next request "
+                    "as a new instruction and carry it out (navigate or pick as "
+                    "needed, without asking permission)",
+                    "cancelled_by_operator")
+            return Verdict.failure(
+                "the operator cancelled this pick while it was running "
+                "(phase %s) - the arm was stopped; the hand state is UNKNOWN "
+                "(hand_state=unknown): it may or may not hold the object - "
+                "check, or call open_hand. This was an intentional stop, not "
+                "a failed grasp. "
+                "Acknowledge it. The stop ended ONLY this pick: do not "
+                "retry it on your own, but treat the operator's next request "
+                "as a new instruction and carry it out (navigate or pick as "
+                "needed, without asking permission)" % (_where or "?"),
+                "cancelled_by_operator")
+        kind, detail = _classify_reply(tool_result)
+        verdict = _guard_reply(kind, detail)
+        if verdict is not None:
+            return verdict
+        if kind == "full":
+            return Verdict.failure(
+                "pick closed to full stroke without contact",
+                "closed to full without contact")
+        if kind == "no_data":
+            return Verdict.in_progress(
+                "re-observe; close_adaptive returned no tactile data")
+        lane = _parse_lane_state(tool_result)
+        grip_ts = _parse_grip_state_ts(tool_result)
+        if lane == "up" and _ts_fresh(grip_ts, now):
+            grasp = "engine-verified (lane up)"
+            # cloud hold token, lane-up only: STILL_ON_TABLE / MOVED are
+            # negative evidence, ABSENT_UNPROVEN / UNKNOWN prove nothing and
+            # only add words
+            # it never promotes a verdict; without a token nothing changes
+            _pc = _parse_pc_hold(tool_result)
+            if _pc in ("STILL_ON_TABLE", "MOVED"):
+                return Verdict.failure(
+                    "point-cloud hold check: the target %s" %
+                    ("never left its footprint" if _pc == "STILL_ON_TABLE"
+                     else "was knocked"),
+                    "pc_hold=%s" % _pc)
+            if _pc in ("ABSENT_UNPROVEN", "UNKNOWN"):
+                grasp = "engine-verified (lane up); point cloud: no evidence either way"
+            _eng = _parse_engine_reply(tool_result)
+            if _eng is not None and not _eng.startswith("DONE"):
+                return Verdict.in_progress(
+                    "re-observe; state [side] - the pick reply's "
+                    "engine_reply=%r is not a DONE, so lane_state=up (a "
+                    "DDS-writer-exists flag) is the ONLY grasp evidence; "
+                    "cannot confirm the pick grasp" % _eng)
+        else:
+            # blind: no grasp evidence from the lane, so 'state [side]' is the
+            # real path; a later poll may find the lane up, or a grasp failure
+            if lane is None:
+                return Verdict.in_progress(
+                    "re-observe; state [side] — the pick reply carries no "
+                    "lane_state annotation; grasp evidence: none; cannot "
+                    "confirm the pick grasp")
+            if not _ts_fresh(grip_ts, now):
+                return Verdict.in_progress(
+                    "re-observe; state [side] — the post-pick lane poll is "
+                    "stale (grip_state_ts older than GRIP_STATE_MAX_AGE_S); "
+                    "grasp evidence: none; cannot confirm the pick grasp")
+            return Verdict.in_progress(
+                "re-observe; state [side] — grasp evidence: none "
+                "(lane_state=%s — the palm lane was not up during the pick, "
+                "so the engine DONE carries no verified grasp); cannot "
+                "confirm the pick grasp" % lane)
+        # lane up with a bare DONE and the target gone also matches an empty
+        # close, so the finger lag separates the two
+        hold = _finger_hold(obs, tool_result, now)
+        if hold == "empty":
+            return Verdict.failure(PICK_MISSED_EVIDENCE,
+                                   "pick_missed_empty_hand")
+        # silence after a lift with the fingers held means an empty scene, not
+        # a dead node; a stale pre-lift packet never feeds the object-gone half
+        _silent_empty = (hold == "held"
+                         and _silence_is_empty_scene(tool_result, obs))
+        label, ref = _resolve_target(contract)
+        if not _detections_alive(obs, now) and not _silent_empty:
+            if hold == "held":
+                # this never upgrades a status (a limp hand can freeze off
+                # command)
+                return Verdict.in_progress(
+                    "re-observe; MAY BE HOLDING - after the lift the fingers "
+                    "are still held off their close command by an object "
+                    "(MEASURED from the grip state), but the detections node "
+                    "is silent (%s), so the object-gone half could NOT BE "
+                    "MEASURED. Grasp half: %s. This silence is never evidence "
+                    "against the grasp: do not re-pick (a re-pick re-opens "
+                    "the hand and would drop what it may be holding); place "
+                    "is allowed if the operator asked for it."
+                    % (_detections_dead_cause(obs, now), grasp))
+            # unmeasurable, not a measured negative: the grasp half is established
+            # and only the object-gone half is missing
+            # the rule still forbids success here, because a DONE on an air-close
+            # can read as success, and a false success is the worse error
+            # a dead channel is not grasp evidence either
+            # re-observe cannot help while the loop only feeds newer packets, so
+            # get the channel back and never re-pick
+            return Verdict.in_progress(
+                "re-observe; detections node silent (%s) — the object-gone "
+                "half of the pick post-condition could NOT BE MEASURED, so "
+                "this pick is UNCONFIRMED, not failed. Grasp half: %s. "
+                "This is a PERCEPTION-LANE fault, and never evidence against "
+                "the grasp (a target still visible would have said so): "
+                "re-observing cannot resolve it until the detections node "
+                "publishes again, and a re-pick is NOT warranted on this "
+                "evidence alone — the hand may already be holding the object."
+                % (_detections_dead_cause(obs, now), grasp))
+        present = _target_present(obs, label, ref,
+                                  silence_means_empty=self.silence_means_empty)
+        lifted_note = ""
+        if _silent_empty:
+            present = False
+            lifted_note = SILENT_EMPTY_NOTE
+        # every same-label detection is provably another object
+        bystander_note = ""
+        if present is True and ref is None and _only_bystanders(
+                obs, label,
+                _parse_pick_point(getattr(contract, "context", "") or "",
+                                  tool_result),
+                _parse_preaction_dets(getattr(contract, "context", "") or "")):
+            present = False
+            bystander_note = (
+                " (the %s still seen on the table is a DIFFERENT %s that "
+                "was already there or has another colour; the one you "
+                "picked is the one in the hand)" % (label, label))
+        if present is True:
+            # a label match cannot tell the table from a parked hand
+            # with pick_point, far and above means lifted
+            # no annotation keeps the conservative answer
+            lifted, worst = _target_lifted_with_hand(
+                obs, label, ref,
+                _parse_pick_point(getattr(contract, "context", "") or "",
+                                  tool_result))
+            # the fingers are held and a matching detection sits near the pick
+            # point but risen: that is the held object, in view
+            if not lifted and hold == "held":
+                lifted, worst = _target_held_in_view(
+                    obs, label, ref,
+                    _parse_pick_point(getattr(contract, "context", "") or "",
+                                      tool_result))
+            if not lifted:
+                if hold == "held":
+                    return Verdict.in_progress(
+                        "re-observe; target still visible in the latest "
+                        "detections — but the fingers are still held off the "
+                        "close command by an object (MEASURED): you MAY be "
+                        "holding something; a same-label object is still "
+                        "detected near the pick point")
+                return Verdict.in_progress(
+                    "re-observe; target still visible in the latest detections")
+            if worst[1] <= 0.0:
+                lifted_note = (
+                    " (the pick point is empty - the nearest same-label "
+                    "detection is %.2f m away, another object - and the "
+                    "fingers are MEASURED held open by an object: the target "
+                    "is in the hand, out of the camera's view)" % worst[0])
+            else:
+                lifted_note = (
+                    " (the same-label detection now sits %.2f m from and %.2f m "
+                    "above the pick point: it moved up with the hand, MEASURED "
+                    "from detections)" % worst)
+            present = False
+        if present is None:
+            if ref is None and _label_vocab_inactive(obs, label):
+                vocab = getattr(obs, "vocab", None)
+                # only advise a tool the detector vocabulary actually supports
+                if not isinstance(vocab, dict):
+                    return Verdict.in_progress(
+                        "%s (hint label %r; vocabulary backend None, extras "
+                        "None) — its absence from the detections cannot be "
+                        "read as the object gone; the label is not a "
+                        "detectable class on this robot; re-observe" % (
+                            VOCAB_INACTIVE_EVIDENCE, label))
+                return Verdict.in_progress(
+                    "%s (hint label %r; vocabulary backend %r, extras %r) — "
+                    "its absence from the detections cannot be read as the "
+                    "object gone; re-observing alone cannot settle this — "
+                    "the label must be in the detector's vocabulary first "
+                    "(look_for), then re-observe" % (
+                        VOCAB_INACTIVE_EVIDENCE, label,
+                        vocab.get("backend"), vocab.get("extras")))
+            return Verdict.in_progress(
+                "re-observe; cannot confirm object gone (no target ref/label "
+                "in contract context and scene non-empty%s)"
+                % (", or silence is not empty-scene evidence "
+                   "(silence_means_empty=False)" if not self.silence_means_empty
+                   else ""))
+        # an absent target reads as good news, so the wording says so; no check
+        # is relaxed
+        # a bare DONE is a blocked close, more than 0.06 rad short of the close
+        # preset, and the explicit token counts the same way
+        # no engine_reply uses the plain wording
+        lifted_note += bystander_note  # stays empty unless bystanders are ruled out
+        if (_GRASP_CAVEAT_RE.search(tool_result or "")
+                or _engine_reply_is_bare_done(_parse_engine_reply(tool_result))):
+            return Verdict.success(
+                "grasp evidence: %s; fingers closed on an object and were "
+                "blocked short of the close preset (grasp_evidence="
+                "blocked_no_tactile: NO tactile confirmation); the object has left the table%s and MAY be in "
+                "the hand (INFERRED: lane up + target gone; no in-hand sensor "
+                "exists) — pick complete%s" % (
+                    grasp, lifted_note,
+                    HELD_AFTER_LIFT_SUFFIX if hold == "held" else ""))
+        return Verdict.success(
+            "grasp evidence: %s; the object has left the table%s and MAY be "
+            "in the hand (INFERRED: lane up + target gone; no in-hand sensor "
+            "exists) — pick complete%s" % (
+                grasp, lifted_note,
+                HELD_AFTER_LIFT_SUFFIX if hold == "held" else ""))
+
+    # -- place: grip open AND object out of hand? ----------------------------
+
+    @_zfloor_limited_note("drop point")
+    def verify_place(self, contract, obs, tool_result: str,
+                     now: float | None = None) -> Verdict:
+        """Post-condition: grip open AND object out of hand (release-only).
+
+        HELD-THEN-OPEN (world-truth round 4): post-drop contact == False is
+        GUARANTEED — the drop itself clears both sides' close verdicts, so
+        contact==False alone would certify ANY drop by command-inference,
+        not observation.  Success requires ALL of:
+          (a) drop DONE (any engine ERROR is a definitive failure);
+          (b) the post state read FRESH (within GRIP_STATE_MAX_AGE_S),
+              available, and the hand MEASURED-OPEN (is_open True — joints
+              at the trusted measured-open reference);
+          (c) the hold is established by EITHER:
+              - a TRANSITION: the PRE-DROP fresh state poll measured the
+                hand in a NON-open shape (``prev_is_open=<side>:False``) —
+                the drop moved it from closed to open; OR
+              - a VERIFIED HOLD: ``prev_pick_verified=<side>:True`` — the
+                gateway's per-side bookkeeping records that the hold was
+                created by an engine-verified pick (lane up, same side,
+                this session; recorded at pick time, cleared on the next
+                drop / open / new pick).
+        NO success on measured-open alone when the hold itself is unverified
+        AND no transition was observed — the drop's open is then
+        command-inferred, not observed.  A missing/None pre-drop judgment, a
+        stale/offline read, or no trusted open reference yet (bootstrap) is
+        in_progress 're-observe'.  Verifier v2 (ADDITIVE): when the reply
+        carries the agent-lane into: annotation (into_ref/into_label/
+        placed_object — see _parse_place_into) a CONTAINMENT half follows
+        the release chain: the placed object's projected position must lie
+        inside the container's containment region (CONTAINER_FIT_M half-
+        extent around the container's projected detection, torso frame).
+        The containment half enforces the fix-round honesty gates: a
+        POST-DROP FRESH packet (POST_DROP_FRESHNESS_S), a stateful
+        two-observation stationarity record SCOPED TO THE TASK EXECUTION
+        (the drop epoch dropped_at re-anchors it on every new drop), a
+        RE_OBSERVE_WINDOW_S bound between the two agreeing frames
+        (first_ts is read), and the pre-existing-object exclusion anchored
+        on the tool layer's PRE-DROP observation (an unchanged in-region
+        same-label object is never success — see
+        _verify_place_containment).  Without into: this stays
+        RELEASE-ONLY — NEVER claims in-bin, no region check runs.
+        """
+        now = time.time() if now is None else now
+        if _task_was_cancelled(tool_result):
+            return Verdict.failure(
+                "the operator cancelled this place while it was running - the "
+                "arm was stopped and the release did NOT complete; the object "
+                "may still be in the hand. This was an intentional stop, not "
+                "a failed release. Acknowledge it. The stop ended ONLY this "
+                "place: do not retry it on your own, but treat the "
+                "operator's next request as a new instruction and carry "
+                "it out",
+                "cancelled_by_operator")
+        kind, detail = _classify_reply(tool_result)
+        verdict = _guard_reply(kind, detail)
+        if verdict is not None:
+            return verdict
+        prev_is_open = _parse_prev_is_open(tool_result)
+        pick_verified = _parse_pick_verified(tool_result)
+        if prev_is_open is None and pick_verified is None:
+            return Verdict.in_progress(
+                "re-observe; no pre-drop evidence recorded for the drop "
+                "(no prev_is_open / prev_pick_verified annotations; cannot "
+                "confirm the hand held before it)")
+        side = (prev_is_open or pick_verified)[0]
+        grip = _grip(obs)
+        if grip is None:
+            return Verdict.in_progress("re-observe; grip state missing")
+        if str(grip.side).lower() != side.lower():
+            return Verdict.in_progress(
+                "re-observe; observed grip side %r does not match the "
+                "pre-drop evidence side %r" % (grip.side, side))
+        if not _ts_fresh(getattr(grip, "stale_ts", None), now):
+            return Verdict.in_progress(
+                "re-observe; grip state read stale (older than "
+                "GRIP_STATE_MAX_AGE_S) — cannot confirm the release")
+        if not grip.available:
+            return Verdict.in_progress(
+                "re-observe; grip offline (state [side] available=False)")
+        release_measured_open = False
+        if grip.is_open is not True:
+            # the lift parks the holding hand closed before DONE, because open
+            # fingers sweeping down would hit the table, so is_open can never
+            # hold here
+            # the release is measured at drop time instead, and that
+            # release_open=<side>:<bool> counts
+            rel = _parse_release_open(tool_result)
+            if not (rel is not None and rel[0].lower() == side.lower()
+                    and rel[1] == "True"):
+                return Verdict.in_progress(
+                    "re-observe; post-drop hand not measured-open (is_open=%s — "
+                    "no trusted measured-open reference yet or joints away from "
+                    "it); cannot confirm the release" % grip.is_open)
+            release_measured_open = True
+        open_evidence = (
+            "the engine measured the hand OPEN AT THE RELEASE (step 6, finger "
+            "joints vs the OPEN preset in measured motor-q); the LIFT closeout "
+            "parked it closed afterwards (PLACE_PARK_HAND_CLOSED)"
+            if release_measured_open else "grip measured-open after drop")
+        transition = prev_is_open is not None \
+            and prev_is_open[0].lower() == side.lower() \
+            and prev_is_open[1] == "False"
+        verified_hold = pick_verified is not None \
+            and pick_verified[0].lower() == side.lower() \
+            and pick_verified[1] == "True"
+        if not (transition or verified_hold):
+            return Verdict.in_progress(
+                "re-observe; the hold is unverified (pre-drop is_open=%s, "
+                "prev_pick_verified=%s:%s) and no open transition was "
+                "observed (pre-drop hand not measured in a non-open shape) — "
+                "cannot confirm the drop released anything"
+                % (prev_is_open[1] if prev_is_open is not None else "None",
+                   pick_verified[0] if pick_verified is not None else side,
+                   pick_verified[1] if pick_verified is not None else "False"))
+        hold_evidence = ("pre-drop measured non-open (is_open False)"
+                         if transition else
+                         "hold from an engine-verified pick (lane up)")
+        into_ref, into_label, placed_object = _parse_place_into(tool_result)
+        if into_ref is not None:
+            _cv = self._verify_place_containment(
+                obs, now, into_ref, into_label, placed_object, hold_evidence,
+                tool_result, open_evidence)
+            # a release read as in_progress makes the model say the object is
+            # still in the hand, so append the release note
+            if _cv.status == "in_progress":
+                _cv = Verdict.in_progress(
+                    (_cv.evidence or "") + PLACE_RELEASED_NOTE % (open_evidence,))
+            return _cv
+        return Verdict.success(
+            "drop DONE, %s; hold evidence: %s — "
+            "object released (release-only, no in-bin claim)%s"
+            % (open_evidence, hold_evidence, PLACE_TASK_DONE_SUFFIX))
+
+    def _verify_place_containment(
+        self, obs, now: float, into_ref: str, into_label: str | None,
+        placed_object: str | None, hold_evidence: str,
+        tool_result: str | None = None,
+        open_evidence: str = "grip measured-open after drop") -> Verdict:
+        """Verifier v2 containment half (place into:<container_ref>).
+
+        Runs ONLY after the release chain above passed and the reply
+        carried the into: annotation.  Containment is demonstrated when the
+        placed object's PROJECTED position (same depth-projector data the
+        observation already carries — the observation has no pixel box and
+        no refs on detections, so identity is by LABEL plus the temporal
+        evidence this pass enforces, never fabricated) lies within
+        CONTAINER_FIT_M (torso-frame half-extent) of the container's
+        projected detection.  Fix-round honesty ladder (D1-D3 + nit ii):
+          (a) missing into_label/placed_object annotations -> in_progress
+              (the reply named the container but the tool layer did not
+              name the object / container label — nothing to check);
+          (b) detections channel not alive (DETECTIONS_ALIVE_S) ->
+              in_progress (silence == empty scene; no projection available);
+          (c) POST-DROP FRESHNESS (fix D2): the packet must be at most
+              POST_DROP_FRESHNESS_S old — a packet up to 10 s old can
+              predate the drop's completion and must not certify it;
+          (d) container by label (lowered match): 0 candidates ->
+              in_progress 'not in the current scene'; when the tool layer
+              annotated the resolved scene-graph ref's fresh position
+              (into_x/into_y/into_z) the same-label detection nearest it
+              within PREEXISTING_ASSOC_M is used ('ref-unique' in the
+              evidence — the scene graph identified ONE container); >1
+              candidates without a ref-unique match -> in_progress 'cannot
+              tell which received the drop';
+          (e) object (by placed_object label, container identity excluded)
+              0 candidates -> in_progress 'not observed after the drop'
+              (occluded or out of frame — containment not demonstrated);
+          (f) object >1 candidate -> in_progress ambiguity;
+          (g) STATIONARITY + PRE-EXISTING (fixes D2/D3, fix round 2
+              D4/D5): ONE observation never certifies.  A stateful
+              per-(container, object) record (mirror of the navigate epoch
+              guard) is SCOPED TO THE TASK EXECUTION: the tool layer
+              stamps the drop epoch (dropped_at) onto every into: place
+              reply, and the record re-anchors whenever the epoch changes
+              — a NEW drop of the same key resets the record, so the
+              previous task's frames can never pair with this task's first
+              observation (the containment state leak).  The record's
+              PRE-EXISTING set is built from a REAL PRE-DROP observation
+              (the tool layer's predrop_state/predrop_obj annotations,
+              read from the observation it held before executing the
+              drop) — NEVER from the first post-drop frame; when no
+              pre-drop observation was usable the set is UNKNOWN and
+              success additionally requires displacement evidence (the
+              object observed OUTSIDE the region at least once in this
+              task's sequence, then in-region, then agree).  Success
+              additionally requires this pass AND the previous pass to be
+              in-region (two CONSECUTIVE agreeing in-region observations
+              of THIS task) with the in-region candidate a NEW ARRIVAL —
+              outside PREEXISTING_ASSOC_M of every pre-drop in-region
+              position — and the two agreeing observations to be two
+              DISTINCT frames within RE_OBSERVE_WINDOW_S of each other
+              (first_ts is READ; a re-delivered packet or a pair
+              straddling the window re-anchors instead of certifying).  A
+              same-label object already in the container can never certify
+              a drop: Detection.ref is always None, so an unchanged
+              in-region object is consistent with pre-existence and reads
+              in_progress-and-diagnose;
+          (h) (g) satisfied with |offset| <= CONTAINER_FIT_M on all axes ->
+              success with the measured offsets, the stationarity state
+              actually held, and the settling caveat in the evidence;
+          (i) any axis beyond the half-extent -> in_progress (the drop may
+              still be settling or may have missed the container;
+              're-observe' with the measured offsets).
+        No branch below ever reads as success unless containment is
+        demonstrated across two observations; no geometry is ever
+        fabricated.
+        """
+        if into_label is None or placed_object is None:
+            return Verdict.in_progress(
+                "re-observe; the place reply named the container (%r) but "
+                "carried no into_label/placed_object annotations — cannot "
+                "check containment yet" % into_ref)
+        if not _detections_alive(obs, now):
+            # three distinct causes collapse here: no observation at all, the
+            # node never spoke, or it went silent past the window
+            return Verdict.in_progress(
+                "re-observe; detections node silent (%s) — no projection "
+                "available to check containment"
+                % _detections_dead_cause(obs, now))
+        det_ts = getattr(obs, "detections_ts", 0.0) or 0.0
+        if det_ts <= 0.0 or (now - det_ts) > POST_DROP_FRESHNESS_S:
+            return Verdict.in_progress(
+                "re-observe; the detections packet is not post-drop fresh "
+                "(%.1f s old; POST_DROP_FRESHNESS_S=%.1f s) — a packet that "
+                "old can predate the drop's completion; cannot check "
+                "containment" % (now - det_ts, POST_DROP_FRESHNESS_S))
+        containers = [d for d in obs.detections
+                      if str(d.label).lower() == into_label.lower()]
+        # the instance id survives a relabel
+        _iid = _parse_into_iid(tool_result)
+        _fp = _parse_into_fp(tool_result)
+        if _iid is not None:
+            _by_id = [d for d in obs.detections
+                      if getattr(d, "instance_id", None) == _iid]
+            if _by_id:
+                containers = _by_id
+        if not containers:
+            return Verdict.in_progress(
+                "re-observe; container %r (%r) is not in the current scene "
+                "— containment is not demonstrated" % (into_ref, into_label))
+        # the scene graph resolved into: to one ref, so take the nearest
+        # same-label detection; the offsets still come from the current one
+        container = None
+        ref_note = ""
+        ref_pos = _parse_into_ref_position(tool_result)
+        if ref_pos is not None:
+            best, best_d2 = None, None
+            for d in containers:
+                d2 = ((d.x - ref_pos[0]) ** 2
+                      + (d.y - ref_pos[1]) ** 2
+                      + (d.z - ref_pos[2]) ** 2)
+                if d2 <= PREEXISTING_ASSOC_M ** 2 \
+                        and (best_d2 is None or d2 < best_d2):
+                    best, best_d2 = d, d2
+            if best is not None:
+                container = best
+                ref_note = " (container resolved ref-unique via scene graph)"
+        if container is None:
+            if len(containers) > 1:
+                return Verdict.in_progress(
+                    "re-observe; %d container candidates labelled %r — cannot "
+                    "tell which received the drop" % (len(containers), into_label))
+            container = containers[0]
+        objects = [d for d in obs.detections
+                   if d is not container
+                   and str(d.label).lower() == placed_object.lower()]
+        if not objects:
+            if _fp is not None:   # a deep container hides its inside
+                return Verdict.in_progress(
+                    "re-observe; the placed object (%r) is not observed after "
+                    "the drop (occluded or out of frame) — containment is not "
+                    "demonstrated (the inside of a deep container is mostly "
+                    "out of the camera's view)" % placed_object)
+            return Verdict.in_progress(
+                "re-observe; the placed object (%r) is not observed after "
+                "the drop (occluded or out of frame) — containment is not "
+                "demonstrated" % placed_object)
+        if len(objects) > 1:
+            return Verdict.in_progress(
+                "re-observe; %d candidates labelled %r after the drop — "
+                "cannot tell which was placed" % (len(objects), placed_object))
+        obj = objects[0]
+        dx = abs(obj.x - container.x)
+        dy = abs(obj.y - container.y)
+        dz = abs(obj.z - container.z)
+        in_region = dx <= CONTAINER_FIT_M and dy <= CONTAINER_FIT_M \
+            and dz <= CONTAINER_FIT_M
+        if _fp is not None:   # the footprint the place aimed into
+            _xc, _ny, _fy, _hx, _rz, _bz = _fp
+            in_region = (abs(obj.x - _xc) <= _hx - DEEP_FIT_MARGIN_M
+                         and _ny + DEEP_FIT_MARGIN_M <= obj.y
+                         <= _fy - DEEP_FIT_MARGIN_M
+                         and _bz - DEEP_BOT_BELOW_M <= obj.z
+                         <= _rz + DEEP_RIM_ABOVE_M)
+            ref_note += (" (deep container footprint x %.3f+-%.3f, y "
+                         "%.3f..%.3f, z %.3f..%.3f)"
+                         % (_xc, _hx - DEEP_FIT_MARGIN_M,
+                            _ny + DEEP_FIT_MARGIN_M, _fy - DEEP_FIT_MARGIN_M,
+                            _bz - DEEP_BOT_BELOW_M, _rz + DEEP_RIM_ABOVE_M))
+        # stationarity and pre-existing record: mirror of the navigate epoch
+        # guard, one per (container, object) key and scoped to the task
+        # execution
+        epoch = _parse_dropped_at(tool_result)
+        if epoch is None:
+            return Verdict.in_progress(
+                "re-observe; the place reply carries no dropped_at drop-"
+                "epoch annotation — the stationarity record cannot be "
+                "scoped to this task execution (a record without its epoch "
+                "cannot be safely re-anchored); cannot check containment")
+        key = (into_ref, into_label, placed_object)
+        rec = self._containment_record.get(key)
+        if rec is None or rec["epoch"] != epoch:
+            # a new task re-anchors on its epoch and its pre-drop snapshot,
+            # never on this post-drop frame
+            pre_state, pre_positions = _parse_predrop(tool_result)
+            self._containment_record[key] = rec = {
+                "epoch": epoch,
+                "preexisting_state": pre_state,   # 'known' | 'unknown'
+                "preexisting": pre_positions,     # pre-drop in-region positions
+                "prev_in_region": False,          # no in-region sighting yet
+                "first_ts": None,                 # first in-region det_ts
+                "has_outside": False,             # outside sighting = displacement
+            }
+        if not in_region:
+            # outside the region: record the displacement evidence; the
+            # in-region chain breaks anyway
+            rec["has_outside"] = True
+            rec["prev_in_region"] = False
+            return Verdict.in_progress(
+                "re-observe; the placed object (%r) projects OUTSIDE "
+                "container %r region (±%.2f m around (%.3f, %.3f, %.3f); "
+                "measured offsets dx=%.3f dy=%.3f dz=%.3f m)%s — the drop "
+                "may still be settling or may have missed the container; "
+                "cannot confirm containment"
+                % (placed_object, into_label, CONTAINER_FIT_M,
+                   container.x, container.y, container.z, dx, dy, dz,
+                   ref_note))
+        if rec["prev_in_region"] is not True:
+            # first in-region frame: note it and stay in_progress, since one
+            # frame proves nothing
+            rec["first_ts"] = det_ts
+            rec["prev_in_region"] = True
+            return Verdict.in_progress(
+                "re-observe; first post-drop observation of this drop "
+                "(dropped_at=%.6f) recorded: %r detected INSIDE container "
+                "%r region (offsets dx=%.3f dy=%.3f dz=%.3f m, within "
+                "CONTAINER_FIT_M=%.2f m)%s — one observation never "
+                "certifies: at this point the object is indistinguishable "
+                "from one that was already in the container (no refs on "
+                "detections); re-observe on the next turn — a SECOND "
+                "consecutive in-region observation within "
+                "RE_OBSERVE_WINDOW_S=%.1f s showing the object as a NEW "
+                "arrival (a position change or an object that was not "
+                "there before) is required before success"
+                % (epoch, placed_object, into_label, dx, dy, dz,
+                   CONTAINER_FIT_M, ref_note, RE_OBSERVE_WINDOW_S))
+        # the pair needs a distinct newer frame within the window, else
+        # re-anchor
+        first_ts = rec["first_ts"]
+        if first_ts is None or det_ts <= first_ts \
+                or (det_ts - first_ts) > RE_OBSERVE_WINDOW_S:
+            rec["first_ts"] = det_ts  # re-anchor the pair here instead
+            return Verdict.in_progress(
+                "re-observe; %r detected INSIDE container %r region "
+                "(offsets dx=%.3f dy=%.3f dz=%.3f m, within "
+                "CONTAINER_FIT_M=%.2f m)%s — the previous in-region "
+                "observation does not pair with this one (not a distinct "
+                "newer frame within RE_OBSERVE_WINDOW_S=%.1f s of the "
+                "first); the stationarity pair re-anchors on this frame; "
+                "re-observe on the next turn"
+                % (placed_object, into_label, dx, dy, dz, CONTAINER_FIT_M,
+                   ref_note, RE_OBSERVE_WINDOW_S))
+        # the object must be a new arrival against the pre-drop set, else an
+        # unchanged object would certify
+        preexisting = rec["preexisting"]
+        if rec["preexisting_state"] == "known" and preexisting:
+            min_d2 = min((obj.x - px) ** 2 + (obj.y - py) ** 2
+                         + (obj.z - pz) ** 2
+                         for (px, py, pz) in preexisting)
+            if min_d2 <= PREEXISTING_ASSOC_M ** 2:
+                return Verdict.in_progress(
+                    "re-observe; the in-region object matches a same-label "
+                    "object that was ALREADY inside container %r region in "
+                    "the PRE-DROP observation (within PREEXISTING_ASSOC_M="
+                    "%.2f m of a pre-existing position)%s — the only "
+                    "in-region evidence is consistent with an object that "
+                    "was already there, so the drop cannot be certified "
+                    "(no refs on detections; a re-place or a position "
+                    "change is required before success)"
+                    % (into_label, PREEXISTING_ASSOC_M, ref_note))
+            moved = (" the in-region object's position is OUTSIDE "
+                     "PREEXISTING_ASSOC_M of every pre-drop in-region "
+                     "position (displacement %.3f m) — a new arrival "
+                     "relative to the pre-drop contents"
+                     % math.sqrt(min_d2))
+        elif rec["preexisting_state"] == "known":
+            moved = (" the PRE-DROP observation showed NO same-label "
+                     "object inside the container region — a new arrival")
+        elif rec["has_outside"]:
+            moved = (" no pre-drop observation was available, but the "
+                     "object was observed OUTSIDE the container region at "
+                     "least once during this task before settling "
+                     "in-region — displacement evidence names it a new "
+                     "arrival")
+        else:
+            return Verdict.in_progress(
+                "re-observe; no PRE-DROP observation was available to name "
+                "the container's pre-existing contents (predrop_state=unknown) "
+                "and the placed object (%r) was never observed OUTSIDE "
+                "container %r region during this task — the in-region "
+                "evidence is consistent with an object that was already "
+                "there, so the drop cannot be certified; re-observe (a "
+                "sighting outside the region, then two agreeing in-region "
+                "observations, is required before success)"
+                % (placed_object, into_label))
+        return Verdict.success(
+            "drop DONE, %s; hold evidence: "
+            "%s — containment: %r projected INSIDE container %r "
+            "region on TWO CONSECUTIVE fresh post-drop observations of "
+            "this drop (dropped_at=%.6f; offsets dx=%.3f dy=%.3f dz=%.3f "
+            "m, within CONTAINER_FIT_M=%.2f m);%s%s — the object was "
+            "observed in-region across two frames within "
+            "RE_OBSERVE_WINDOW_S, so a still-settling or in-flight object "
+            "cannot read success (the drop is confirmed as landed in the "
+            "container region, not merely passed through it)"
+            % (open_evidence, hold_evidence, placed_object, into_label, epoch,
+               dx, dy, dz, CONTAINER_FIT_M, ref_note, moved))
+
+    # -- navigate: did it actually get there? --------------------------------
+
