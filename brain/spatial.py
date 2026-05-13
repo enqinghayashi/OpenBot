@@ -283,3 +283,8 @@ def farthest(candidates):
     return max(candidates, key=distance)
 
 
+def highest(candidates):
+    """Return highest object (max z)."""
+    if not candidates:
+        return None
+    return max(candidates, key=lambda o: float(o.get('z') or 0))
