@@ -337,3 +337,5 @@ def _has_xy(obj):
         return math.isfinite(float(obj.get('x'))) and math.isfinite(float(obj.get('y')))
     except (TypeError, ValueError):
         return False
+
+
