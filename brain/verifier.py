@@ -2212,3 +2212,459 @@ class SkillVerifier:
 
     # -- navigate: did it actually get there? --------------------------------
 
+    def verify_navigate(self, contract, obs, tool_result: str,
+                        now: float | None = None) -> Verdict:
+        """Post-condition: robot at target — walk_status == REACHED ONLY,
+        confirmed within the DISPATCH EPOCH (the NAVIGATE EPOCH GATE).
+
+        NEVER odom distance: /unitree/slam_mapping/odom does NOT exist on
+        Stuart. The gateway stamps ``nav_epoch`` on each /walk_go publish and
+        annotates the tool result with NAV_EPOCH, NAV_LABEL (the requested
+        target), LATEST_WALK_TS (latest walk_status message time) and
+        PHASES_SEEN (phases observed with ts >= epoch). Success requires ALL
+        of:
+          (a) nav_epoch parsed from the tool result;
+          (b) latest walk_status ts >= nav_epoch (the FSM reacted to THIS
+              dispatch — not a pre-dispatch snapshot);
+          (c) walk_status phase == REACHED;
+          (d) at least one NON-REACHED phase (SEARCHING/APPROACHING) observed
+              in this epoch — the transition guard that defeats a stale or
+              hold REACHED from a previous arrival (the FSM re-publishes
+              REACHED at 1 Hz for REACHED_HOLD_S = 5 s after arrival);
+          (e) this epoch was not already confirmed (no re-success on one
+              epoch);
+          (f) the walk_status payload label matches NAV_LABEL (fix 1): a
+              REACHED for a DIFFERENT label is a stale arrival of an earlier
+              target — mismatch -> in_progress 're-observe'.  Case-insensitive
+              (the FSM lowercases /walk_target labels).
+        Any miss -> in_progress with evidence 're-observe'. SEARCHING/
+        APPROACHING = still moving; IDLE is ambiguous (arrived-and-finished
+        vs never-started) -> in_progress, re-observe.
+
+        THE ONE TERMINAL NON-SUCCESS (C5, 2026-10-01): when the operator
+        cancelled the walk while it was running, this returns
+        ``failure(reason='cancelled_by_operator')`` — checked BEFORE every
+        epoch gate above, because a cancel clears the dispatch epoch.  It is
+        deliberately NOT in_progress: re-observe is an instruction to try
+        again, and the operator asked for the opposite.
+        """
+        kind, detail = _classify_reply(tool_result)
+        verdict = _guard_reply(kind, detail)
+        if verdict is not None:
+            return verdict
+        # terminal, checked before the epoch gates: a cancel clears the epoch,
+        # so every epoch-gated outcome would read in_progress
+        # failure with a reason is the honest status; the budget only acts on
+        # success and failure, so a fourth status would sit inert
+        if _walk_was_cancelled(tool_result):
+            return Verdict.failure(
+                "the operator cancelled this navigate while it was running — "
+                "the walk FSM was stopped and the target was NOT reached; "
+                "this was an intentional stop, not a failure to arrive. "
+                "Acknowledge it; it ended ONLY this navigate. Do not repeat "
+                "it on your own, but walk again (no permission needed) once the "
+                "operator gives a new instruction",
+                "cancelled_by_operator")
+        nav_epoch = _parse_nav_epoch(tool_result)
+        if nav_epoch is None:
+            return Verdict.in_progress(
+                "re-observe; navigate tool result carries no NAV_EPOCH — "
+                "cannot gate the verdict on the dispatch epoch")
+        # already at the target: REACHED standby, a fresh packet with no
+        # transition, so the live phase and label decide
+        if "WALK_WAIT=already_reached" in (tool_result or ""):
+            walk = getattr(obs, "walk", None) if obs is not None else None
+            phase = ((getattr(walk, "phase", None) or "") if walk else "").upper()
+            nav_label = _parse_nav_label(tool_result)
+            walk_label = (getattr(walk, "label", None) or "") if walk else ""
+            if phase == "REACHED" and (nav_label is None or
+                                       walk_label.strip().lower()
+                                       == nav_label.strip().lower()):
+                self._nav_last_success_epoch = nav_epoch
+                return Verdict.success(
+                    "already at the target: walk_status == REACHED standby on "
+                    "%r (no new walk was needed) — do NOT navigate again; "
+                    "go on with the next step (place / pick)" % (nav_label,))
+            return Verdict.in_progress(
+                "re-observe; gateway reported already_reached but the live "
+                "walk_status is %r on %r" % (phase, walk_label))
+        if nav_epoch > 0.0 and nav_epoch == self._nav_last_success_epoch:
+            return Verdict.in_progress(
+                "re-observe; dispatch epoch %.6f already confirmed — "
+                "refusing re-success on the same epoch" % nav_epoch)
+        latest_ts = _parse_latest_walk_ts(tool_result)
+        if latest_ts is None or latest_ts < nav_epoch:
+            return Verdict.in_progress(
+                "re-observe; no walk_status observed since dispatch epoch "
+                "%.6f (latest walk ts %.6f)"
+                % (nav_epoch, latest_ts if latest_ts is not None else 0.0))
+        phases_seen = _parse_phases_seen(tool_result)
+        if not phases_seen:
+            return Verdict.in_progress(
+                "re-observe; no walk phases observed in dispatch epoch %.6f"
+                % nav_epoch)
+        walk = getattr(obs, "walk", None) if obs is not None else None
+        if walk is None:
+            return Verdict.in_progress("re-observe; no walk_status")
+        phase = (walk.phase or "").upper()
+        if phase != "REACHED":
+            if phase in ("SEARCHING", "APPROACHING"):
+                return Verdict.in_progress(
+                    "re-observe; walk FSM still %s (epoch %.6f)"
+                    % (phase, nav_epoch))
+            if phase == "IDLE":
+                return Verdict.in_progress(
+                    "re-observe; walk FSM IDLE (REACHED not seen — ambiguous, "
+                    "epoch %.6f)" % nav_epoch)
+            return Verdict.in_progress(
+                "re-observe; unknown walk phase %r (epoch %.6f)"
+                % (phase, nav_epoch))
+        # REACHED, which means a SEARCHING/APPROACHING phase came first this epoch
+        if not any(p in ("SEARCHING", "APPROACHING") for p in phases_seen):
+            return Verdict.in_progress(
+                "re-observe; only REACHED observed in dispatch epoch %.6f — "
+                "stale/hold REACHED from a previous arrival (no transition "
+                "evidence; phases seen: %s)"
+                % (nav_epoch, ",".join(phases_seen)))
+        # the label must match the requested target; an absent NAV_LABEL skips
+        # the check
+        nav_label = _parse_nav_label(tool_result)
+        if nav_label is not None:
+            walk_label = getattr(walk, "label", None)
+            if (walk_label or "").strip().lower() != \
+                    (nav_label or "").strip().lower():
+                return Verdict.in_progress(
+                    "re-observe; walk_status payload label %r does not match "
+                    "the requested target %r (epoch %.6f)"
+                    % (walk_label, nav_label, nav_epoch))
+        self._nav_last_success_epoch = nav_epoch
+        return Verdict.success(
+            "walk_status == REACHED within dispatch epoch %.6f (transition "
+            "observed: %s)" % (nav_epoch, ",".join(phases_seen)))
+
+    # -- open_hand: is the hand measured open? -------------------------------
+
+    def verify_open_hand(self, contract, obs, tool_result: str,
+                         now: float | None = None) -> Verdict:
+        """Post-condition: grip open — the MEASURED hand state, never
+        command-inference.
+
+        MEASURED OPEN (world-truth round 3 fix 3 + round 4/5): the open
+        itself clears the close verdicts, so post contact==False is
+        GUARANTEED and proves nothing.  Success requires the post state read
+        FRESH (within GRIP_STATE_MAX_AGE_S), the hand MEASURED-OPEN (joints
+        at the CAUSAL measured-open reference — per side it forms ONLY from
+        reads taken after a gateway-dispatched open command for that side,
+        via a double-read agreement; is_open True) and NO literal contact
+        verdict on file (grip.contact True = a close_adaptive DONE:contact
+        still folded — the hand was holding at that close).  A still-folded
+        literal contact is a failure; a stale read, an offline grip, or NO
+        reference yet (no open command dispatched for the side, or the
+        double-read hasn't completed — the verifying read is the FIRST of
+        the two, so one re-observe confirms) is in_progress 're-observe'.
+        A measured-open read on an open-commanded hand is a REAL
+        confirmation path.  The pre-open prev_contact annotations are
+        INFORMATIONAL ONLY.
+
+        BOTH HANDS (fix 5): an open_both (sides=both) verifies the LEFT hand
+        independently (left_available True + left state read fresh +
+        left_contact not True + left measured-open); an unobserved, offline
+        or unmeasurable left state is in_progress, never success — world
+        truth runs on the left side as well.
+        """
+        now = time.time() if now is None else now
+        kind, detail = _classify_reply(tool_result)
+        verdict = _guard_reply(kind, detail)
+        if verdict is not None:
+            return verdict
+        if kind in ("contact", "full"):
+            return Verdict.failure(
+                f"hand not open: close_adaptive reported {kind}", f"close_adaptive {kind}")
+        sides = _parse_sides(tool_result) or "right"
+        grip = _grip(obs)
+        if grip is None:
+            available = _state_available(detail)
+            if available is False:
+                return Verdict.in_progress(
+                    "re-observe; grip offline (state reply available=False)")
+            return Verdict.in_progress(
+                "re-observe; grip state missing (state reply carries no contact)")
+        if not _ts_fresh(getattr(grip, "stale_ts", None), now):
+            return Verdict.in_progress(
+                "re-observe; grip state read stale (older than "
+                "GRIP_STATE_MAX_AGE_S) — cannot confirm the open")
+        if not grip.available:
+            return Verdict.in_progress(
+                "re-observe; grip offline (state [side] available=False)")
+        if grip.contact is True:
+            return Verdict.failure(
+                "hand still holding (literal close_adaptive contact verdict "
+                "on file after open)", "still holding after open")
+        if grip.is_open is not True:
+            return Verdict.in_progress(
+                "re-observe; hand not measured-open (is_open=%s — no "
+                "trusted measured-open reference yet or joints away from "
+                "it); cannot confirm the open" % grip.is_open)
+        if sides == "both":
+            left_available = getattr(grip, "left_available", None)
+            left_stale_ts = getattr(grip, "left_stale_ts", None)
+            left_is_open = getattr(grip, "left_is_open", None)
+            left_contact = getattr(grip, "left_contact", None)
+            if left_available is not True:
+                return Verdict.in_progress(
+                    "re-observe; left grip offline (left_available=%s) — "
+                    "open_both cannot be confirmed" % left_available)
+            if not _ts_fresh(left_stale_ts, now):
+                return Verdict.in_progress(
+                    "re-observe; left grip state read stale — open_both "
+                    "cannot be confirmed")
+            if left_contact is True:
+                return Verdict.failure(
+                    "left hand still holding after open_both (literal "
+                    "close_adaptive contact verdict on file for the left "
+                    "hand)", "left still holding after open")
+            if left_is_open is not True:
+                return Verdict.in_progress(
+                    "re-observe; left hand not measured-open (left_is_open=%s) "
+                    "— open_both cannot be confirmed" % left_is_open)
+            return Verdict.success(
+                "grip measured-open, no literal contact verdict on either hand")
+        return Verdict.success(
+            "grip measured-open, no literal contact verdict on file")
+
+    # -- close_hand: did it really close on something? -----------------------
+
+    def verify_close_hand(self, contract, obs, tool_result: str,
+                          now: float | None = None) -> Verdict:
+        """Post-condition: grip closed — literal contact OR full-stroke stop.
+
+        close_adaptive replies are decisive: DONE:contact = the real grasp
+        signal; DONE:full = full-stroke stop (post-condition met); DONE:no_data
+        = no tactile evidence -> in_progress.  Plain DONE relies on grip
+        state: the FOLDED contact (the gateway's OWN serialized
+        close_adaptive verdict for this close).
+
+        CLOSE FRESHNESS (world-truth round 4, fix 2): ALL success paths
+        require a FRESH grip state read (GRIP_STATE_MAX_AGE_S), and the
+        folded-contact path additionally requires the folded verdict's own
+        timestamp (GripState.contact_ts) within CLOSE_CONTACT_WINDOW_S — a
+        daemon'd grip's stale folded contact must NOT confirm.
+
+        BOTH HANDS (world-truth round 5): the gateway's close_both dispatch
+        is now REAL per-side close_adaptive (RIGHT then LEFT — per-side
+        tactile evidence), and the tool result lists the per-side verdicts
+        (``right_close=contact|full|no_data; left_close=...``).  Success
+        requires BOTH sides' verdicts contact|full on FRESH, available
+        reads — the both-hands check runs BEFORE any right-only success.  A
+        no_data / missing / offline / stale side -> in_progress
+        (re-observe), never success.  Replies without per-side fields fall
+        back to the folded-contact path (both hands' literal contact, all
+        fresh).
+        """
+        now = time.time() if now is None else now
+        kind, detail = _classify_reply(tool_result)
+        verdict = _guard_reply(kind, detail)
+        if verdict is not None:
+            return verdict
+        if kind == "contact":
+            if self._close_fresh(obs, now):
+                return Verdict.success(
+                    "close_adaptive DONE:contact on a fresh grip read — grip "
+                    "closed on object")
+            return Verdict.in_progress(
+                "re-observe; close_adaptive DONE:contact but the grip state "
+                "read is missing/stale/offline — cannot confirm on a dead "
+                "lane")
+        if kind == "full":
+            if self._close_fresh(obs, now):
+                return Verdict.success(
+                    "close_adaptive DONE:full on a fresh grip read — closed "
+                    "to full-stroke stop")
+            return Verdict.in_progress(
+                "re-observe; close_adaptive DONE:full but the grip state "
+                "read is missing/stale/offline — cannot confirm on a dead "
+                "lane")
+        if kind == "no_data":
+            return Verdict.in_progress(
+                "re-observe; close_adaptive returned no tactile data")
+        if _parse_sides(tool_result) == "both":
+            return self._verify_close_both(obs, now, tool_result)
+        grip = _grip(obs)
+        if grip is None:
+            available = _state_available(detail)
+            if available is False:
+                return Verdict.in_progress(
+                    "re-observe; grip offline (state reply available=False)")
+            return Verdict.in_progress(
+                "re-observe; grip state missing (state reply carries no contact)")
+        if not grip.available:
+            return Verdict.in_progress(
+                "re-observe; grip offline (state [side] available=False)")
+        # a fresh read and a folded verdict timestamp inside the window
+        if grip.contact and _verdict_fresh(getattr(grip, "contact_ts", None),
+                                           now) \
+                and _ts_fresh(getattr(grip, "stale_ts", None), now):
+            return Verdict.success(
+                "grip state literal contact True on a fresh read — grip "
+                "closed on object")
+        return Verdict.in_progress(
+            "re-observe; grip not confirmed closed (no fresh literal contact "
+            "evidence: folded verdict missing/stale or the state read is "
+            "not fresh)")
+
+    # -- pose: did the posture get commanded? --------------------------------
+
+    @_zfloor_limited_note("requested pose")
+    def verify_pose(self, contract, obs, tool_result: str,
+                    now: float | None = None) -> Verdict:
+        """Post-condition: the named posture was COMMANDED and the engine
+        reported the move complete.
+
+        READ THIS BEFORE WEAKENING OR STRENGTHENING THE SUCCESS PATH.
+
+        There is no posture sensor in this system.  WorldObservation carries
+        grip, walk, detections and a scene graph, and NOTHING that measures
+        where the arm joints are.  So a pose cannot be MEASURED the way 'grip
+        open' (a fresh joint/hand-state read) or 'walk REACHED' (the walk
+        FSM) can.  The only evidence that exists is the pick engine's own
+        completion report, which reaches us as 'DONE:<v1>[+<v2>]'.
+
+        That is a WEAKER class of evidence, and this verifier says so in the
+        evidence string instead of dressing it up as a measurement.  It
+        accepts the engine's DONE because the engine is the arm's AUTHORITY —
+        it drives the arm_sdk writer and blocks on the motion — which is the
+        same footing on which verify_navigate accepts the walk FSM's REACHED
+        as an independent subsystem report.  It is NOT the same footing as
+        verify_open_hand, which reads the world back.
+
+        What it refuses:
+          - any reply that is not a DONE: error/query/state/unknown/empty all
+            fall through the shared prologue;
+          - a DONE with NO verb list (the mock form) — it names no posture, so
+            it certifies nothing;
+          - a DONE whose verb list is not ONE WHOLE POSE.  This is the check
+            that matters: 'tuck' is TWO sequential engine moves (carry, then
+            carry_left) because the engine's carry pose is per-arm.  A reply
+            naming only 'carry' means the sequence died with the right arm
+            parked and the left still where it was — a real, half-finished
+            posture that must never read as done.  See
+            tests/test_pose_tool.py scenario 4 for the matching backend pin.
+        """
+        kind, detail = _classify_reply(tool_result)
+        verdict = _guard_reply(kind, detail)
+        if verdict is not None:
+            return verdict
+        reported = tuple(v for v in (detail or "").split("+") if v.strip())
+        if not reported:
+            return Verdict.in_progress(
+                "re-observe; pose reply carries no engine verb list — it names "
+                "no posture, so it certifies none")
+        # lazy import, because a module-scope import closes a cycle
+        # the backend's table is the single source of truth: a drifted copy
+        # would certify the wrong pose
+        try:
+            from gateway.brain_client import POSE_ENGINE_VERBS
+        except Exception as exc:  # pragma: no cover - import environment only
+            return Verdict.in_progress(
+                "re-observe; cannot reach the pose verb table (%s) — refusing "
+                "to certify a posture against a vocabulary I cannot check"
+                % exc.__class__.__name__)
+        named = [name for name, verbs in POSE_ENGINE_VERBS.items()
+                 if tuple(verbs) == reported]
+        if not named:
+            return Verdict.in_progress(
+                "re-observe; engine reported %r, which is not a whole pose "
+                "(known sequences: %s) — a partial sequence is a half-finished "
+                "posture, not a reached one"
+                % ("+".join(reported),
+                   ", ".join("+".join(v) for v in
+                             sorted(POSE_ENGINE_VERBS.values()))))
+        return Verdict.success(
+            "engine reported DONE:%s == the %r posture, in full (engine-"
+            "reported, NOT sensor-measured — no posture sensor exists)"
+            % ("+".join(reported), named[0]))
+
+    def verify_turn_around(self, contract, obs, tool_result: str,
+                           now: float | None = None) -> Verdict:
+        """Post-condition: the sweep ran and the person was CENTRED.
+
+        BATCH-2 UPDATE (TURN interface): the gateway verb now blocks, sweeps
+        for the label, stops, then rotates in place (omega only) until the
+        detection bearing is ~0, and replies 'DONE turn_around: ... ;
+        TURN_RESULT=centred' ONLY for a verified centring (every other
+        outcome leads 'ERROR:turn_around').  Success therefore requires the
+        DONE prefix AND the TURN_RESULT=centred token.  The historical notes
+        below describe the pre-batch-2 fire-and-forget sweep.
+
+        READ THIS BEFORE STRENGTHENING THE SUCCESS PATH.
+
+        turn_around is NOT navigate, and it must never borrow navigate's
+        verdict.  verify_navigate requires walk_status == REACHED inside the
+        dispatch epoch; a turn-around sweep NEVER produces REACHED, by
+        design — the FSM's _phase_hold stops the sweep on first sight and
+        deliberately never approaches (skills/locomotion/walk_node.py
+        _phase_hold, the DETECTED hold).  Gating on REACHED would answer
+        in_progress forever and burn the model's budget on a task that had
+        already succeeded.
+
+        There is also NO epoch to gate on, unlike navigate.  The gateway's
+        reply carries no NAV_EPOCH / PHASES_SEEN annotation (gateway_node's
+        _do_turn_around returns the DONE line alone), and obs.walk carries
+        only the LATEST phase — so a 'SEARCHING' seen here cannot be
+        distinguished from a SEARCHING that predates this dispatch.
+        Requiring a fresh phase WITHOUT an epoch is exactly the stale-arrival
+        false success that navigate's (b)/(d) gates exist to defeat, and
+        false-success is the worse error, so this verifier does not attempt
+        it.  Adding an epoch to the turn_around reply is the prerequisite for
+        ever tightening this.
+
+        What it therefore certifies, and nothing more: the gateway accepted
+        the verb and published the label on /walk_target.  Whether anyone is
+        in view is NOT verified here and is never claimed — the FSM reports
+        that later on /walk_status as DETECTED, which no tool result carries.
+
+        What it refuses:
+          - any non-DONE reply (the shared prologue: ERROR -> failure);
+          - a bare 'DONE' that does not name the sweep — it certifies that
+            SOME command succeeded, not that a sweep was published.
+        """
+        kind, detail = _classify_reply(tool_result)
+        verdict = _guard_reply(kind, detail)
+        if verdict is not None:
+            return verdict
+        first = ""
+        if tool_result is not None and tool_result.strip():
+            first = tool_result.strip().splitlines()[0].strip()
+        # lazy import again, same cycle; the constant is the single source of
+        # truth
+        try:
+            from gateway.brain_client import TURN_AROUND_DONE_PREFIX
+        except Exception as exc:  # pragma: no cover - import environment only
+            return Verdict.in_progress(
+                "re-observe; cannot reach the turn_around reply vocabulary "
+                "(%s) — refusing to certify a sweep against a shape I cannot "
+                "check" % exc.__class__.__name__)
+        # centring needs the DONE prefix and the TURN_RESULT=centred token; this
+        # check runs first, and the prefix gate below stays the guard for a reply
+        # that names no sweep
+        if (first.startswith(TURN_AROUND_DONE_PREFIX)
+                and _TURN_CENTRED_RE.search(first) is None):
+            return Verdict.in_progress(
+                "re-observe; turn_around reply does not carry "
+                "TURN_RESULT=centred (%r) — the person was not verified "
+                "centred in the frame" % first[:160])
+        if not first.startswith(TURN_AROUND_DONE_PREFIX):
+            return Verdict.in_progress(
+                "re-observe; turn_around reply %r does not name the sweep "
+                "(expected one starting %r) — a reply that does not name the "
+                "sweep certifies no sweep was published"
+                % (first[:120], TURN_AROUND_DONE_PREFIX))
+        return Verdict.success(
+            "gateway reported %r — the robot turned in place and the gateway "
+            "rotated it until the target sat at the centre of the camera "
+            "frame, then stopped (no walking; the bearing is gateway-measured "
+            "from /object_detections_body; gateway-reported, NOT "
+            "sensor-measured by any body-pose sensor; /walk_status was not "
+            "consulted)"
+            % first)
+
