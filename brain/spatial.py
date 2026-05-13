@@ -331,3 +331,9 @@ LABEL_ALIASES = {
 }
 
 
+def _has_xy(obj):
+    """True when the object has finite measured x and y (never assume 0)."""
+    try:
+        return math.isfinite(float(obj.get('x'))) and math.isfinite(float(obj.get('y')))
+    except (TypeError, ValueError):
+        return False
