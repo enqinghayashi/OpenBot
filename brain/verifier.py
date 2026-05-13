@@ -1229,3 +1229,133 @@ def _verdict_fresh(ts: float | None, now: float) -> bool:
     fix 2: a daemon'd grip's stale folded contact must not confirm)."""
     return ts is not None and ts > 0.0 \
         and (now - ts) <= CLOSE_CONTACT_WINDOW_S
+
+
+def _grip_fresh(grip, now: float) -> bool:
+    """The grip's state read is fresh (a never-read grip is not)."""
+    if grip is None:
+        return False
+    return _ts_fresh(getattr(grip, "stale_ts", None), now)
+
+
+def _resolve_target(contract) -> tuple[str | None, str | None]:
+    """Target hint from contract.context -> (label, ref); (None, None) if absent.
+
+    Conventions (context is free-form; hints separated by ';' or ','):
+      target=<ref>          scene-graph ref, e.g. 'target=bottle_3'
+      target_label=<label>  detection label, e.g. 'target_label=bottle'
+      label=<label>         alias of target_label
+    'target=' wins over label hints when both are present. Without a hint the
+    verifier cannot name the picked object, so 'object gone' is only
+    confirmable against an empty scene.
+    """
+    context = getattr(contract, "context", "") or ""
+    m = re.search(r"target\s*=\s*([A-Za-z0-9_.\-]+)", context)
+    if m:
+        return None, m.group(1)
+    m = re.search(r"target_label\s*=\s*([A-Za-z0-9_.\-]+)", context)
+    if m:
+        return m.group(1), None
+    m = re.search(r"(?<![A-Za-z0-9_])label\s*=\s*([A-Za-z0-9_.\-]+)", context)
+    if m:
+        return m.group(1), None
+    return None, None
+
+
+#: an absent label outside the active vocabulary proves nothing
+VOCAB_INACTIVE_EVIDENCE = (
+    "re-observe; target label is not in the active vocabulary")
+
+
+def _label_vocab_inactive(obs: WorldObservation | None,
+                          label: str | None) -> bool:
+    """True when ``label`` names an EXTRA class the detector is not running.
+
+    D13: a hint label outside ``known_labels.TRACKED_CLASSES`` can only ever
+    be published by the YOLOE backend with that label in its extras.  When
+    the observation's ``vocab`` DICT does not show that (backend not
+    'yoloe', or the label not in ``extras``), the label's absence from the
+    packet is NOT evidence that the object is gone — the detector simply
+    cannot see it — so the caller must treat it as unconfirmable.
+    A base label (or a non-str / absent label) is never affected: today's
+    logic runs unchanged.
+
+    WHAT COUNTS AS A BASE LABEL (round-2 fix, reviewer finding P10-H1).  The
+    raw hint text is NOT the only form a base object arrives in.  The gateway
+    hint mirror (`gateway_node._pick_hint_label`) forwards the model's label
+    verbatim — no sighting gate, no stem — and `make_pick` ADMITS a scene ref
+    ('bottle_1', brain/agent/tools.py resolve_ref -> ref label) and a target
+    alias ('me' -> 'person').  So a label is base when its text, its
+    '_<n>'-stripped stem (mirrors brain/hooks.py), that stem with '_' read
+    as a space (SceneGraph sanitizes 'cell phone' into the ref key
+    'cell_phone_1'), or its TARGET_ALIASES value is a tracked class.
+    With NO vocabulary block (`vocab` not a dict: the shipped OFF form, field
+    None) the rule is OFF for EVERY label (returns False): every switch
+    absent keeps today's verdict byte-for-byte, including the regex-truncated
+    first word of a multi-word hint ('potted' from 'potted plant').
+    """
+    if not isinstance(label, str):
+        return False
+    text = label.strip().lower()
+    stem = re.sub(r"_\d+$", "", text)
+    cands = (text, stem)
+    # a narrowed detector cannot see a label outside its set, so that label's
+    # absence is no evidence
+    _v = getattr(obs, "vocab", None)
+    _s = _v.get("strict") if isinstance(_v, dict) else None
+    if isinstance(_s, (list, tuple)) and _s:
+        allowed = set(str(x).strip().lower() for x in _s)
+        names = set(cands) | {stem.replace("_", " ")}
+        names |= set(_TARGET_ALIASES.get(c) for c in list(names)
+                     if _TARGET_ALIASES.get(c))
+        if not (names & allowed):
+            return True
+    for cand in cands + (stem.replace("_", " "),):
+        if (cand in _TRACKED_CLASSES
+                or _TARGET_ALIASES.get(cand) in _TRACKED_CLASSES):
+            return False
+    vocab = getattr(obs, "vocab", None)
+    if not isinstance(vocab, dict):
+        # no vocab block: the rule is off and the normal label logic applies
+        # the hint regex chops at the first space ('potted plant' -> 'potted'),
+        # so keying on the full label would fail real picks
+        return False
+    if vocab.get("backend") == "yoloe":
+        extras = vocab.get("extras")
+        if isinstance(extras, (list, tuple)):
+            for extra in extras:
+                if (isinstance(extra, str)
+                        and extra.strip().lower() in cands):
+                    return False
+    return True
+
+
+def _target_present(obs: WorldObservation | None, label: str | None,
+                    ref: str | None, silence_means_empty: bool = True,
+                    ) -> bool | None:
+    """Is the target still visible in the latest detections packet?
+
+    Callers gate on channel-liveness FIRST (_detections_alive): this
+    function reads the latest packet only.
+
+    True  - a matching detection is present
+    False - confirmed absent (empty scene, or no detection matches the hint)
+    None  - unconfirmable: scene non-empty but no target hint, a ref hint
+            with no ref-bearing detections to compare against, or an EMPTY
+            scene under silence_means_empty=False (silence is then never
+            empty-scene evidence), or (D13) a label hint naming an extra
+            class the detector is not currently running
+    """
+    if ref is None and _label_vocab_inactive(obs, label):
+        return None  # inactive extra's absence proves nothing
+    dets = getattr(obs, "detections", None) or []
+    if not dets:
+        # an empty packet counts only with the switch on
+        return False if silence_means_empty else None
+    if ref is not None:
+        if not any(d.ref is not None for d in dets):
+            return None  # no refs in the scene, so absence is unconfirmable
+        return any(d.ref == ref for d in dets)
+    if label is not None:
+        return any((d.label or "").lower() == label.lower() for d in dets)
+    return None
