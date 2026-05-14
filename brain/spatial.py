@@ -382,3 +382,5 @@ def _read_name(text, objs, names):
         if squashed.startswith(w) and squashed[len(w):] and squashed[len(w):] in labels:
             return squashed[len(w):], word, None
     return text, None, None
+
+
