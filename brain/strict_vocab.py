@@ -58,3 +58,11 @@ class StrictScope(object):
         self.applied_ts = None
         self.released_ts = None
 
+    def _call(self, req: dict) -> str:
+        if self.wait_s is not None:
+            req["wait_s"] = round(max(0.0, min(5.0, float(self.wait_s))), 2)
+        try:
+            return _reply_text(self.backend.yolo_strict(req))
+        except Exception as exc:  # noqa: BLE001 -- no strict here, and it must never crash
+            return "yolo_strict raised %s" % (exc,)
+
