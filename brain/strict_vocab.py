@@ -150,3 +150,27 @@ def place_strict_labels(registry: Any, args: dict) -> List[str]:
     return out
 
 
+def _wrap(registry: Any, name: str, labels_fn: Callable, owner: str,
+          enabled: Callable[[], bool]) -> bool:
+    tool = registry.snapshot().get(name) if hasattr(registry, "snapshot") else None
+    original = getattr(tool, "_prepare_hook", None)
+    if tool is None or original is None or getattr(original, "_b8i_strict", False):
+        return False
+
+    def prepare(args: dict):
+        backend = getattr(registry, "backend", None)
+        if getattr(backend, "yolo_strict", None) is None or not enabled():
+            return original(args)
+        try:
+            labels = labels_fn(registry, args)
+        except Exception:  # noqa: BLE001 -- the labels are just best effort
+            labels = []
+        if not labels:
+            return original(args)
+        with StrictScope(backend, labels, owner):
+            return original(args)
+
+    prepare._b8i_strict = True
+    prepare._b8i_original = original
+    tool._prepare_hook = prepare
+    return True
