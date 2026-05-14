@@ -79,3 +79,10 @@ class StrictScope(object):
         self.hold, self.applied_ts = int(m.group(1)), float(m.group(2))
         return self
 
+    def __exit__(self, et: Any, ev: Any, tb: Any) -> bool:
+        if self.hold is None:
+            return False
+        hold, self.hold = self.hold, None
+        m = _END_RE.match(self._call({"op": "end", "hold": hold}))
+        self.released_ts = float(m.group(1)) if m else None
+        return False                      # never swallow the body's error
