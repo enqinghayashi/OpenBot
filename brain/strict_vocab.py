@@ -88,3 +88,26 @@ class StrictScope(object):
         return False                      # never swallow the body's error
 
 
+def strict_class(registry: Any, text: Any) -> Optional[str]:
+    """The ONE detector class ``text`` names, else None (then no strict).
+    'the trash can' -> 'bin' (an active extra's alias), 'bowl_1' -> 'bowl',
+    'red cup' -> 'cup', 'me' -> 'person'; free text -> None."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    t = known_labels.resolve_alias(text.strip())
+    try:
+        t = registry._walk_label(t)
+    except Exception:  # noqa: BLE001 -- the translation is just best effort
+        pass
+    if not isinstance(t, str):
+        return None
+    extras = known_labels.extra_classes()
+    for cand in (t.strip().lower(), label_base_class(t)):
+        if not cand:
+            continue
+        if cand in known_labels.TRACKED_CLASSES or cand in extras:
+            return cand
+        hit = known_labels.EXTRA_ALIASES.get(cand)
+        if hit:
+            return hit
+    return None
