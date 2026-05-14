@@ -41,3 +41,5 @@ def _reply_text(env: Any) -> str:
         v = env.get("value") if env.get("success") else env.get("reason")
         return v if isinstance(v, str) else ""
     return env if isinstance(env, str) else ""
+
+
