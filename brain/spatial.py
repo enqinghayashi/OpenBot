@@ -662,3 +662,7 @@ def scene_lines(objs):
         lines.append(' '.join(parts))
 
     return lines
+
+
+if __name__ == '__main__':
+    raise SystemExit('spatial.py is a library; run tests instead.')
