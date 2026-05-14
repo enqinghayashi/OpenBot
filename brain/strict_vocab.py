@@ -46,3 +46,15 @@ def _reply_text(env: Any) -> str:
 class StrictScope(object):
     """``with StrictScope(backend, ['bin'], 'place'): <resolve the target>``"""
 
+    def __init__(self, backend: Any, labels: List[str], owner: str,
+                 log: Callable[[str], None] = print,
+                 wait_s: Optional[float] = None) -> None:
+        self.backend = backend
+        self.labels = [l for l in (labels or []) if isinstance(l, str) and l]
+        self.owner = owner
+        self._log = log
+        self.wait_s = wait_s              # None = gateway picks bounds
+        self.hold = None                  # int while the hold is open
+        self.applied_ts = None
+        self.released_ts = None
+
