@@ -449,3 +449,36 @@ class Assembler:
                 self._last_walk_ts = now
         return self.observation(now=now)
 
+    def note_close_result(self, side: str, verdict: str,
+                          now: Optional[float] = None) -> None:
+        """Record a ``close_adaptive`` reply (DONE:contact|full|no_data).
+
+        This is the only source of truth for ``GripState.contact`` — the grip
+        server does not auto-verify, so contact exists only right after a
+        commanded close. Also marks ``side`` as the active one for
+        ``WorldObservation.grip``.
+        """
+        if side not in ("right", "left"):
+            return
+        self._close_verdicts[side] = (verdict, time.time() if now is None else now)
+        self._active_side = side
+
+    def set_active_side(self, side: str) -> None:
+        """Which side ``WorldObservation.grip`` reports (default 'right')."""
+        if side in ("right", "left"):
+            self._active_side = side
+
+    @property
+    def active_side(self) -> str:
+        """The side ``WorldObservation.grip`` reports (default 'right')."""
+        return self._active_side
+
+    def clear_close_result(self, side: str) -> None:
+        """Drop the recorded ``close_adaptive`` verdict for a side.
+
+        Called when the hand is commanded open: an open invalidates any
+        prior grasp signal, so ``GripState.contact`` must not linger.
+        """
+        if side in ("right", "left"):
+            self._close_verdicts.pop(side, None)
+
