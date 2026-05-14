@@ -36,3 +36,8 @@ def pick_strict_on(environ: Any = None) -> bool:
     return env.get(PICK_SWITCH) == "1"
 
 
+def _reply_text(env: Any) -> str:
+    if isinstance(env, dict):
+        v = env.get("value") if env.get("success") else env.get("reason")
+        return v if isinstance(v, str) else ""
+    return env if isinstance(env, str) else ""
