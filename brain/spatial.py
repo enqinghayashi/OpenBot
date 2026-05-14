@@ -588,3 +588,77 @@ def resolve(objs, query):
 
 # ── Scene text ────────────────────────────────────────────────────────────────
 
+def scene_lines(objs):
+    """Generate scene description lines for objects.
+
+    Returns:
+        list of strings, one per object: name, label, colour, x/y/z, distance,
+        bearing, size, and its 2 nearest neighbours with direction words and
+        distances.
+    """
+    if not objs:
+        return []
+
+    # display names
+    names_dict = display_names(objs)
+
+    lines = []
+    for obj in objs:
+        ref = obj.get('ref')
+        name = names_dict.get(ref, str(ref))
+        label = obj.get('label')
+        colour = obj.get('colour')
+        x = float(obj.get('x') or 0)
+        y = float(obj.get('y') or 0)
+        z = float(obj.get('z') or 0)
+        width_m = obj.get('width_m')
+        height_m = obj.get('height_m')
+
+        # basics
+        parts = [name, str(label) if label else '?']
+        if colour:
+            parts.append(str(colour))
+
+        parts.append(f"x={x:.2f} y={y:.2f} z={z:.2f}")
+
+        # distance + direction
+        d = distance(obj)
+        b_deg, b_dir = bearing(obj)
+        parts.append(f"d={d:.2f} bearing={b_dir}")
+
+        # Dimensions
+        if width_m is not None and height_m is not None:
+            w = float(width_m)
+            h = float(height_m)
+            parts.append(f"size={w:.2f}x{h:.2f}")
+
+        # Closest neighbours
+        other_objs = [o for o in objs if o.get('ref') != ref]
+        if other_objs:
+            # distance to every other object
+            dists = []
+            for other in other_objs:
+                other_dist = distance(other)
+                dx = float(other.get('x') or 0) - x
+                dy = float(other.get('y') or 0) - y
+                pair_dist = math.hypot(dx, dy)
+
+                # Which way is it
+                if abs(dx) < 0.03:
+                    direction = 'ahead' if dy > 0 else 'behind'
+                elif dx < 0:
+                    direction = 'left'
+                else:
+                    direction = 'right'
+
+                other_name = names_dict.get(other.get('ref'), str(other.get('ref')))
+                dists.append((pair_dist, other_name, direction))
+
+            # closest 2, sorted
+            dists.sort(key=lambda x: x[0])
+            for pair_dist, other_name, direction in dists[:2]:
+                parts.append(f"{other_name} {pair_dist:.2f}m {direction}")
+
+        lines.append(' '.join(parts))
+
+    return lines
