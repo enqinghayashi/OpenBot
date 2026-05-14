@@ -584,3 +584,7 @@ def resolve(objs, query):
         'candidates': [names.get(o.get('ref'), str(o.get('ref') or ''))
                        for o in candidates]
     }
+
+
+# ── Scene text ────────────────────────────────────────────────────────────────
+
