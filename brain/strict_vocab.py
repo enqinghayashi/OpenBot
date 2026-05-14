@@ -174,3 +174,5 @@ def _wrap(registry: Any, name: str, labels_fn: Callable, owner: str,
     prepare._b8i_original = original
     tool._prepare_hook = prepare
     return True
+
+
