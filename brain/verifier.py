@@ -2668,3 +2668,110 @@ class SkillVerifier:
             "consulted)"
             % first)
 
+    def _close_fresh(self, obs, now: float) -> bool:
+        """The grip state read behind a close is FRESH and available.
+
+        All close_hand success paths require a fresh grip state read
+        (GRIP_STATE_MAX_AGE_S) — a dead/daemon'd grip lane can never
+        confirm (world-truth round 4, fix 2).
+        """
+        grip = _grip(obs)
+        if grip is None:
+            return False
+        if not grip.available:
+            return False
+        return _ts_fresh(getattr(grip, "stale_ts", None), now)
+
+    def _verify_close_both(self, obs, now: float,
+                           tool_result: str | None = None) -> Verdict:
+        """close_both: success ONLY with BOTH hands' closed evidence.
+
+        Per-side dispatch path (world-truth round 5): the gateway dispatched
+        close_adaptive RIGHT then close_adaptive LEFT and annotated the tool
+        result with each side's bare verdict
+        (``right_close=contact|full|no_data; left_close=...``).  Success
+        requires BOTH sides' verdicts contact|full (literal tactile
+        evidence — CONTACT LAW: never derived from joints) on FRESH,
+        available reads.  A no_data verdict, a missing verdict field, or an
+        unobserved/offline/stale side -> in_progress, never success.
+
+        Fallback path (replies without per-side fields): both hands'
+        literal FOLDED contact verdicts (right grip.contact + left_contact)
+        with their own timestamps within CLOSE_CONTACT_WINDOW_S on FRESH,
+        available reads.
+        """
+        grip = _grip(obs)
+        if grip is None:
+            return Verdict.in_progress(
+                "re-observe; grip state missing — close_both cannot be "
+                "confirmed")
+        if not _ts_fresh(getattr(grip, "stale_ts", None), now):
+            return Verdict.in_progress(
+                "re-observe; grip state read stale — close_both cannot be "
+                "confirmed")
+        if not grip.available:
+            return Verdict.in_progress(
+                "re-observe; grip offline (state [side] available=False) — "
+                "close_both cannot be confirmed")
+
+        right_v = left_v = None
+        if tool_result:
+            m = _RIGHT_CLOSE_RE.search(tool_result)
+            if m:
+                right_v = m.group(1).lower()
+            m = _LEFT_CLOSE_RE.search(tool_result)
+            if m:
+                left_v = m.group(1).lower()
+
+        def _side_closed(verdict: str | None, contact: bool | None,
+                         contact_ts, avail, stale_ts) -> tuple[str, ...]:
+            """(problems...) — empty means this side is confirmed closed."""
+            if verdict is not None:
+                # per-side verdict: same rules as a single side
+                if verdict == "no_data":
+                    return ("no tactile data",)
+                if verdict in ("contact", "full"):
+                    if avail is not True:
+                        return ("grip offline",)
+                    if not _ts_fresh(stale_ts, now):
+                        return ("stale read",)
+                    return ()
+                return ("unrecognized verdict %r" % verdict,)
+            # fallback: folded contact with its own timestamp
+            if contact is not True or not _verdict_fresh(contact_ts, now):
+                return ("no FRESH literal contact verdict",)
+            if avail is not True:
+                return ("grip offline",)
+            if not _ts_fresh(stale_ts, now):
+                return ("stale read",)
+            return ()
+
+        right_problems = _side_closed(
+            right_v, grip.contact, getattr(grip, "contact_ts", None),
+            True, getattr(grip, "stale_ts", None))
+        if right_problems:
+            return Verdict.in_progress(
+                "re-observe; right hand not confirmed closed (%s; "
+                "right_close=%s) — close_both cannot be confirmed"
+                % ("; ".join(right_problems),
+                   right_v if right_v is not None else "not annotated"))
+
+        left_available = getattr(grip, "left_available", None)
+        left_stale_ts = getattr(grip, "left_stale_ts", None)
+        left_problems = _side_closed(
+            left_v, getattr(grip, "left_contact", None),
+            getattr(grip, "left_contact_ts", None),
+            left_available, left_stale_ts)
+        if left_problems:
+            return Verdict.in_progress(
+                "re-observe; left hand not confirmed closed (%s; "
+                "left_close=%s) — close_both cannot be confirmed"
+                % ("; ".join(left_problems),
+                   left_v if left_v is not None else "not annotated"))
+
+        evidence = (
+            "both hands closed on fresh reads (per-side close_adaptive: "
+            "right_close=%s, left_close=%s)"
+            % (right_v if right_v is not None else "folded-contact",
+               left_v if left_v is not None else "folded-contact"))
+        return Verdict.success(evidence)
