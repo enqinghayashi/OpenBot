@@ -113,3 +113,38 @@ def strict_class(registry: Any, text: Any) -> Optional[str]:
     return None
 
 
+def place_strict_labels(registry: Any, args: dict) -> List[str]:
+    """The classes a place may resolve its container to: 'into', then
+    'destination' (same cleaning as _place_destination_target), then the
+    operator's named destination; unique, in that order.  [] when the
+    self-state already refuses the place (no strict cycle for a refusal)."""
+    ss = getattr(getattr(registry, "scene_graph", None), "self_state", None)
+    if ss is not None and hasattr(ss, "place_refusal") and ss.place_refusal():
+        return []
+    texts = []
+    into = args.get("into")
+    if isinstance(into, str) and into.strip():
+        texts.append(into.strip())
+    dest = args.get("destination")
+    if isinstance(dest, str) and dest.strip():
+        d = dest.strip().rstrip(".!? ")
+        if (d.lower() not in registry._PLACE_HERE_WORDS
+                and not registry._PLACE_BESIDE_RE.search(d)):
+            d = registry._PLACE_ON_IN_RE.sub("", d, count=1)
+            d = re.sub(r"^(?:the|a|an|that|this)\s+", "", d.strip(),
+                       flags=re.I).strip()
+            if d:
+                texts.append(d)
+    if ss is not None and hasattr(ss, "request_destination"):
+        try:
+            op = ss.request_destination()
+        except Exception:  # noqa: BLE001
+            op = None
+        if isinstance(op, str) and op.strip():
+            texts.append(op.strip())
+    out = []
+    for t in texts:
+        c = strict_class(registry, t)
+        if c and c not in out:
+            out.append(c)
+    return out
