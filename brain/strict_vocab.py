@@ -111,3 +111,5 @@ def strict_class(registry: Any, text: Any) -> Optional[str]:
         if hit:
             return hit
     return None
+
+
