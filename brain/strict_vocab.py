@@ -43,3 +43,6 @@ def _reply_text(env: Any) -> str:
     return env if isinstance(env, str) else ""
 
 
+class StrictScope(object):
+    """``with StrictScope(backend, ['bin'], 'place'): <resolve the target>``"""
+
