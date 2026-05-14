@@ -482,3 +482,70 @@ class Assembler:
         if side in ("right", "left"):
             self._close_verdicts.pop(side, None)
 
+    def note_grip_read_error(self, now: Optional[float] = None) -> None:
+        """Record that a ``state`` read FAILED (socket error / daemon dead).
+
+        A GripState whose last successful read is followed by a failed read
+        is reported available=False (fix 2) — the daemon'd-grip case where
+        the last good 'available=True' would otherwise confirm forever.  The
+        error is superseded by the next successful read (grip_state()
+        compares this ts against the last success ts).
+        """
+        self._grip_error_ts = time.time() if now is None else now
+
+    # ── what qualifies for the CAUSAL OPEN REFERENCE ──────────────────────
+
+    def note_motion_dispatched(self) -> None:
+        """RETAINED as a compatibility no-op (world-truth round 5).
+
+        The round-4 boot window is deleted: a read qualifies for the open
+        reference ONLY when the side is open-trusted (a gateway-dispatched
+        open command ran since the last hand-affecting command).  Motion
+        dispatch no longer changes qualifying context — callers may keep
+        calling this, but it does nothing.
+        """
+
+    def note_open_commanded(self, side: str) -> None:
+        """A gateway-dispatched open command ran for ``side`` (or both).
+
+        Per the CAUSAL OPEN REFERENCE (module docstring): the reference for
+        a side forms ONLY from state reads taken AFTER this mark — the open
+        command's own measured shape is the trusted open context.  The mark
+        is cleared by :meth:`note_hand_command` when a pick/close could
+        change the shape.
+        """
+        if side in ("right", "left"):
+            self._open_trusted[side] = True
+
+    def note_hand_command(self, side: str) -> None:
+        """A pick/close was dispatched for ``side`` — the open-trust mark ends.
+
+        The hand may now be in a non-open shape, so reads for that side are
+        no longer post-open-qualifying until the next open command.
+        """
+        if side in ("right", "left"):
+            self._open_trusted[side] = False
+
+    def _read_qualifies(self, side: str) -> bool:
+        """Is a state read for ``side`` in a qualifying context right now?
+
+        Only post-open reads qualify: ``side`` must be open-trusted — a
+        gateway-dispatched open command ran since the last hand-affecting
+        command.  WITHOUT an open command no read — however agreeing —
+        ever forms a reference (causal law; the boot window is gone).
+        """
+        return self._open_trusted.get(side, False)
+
+    # ── the measured-open reference ────────────────────────────────────────
+
+    def open_joints_ref(self, side: str) -> Optional[List[float]]:
+        """The measured-open reference joints for one side, or None.
+
+        None until a post-open DOUBLE-READ agreement exists (two consecutive
+        reads within ``OPEN_JOINT_TOLERANCE``, both taken after a
+        gateway-dispatched open command for that side).  Documented (module
+        docstring): the reference forms ONLY from open-commanded shapes —
+        a closed hand at boot / mid-grasp never becomes the reference.
+        """
+        return self._open_refs.get(side)
+
