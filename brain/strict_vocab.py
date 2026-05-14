@@ -66,3 +66,16 @@ class StrictScope(object):
         except Exception as exc:  # noqa: BLE001 -- no strict here, and it must never crash
             return "yolo_strict raised %s" % (exc,)
 
+    def __enter__(self) -> "StrictScope":
+        if getattr(self.backend, "yolo_strict", None) is None or not self.labels:
+            return self
+        text = self._call({"op": "begin", "labels": list(self.labels),
+                           "owner": self.owner})
+        m = _BEGIN_RE.match(text)
+        if m is None:
+            self._log("[strict] %s %s: full vocabulary kept (%s)"
+                      % (self.owner, ",".join(self.labels), text[:160]))
+            return self
+        self.hold, self.applied_ts = int(m.group(1)), float(m.group(2))
+        return self
+
