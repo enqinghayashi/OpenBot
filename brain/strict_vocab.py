@@ -34,3 +34,5 @@ _END_RE = re.compile(r"^DONE:strict released hold=\d+ released_ts=(\d+(?:\.\d+)?
 def pick_strict_on(environ: Any = None) -> bool:
     env = os.environ if environ is None else environ
     return env.get(PICK_SWITCH) == "1"
+
+
