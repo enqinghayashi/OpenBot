@@ -301,3 +301,151 @@ def _measured_vector(actual) -> List[float]:
             return []
         out.append(q)
     return out
+
+
+def parse_grip_line(line: str) -> Dict[str, GripState]:
+    """Parse one grip-server ``state`` reply line -> per-side ``GripState``.
+
+    Reply grammar (skills/arm/grip_server.py ``_state_payload``):
+    ``DONE:<json>`` where the json is, for one or both sides,
+    ``{side: {"<jid>": last_q, ..., "available": bool,
+              "actual": {"<jid>": q, ...},      # OPTIONAL: measured motor q
+              "mode": {...}, "motorstate": {...}}}``   # OPTIONAL (B0.2)
+    The TOP-LEVEL digit keys are the last COMMANDED q (``controller.last_q``)
+    -> ``GripState.commanded``.  ``actual`` is the MEASURED motor q, present
+    whenever the Dex3 DDS lane has state and OMITTED otherwise — never faked
+    from ``last_q`` (grip_server.py:1036-1048: comparing against ``last_q``
+    'would pass unconditionally') -> ``GripState.joints``, ordered by joint
+    id; ``[]`` when ``actual`` is absent or malformed (see
+    :func:`_measured_vector`).  ``mode`` / ``motorstate`` are not read here.
+    ``ERROR:`` / malformed lines yield ``{}`` (grip unknown — never a guess).
+    ``contact`` is left False here; the caller folds the last
+    ``close_adaptive`` verdict in via :meth:`Assembler.note_close_result`.
+    CONTACT LAW (world-truth round 4): contact is NEVER derived from the
+    joints, and no hand-state field is read from the reply; there is no
+    literal hand-state contact in a state reply.
+    """
+    if not line.startswith("DONE:"):
+        return {}
+    try:
+        payload = json.loads(line[len("DONE:"):])
+    except (ValueError, TypeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    states: Dict[str, GripState] = {}
+    for side, data in payload.items():
+        if side not in ("right", "left") or not isinstance(data, dict):
+            continue
+        states[side] = GripState(
+            side=side,
+            joints=_measured_vector(data.get("actual")),
+            contact=False,
+            available=bool(data.get("available", False)),
+            commanded=_joint_vector(data),
+        )
+    return states
+
+
+def parse_walk_status(payload: dict, ts: float = 0.0) -> Optional[WalkStatus]:
+    """Normalize a ``/walk_status`` payload dict -> ``WalkStatus``.
+
+    The walk node publishes ``{"state": <phase>, "label": ..., "detail": ...}``
+    JSON (the payload carries NO timestamp — the caller stamps ``ts`` on
+    arrival; the gateway does exactly that). DETECTED is a vocabulary event
+    inside SEARCHING (see ``WALK_STATE_MAP``); any other state string passes
+    through as-is.  The payload ``label`` is captured so the navigate
+    verifier can reject a REACHED whose label does not match the requested
+    target (fix 1).
+    """
+    if not isinstance(payload, dict):
+        return None
+    state = payload.get("state")
+    if not isinstance(state, str) or not state:
+        return None
+    label = payload.get("label")
+    if label is not None and not isinstance(label, str):
+        label = None
+    return WalkStatus(phase=WALK_STATE_MAP.get(state, state),
+                      label=label, ts=ts)
+
+
+class Assembler:
+    """Stateful, pure-stdlib assembler of skill payloads -> WorldObservation.
+
+    The gateway node keeps one instance and feeds it every packet it sees;
+    ``observation()`` is called on every poll (even silent ones) so the
+    ``fresh`` flag always reflects the current gap since the last packet.
+    """
+
+    def __init__(self, max_stale_s: float = MAX_STALE_S,
+                 contact_window_s: float = CLOSE_CONTACT_WINDOW_S,
+                 silence_means_empty: bool = True,
+                 walk_max_stale_s: float = WALK_MAX_STALE_S):
+        self.max_stale_s = max_stale_s
+        self.walk_max_stale_s = walk_max_stale_s
+        self.contact_window_s = contact_window_s
+        #: silence switch. True (shipped): a live channel's
+        #: empty last packet IS an empty scene; silent
+        #: forever = DEAD node. False: silence is never
+        #: empty-scene evidence. the verifier's
+        #: target-gone path wires the same value.
+        self.silence_means_empty = silence_means_empty
+        self._detections: List[Detection] = []
+        self._last_detections_ts = 0.0  # 0.0 = never observed
+        self._grip_states: Dict[str, GripState] = {}
+        self._grip_state_ts: Dict[str, float] = {}  # side -> last read's ts
+        self._grip_error_ts = 0.0  # read failed (0 = never)
+        self._open_refs: Dict[str, List[float]] = {}  # side -> measured ref
+        self._open_candidates: Dict[str, List[float]] = {}  # side -> first read
+        #: what qualifies for the CAUSAL OPEN REFERENCE.
+        #: open-trust starts at a dispatched open
+        #: (note_open_commanded), ends at a pick/close.
+        #: NO boot window: boot reads guarantee nothing -
+        #: a mid-grasp boot would make the closed shape
+        #: the 'open' ref. double-read agreement only.
+        self._open_trusted: Dict[str, bool] = {"right": False, "left": False}
+        self._close_verdicts: Dict[str, tuple] = {}  # side -> (verdict + when)
+        self._active_side = "right"  # pick defaults to the right arm
+        self._walk: Optional[WalkStatus] = None
+        self._last_walk_ts = 0.0  # 0.0 = never seen (see observation())
+
+    # ── taking packets in ──────────────────────────────────────────────────
+
+    def update(self, detections: Optional[List[dict]] = None,
+               grip_line: Optional[str] = None,
+               walk_payload: Optional[dict] = None,
+               now: Optional[float] = None) -> WorldObservation:
+        """Ingest any subset of raw payloads, return the current observation.
+
+        ``detections`` rows are timestamped on arrival (a packet, even an
+        empty list, is a fresh observation of the scene). ``grip_line`` is the
+        grip server's ``state`` reply. ``walk_payload`` is the parsed
+        ``/walk_status`` dict, timestamped on arrival and served only while
+        younger than ``walk_max_stale_s``.
+        """
+        now = time.time() if now is None else now
+        if detections is not None:
+            self._detections = parse_detections(detections, now)
+            self._last_detections_ts = now
+        if grip_line:
+            # kept raw (contact=False); contact is derived on
+            # read from verdict + window, so expiry is right.
+            states = parse_grip_line(grip_line)
+            if not states:
+                # ERROR:/malformed = READ FAILURE: last good
+                # state must not confirm forever. next good read
+                # supersedes it (grip_state compares ts).
+                self._grip_error_ts = now
+            else:
+                for side, st in states.items():
+                    self._grip_states[side] = st
+                    self._grip_state_ts[side] = now
+                    self._update_open_ref(side, st.joints)
+        if walk_payload is not None:
+            walk = parse_walk_status(walk_payload, ts=now)
+            if walk is not None:
+                self._walk = walk
+                self._last_walk_ts = now
+        return self.observation(now=now)
+
