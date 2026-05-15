@@ -200,3 +200,9 @@ class Verdict:
     def in_progress(cls, evidence: str) -> "Verdict":
         return cls(status="in_progress", evidence=evidence)
 
+    def to_string(self) -> str:
+        """'VERDICT:success|Evidence:...|Reason:...' (Reason omitted when None)."""
+        s = f"VERDICT:{self.status}|Evidence:{self.evidence}"
+        if self.failure_reason is not None:
+            s += f"|Reason:{self.failure_reason}"
+        return s
