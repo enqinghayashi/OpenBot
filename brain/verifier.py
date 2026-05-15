@@ -346,3 +346,5 @@ def _parse_nav_epoch(tool_result: str | None) -> float | None:
 
 def _parse_latest_walk_ts(tool_result: str | None) -> float | None:
     return _parse_float_field(_LATEST_WALK_TS_RE, tool_result)
+
+
