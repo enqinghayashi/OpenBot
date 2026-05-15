@@ -176,3 +176,17 @@ def _wrap(registry: Any, name: str, labels_fn: Callable, owner: str,
     return True
 
 
+def install(registry: Any) -> List[str]:
+    """Wrap the place and pick prepare hooks IN PLACE (same Tool objects, so
+    get_specs() is unchanged).  Called once by look_for_tool.make_tools.
+    Returns the names wrapped."""
+    done = []
+    if _wrap(registry, "place", place_strict_labels, "place", lambda: True):
+        done.append("place")
+
+    def pick_labels(reg: Any, args: dict) -> List[str]:
+        c = strict_class(reg, args.get("label"))
+        return [c] if c else []
+    if _wrap(registry, "pick", pick_labels, "pick", pick_strict_on):
+        done.append("pick")
+    return done
