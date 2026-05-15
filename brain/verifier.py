@@ -348,3 +348,11 @@ def _parse_latest_walk_ts(tool_result: str | None) -> float | None:
     return _parse_float_field(_LATEST_WALK_TS_RE, tool_result)
 
 
+def _parse_phases_seen(tool_result: str | None) -> list[str]:
+    """Phases observed since the dispatch epoch (uppercased, in order)."""
+    if not tool_result:
+        return []
+    m = _PHASES_SEEN_RE.search(tool_result)
+    if not m or not m.group(1):
+        return []
+    return [p.strip().upper() for p in m.group(1).split(",") if p.strip()]
