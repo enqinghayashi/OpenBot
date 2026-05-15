@@ -183,3 +183,8 @@ class Verdict:
     evidence: str
     failure_reason: str | None = None
 
+    def __post_init__(self) -> None:
+        if self.status not in VALID_STATUSES:
+            raise ValueError(
+                f"invalid Verdict status {self.status!r}; must be one of {VALID_STATUSES}")
+
