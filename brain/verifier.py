@@ -338,3 +338,5 @@ def _parse_float_field(pattern: re.Pattern, tool_result: str | None) -> float | 
         return float(m.group(1))
     except ValueError:
         return None
+
+
