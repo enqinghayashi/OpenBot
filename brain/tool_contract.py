@@ -308,3 +308,18 @@ def validate_precondition(text: str) -> list[str]:
     return unmet
 
 
+def _contradicted_by_negation(lowered: str, keyword: str) -> bool:
+    """True if any 'no|not|none|never' token directly precedes `keyword`, or `keyword`
+    appears within ~4 words after such a token.
+
+    Conservative heuristic: protects 'no objects' / 'not reachable' / 'no tabletop
+    objects' style brief phrasing from satisfying a precondition.
+    """
+    kw_re = rf"\b{re.escape(keyword)}\w*\b"
+    for m in _NEGATION_RE.finditer(lowered):
+        if re.fullmatch(kw_re, m.group("kw")):  # e.g. 'no <keyword>'
+            return True
+        tail = lowered[m.end(): m.end() + 48]  # or at most ~4 words later
+        if re.search(kw_re, tail):
+            return True
+    return False
