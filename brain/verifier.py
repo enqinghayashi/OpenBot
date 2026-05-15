@@ -196,3 +196,7 @@ class Verdict:
     def failure(cls, evidence: str, reason: str) -> "Verdict":
         return cls(status="failure", evidence=evidence, failure_reason=reason)
 
+    @classmethod
+    def in_progress(cls, evidence: str) -> "Verdict":
+        return cls(status="in_progress", evidence=evidence)
+
