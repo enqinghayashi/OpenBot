@@ -166,3 +166,20 @@ __all__ = ["Verdict", "SkillVerifier"]
 VALID_STATUSES = ("success", "failure", "in_progress")
 
 
+@dataclass
+class Verdict:
+    """Outcome of verifying one tool invocation against the world.
+
+    status        - one of 'success' | 'failure' | 'in_progress'
+    evidence      - what the verifier actually observed (the LLM's evidence text)
+    failure_reason- structured reason for 'failure' (replan input), None otherwise
+
+    Conservative rule: any ambiguity (missing/unfresh data, indistinguishable
+    target) MUST be 'in_progress' with evidence starting 're-observe'. A verifier
+    that cannot confirm must never claim success.
+    """
+
+    status: str
+    evidence: str
+    failure_reason: str | None = None
+
