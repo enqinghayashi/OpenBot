@@ -306,3 +306,5 @@ def validate_precondition(text: str) -> list[str]:
             if not satisfied:
                 unmet.append(f"[{contract.name}] {pc}")
     return unmet
+
+
