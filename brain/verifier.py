@@ -188,3 +188,7 @@ class Verdict:
             raise ValueError(
                 f"invalid Verdict status {self.status!r}; must be one of {VALID_STATUSES}")
 
+    @classmethod
+    def success(cls, evidence: str) -> "Verdict":
+        return cls(status="success", evidence=evidence)
+
