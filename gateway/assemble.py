@@ -714,3 +714,109 @@ class Assembler:
         profile); False = silence is never empty-scene evidence."""
         return self._silence_means_empty
 
+    @silence_means_empty.setter
+    def silence_means_empty(self, value: bool) -> None:
+        self._silence_means_empty = bool(value)
+
+    def grip_state(self, side: str, now: Optional[float] = None) -> Optional[GripState]:
+        """Last known GripState for one side, ALL evidence derived at read time.
+
+        ``contact`` is True only when the most recent ``close_adaptive``
+        verdict for that side was ``contact`` and it is still inside the
+        ``contact_window_s`` window — the honest "grasp signal exists right
+        now" answer.  CONTACT LAW (world-truth round 4): contact is NEVER
+        derived from the joints; ``contact_ts`` is the verdict's own
+        timestamp (None when no contact verdict is on file), so a folded
+        verdict older than its own window, or cleared elsewhere, is exposed
+        as stale to the verifier.
+
+        AGING: ``available`` is False when the state read is older than
+        ``GRIP_STATE_MAX_AGE_S`` or a read errored after the last success;
+        ``stale_ts`` carries the last successful read ts.  A daemon'd grip
+        can never confirm forever.
+
+        MEASURED evidence (CAUSAL OPEN REFERENCE, round 5): ``is_open``
+        compares the read joints against the side's measured-open reference
+        (None until a post-open double-read agreement forms it — the
+        reference forms ONLY from reads taken after a gateway-dispatched
+        open command for that side; a single read never forms a reference).
+
+        When ``side`` is 'right', ``left_contact`` / ``left_contact_ts`` /
+        ``left_available`` / ``left_stale_ts`` / ``left_is_open`` are folded
+        from the LEFT hand's stored state + verdict, so a both-hands command
+        (open_both / close_both) can verify the LEFT hand too, with the
+        SAME aging rules the right hand gets.  For side == 'left' the left
+        fields stay None (no self-reference); they are None too when the
+        left hand was never observed — the verifier treats unknown as
+        re-observe, never success.
+        """
+        state = self._grip_states.get(side)
+        if state is None:
+            return None
+        now = time.time() if now is None else now
+        read_ts = self._grip_state_ts.get(side, 0.0)
+        read_failed = self._grip_error_ts > read_ts
+        stale = read_ts <= 0.0 or (now - read_ts) > GRIP_STATE_MAX_AGE_S \
+            or read_failed
+        available = state.available and not stale
+        stale_ts: Optional[float] = read_ts if read_ts > 0.0 else None
+        verdict, v_ts = self._close_verdicts.get(side, (None, 0.0))
+        contact = verdict == "contact" and (now - v_ts) <= self.contact_window_s
+        # contact_ts shows for any 'contact' verdict,
+        # even EXPIRED, so the verifier can age it itself.
+        contact_ts: Optional[float] = v_ts if verdict == "contact" and v_ts > 0.0 else None
+        is_open = self.is_open(side, state.joints)
+        left_contact: Optional[bool] = None
+        left_contact_ts: Optional[float] = None
+        left_available: Optional[bool] = None
+        left_stale_ts: Optional[float] = None
+        left_is_open: Optional[bool] = None
+        if side == "right":
+            lstate = self._grip_states.get("left")
+            if lstate is not None:
+                l_ts = self._grip_state_ts.get("left", 0.0)
+                l_failed = self._grip_error_ts > l_ts
+                l_stale = l_ts <= 0.0 or (now - l_ts) > GRIP_STATE_MAX_AGE_S \
+                    or l_failed
+                lverdict, lv_ts = self._close_verdicts.get("left", (None, 0.0))
+                left_contact = (lverdict == "contact"
+                                and (now - lv_ts) <= self.contact_window_s)
+                left_contact_ts = (lv_ts if lverdict == "contact" and lv_ts > 0.0
+                                   else None)
+                left_available = lstate.available and not l_stale
+                left_stale_ts = l_ts if l_ts > 0.0 else None
+                left_is_open = self.is_open("left", lstate.joints)
+        if (contact != state.contact
+                or available != state.available
+                or stale_ts != state.stale_ts
+                or contact_ts != state.contact_ts
+                or is_open != state.is_open
+                or left_contact != state.left_contact
+                or left_contact_ts != state.left_contact_ts
+                or left_available != state.left_available
+                or left_stale_ts != state.left_stale_ts
+                or left_is_open != state.left_is_open):
+            return replace(
+                state, contact=contact, available=available, stale_ts=stale_ts,
+                contact_ts=contact_ts, is_open=is_open,
+                left_contact=left_contact, left_contact_ts=left_contact_ts,
+                left_available=left_available, left_stale_ts=left_stale_ts,
+                left_is_open=left_is_open)
+        return state
+
+
+def assemble(detections: Optional[List[dict]] = None,
+             grip_line: Optional[str] = None,
+             walk_payload: Optional[dict] = None,
+             now: Optional[float] = None,
+             max_stale_s: float = MAX_STALE_S) -> WorldObservation:
+    """One-shot convenience: feed one packet batch through a fresh Assembler.
+
+    With ``detections`` given, the observation is fresh (the packet is new).
+    With ``detections=None`` there is no last timestamp, so the result is
+    ``fresh=False`` with ``detections=[]`` — the gateway node should use the
+    stateful :class:`Assembler` instead; this exists for tests and mocks.
+    """
+    return Assembler(max_stale_s=max_stale_s).update(
+        detections=detections, grip_line=grip_line,
+        walk_payload=walk_payload, now=now)
