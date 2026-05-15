@@ -356,3 +356,5 @@ def _parse_phases_seen(tool_result: str | None) -> list[str]:
     if not m or not m.group(1):
         return []
     return [p.strip().upper() for p in m.group(1).split(",") if p.strip()]
+
+
