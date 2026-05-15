@@ -271,3 +271,38 @@ if _UNMAPPED:
 _NEGATION_RE = re.compile(r"\b(no|not|none|never)\s+(?P<kw>\w+)")
 
 
+def validate_precondition(text: str) -> list[str]:
+    """Return unmet preconditions of all contracts against a scene_brief `text`.
+
+    Keyword heuristic: a scene-expressible precondition is 'met' when the brief contains
+    any of its mapped keywords, unless negated ('no/not/none/never <keyword>'). Runtime
+    preconditions (keyword map = ()) are never judged here - the agent checks them
+    directly against the platform. 'Unmet' means "brief does not confirm it" -> the
+    agent must re-observe, never guess. Empty text = empty scene -> nothing confirmed.
+
+    Returns entries prefixed with the contract name, e.g. '[pick] object on a
+    reachable tabletop surface'. Heuristic only - never a correctness claim.
+    """
+    if not text:
+        return [
+            f"[{c.name}] {pc}"
+            for c in CONTRACTS.values()
+            for pc in c.preconditions
+            if _PRECONDITION_KEYWORDS[pc]
+        ]
+    lowered = text.lower()
+    unmet: list[str] = []
+    for contract in CONTRACTS.values():
+        for pc in contract.preconditions:
+            keywords = _PRECONDITION_KEYWORDS[pc]
+            if not keywords:
+                continue  # runtime precondition: the agent judges it
+            satisfied = False
+            for kw in keywords:
+                pattern = rf"\b{re.escape(kw)}\w*\b"
+                if re.search(pattern, lowered) and not _contradicted_by_negation(lowered, kw):
+                    satisfied = True
+                    break
+            if not satisfied:
+                unmet.append(f"[{contract.name}] {pc}")
+    return unmet
