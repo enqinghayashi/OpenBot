@@ -549,3 +549,101 @@ class Assembler:
         """
         return self._open_refs.get(side)
 
+    def is_open(self, side: str, joints: List[float]) -> Optional[bool]:
+        """Measured-open judgment for one side in measured joint space.
+
+        True when ``joints`` are within ``OPEN_JOINT_TOLERANCE`` of the
+        side's reference; False when they are not (or the readback is
+        missing/mismatched); None when no reference exists yet (no open
+        command for that side, or the double-read hasn't completed) —
+        nothing can be judged, and open/place verification is in_progress
+        're-observe'.
+        """
+        ref = self._open_refs.get(side)
+        if ref is None:
+            return None
+        if not joints or len(joints) != len(ref):
+            return False  # missing readback can't be open
+        return max(abs(a - b) for a, b in zip(joints, ref)) \
+            < OPEN_JOINT_TOLERANCE
+
+    def _agree(self, a: List[float], b: List[float]) -> bool:
+        """Two reads agree within ``OPEN_JOINT_TOLERANCE`` (double-read test)."""
+        if not a or len(a) != len(b):
+            return False
+        return max(abs(x - y) for x, y in zip(a, b)) < OPEN_JOINT_TOLERANCE
+
+    @staticmethod
+    def _closed_shape(joints: List[float]) -> bool:
+        """B8h: |joints 5/6| above OPEN_REF_MAX_FINGER_RAD -- a closed hand.
+
+        abs(): the left hand closes NEGATIVE (L_HAND_CLOSE 5/6 = -1.571/-1.745,
+        skills/arm/grip_server.py); an open hand reads about 0 on both sides.
+
+        Shorter readbacks (no joints 5/6) are not judged here (False), so the
+        old agreement rules still apply to them.
+        """
+        return len(joints) > 6 and (abs(joints[5]) > OPEN_REF_MAX_FINGER_RAD
+                                    or abs(joints[6]) > OPEN_REF_MAX_FINGER_RAD)
+
+    def _update_open_ref(self, side: str, joints: List[float]) -> None:
+        """CAUSAL OPEN REFERENCE maintenance (module docstring, round 5).
+
+        A read only participates when it is QUALIFYING (the side is
+        open-trusted — a gateway-dispatched open command ran for it since
+        the last hand-affecting command); an untrusted read discards any
+        pending candidate (the "two CONSECUTIVE qualifying reads" rule) and
+        never forms or moves a reference.  With a reference None, a
+        qualifying read becomes the candidate; the NEXT qualifying read that
+        agrees with it forms the reference (double-read agreement — NO
+        single-first-read bootstrap; the verifying read after the open is
+        the FIRST of the two, and one re-observe confirms).  With a
+        reference set, only a new qualifying agreement whose candidate is
+        within tolerance of the CURRENT reference drifts it (servo settling
+        / thermal drift); a far read never moves it.
+        """
+        if not joints:
+            return
+        if not self._read_qualifies(side):
+            self._open_candidates.pop(side, None)  # keeps the reads consecutive
+            return
+        ref = self._open_refs.get(side)
+        candidate = self._open_candidates.get(side)
+        if ref is None and self._closed_shape(joints):
+            # closed shape can't be the candidate or finish
+            # a double-read; pending candidate dropped too.
+            self._open_candidates.pop(side, None)
+            return
+        if ref is None:
+            if candidate is None:
+                self._open_candidates[side] = list(joints)
+            elif self._agree(candidate, joints):
+                # double-read agreement - ref forms
+                self._open_refs[side] = list(candidate)
+                self._open_candidates.pop(side, None)
+            else:
+                # disagree: restart from the newer read.
+                self._open_candidates[side] = list(joints)
+        else:
+            if candidate is None:
+                if self.is_open(side, joints):
+                    self._open_candidates[side] = list(joints)
+            elif self._agree(candidate, joints) and self.is_open(side, candidate):
+                # near the current reference -> drift.
+                self._open_refs[side] = list(candidate)
+                self._open_candidates.pop(side, None)
+            else:
+                self._open_candidates.pop(side, None)
+
+    def grip_state_read_ts(self, side: str) -> Optional[float]:
+        """Timestamp of the last successful ``state`` read for a side.
+
+        None when the side was never successfully read.  The gateway's
+        post-pick lane poll uses this to tell whether THIS reply carried the
+        side (a poll whose reply omits the side leaves the old ts in place).
+        """
+        ts = self._grip_state_ts.get(side, 0.0)
+        return ts if ts > 0.0 else None
+
+    # ── reading it back out ────────────────────────────────────────────────
+
