@@ -178,3 +178,136 @@ class GatewayTransportError(ConnectionError):
     reply failed (EOF, non-JSON, non-object reply).  Callers convert it
     to a failure envelope — never a fake success."""
 
+    def __init__(self, message: str, *, phase: str = "reply") -> None:
+        super().__init__(message)
+        self.phase = phase
+
+
+# --- talking to the socket ----------------------------------------------------
+
+
+def _is_ip_literal(host: str) -> bool:
+    """True when ``host`` is an IPv4/IPv6 address literal ('192.168.123.164',
+    '::1', '[::1]').  Numeric addresses never touch DNS — resolving them is
+    pure parsing — so they keep the exact native connect path and are never
+    routed through the bounded (threaded) resolver below.  A bracketed IPv6
+    literal is unwrapped the way socket.create_connection unwraps it."""
+    h = str(host)
+    if h.startswith("[") and h.endswith("]"):
+        h = h[1:-1]
+    try:
+        ipaddress.ip_address(h)
+        return True
+    except ValueError:
+        return False
+
+
+def _resolve_bounded(
+    host: str, port: int, deadline: float, timeout_s: float
+) -> List[tuple]:
+    """``socket.getaddrinfo`` under a hard deadline.
+
+    Runs the resolution in a daemon thread and joins with the time left to
+    the deadline, so a slow or dead libc resolver cannot stall the caller
+    past ``timeout_s`` and a stuck getaddrinfo cannot block process exit.
+    Returns the addrinfo list; raises the resolver's own exception
+    (gaierror, an OSError) when it fails inside the bound; raises
+    :class:`socket.timeout` when the deadline passes with the resolver
+    still working.
+    """
+    box: Dict[str, Any] = {}
+
+    def _work() -> None:
+        try:
+            box["addrs"] = socket.getaddrinfo(
+                host, port, 0, socket.SOCK_STREAM
+            )
+        except Exception as exc:  # noqa: BLE001 - surfaced to the caller anyway
+            box["error"] = exc
+
+    worker = threading.Thread(
+        target=_work, name="gateway-dns-resolve", daemon=True
+    )
+    worker.start()
+    worker.join(max(0.0, deadline - time.monotonic()))
+    if "addrs" in box:
+        return box["addrs"]
+    if "error" in box:
+        raise box["error"]  # type: ignore[misc] — in practice it's a gaierror/OSError
+    raise socket.timeout(
+        "DNS resolution of %r exceeded the gateway timeout (%.1fs)"
+        % (host, timeout_s)
+    )
+
+
+def connect_with_timeout(
+    host: str, port: int, timeout_s: float
+) -> socket.socket:
+    """Connect ``host:port`` with BOTH name resolution and the TCP connect
+    bounded by ``timeout_s`` — a hostname connect returns an honest OSError
+    within the bound.  (Python's socket timeout bounds CONNECT only;
+    ``socket.create_connection``'s implicit ``getaddrinfo`` is NOT bounded
+    by it, so a slow/dead resolver would otherwise stall the caller far
+    beyond ``timeout_s``.)
+
+    An IP literal never touches the resolver at all (numeric addresses are
+    pure parsing) and keeps the exact native path — same address family /
+    IPv6 handling as before, one bounded connect attempt.  A hostname is
+    resolved by :func:`_resolve_bounded` against a deadline and the
+    returned addresses are then tried in getaddrinfo order exactly as
+    ``socket.create_connection`` tries them (every family in turn —
+    dual-stack use preserved), each attempt budgeted by the same deadline
+    with a small floor so a slow-but-working resolver still leaves room to
+    reach a live gateway.
+
+    Every failure raises an OSError — ``socket.timeout`` when resolution or
+    the deadline expires, ``gaierror`` when resolution fails, the last
+    connect error otherwise — so callers fold it into the same honest
+    phase-'connect' envelope as a refused connection.  The shared seam the
+    voice app's embodiment-gate probe (voice/app.py:1813) can call too.
+    """
+    if _is_ip_literal(host):
+        # native fast path: own family, one bounded
+        # attempt, same AF/IPv6 handling
+        # create_connection picks, no resolver.
+        h = str(host)
+        if h.startswith("[") and h.endswith("]"):
+            h = h[1:-1]
+        addr = ipaddress.ip_address(h)
+        sock = socket.socket(
+            socket.AF_INET6 if addr.version == 6 else socket.AF_INET,
+            socket.SOCK_STREAM,
+        )
+        try:
+            sock.settimeout(float(timeout_s))
+            sock.connect((str(addr), int(port)))
+            return sock
+        except Exception:
+            try:
+                sock.close()
+            except OSError:
+                pass
+            raise
+    deadline = time.monotonic() + max(0.0, float(timeout_s))
+    addrs = _resolve_bounded(host, int(port), deadline, float(timeout_s))
+    err: Optional[OSError] = None
+    # create_connection's loop: every family, in order
+    floor = min(0.25, max(0.0, float(timeout_s)))
+    sock: Optional[socket.socket] = None
+    for af, socktype, proto, _canonname, sa in addrs:
+        try:
+            sock = socket.socket(af, socktype, proto)
+            sock.settimeout(max(deadline - time.monotonic(), floor))
+            sock.connect(sa)
+            return sock
+        except OSError as exc:
+            err = exc
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+                sock = None
+    if err is not None:
+        raise err
+    raise OSError("getaddrinfo returned no usable addresses for %r" % (host,))
