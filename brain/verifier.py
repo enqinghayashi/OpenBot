@@ -206,3 +206,124 @@ class Verdict:
         if self.failure_reason is not None:
             s += f"|Reason:{self.failure_reason}"
         return s
+
+
+# ── what a tool reply looks like ─────────────────────────────────────────────
+# writer socket:
+#   DONE | ERROR:<msg> | Q:<14 floats> | STATE:...
+# grip socket:
+#   open|close|... -> DONE
+#   close_adaptive -> contact | full | no_data
+#   state [side] -> DONE:<json>
+#   the grip never auto-verifies
+#   'state' is the only world signal
+# engine socket: READY, then DONE | ERROR:<msg>
+# Q: / STATE: -> no world signal
+
+
+# ── parsers for the fields the gateway annotates onto tool results ───────────
+# gateway fields on motion results:
+#   pick: lane_state=, grip_state_ts=
+#   place: prev_is_open=, prev_pick_verified=, release_open= (engine open check)
+#   open_hand: sides=, prev_contact=
+#   navigate: NAV_EPOCH=, NAV_LABEL=, LATEST_WALK_TS=, PHASES_SEEN=
+# lane_state=up is the only grasp evidence
+# release_open counts because the lift parks the hand closed before DONE, so
+# is_open never holds after a place
+# the open_hand fields are informational
+
+_NAV_EPOCH_RE = re.compile(r"NAV_EPOCH=([0-9]+(?:\.[0-9]+)?)")
+_NAV_LABEL_RE = re.compile(r"NAV_LABEL=([^;]*)")
+_LATEST_WALK_TS_RE = re.compile(r"LATEST_WALK_TS=([0-9]+(?:\.[0-9]+)?)")
+_PHASES_SEEN_RE = re.compile(r"PHASES_SEEN=([A-Za-z_,]*)")
+# motion-wait token: a cancel writes WALK_WAIT=cancelled_by_operator@<s>
+# the value class takes letters and underscores, leaving out the @<s> suffix
+_WALK_WAIT_RE = re.compile(r"WALK_WAIT=([A-Za-z_]+)")
+_LANE_STATE_RE = re.compile(r"lane_state=(up|down|unknown)")
+_GRIP_STATE_TS_RE = re.compile(r"grip_state_ts=([0-9]+(?:\.[0-9]+)?)")
+_PREV_IS_OPEN_RE = re.compile(r"prev_is_open=([A-Za-z]+):(True|False|None)")
+_PICK_VERIFIED_RE = re.compile(r"prev_pick_verified=([A-Za-z]+):(True|False)")
+_RELEASE_OPEN_RE = re.compile(r"release_open=([A-Za-z]+):(True|False)")
+_SIDES_RE = re.compile(r"sides=([A-Za-z]+)")
+_RIGHT_CLOSE_RE = re.compile(r"right_close=([^;\s]*)")
+_LEFT_CLOSE_RE = re.compile(r"left_close=([^;\s]*)")
+# annotated values are written bare when they contain only [A-Za-z0-9_.-] and
+# double-quoted otherwise ('wine glass')
+# both forms are anchored, so a bad line yields None instead of swallowing the
+# next key
+_INTO_REF_RE = re.compile(r'into=(?:"([^"]*)"|([A-Za-z0-9_.\-]+))')
+_INTO_LABEL_RE = re.compile(r'into_label=(?:"([^"]*)"|([A-Za-z0-9_.\-]+))')
+_PLACED_OBJECT_RE = re.compile(r'placed_object=(?:"([^"]*)"|([A-Za-z0-9_.\-]+))')
+_INTO_X_RE = re.compile(r"into_x=(-?[0-9]+(?:\.[0-9]+)?)")
+_INTO_Y_RE = re.compile(r"into_y=(-?[0-9]+(?:\.[0-9]+)?)")
+_INTO_Z_RE = re.compile(r"into_z=(-?[0-9]+(?:\.[0-9]+)?)")
+# drop epoch, stamped at execution; it scopes the stationarity record to one
+# task
+# predrop_*: the pre-drop in-region set read from the pre-tool observation
+_DROPPED_AT_RE = re.compile(r"dropped_at=([0-9]+(?:\.[0-9]+)?)")
+_PREDROP_STATE_RE = re.compile(r"predrop_state=(known|unknown)")
+_PREDROP_OBJ_RE = re.compile(r"predrop_obj=([^;]*)")
+#: place-into tokens: container id plus the deep footprint
+#: as xc, near y, far y, half x, rim z, bottom z
+_INTO_IID_RE = re.compile(r"\binto_iid=(\d+)")
+_INTO_FP_RE = re.compile(
+    r"\binto_fp=(-?\d+(?:\.\d+)?(?:,-?\d+(?:\.\d+)?){5})")
+
+#: grip 'state' read max age in seconds
+#: a read older than this cannot confirm grip state
+GRIP_STATE_MAX_AGE_S = 5.0
+
+#: folded close verdict max age in seconds
+#: a stale folded verdict cannot confirm a close
+CLOSE_CONTACT_WINDOW_S = 15.0
+
+#: detections channel liveness window in seconds
+#: a quiet node inside the window is alive; never-spoke or older is dead
+DETECTIONS_ALIVE_S = 10.0
+
+#: finger hold threshold: a joint at least this far off its commanded q is held
+#: joints 1..6 are checked. real holds measure 0.174-0.253 rad off command,
+#: misses 0.030 and controls 0.058, so 0.10 separates a held object from an
+#: empty close.
+#: a threshold near this value reads 'empty' and triggers a re-pick that drops
+#: the object; a test pins the constant.
+FINGER_HOLD_LAG_RAD = 0.10
+#: held needs this many of the six finger joints off command
+#: 0 = empty, 1..3 = no claim
+FINGER_HOLD_MIN_JOINTS = 4
+
+#: containment half-extent in the torso frame, metres
+#: a placed object must project within this of the container
+#: detections carry no box, so this is a configured tolerance, not a measured
+#: one
+#: 0.12 covers a ~20 cm bin (0.10 half-width) plus ~2 cm of depth-projection
+#: noise at arm reach
+#: it stays tighter than the 15 cm misses (dx=0.15, dz=0.07) and the in-flight
+#: frame (dz=0.15)
+CONTAINER_FIT_M = 0.12
+
+#: packet age allowed for a finished drop
+#: the liveness window is not freshness: a packet older than this can predate
+#: the drop's completion
+POST_DROP_FRESHNESS_S = 3.0
+
+#: association tolerance in metres
+#: closer than this is the same object
+PREEXISTING_ASSOC_M = 0.25
+
+#: deep bin: an object sits 0.14-0.30 m below the container centroid, and the
+#: centroid drifts to the far wall, so judge the aimed-at footprint
+#: shrunk by DEEP_FIT_MARGIN_M, from bottom-DEEP_BOT_BELOW_M to
+#: rim+DEEP_RIM_ABOVE_M
+DEEP_FIT_MARGIN_M = 0.03
+DEEP_BOT_BELOW_M = 0.05
+DEEP_RIM_ABOVE_M = 0.10
+
+#: re-observe window: the two agreeing frames must be distinct and no further
+#: apart than this
+#: a re-observe turn takes ~1-2 s, so 5.0 s covers a normal pair while staying
+#: inside the 10.0 s liveness window
+#: an older frame re-anchors the pair
+RE_OBSERVE_WINDOW_S = 5.0
+
+
