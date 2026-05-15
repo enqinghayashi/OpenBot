@@ -342,3 +342,5 @@ def _parse_float_field(pattern: re.Pattern, tool_result: str | None) -> float | 
 
 def _parse_nav_epoch(tool_result: str | None) -> float | None:
     return _parse_float_field(_NAV_EPOCH_RE, tool_result)
+
+
