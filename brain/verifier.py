@@ -327,3 +327,14 @@ DEEP_RIM_ABOVE_M = 0.10
 RE_OBSERVE_WINDOW_S = 5.0
 
 
+def _parse_float_field(pattern: re.Pattern, tool_result: str | None) -> float | None:
+    """Parse one float-valued field (NAV_EPOCH / LATEST_WALK_TS)."""
+    if not tool_result:
+        return None
+    m = pattern.search(tool_result)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return None
