@@ -412,3 +412,23 @@ def _parse_pick_point(*texts):
             if all(math.isfinite(v) for v in pt):
                 return pt
     return None
+
+
+# a label match cannot tell the picked object from a second object of the same
+# label, so every same-label detection must be provably another object
+# the pick context carries a preaction_dets= pre-pick snapshot to compare
+# against
+# any doubt keeps the conservative 'target still visible' answer
+_PREACTION_DETS_RE = re.compile(r"preaction_dets=([^\n]*)")
+#: closer than this to the pick point = the target is still there
+PICK_BYSTANDER_MIN_FROM_PICK_M = 0.08
+#: the pre-pick target is the detection nearest the pick point
+#: within this distance
+PICK_BYSTANDER_TARGET_GATE_M = 0.05
+#: this close to a pre-pick non-target = that object
+PICK_BYSTANDER_SAME_PLACE_M = 0.06
+#: or a hue this far off the target's pre-pick hue (circular degrees):
+#: a red cup is not the cyan cup
+PICK_BYSTANDER_MIN_HUE_DEG = 60.0
+
+
