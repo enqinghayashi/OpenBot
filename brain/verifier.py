@@ -668,3 +668,5 @@ def _parse_release_open(tool_result: str | None):
     if not m:
         return None
     return (m.group(1), m.group(2))
+
+
