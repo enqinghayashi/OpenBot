@@ -629,3 +629,11 @@ def _parse_engine_reply(tool_result: str | None) -> str | None:
         return None
     m = _ENGINE_REPLY_RE.search(tool_result)
     return m.group(1).strip() if m else None
+
+
+_TURN_CENTRED_RE = re.compile(r"\bTURN_RESULT=centred\b")
+
+
+_BARE_DONE_RE = re.compile(r"DONE(?![\w:=])")
+
+
