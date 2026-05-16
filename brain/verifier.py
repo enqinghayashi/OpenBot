@@ -518,3 +518,5 @@ def _only_bystanders(obs, label, pick_point, pre):
             continue
         return False
     return True
+
+
