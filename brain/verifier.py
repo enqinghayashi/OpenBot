@@ -621,3 +621,5 @@ def _task_was_cancelled(tool_result: str | None) -> bool:
     if not tool_result:
         return False
     return _ENGINE_CANCELLED_RE.search(tool_result) is not None
+
+
