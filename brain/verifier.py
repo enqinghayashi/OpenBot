@@ -670,3 +670,6 @@ def _parse_release_open(tool_result: str | None):
     return (m.group(1), m.group(2))
 
 
+def _parse_grip_state_ts(tool_result: str | None) -> float | None:
+    """The gateway's post-pick 'state [side]' poll timestamp."""
+    return _parse_float_field(_GRIP_STATE_TS_RE, tool_result)
