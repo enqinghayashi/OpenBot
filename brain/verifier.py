@@ -643,3 +643,5 @@ def _engine_reply_is_bare_done(engine_reply: str | None) -> bool:
     if not engine_reply:
         return False
     return _BARE_DONE_RE.match(engine_reply.strip()) is not None
+
+
