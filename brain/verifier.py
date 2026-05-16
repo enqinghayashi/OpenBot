@@ -375,3 +375,26 @@ def _walk_was_cancelled(tool_result: str | None) -> bool:
     run12 returned the former and the model, reasonably, tried again.
     """
     return _parse_walk_wait(tool_result) == "cancelled_by_operator"
+
+
+_ENGINE_CANCELLED_RE = re.compile(r"engine_reply=CANCELLED:|^\s*CANCELLED[: ]")
+_ENGINE_REPLY_RE = re.compile(r"engine_reply=([^\r\n]*)")
+
+# the point the arm is sent to, as `pick_point=<x>,<y>,<z>` in the torso frame
+# absent: the lift checks are skipped
+# away and above the pick point = in the hand
+_PICK_POINT_RE = re.compile(
+    r"pick_point=\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*,"
+    r"\s*(-?\d+(?:\.\d+)?)")
+
+#: min 3-D distance from the pick point for an object in the hand
+#: a miss is re-detected 0.027-0.041 m away, an in-hand object 0.23-0.29 m
+#: 0.10 sits between the two
+PICK_INHAND_MIN_DISPLACEMENT_M = 0.10
+#: min rise above the pick point
+#: in-hand objects rise +0.157 to +0.278 m, missed ones +0.006 to +0.020 m
+#: a knocked-over object never rises, and a flat one stays 'visible'
+#: 0.08 separates the two
+PICK_INHAND_MIN_RISE_M = 0.08
+
+
