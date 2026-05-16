@@ -358,3 +358,9 @@ def _parse_phases_seen(tool_result: str | None) -> list[str]:
     return [p.strip().upper() for p in m.group(1).split(",") if p.strip()]
 
 
+def _parse_walk_wait(tool_result: str | None) -> str | None:
+    """The gateway's WALK_WAIT token, or None when the result carries none."""
+    if not tool_result:
+        return None
+    m = _WALK_WAIT_RE.search(tool_result)
+    return m.group(1) if m else None
