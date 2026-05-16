@@ -637,3 +637,9 @@ _TURN_CENTRED_RE = re.compile(r"\bTURN_RESULT=centred\b")
 _BARE_DONE_RE = re.compile(r"DONE(?![\w:=])")
 
 
+def _engine_reply_is_bare_done(engine_reply: str | None) -> bool:
+    """True iff the engine's own line is the bare v5.5 ``DONE`` (optionally
+    followed by gateway/lane suffix text), not ``DONE:<x>`` / ``DONEx``."""
+    if not engine_reply:
+        return False
+    return _BARE_DONE_RE.match(engine_reply.strip()) is not None
