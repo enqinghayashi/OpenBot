@@ -432,3 +432,34 @@ PICK_BYSTANDER_SAME_PLACE_M = 0.06
 PICK_BYSTANDER_MIN_HUE_DEG = 60.0
 
 
+def _parse_preaction_dets(*texts):
+    """[(x, y, hue|None)] from the first ``preaction_dets=`` annotation.
+
+    A malformed entry voids the WHOLE list (returns []): half a pre-pick
+    scene could hide the target, and [] keeps the old rule.
+    """
+    for text in texts:
+        if not text:
+            continue
+        m = _PREACTION_DETS_RE.search(text)
+        if not m:
+            continue
+        out = []
+        for part in m.group(1).split(";"):
+            part = part.strip()
+            if not part:
+                continue
+            f = [p.strip() for p in part.split(",")]
+            if len(f) != 3:
+                return []
+            try:
+                x, y = float(f[0]), float(f[1])
+                hue = None if f[2] == "-" else float(f[2])
+            except ValueError:
+                return []
+            if not (math.isfinite(x) and math.isfinite(y)) or (
+                    hue is not None and not math.isfinite(hue)):
+                return []
+            out.append((x, y, hue))
+        return out
+    return []
