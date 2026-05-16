@@ -705,3 +705,11 @@ def _parse_pc_hold(tool_result: str | None) -> str | None:
     return token if token in _PC_HOLD_TOKENS else "UNKNOWN"
 
 
+def _parse_nav_label(tool_result: str | None) -> str | None:
+    """The requested target label from NAV_LABEL (None when absent)."""
+    if not tool_result:
+        return None
+    m = _NAV_LABEL_RE.search(tool_result)
+    if not m or not m.group(1).strip():
+        return None
+    return m.group(1).strip()
