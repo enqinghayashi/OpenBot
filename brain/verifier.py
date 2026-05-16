@@ -623,3 +623,9 @@ def _task_was_cancelled(tool_result: str | None) -> bool:
     return _ENGINE_CANCELLED_RE.search(tool_result) is not None
 
 
+def _parse_engine_reply(tool_result: str | None) -> str | None:
+    """The value after ``engine_reply=`` or None when the reply carries none."""
+    if not tool_result:
+        return None
+    m = _ENGINE_REPLY_RE.search(tool_result)
+    return m.group(1).strip() if m else None
