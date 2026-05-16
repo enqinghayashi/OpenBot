@@ -520,3 +520,35 @@ def _only_bystanders(obs, label, pick_point, pre):
     return True
 
 
+def _target_lifted_with_hand(obs, label, ref, pick_point):
+    """(True, worst) iff EVERY detection matching the target sits at least
+    PICK_INHAND_MIN_DISPLACEMENT_M from the pick point AND at least
+    PICK_INHAND_MIN_RISE_M above it; worst = (min distance, min rise).
+    (False, None) otherwise — any single matching detection near the pick
+    point, or not risen, keeps the conservative 'still visible' answer."""
+    if pick_point is None:
+        return False, None
+    px, py, pz = pick_point
+    dets = getattr(obs, "detections", None) or []
+    if ref is not None:
+        match = [d for d in dets if d.ref == ref]
+    elif label is not None:
+        match = [d for d in dets
+                 if (d.label or "").lower() == label.lower()]
+    else:
+        return False, None
+    if not match:
+        return False, None
+    dists, rises = [], []
+    for d in match:
+        try:
+            dx, dy, dz = float(d.x) - px, float(d.y) - py, float(d.z) - pz
+        except (TypeError, ValueError):
+            return False, None
+        dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+        if not (math.isfinite(dist) and dist >= PICK_INHAND_MIN_DISPLACEMENT_M
+                and dz >= PICK_INHAND_MIN_RISE_M):
+            return False, None
+        dists.append(dist)
+        rises.append(dz)
+    return True, (min(dists), min(rises))
