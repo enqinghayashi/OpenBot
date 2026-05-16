@@ -610,3 +610,14 @@ def _target_held_in_view(obs, label, ref, pick_point):
     return True, held
 
 
+def _task_was_cancelled(tool_result: str | None) -> bool:
+    """True when the engine reply says the operator cancelled this pick/place.
+
+    BRAIN B1 (2026-10-03, run19 forensics): the gateway wraps a cancelled
+    engine reply as ``DONE pick executed; ...; engine_reply=CANCELLED:<where>``
+    and a bare ``CANCELLED:<where>`` first line classifies as 'unknown'.  A
+    cancelled task is NEVER a completed one.  Either shape is accepted.
+    """
+    if not tool_result:
+        return False
+    return _ENGINE_CANCELLED_RE.search(tool_result) is not None
