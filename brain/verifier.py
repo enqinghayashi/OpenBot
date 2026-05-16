@@ -645,3 +645,11 @@ def _engine_reply_is_bare_done(engine_reply: str | None) -> bool:
     return _BARE_DONE_RE.match(engine_reply.strip()) is not None
 
 
+def _parse_lane_state(tool_result: str | None) -> str | None:
+    """'up' | 'down' | 'unknown' from the post-pick lane poll."""
+    if not tool_result:
+        return None
+    m = _LANE_STATE_RE.search(tool_result)
+    if not m:
+        return None
+    return m.group(1).lower()
