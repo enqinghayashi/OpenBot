@@ -366,3 +366,12 @@ def _parse_walk_wait(tool_result: str | None) -> str | None:
     return m.group(1) if m else None
 
 
+def _walk_was_cancelled(tool_result: str | None) -> bool:
+    """True when the operator cancelled this navigate while it was running.
+
+    STOP-KILLS-TASK (C5, 2026-10-01).  Distinct from every timeout token:
+    ``timeout_after_walk`` means the FSM never reported, while this means the
+    operator ended the task on purpose.  The distinction is the whole point —
+    run12 returned the former and the model, reasonably, tried again.
+    """
+    return _parse_walk_wait(tool_result) == "cancelled_by_operator"
