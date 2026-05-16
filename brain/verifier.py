@@ -673,3 +673,12 @@ def _parse_release_open(tool_result: str | None):
 def _parse_grip_state_ts(tool_result: str | None) -> float | None:
     """The gateway's post-pick 'state [side]' poll timestamp."""
     return _parse_float_field(_GRIP_STATE_TS_RE, tool_result)
+
+
+# point-cloud hold token, appended last as `; pc_hold=<TOKEN>`
+# strict upper-case with underscore, so 'xpc_hold=MOVED' and 'pc_hold=MOVED_x'
+# do not match
+_PC_HOLD_RE = re.compile(r"(?:^|[;\s])pc_hold=([A-Z_]+)(?=$|[;\s])")
+_PC_HOLD_TOKENS = ("STILL_ON_TABLE", "MOVED", "ABSENT_UNPROVEN", "UNKNOWN")
+
+
