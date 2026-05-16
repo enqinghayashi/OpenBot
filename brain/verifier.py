@@ -364,3 +364,5 @@ def _parse_walk_wait(tool_result: str | None) -> str | None:
         return None
     m = _WALK_WAIT_RE.search(tool_result)
     return m.group(1) if m else None
+
+
