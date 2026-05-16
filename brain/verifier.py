@@ -398,3 +398,17 @@ PICK_INHAND_MIN_DISPLACEMENT_M = 0.10
 PICK_INHAND_MIN_RISE_M = 0.08
 
 
+def _parse_pick_point(*texts):
+    """(x, y, z) from the first ``pick_point=`` annotation, else None."""
+    for text in texts:
+        if not text:
+            continue
+        m = _PICK_POINT_RE.search(text)
+        if m:
+            try:
+                pt = tuple(float(v) for v in m.groups())
+            except ValueError:
+                continue
+            if all(math.isfinite(v) for v in pt):
+                return pt
+    return None
