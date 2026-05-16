@@ -473,3 +473,48 @@ def _hue_gap(a, b):
     return min(d, 360.0 - d)
 
 
+def _only_bystanders(obs, label, pick_point, pre):
+    """True iff EVERY same-label detection in ``obs`` is provably another object.
+
+    ``pre`` = the pre-pick same-label detections [(x, y, hue|None)].  False
+    (= the old 'target still visible') when the pick point is unknown, no
+    pre-pick detection lies within PICK_BYSTANDER_TARGET_GATE_M of it, no
+    same-label detection is seen now, or any one of them is either within
+    PICK_BYSTANDER_MIN_FROM_PICK_M of the pick point or matches neither
+    bystander test (stood where a pre-pick NON-target stood / hue far from
+    the target's).
+    """
+    if pick_point is None or label is None or not pre:
+        return False
+    px, py = pick_point[0], pick_point[1]
+    dist = [math.hypot(x - px, y - py) for x, y, _h in pre]
+    ti = min(range(len(pre)), key=dist.__getitem__)
+    if dist[ti] > PICK_BYSTANDER_TARGET_GATE_M:
+        return False
+    target_hue = pre[ti][2]
+    others = [p for i, p in enumerate(pre) if i != ti]
+    match = [d for d in (getattr(obs, "detections", None) or [])
+             if (d.label or "").lower() == label.lower()]
+    if not match:
+        return False
+    for d in match:
+        try:
+            x, y = float(d.x), float(d.y)
+        except (TypeError, ValueError):
+            return False
+        if not (math.isfinite(x) and math.isfinite(y)):
+            return False
+        if math.hypot(x - px, y - py) < PICK_BYSTANDER_MIN_FROM_PICK_M:
+            return False
+        hue = getattr(d, "hue", None)
+        try:
+            gap = _hue_gap(target_hue, hue)
+        except (TypeError, ValueError):
+            gap = None
+        if gap is not None and math.isfinite(gap) and gap > PICK_BYSTANDER_MIN_HUE_DEG:
+            continue
+        if any(math.hypot(x - ox, y - oy) <= PICK_BYSTANDER_SAME_PLACE_M
+               for ox, oy, _h in others):
+            continue
+        return False
+    return True
