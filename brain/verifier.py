@@ -564,3 +564,47 @@ PICK_HELD_IN_VIEW_MIN_RISE_M = 0.03
 PICK_HELD_IN_VIEW_TABLE_XY_M = 0.06
 
 
+def _target_held_in_view(obs, label, ref, pick_point):
+    """(True, (xy distance, rise) of the held detection) iff at least one
+    detection matching the target lies within PICK_HELD_IN_VIEW_MAX_XY_M
+    (horizontal) of the pick point AND at least PICK_HELD_IN_VIEW_MIN_RISE_M
+    above it (the object in the raised hand, in view), and NO non-risen
+    matching detection sits within PICK_HELD_IN_VIEW_TABLE_XY_M of the pick
+    point (the target still on the table).  Only meaningful when the fingers
+    are measured held by an object (the caller checks).  (False, None)
+    otherwise."""
+    if pick_point is None:
+        return False, None
+    px, py, pz = pick_point
+    dets = getattr(obs, "detections", None) or []
+    if ref is not None:
+        match = [d for d in dets if d.ref == ref]
+    elif label is not None:
+        match = [d for d in dets
+                 if (d.label or "").lower() == label.lower()]
+    else:
+        return False, None
+    held = None
+    for d in match:
+        try:
+            dx, dy, dz = float(d.x) - px, float(d.y) - py, float(d.z) - pz
+        except (TypeError, ValueError):
+            return False, None
+        dxy = math.sqrt(dx * dx + dy * dy)
+        if not math.isfinite(dxy):
+            return False, None
+        if dz >= PICK_HELD_IN_VIEW_MIN_RISE_M:
+            if dxy <= PICK_HELD_IN_VIEW_MAX_XY_M and (
+                    held is None or dxy < held[0]):
+                held = (dxy, dz)
+        elif dxy <= PICK_HELD_IN_VIEW_TABLE_XY_M:
+            return False, None      # the target is still on the table
+    if held is None:
+        # nothing risen and nothing same-label on the pick point while the
+        # fingers are held: the object went into the hand and out of view
+        # (a bystander 0.15 m off is not near the point); rise 0.0 = not seen
+        # in the hand
+        near = min(math.sqrt((float(d.x) - px) ** 2 + (float(d.y) - py) ** 2)
+                   for d in match)
+        return True, (near, 0.0)
+    return True, held
