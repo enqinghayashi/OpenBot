@@ -682,3 +682,24 @@ _PC_HOLD_RE = re.compile(r"(?:^|[;\s])pc_hold=([A-Z_]+)(?=$|[;\s])")
 _PC_HOLD_TOKENS = ("STILL_ON_TABLE", "MOVED", "ABSENT_UNPROVEN", "UNKNOWN")
 
 
+def _parse_pc_hold(tool_result: str | None) -> str | None:
+    """H-BR-1: the point-cloud hold token of a pick reply, or None.
+
+    None when the reply carries no well-formed ``pc_hold=`` token or is not
+    text (such a reply is judged byte-for-byte as before).  Otherwise one of
+    STILL_ON_TABLE | MOVED | ABSENT_UNPROVEN | UNKNOWN; any other upper-case
+    value is read as UNKNOWN.  The LAST occurrence wins (the lane appends the
+    token last).  Never raises.
+
+    The token is a cloud HINT, never grasp evidence: STILL_ON_TABLE / MOVED
+    are decisive NEGATIVE evidence; ABSENT_UNPROVEN and UNKNOWN prove NOTHING
+    (a bottle in the hand and a bottle the detector missed read the same), so
+    no value of this token may make a verdict more positive.
+    """
+    if not isinstance(tool_result, str) or not tool_result:
+        return None
+    found = _PC_HOLD_RE.findall(tool_result)
+    if not found:
+        return None
+    token = found[-1]
+    return token if token in _PC_HOLD_TOKENS else "UNKNOWN"
