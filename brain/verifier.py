@@ -552,3 +552,15 @@ def _target_lifted_with_hand(obs, label, ref, pick_point):
         dists.append(dist)
         rises.append(dz)
     return True, (min(dists), min(rises))
+
+
+#: an object near the pick point but risen, with the fingers held open, is
+#: the held object still in view
+PICK_HELD_IN_VIEW_MAX_XY_M = 0.25
+PICK_HELD_IN_VIEW_MIN_RISE_M = 0.03
+#: non-risen and this close means it is still on the table
+#: farther out is another object (a second apple 0.14 m off, the held one
+#: 0.17 m off and risen 0.10 m)
+PICK_HELD_IN_VIEW_TABLE_XY_M = 0.06
+
+
