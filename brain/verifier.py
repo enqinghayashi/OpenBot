@@ -465,3 +465,9 @@ def _parse_preaction_dets(*texts):
     return []
 
 
+def _hue_gap(a, b):
+    """Circular distance in degrees between two hues, None if either is unknown."""
+    if a is None or b is None:
+        return None
+    d = abs(float(a) % 360.0 - float(b) % 360.0)
+    return min(d, 360.0 - d)
