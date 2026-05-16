@@ -655,3 +655,16 @@ def _parse_lane_state(tool_result: str | None) -> str | None:
     return m.group(1).lower()
 
 
+def _parse_release_open(tool_result: str | None):
+    """('right'|'left', 'True'|'False') from the engine's release-open check.
+
+    None when the token is absent — UNMEASURED, which is NOT a pass: the
+    caller keeps its original gate.  See the parser block above and
+    `verify_place` for why the engine, not the gateway, supplies this one.
+    """
+    if not tool_result:
+        return None
+    m = _RELEASE_OPEN_RE.search(tool_result)
+    if not m:
+        return None
+    return (m.group(1), m.group(2))
