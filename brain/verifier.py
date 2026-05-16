@@ -608,3 +608,5 @@ def _target_held_in_view(obs, label, ref, pick_point):
                    for d in match)
         return True, (near, 0.0)
     return True, held
+
+
