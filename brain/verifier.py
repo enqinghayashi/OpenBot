@@ -831,3 +831,18 @@ def _parse_into_iid(tool_result: str | None) -> int | None:
     return v if v >= 1 else None
 
 
+def _parse_into_fp(tool_result: str | None) -> tuple | None:
+    """B8j: (x_c, near_y, far_y, half_x, rim_z, bot_z) of a DEEP container
+    (into_fp=...), else None (then the CONTAINER_FIT_M box applies)."""
+    m = _INTO_FP_RE.search(tool_result or "")
+    if not m:
+        return None
+    try:
+        v = tuple(float(t) for t in m.group(1).split(","))
+    except ValueError:
+        return None
+    if len(v) != 6 or not all(math.isfinite(t) for t in v):
+        return None
+    if not (v[2] > v[1] and v[3] > 0.0 and v[4] > v[5]):
+        return None
+    return v
