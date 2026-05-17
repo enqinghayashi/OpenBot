@@ -859,3 +859,5 @@ def _parse_dropped_at(tool_result: str | None) -> float | None:
     gateway-stamped detections_ts use, but equality is all that matters).
     """
     return _parse_float_field(_DROPPED_AT_RE, tool_result)
+
+
