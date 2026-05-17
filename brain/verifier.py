@@ -846,3 +846,5 @@ def _parse_into_fp(tool_result: str | None) -> tuple | None:
     if not (v[2] > v[1] and v[3] > 0.0 and v[4] > v[5]):
         return None
     return v
+
+
