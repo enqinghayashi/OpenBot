@@ -944,3 +944,5 @@ def containment_predrop_snapshot(obs, into_label, placed_object) -> dict:
                 and dz <= CONTAINER_FIT_M:
             positions.append((d.x, d.y, d.z))
     return {"state": "known", "preexisting": positions}
+
+
