@@ -820,3 +820,5 @@ def _parse_into_ref_position(tool_result: str | None) -> tuple[float, float, flo
         return float(x), float(y), float(z)
     except ValueError:
         return None
+
+
