@@ -729,3 +729,5 @@ def _parse_prev_is_open(tool_result: str | None) -> tuple[str, str] | None:
     if not m:
         return None
     return m.group(1), m.group(2)
+
+
