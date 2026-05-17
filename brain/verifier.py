@@ -731,3 +731,16 @@ def _parse_prev_is_open(tool_result: str | None) -> tuple[str, str] | None:
     return m.group(1), m.group(2)
 
 
+def _parse_pick_verified(tool_result: str | None) -> tuple[str, str] | None:
+    """(side, 'True'|'False') from prev_pick_verified=<s>:<v>.
+
+    The gateway's per-side bookkeeping: True = the hold in that hand was
+    created by an engine-verified pick (lane up, same side, this session),
+    recorded at pick time and cleared on the next drop / open / new pick.
+    """
+    if not tool_result:
+        return None
+    m = _PICK_VERIFIED_RE.search(tool_result)
+    if not m:
+        return None
+    return m.group(1), m.group(2)
