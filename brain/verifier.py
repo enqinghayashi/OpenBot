@@ -754,3 +754,5 @@ def _parse_sides(tool_result: str | None) -> str | None:
     if not m:
         return None
     return m.group(1).lower()
+
+
