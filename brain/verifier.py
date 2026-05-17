@@ -893,3 +893,5 @@ def _parse_predrop(tool_result: str | None) -> tuple[str, list]:
                 except ValueError:
                     continue
     return state, positions
+
+
