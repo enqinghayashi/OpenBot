@@ -713,3 +713,5 @@ def _parse_nav_label(tool_result: str | None) -> str | None:
     if not m or not m.group(1).strip():
         return None
     return m.group(1).strip()
+
+
