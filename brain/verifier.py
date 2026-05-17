@@ -861,3 +861,35 @@ def _parse_dropped_at(tool_result: str | None) -> float | None:
     return _parse_float_field(_DROPPED_AT_RE, tool_result)
 
 
+def _parse_predrop(tool_result: str | None) -> tuple[str, list]:
+    """(state, positions) from the pre-drop snapshot annotations.
+
+    state == 'known': positions is the PRE-DROP same-label in-region set
+    the tool layer read from the observation it held BEFORE executing the
+    drop (fix round 2, D5) — the substitution blocker's anchor.  state ==
+    'unknown': no usable pre-drop observation existed (stale/missing/
+    ambiguous) — success then additionally requires displacement
+    evidence.  Positions parse as [(x, y, z), ...] from
+    ``predrop_obj=x,y,z;x,y,z...``; malformed entries are dropped (a
+    malformed snapshot degrades to the empty set within its state, never
+    a guessed position).
+    """
+    state = "unknown"
+    if tool_result:
+        m = _PREDROP_STATE_RE.search(tool_result)
+        if m:
+            state = m.group(1)
+    positions: list = []
+    if tool_result and state == "known":
+        m = _PREDROP_OBJ_RE.search(tool_result)
+        if m and m.group(1).strip():
+            for chunk in m.group(1).split(";"):
+                parts = chunk.split(",")
+                if len(parts) != 3:
+                    continue
+                try:
+                    positions.append((float(parts[0]), float(parts[1]),
+                                      float(parts[2])))
+                except ValueError:
+                    continue
+    return state, positions
