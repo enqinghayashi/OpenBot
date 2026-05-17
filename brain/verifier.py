@@ -895,3 +895,52 @@ def _parse_predrop(tool_result: str | None) -> tuple[str, list]:
     return state, positions
 
 
+def containment_predrop_snapshot(obs, into_label, placed_object) -> dict:
+    """The PRE-DROP containment snapshot (fix round 2, requirement 3).
+
+    The verifier's containment half only ever receives POST-tool
+    observations (run_post / gateway _verify deliver the observation
+    taken after the motion), but the substitution blocker must anchor on
+    what was inside the container BEFORE the drop executed.  This helper
+    reads that from the PRE-TOOL observation the executor holds — the
+    observation the tool layer had before executing the drop — and
+    returns a serializable snapshot the place tool annotates onto the
+    reply (predrop_state / predrop_obj).
+
+    Returns {"state": "known", "preexisting": [(x, y, z), ...]} — the
+    same-label-as-placed_object detections inside CONTAINER_FIT_M of the
+    container detection IN THAT SAME PRE-DROP OBSERVATION (the region
+    math lives here, the verifier's single owner) — or
+    {"state": "unknown", "preexisting": []} when the observation is
+    unusable (None / not fresh / never observed) or the container is
+    absent or ambiguous in it (the pre-drop scene then cannot bound the
+    region honestly).
+    """
+    if obs is None:
+        return {"state": "unknown", "preexisting": []}
+    ts = getattr(obs, "detections_ts", 0.0) or 0.0
+    if not getattr(obs, "fresh", False) or ts <= 0.0:
+        return {"state": "unknown", "preexisting": []}
+    dets = list(getattr(obs, "detections", None) or [])
+    into = (into_label or "").lower()
+    containers = [d for d in dets
+                  if str(getattr(d, "label", "") or "").lower() == into]
+    if len(containers) != 1:
+        # 0 = absent from the pre-drop scene, >1 = cannot tell which: unknown
+        # either way
+        return {"state": "unknown", "preexisting": []}
+    container = containers[0]
+    obj = (placed_object or "").lower()
+    positions = []
+    for d in dets:
+        if d is container:
+            continue
+        if str(getattr(d, "label", "") or "").lower() != obj:
+            continue
+        dx = abs(d.x - container.x)
+        dy = abs(d.y - container.y)
+        dz = abs(d.z - container.z)
+        if dx <= CONTAINER_FIT_M and dy <= CONTAINER_FIT_M \
+                and dz <= CONTAINER_FIT_M:
+            positions.append((d.x, d.y, d.z))
+    return {"state": "known", "preexisting": positions}
