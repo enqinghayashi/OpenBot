@@ -822,3 +822,10 @@ def _parse_into_ref_position(tool_result: str | None) -> tuple[float, float, flo
         return None
 
 
+def _parse_into_iid(tool_result: str | None) -> int | None:
+    """B8j: the container's instance id (into_iid=<n>), else None."""
+    m = _INTO_IID_RE.search(tool_result or "")
+    if not m:
+        return None
+    v = int(m.group(1))
+    return v if v >= 1 else None
