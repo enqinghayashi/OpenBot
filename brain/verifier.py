@@ -791,3 +791,5 @@ def _parse_place_into(tool_result: str | None) -> tuple[str | None, str | None, 
     obj = (m.group(1) if m and m.group(1) is not None
            else (m.group(2) if m else None))
     return ref, label, obj
+
+
