@@ -715,3 +715,17 @@ def _parse_nav_label(tool_result: str | None) -> str | None:
     return m.group(1).strip()
 
 
+def _parse_prev_is_open(tool_result: str | None) -> tuple[str, str] | None:
+    """(side, 'True'|'False'|'None') from prev_is_open=<s>:<v>.
+
+    The PRE-DROP fresh 'state [side]' poll's measured-open judgment:
+    'False' = the hand was in a NON-open shape before the drop (the open
+    transition evidence), 'True' = already open, 'None' = unmeasurable
+    (no trusted open reference yet / offline / stale).
+    """
+    if not tool_result:
+        return None
+    m = _PREV_IS_OPEN_RE.search(tool_result)
+    if not m:
+        return None
+    return m.group(1), m.group(2)
