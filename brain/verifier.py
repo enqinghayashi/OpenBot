@@ -829,3 +829,5 @@ def _parse_into_iid(tool_result: str | None) -> int | None:
         return None
     v = int(m.group(1))
     return v if v >= 1 else None
+
+
