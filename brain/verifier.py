@@ -746,3 +746,11 @@ def _parse_pick_verified(tool_result: str | None) -> tuple[str, str] | None:
     return m.group(1), m.group(2)
 
 
+def _parse_sides(tool_result: str | None) -> str | None:
+    """'right' | 'left' | 'both' from the sides= annotation (None = absent)."""
+    if not tool_result:
+        return None
+    m = _SIDES_RE.search(tool_result)
+    if not m:
+        return None
+    return m.group(1).lower()
