@@ -793,3 +793,30 @@ def _parse_place_into(tool_result: str | None) -> tuple[str | None, str | None, 
     return ref, label, obj
 
 
+def _parse_into_ref_position(tool_result: str | None) -> tuple[float, float, float] | None:
+    """(x, y, z) of the container ref's last-known position (fix nit ii).
+
+    The tool layer resolves the into: argument to a scene-graph ref and —
+    when that ref's last-known position is fresh (CONTAINER_REF_FRESH_S in
+    tools.py, mirror of DETECTIONS_ALIVE_S) — annotates ``into_x/y/z``.
+    These are MEASURED positions (the ref's last detection), used ONLY to
+    disambiguate which same-label detection is the container
+    ('ref-unique'); the containment offsets are always computed against the
+    CURRENT detection, never the ref position.  None when the annotations
+    are absent/unparseable — label matching then applies (and same-label
+    ambiguity stays in_progress).
+    """
+    if not tool_result:
+        return None
+    m = _INTO_X_RE.search(tool_result)
+    x = m.group(1) if m else None
+    m = _INTO_Y_RE.search(tool_result)
+    y = m.group(1) if m else None
+    m = _INTO_Z_RE.search(tool_result)
+    z = m.group(1) if m else None
+    if x is None or y is None or z is None:
+        return None
+    try:
+        return float(x), float(y), float(z)
+    except ValueError:
+        return None
