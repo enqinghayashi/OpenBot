@@ -848,3 +848,14 @@ def _parse_into_fp(tool_result: str | None) -> tuple | None:
     return v
 
 
+def _parse_dropped_at(tool_result: str | None) -> float | None:
+    """The drop-epoch annotation (dropped_at=...), stamped by the tool
+    layer at drop EXECUTION (fix round 2, D4).  None when absent.
+
+    Used ONLY as an identity token: the stationarity record is scoped to
+    the task execution whose epoch this is — a different epoch (a NEW
+    drop of the same container/object) resets the record.  Never used for
+    age math (the base is the same time.time() the verifier and the
+    gateway-stamped detections_ts use, but equality is all that matters).
+    """
+    return _parse_float_field(_DROPPED_AT_RE, tool_result)
