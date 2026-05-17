@@ -756,3 +756,38 @@ def _parse_sides(tool_result: str | None) -> str | None:
     return m.group(1).lower()
 
 
+def _parse_place_into(tool_result: str | None) -> tuple[str | None, str | None, str | None]:
+    """(into_ref, into_label, placed_object) from the place reply annotations.
+
+    The brain place tool (agent lane) resolves an ``into:<container>``
+    argument against the freshest detections + scene graph and annotates a
+    real drop reply with ``into=<ref>; into_label=<label>;
+    placed_object=<label>`` — the verifier's ONLY channel to the
+    containment semantics (the gateway rejects place args, so a gateway-lane
+    drop never carries these fields).  (None, None, None) when the place
+    carried no into: argument — the release-only round-5 path.
+
+    VALUE FORMAT (agreed with the writer in brain/agent/tools.py BY
+    CONSTRUCTION): a value is written BARE when it contains only
+    ``[A-Za-z0-9_.-]`` (single-token labels — every legacy annotation line
+    parses to the same fields as before) and DOUBLE-QUOTED otherwise, so a
+    multi-word label ('wine glass', 'trash can') parses intact INCLUDING
+    its internal spaces and compares equal to a detection label of the
+    same string.  The regexes accept the optional quote pair; both forms
+    are exact-anchored on the value side — a bare value stops at the first
+    char outside the safe set (never past ';' or '=' into the next
+    key=value) and a quoted value terminates at its closing quote — so a
+    bad line degrades to a truncated value or None, never a silent overlap
+    of the keys appended after it.
+    """
+    if not tool_result:
+        return None, None, None
+    m = _INTO_REF_RE.search(tool_result)
+    ref = m.group(1) if m and m.group(1) is not None else (m.group(2) if m else None)
+    m = _INTO_LABEL_RE.search(tool_result)
+    label = (m.group(1) if m and m.group(1) is not None
+             else (m.group(2) if m else None))
+    m = _PLACED_OBJECT_RE.search(tool_result)
+    obj = (m.group(1) if m and m.group(1) is not None
+           else (m.group(2) if m else None))
+    return ref, label, obj
