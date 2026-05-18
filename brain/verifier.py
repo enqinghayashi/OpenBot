@@ -1223,3 +1223,9 @@ def _ts_fresh(ts: float | None, now: float) -> bool:
     return ts is not None and ts > 0.0 and (now - ts) <= GRIP_STATE_MAX_AGE_S
 
 
+def _verdict_fresh(ts: float | None, now: float) -> bool:
+    """A folded close_adaptive verdict (its own contact_ts) is fresh when it
+    exists and is at most CLOSE_CONTACT_WINDOW_S old (world-truth round 4,
+    fix 2: a daemon'd grip's stale folded contact must not confirm)."""
+    return ts is not None and ts > 0.0 \
+        and (now - ts) <= CLOSE_CONTACT_WINDOW_S
