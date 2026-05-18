@@ -783,3 +783,54 @@ class GatewayCallerBackend(GatewayBackend):
                 named[key] = args.get(key)
         return self._roundtrip("yolo_strict", named)
 
+    def container(self, args: Optional[dict] = None) -> dict:
+        """B8j: the gateway's CONTAINER LOCK (the container the last navigate
+        REACHED, followed by instance id across label changes).  ok('DONE:
+        container {json}') or ok('DONE:container none (<why>)'); an older
+        gateway answers its unknown-verb error.  No motion.  The mock backend
+        has no such method (inert)."""
+        return self._roundtrip("container", {})
+
+    def creep(self, args: dict) -> dict:
+        """B8j: the last centimetres to a container in short forward pulses
+        (``{label, iid, x, y, z, w, dd, h[, dry]}``).  ok('DONE creep: ...;
+        CREEP_RESULT=...') or fail('ERROR:creep ...; CREEP_RESULT=...').  Only
+        the place tool calls it, after the confirm gate.  The mock backend
+        has no such method (inert)."""
+        named: Dict[str, Any] = {}
+        for key in ("label", "iid", "x", "y", "z", "w", "dd", "h", "dry"):
+            if args.get(key) is not None:
+                named[key] = args.get(key)
+        return self._roundtrip("creep", named)
+
+    def pc_rim(self, args: dict) -> dict:
+        """B8k: the point-cloud bowl-rim fit of a container the place tool is
+        about to aim into while standing (``{label, x, y[, ts]}``).
+        ok('DONE:pc_rim applied drop_z=<z>') only when the gateway's
+        ``pc_place_rim`` switch is on and every fit gate passed;
+        ok('DONE:pc_rim none') / ok('NOPC:...') otherwise.  The mock backend
+        has no such method (inert)."""
+        named: Dict[str, Any] = {}
+        for key in ("label", "x", "y", "ts"):
+            if args.get(key) is not None:
+                named[key] = args.get(key)
+        return self._roundtrip("pc_rim", named)
+
+    def home(self, args: Optional[dict] = None) -> dict:
+        """B8l: the fetch START POINT (odometry) and the requester, ``{op:
+        status|mark|auto|clear[, why]}``.  ok('DONE:home {json}') /
+        ok('DONE:home marked|kept {json}') / ok('DONE:home none (<why>)');
+        an older gateway answers its unknown-verb error.  No motion.  The
+        mock backend has no such method (inert)."""
+        named: Dict[str, Any] = {}
+        for key in ("op", "why"):
+            if isinstance(args, dict) and args.get(key) is not None:
+                named[key] = str(args.get(key))
+        return self._roundtrip("home", named)
+
+    def return_home(self, args: Optional[dict] = None) -> dict:
+        """B8l: walk back to the fetch start point on odometry and face the
+        person who asked.  BLOCKS until arrival (<= ~130 s).
+        ok('DONE return_home: ...') or fail('ERROR:return_home ...')."""
+        return self._roundtrip("return_home", {})
+
