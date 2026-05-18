@@ -1146,3 +1146,5 @@ def _silence_is_empty_scene(tool_result, obs=None) -> bool:
             return False
     pubs, seen = int(hits[0][0]), int(hits[0][1])
     return pubs >= 1 and seen == 1
+
+
