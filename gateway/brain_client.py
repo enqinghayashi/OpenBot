@@ -418,3 +418,162 @@ class GatewayCallerBackend(GatewayBackend):
             else _SocketGatewayTransport(self.host, self.port, self.timeout_s)
         )
 
+    @classmethod
+    def from_config(cls, cfg: Any) -> "GatewayCallerBackend":
+        """Build the socket client from a loaded config — consumes
+        ``gateway.host`` / ``gateway.port`` (default 127.0.0.1:3900)."""
+        gateway = getattr(cfg, "gateway", None)
+        host = (
+            getattr(gateway, "host", DEFAULT_HOST)
+            if gateway is not None
+            else DEFAULT_HOST
+        )
+        port = (
+            getattr(gateway, "port", DEFAULT_PORT)
+            if gateway is not None
+            else DEFAULT_PORT
+        )
+        # GATEWAY_CALL_TIMEOUT_S, not DEFAULT_TIMEOUT_S:
+        # the REAL path must outlast a pick's motion.
+        return cls(host=str(host), port=int(port or DEFAULT_PORT),
+                   timeout_s=GATEWAY_CALL_TIMEOUT_S)
+
+    # -- internal helpers ------------------------------------------------------
+
+    def _roundtrip(self, tool: str, args: dict) -> dict:
+        """One named-args request; any failure is an honest error envelope.
+
+        Outcome-aware wording (round-4): a failure where the connection
+        was NEVER established is 'gateway unreachable'; a failure where
+        the connection SUCCEEDED but the exchange/reply was malformed is
+        'gateway reply error'.  A server-side ok:false reason passes
+        through verbatim (no prefix) — it IS the server's reason.
+        """
+        try:
+            reply = self._transport.roundtrip(
+                {"tool": tool, "args": dict(args)}
+            )
+        except GatewayTransportError as exc:
+            if exc.phase == "connect":
+                return fail(f"{tool} gateway unreachable: {exc}")
+            return fail(f"{tool} gateway reply error: {exc}")
+        except Exception as exc:  # noqa: BLE001 - wrap it up, never propagate
+            return fail(f"{tool} transport failure: {exc}")
+        if not isinstance(reply, dict):
+            return fail(f"{tool} gateway reply is not a JSON object: {reply!r}")
+        if reply.get("ok"):
+            return ok(reply.get("value", reply.get("reply")))
+        return fail(
+            str(
+                reply.get("reason")
+                or reply.get("reply")
+                or "gateway refused the request"
+            )
+        )
+
+    # -- the GatewayBackend protocol --------------------------------------------
+
+    def observe(self) -> Any:
+        """Latest WorldObservation from the gateway server, or None.
+
+        The server's 'observe' verb returns the observation JSON (the
+        gateway's ``observe_dict()``, json.dumps'ed).  The tools server's
+        ``_shape_reply`` ALWAYS sends that value as a STRING — the JSON
+        text of the observation dict (R7-3 envelope: ok:true carries
+        ``value`` = reply text).  This parses BOTH real shapes:
+
+          (a) a str      — the JSON text of the gateway's observe_dict():
+                           json.loads'd into the payload dict;
+          (b) a dict     — the observation payload directly (in-process /
+                           mock paths that never round-trip a string).
+
+        Anything else — malformed JSON, a JSON value that is not an object,
+        a non-dict/non-str value — is None (never raised): the tools.py
+        contract (None = no source; silence == empty, never a guess).  The
+        brain.observation.WorldObservation import stays lazy.
+        """
+        env = self._roundtrip("observe", {})
+        if not env.get("success"):
+            return None
+        value = env.get("value")
+        payload = value
+        if isinstance(value, str):
+            # value = json text of the dict
+            try:
+                payload = json.loads(value)
+            except ValueError:
+                return None  # bad JSON = no source
+        if not isinstance(payload, dict):
+            return None
+        try:
+            from brain.observation import WorldObservation  # imported lazily
+
+            return WorldObservation.from_dict(payload)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def capture_image(self) -> Optional[dict]:
+        """Latest camera frame {jpeg_b64, w, h, ts, fresh}, or None.
+
+        Mirrors :meth:`observe`'s envelope parsing: the server's 'image'
+        verb returns the frame dict as JSON text and ``_shape_reply``
+        ALWAYS carries that value as a STRING, so this parses BOTH real
+        shapes — (a) str: the JSON text of the gateway's ``_do_image()``
+        dict, json.loads'd into the payload; (b) dict: the payload
+        directly (in-process / mock paths that never round-trip a
+        string).  Anything else — malformed JSON, a JSON value that is
+        not an object, a non-dict/non-str value, or an ok:false envelope
+        — is None (never raised): the tools.py contract (None = no
+        camera / no usable frame).  ``fresh`` inside the dict is the
+        frame's own honesty flag — a caller must never treat a
+        fresh:false payload as a usable frame.
+        """
+        env = self._roundtrip("image", {})
+        if not env.get("success"):
+            return None
+        value = env.get("value")
+        payload = value
+        if isinstance(value, str):
+            try:
+                payload = json.loads(value)
+            except ValueError:
+                return None  # bad JSON = no frame
+        if not isinstance(payload, dict):
+            return None
+        return payload
+
+    def pick(self, args: dict) -> dict:
+        """Command the pick engine (tabletop only); the server refuses a
+        floor pick honestly.  ``arm`` 'left' maps to the pick_left verb.
+
+        ORIENTATION (fix 2026-09-07): the grasp approach is NEVER stripped
+        here.  A concrete 'upright'/'horizontal' passes through; an
+        'auto'/absent/unknown orientation defaults to 'upright' (the engine
+        default), because THIS thin seam holds no detection store — the
+        binding of 'auto' to the detection's own orientation (horizontal
+        for a lying object) happens one layer up, in the pick tool's
+        prepare hook, on the SAME observation that produced x/y/z.  The
+        wire never carries 'auto' (the engine would reject it).
+        """
+        verb = "pick_left" if str(args.get("arm") or "auto").lower() == "left" else "pick"
+        named: Dict[str, Any] = {}
+        # `label`/`ref` aren't engine args - the
+        # positional grammar is pure geometry and
+        # _shape_named_args reads only geometry keys.
+        # they ride along for the GATEWAY'S OWN
+        # verifier: without them _verify("pick", ...)
+        # got label=None, ref=None, _target_present
+        # went unconfirmable, and EVERY pick came
+        # back `VERDICT:in_progress|... cannot confirm
+        # object gone` however the grasp went.
+        # a good pick reports
+        # unconfirmed. the verdict is minted
+        # gateway-side; the label never got there.
+        # tests/test_pick_verdict_hint.py.
+        for key in ("x", "y", "z", "nx", "ny", "nz", "height_m", "label", "ref"):
+            if args.get(key) is not None:
+                named[key] = args[key]
+        orientation = str(args.get("orientation") or "upright").strip().lower()
+        named["orientation"] = orientation if orientation in ("upright", "horizontal") else "upright"
+        return self._roundtrip(verb, named)
+
