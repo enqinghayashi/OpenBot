@@ -1163,3 +1163,36 @@ def _detections_alive(obs: WorldObservation | None, now: float) -> bool:
     return ts > 0.0 and (now - ts) <= DETECTIONS_ALIVE_S
 
 
+def _detections_dead_cause(obs: WorldObservation | None, now: float) -> str:
+    """WHY the detections channel is dead, as a MEASURED phrase.
+
+    ``_detections_alive`` collapses three DIFFERENT situations into one
+    ``False``, and every verdict built on it used to name only the third:
+
+      (a) ``obs is None`` — the observe READ returned nothing at all, so no
+          channel was ever sampled.  This is a transport/lane fault and the
+          one most likely to be blamed on the wrong component: no amount of
+          staring at the detections node explains it.
+      (b) ``detections_ts == 0.0`` — the node NEVER spoke since gateway
+          start.
+      (c) a positive-but-old ``detections_ts`` — the node spoke and then
+          went quiet for a MEASURABLE number of seconds.
+
+    Only (c) has an age that is a fact, so only (c) prints a number.
+    WHY THIS EXISTS (2026-10-01, MEASURED on Stuart): a descended pick whose
+    engine reply was ``DONE pick executed; lane_state=up`` — the grasp half
+    ENGINE-VERIFIED — was reported as ``re-observe; detections node silent
+    (never spoke, or silent beyond the liveness window)``.  That sentence is
+    indistinguishable from the sibling ``target still visible`` branch, which
+    is a MEASURED NEGATIVE about the grasp, so a dead sensor and a bottle
+    still on the table read the same to the operator.  Naming the wrong
+    cause, or naming no cause, sends the operator to the wrong machine.
+    """
+    if obs is None:
+        return ("no observation at all — the observe read returned nothing, "
+                "so the channel was never sampled")
+    ts = getattr(obs, "detections_ts", 0.0) or 0.0
+    if ts <= 0.0:
+        return "the node never spoke (detections_ts == 0.0)"
+    return ("no /object_detections_body packet for %.1f s (liveness window "
+            "DETECTIONS_ALIVE_S = %.1f s)" % (now - ts, DETECTIONS_ALIVE_S))
