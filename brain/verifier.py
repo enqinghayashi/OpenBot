@@ -1217,3 +1217,7 @@ def _state_available(detail: str | None) -> bool | None:
     return bool(all(avail))
 
 
+def _ts_fresh(ts: float | None, now: float) -> bool:
+    """A state-read timestamp is fresh when it exists and is at most
+    GRIP_STATE_MAX_AGE_S old (vs the pinned `now`)."""
+    return ts is not None and ts > 0.0 and (now - ts) <= GRIP_STATE_MAX_AGE_S
