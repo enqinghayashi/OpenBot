@@ -311,3 +311,110 @@ def connect_with_timeout(
     if err is not None:
         raise err
     raise OSError("getaddrinfo returned no usable addresses for %r" % (host,))
+
+
+class _SocketGatewayTransport:
+    """JSON-lines request/response over a TCP stream socket.
+
+    One request line -> one reply line, exactly like the gateway node's
+    tools server.  A fresh connection per request is safe (the server is
+    multi-client, thread-per-connection).  Every failure raises
+    :class:`GatewayTransportError` — the backend converts it to an honest
+    failure envelope.
+    """
+
+    def __init__(
+        self,
+        host: str = DEFAULT_HOST,
+        port: int = DEFAULT_PORT,
+        timeout_s: float = DEFAULT_TIMEOUT_S,
+    ) -> None:
+        self.host = host
+        self.port = int(port)
+        self.timeout_s = float(timeout_s)
+
+    def roundtrip(self, request: dict) -> dict:
+        """Send one request line, return the parsed reply dict."""
+        payload = json.dumps(request)
+        try:
+            # bounded connect: caps BOTH DNS and TCP via
+            # self.timeout_s (create_connection bounds
+            # connect only - getaddrinfo can stall past
+            # it). IP literals keep the native path.
+            sock = connect_with_timeout(
+                self.host, self.port, self.timeout_s
+            )
+        except OSError as exc:
+            # phase 'connect': never established -
+            # refused, unreachable or resolution failure.
+            raise GatewayTransportError(
+                f"gateway {self.host}:{self.port} unreachable: {exc}",
+                phase="connect",
+            ) from exc
+        try:
+            sock.settimeout(self.timeout_s)
+            sock.sendall((payload + "\n").encode("utf-8"))
+            raw = sock.makefile("r", encoding="utf-8").readline()
+        except OSError as exc:
+            # phase 'reply': connection worked, the
+            # exchange didn't.
+            raise GatewayTransportError(
+                f"gateway roundtrip failed on {payload!r}: {exc}"
+            ) from exc
+        finally:
+            try:
+                sock.close()
+            except OSError:
+                pass
+        if not raw:
+            raise GatewayTransportError(
+                f"gateway closed the connection without a reply to {payload!r}"
+            )
+        try:
+            reply = json.loads(raw)
+        except ValueError as exc:
+            raise GatewayTransportError(
+                f"gateway replied non-JSON ({raw!r}): {exc}"
+            ) from exc
+        if not isinstance(reply, dict):
+            raise GatewayTransportError(
+                f"gateway reply is not a JSON object: {reply!r}"
+            )
+        return reply
+
+
+# --- the socket backend --------------------------------------------------------
+
+
+class GatewayCallerBackend(GatewayBackend):
+    """The brain->gateway socket client (the tools.py GatewayBackend).
+
+    Every method returns the tools.py result envelope
+    (``ok(value)`` / ``fail(reason)``); every transport failure is an
+    honest failure envelope — never a fake success.  Host/port default to
+    127.0.0.1:3900 and are normally read from the ``gateway:`` config
+    segment via :meth:`from_config`.
+    """
+
+    def __init__(
+        self,
+        host: str = DEFAULT_HOST,
+        port: int = DEFAULT_PORT,
+        timeout_s: float = DEFAULT_TIMEOUT_S,
+        transport: Optional[Any] = None,
+    ) -> None:
+        host = str(host or "").strip()
+        if _is_placeholder_host(host):
+            # never connect to a template host
+            # ('TODO-IP' / 'localhost-TODO' / '').
+            # ConfigError, pre-socket.
+            raise ConfigError(PLACEHOLDER_HOST_ERROR)
+        self.host = host
+        self.port = int(port)
+        self.timeout_s = float(timeout_s)
+        self._transport = (
+            transport
+            if transport is not None
+            else _SocketGatewayTransport(self.host, self.port, self.timeout_s)
+        )
+
