@@ -1229,3 +1229,5 @@ def _verdict_fresh(ts: float | None, now: float) -> bool:
     fix 2: a daemon'd grip's stale folded contact must not confirm)."""
     return ts is not None and ts > 0.0 \
         and (now - ts) <= CLOSE_CONTACT_WINDOW_S
+
+
