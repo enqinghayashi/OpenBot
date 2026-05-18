@@ -714,3 +714,72 @@ class GatewayCallerBackend(GatewayBackend):
         """Non-blocking notice (server forwards it or refuses honestly)."""
         return self._roundtrip("notify_user", dict(args))
 
+    def stop(self, args: dict) -> dict:
+        """Immediate halt — no confirmation (stopping is always allowed).
+
+        TWO LANES, AND THE ORDER MATTERS (2026-10-01, mid-task cancel).
+        Until now this mapped ONLY to ``navigate`` 'stop' — /walk_target
+        'stop' queues ('stop', None) in the walk FSM (walk_node.py).  That
+        stops the LEGS and nothing else: a pick/place is minutes of arm
+        motion driven by the engine process, which the walk FSM has no
+        handle on, so "stop" during a pick stopped a robot that was not
+        walking and the arm kept moving.
+
+        The gateway now owns ``stop``/``cancel`` (gateway_node.py, verb
+        dispatch -> _do_cancel), which cancels the ENGINE and stops the walk
+        in one call — a strict superset of the old path.  It is tried FIRST.
+
+        FALLBACK, NOT DEAD CODE: an older deployed gateway has no ``stop``
+        verb, and the reply for an unknown verb is an honest failure.  In
+        that case we fall back to ``navigate`` target=stop, so this method
+        can never be WORSE than the walk-only behaviour it replaces.  The
+        fallback is silent about which path ran — the returned envelope is
+        whichever lane answered.
+        """
+        env = self._roundtrip("stop", {})
+        if isinstance(env, dict) and env.get("success"):
+            return env
+        return self._roundtrip("navigate", {"target": "stop"})
+
+    # -- passthrough verbs (same as the tools registry) -------------------------
+
+    def resolve_ref(self, args: dict) -> dict:
+        """Passthrough.  The tools registry resolves refs against its OWN
+        scene graph locally; this verb is only meaningful when the server
+        forwards it (otherwise the server's honest unknown-verb error)."""
+        return self._roundtrip("resolve_ref", dict(args))
+
+    def scene_brief(self, args: dict) -> dict:
+        """Passthrough (see :meth:`resolve_ref`)."""
+        return self._roundtrip("scene_brief", dict(args))
+
+    def yolo_classes(self, args: dict) -> dict:
+        """Open-vocabulary request (batch 4): ``{op, classes, min_conf}``.
+
+        The gateway validates and answers ``DONE:applied ...`` only on the
+        yolo node's matching state echo; every other outcome is an
+        ``ERROR:yolo_classes ...`` refusal surfaced verbatim as a failure.
+        ``op`` defaults to 'set' (the only op that carries classes);
+        ``min_conf`` is sent only when given.  An older gateway without the
+        verb answers its honest unknown-verb error.
+        """
+        named: Dict[str, Any] = {
+            "op": str(args.get("op") or "set"),
+            "classes": list(args.get("classes") or []),
+        }
+        if args.get("min_conf") is not None:
+            named["min_conf"] = args.get("min_conf")
+        return self._roundtrip("yolo_classes", named)
+
+    def yolo_strict(self, args: dict) -> dict:
+        """B8i strict detection hold: ``{op: 'begin', labels, owner}`` or
+        ``{op: 'end', hold}`` (optional ``wait_s`` 0-5 caps the gateway's
+        wait for a fresh packet).  The gateway answers 'DONE:strict ...' or an
+        'ERROR:yolo_strict ...' refusal (the brain then keeps the full
+        vocabulary).  The mock backend has no such method (inert)."""
+        named: Dict[str, Any] = {"op": str(args.get("op") or "")}
+        for key in ("labels", "owner", "hold", "wait_s"):
+            if args.get(key) is not None:
+                named[key] = args.get(key)
+        return self._roundtrip("yolo_strict", named)
+
