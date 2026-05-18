@@ -1148,3 +1148,16 @@ def _silence_is_empty_scene(tool_result, obs=None) -> bool:
     return pubs >= 1 and seen == 1
 
 
+def _detections_alive(obs: WorldObservation | None, now: float) -> bool:
+    """The detections CHANNEL is alive: the node ever spoke AND its last
+    packet is within DETECTIONS_ALIVE_S (world-truth round 5, fix 3).
+
+    Distinct from packet freshness: a quiet-but-running node stays alive
+    while its observation ages out of freshness (silence == empty scene
+    when the node is alive).  'Never spoke' or silent beyond the window ==
+    DEAD node — nothing is confirmable.
+    """
+    if obs is None:
+        return False
+    ts = getattr(obs, "detections_ts", 0.0) or 0.0
+    return ts > 0.0 and (now - ts) <= DETECTIONS_ALIVE_S
