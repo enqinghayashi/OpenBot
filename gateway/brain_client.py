@@ -643,3 +643,74 @@ class GatewayCallerBackend(GatewayBackend):
         """Open the gripper (side: right|left|both)."""
         return self._roundtrip("open_hand", {"side": str(args.get("side") or "right")})
 
+    def close_hand(self, args: dict) -> dict:
+        """Close the gripper (side: right|left|both); optional adaptive
+        params passthrough."""
+        named: Dict[str, Any] = {"side": str(args.get("side") or "right")}
+        params = args.get("params")
+        if isinstance(params, list) and params:
+            named["params"] = params
+        return self._roundtrip("close_hand", named)
+
+    def pose(self, args: dict) -> dict:
+        """Move the arms to a named pose (name: ready|tuck|neutral|home).
+
+        Reaches the engine through the gateway's GENERIC ``engine`` tool
+        (gateway_node.py dispatch -> engine_verb), so no gateway-side verb
+        had to be added — every pose below is a command the engine already
+        implements (pick_engine_v3.py command dispatch, lines 3360-3430).
+
+        'tuck' is the one pose the engine has NO single verb for: the carry
+        pose is per-arm ('carry' freezes the left at its current q while the
+        right moves, 'carry_left' mirrors it), so both are issued in
+        sequence.  Running them back to back lands BOTH arms in CARRY_TUCK —
+        the first call parks the right arm and the second moves the left
+        without disturbing it.
+        """
+        name = str(args.get("name") or "").strip().lower()
+        verbs = POSE_ENGINE_VERBS.get(name)
+        if not verbs:
+            return fail(
+                f"unknown pose {name!r}; valid: "
+                + ", ".join(sorted(POSE_ENGINE_VERBS))
+            )
+        zfloor: List[float] = []
+        for verb in verbs:
+            # NAMED args, never a positional list.
+            # the gateway's _shape_named_args
+            # reads args.get("line") for the line verbs.
+            # a bare ['ready'] passes a list, not a name:
+            # the envelope builder does dict(args), which
+            # raises on a list, and the catch-all turned
+            # it into 'engine transport failure' - all
+            # four poses died on the robot.
+            # tests/test_pose_tool.py scenario 4 stubs
+            # the TRANSPORT so the real builder runs.
+            env = self._roundtrip("engine", {"line": verb})
+            if not env.get("success"):
+                # first failure wins, verbatim - a half-done
+                # 'tuck' must never read as success. an
+                # earlier floor token (that move DID stop at
+                # the table) rides on the refusal.
+                if zfloor:
+                    low = min(zfloor)
+                    return fail("%s; zfloor_limited=%.2f" % (
+                        str(env.get("reason") or "unknown error"), low))
+                return env
+            # keep the z-floor token (_ZFLOOR_LIMITED_RE);
+            # 'tuck' reports the smallest s.
+            zfloor += [float(s) for s in
+                       _ZFLOOR_LIMITED_RE.findall(str(env.get("value") or ""))]
+        reply = "DONE:" + "+".join(verbs)
+        if zfloor:
+            reply += "; zfloor_limited=%.2f" % min(zfloor)
+        return ok(reply)
+
+    def query_user(self, args: dict) -> dict:
+        """Blocking human question (server forwards it or refuses honestly)."""
+        return self._roundtrip("query_user", dict(args))
+
+    def notify_user(self, args: dict) -> dict:
+        """Non-blocking notice (server forwards it or refuses honestly)."""
+        return self._roundtrip("notify_user", dict(args))
+
