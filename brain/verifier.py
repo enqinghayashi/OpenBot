@@ -984,3 +984,5 @@ def _classify_reply(tool_result: str | None) -> tuple[str, str | None]:
     if first.startswith("STATE:"):
         return ("state", first[6:].strip())
     return ("unknown", first)
+
+
