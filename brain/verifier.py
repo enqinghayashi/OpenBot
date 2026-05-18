@@ -1215,3 +1215,5 @@ def _state_available(detail: str | None) -> bool | None:
     if not avail:
         return None
     return bool(all(avail))
+
+
