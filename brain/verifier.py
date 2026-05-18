@@ -1015,3 +1015,5 @@ def _grip(obs: WorldObservation | None):
     if obs is None:
         return None
     return getattr(obs, "grip", None)
+
+
