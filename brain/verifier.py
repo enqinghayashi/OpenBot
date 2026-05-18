@@ -1056,3 +1056,19 @@ def classify_finger_lag(grip) -> str | None:
     return None
 
 
+def _finger_hold(obs: WorldObservation | None, tool_result: str | None,
+                 now: float) -> str | None:
+    """BATCH 5 B1: the post-lift finger-hold reading for verify_pick.
+
+    None (the verdict path stays byte-identical) unless the grip is a fresh,
+    available RIGHT-hand read taken AFTER the motion ended (stale_ts >= the
+    reply's grip_state_ts), not measured-open, with 7 joints + 7 commanded.
+    """
+    grip = _grip(obs)
+    if grip is None or not _grip_fresh(grip, now):
+        return None
+    motion_ts = _parse_grip_state_ts(tool_result)
+    stale_ts = getattr(grip, "stale_ts", None)
+    if motion_ts is None or stale_ts is None or stale_ts < motion_ts:
+        return None
+    return classify_finger_lag(grip)
