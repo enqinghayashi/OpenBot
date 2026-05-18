@@ -1161,3 +1161,5 @@ def _detections_alive(obs: WorldObservation | None, now: float) -> bool:
         return False
     ts = getattr(obs, "detections_ts", 0.0) or 0.0
     return ts > 0.0 and (now - ts) <= DETECTIONS_ALIVE_S
+
+
