@@ -1196,3 +1196,5 @@ def _detections_dead_cause(obs: WorldObservation | None, now: float) -> str:
         return "the node never spoke (detections_ts == 0.0)"
     return ("no /object_detections_body packet for %.1f s (liveness window "
             "DETECTIONS_ALIVE_S = %.1f s)" % (now - ts, DETECTIONS_ALIVE_S))
+
+
