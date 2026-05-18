@@ -986,3 +986,22 @@ def _classify_reply(tool_result: str | None) -> tuple[str, str | None]:
     return ("unknown", first)
 
 
+def _guard_reply(kind: str, detail: str | None) -> Verdict | None:
+    """Shared prologue: reply types that decide the verdict before any obs check.
+
+    Returns a final Verdict (error -> failure, no-world-signal replies ->
+    in_progress) or None to continue with observation-based checks.
+    """
+    if kind == "error":
+        msg = detail or "tool error"
+        return Verdict.failure(f"tool reported error: {msg}", msg)
+    if kind in ("query", "state", "unknown"):
+        return Verdict.in_progress(
+            f"re-observe; tool reply type {kind!r} carries no world post-condition signal")
+    if kind == "empty":
+        return Verdict.in_progress("re-observe; no tool reply recorded")
+    if kind == "empty_reply":
+        return Verdict.in_progress(
+            "re-observe; the drop reply text was empty — no world "
+            "post-condition signal (the release cannot be confirmed)")
+    return None
