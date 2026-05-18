@@ -946,3 +946,41 @@ def containment_predrop_snapshot(obs, into_label, placed_object) -> dict:
     return {"state": "known", "preexisting": positions}
 
 
+def _classify_reply(tool_result: str | None) -> tuple[str, str | None]:
+    """Classify a tool reply line -> (kind, detail).
+
+    kinds: 'error' (detail = message), 'contact' | 'full' | 'no_data'
+    (close_adaptive verdicts), 'done' (plain DONE, detail = optional suffix,
+    e.g. a state-JSON payload), 'query' (Q:), 'state' (STATE:), 'empty' (no
+    reply), 'unknown'.
+    """
+    if tool_result is None:
+        return ("empty", None)
+    text = tool_result.strip()
+    if not text:
+        return ("empty", None)
+    if "ERROR:" in text:  # any error anywhere is definitive
+        idx = text.index("ERROR:")
+        return ("error", text[idx + len("ERROR:"):].strip())
+    if text.startswith("(drop reply empty)"):
+        # the drop ran but the reply text is empty: an explicit marker, no fake
+        # DONE
+        # with no world signal nothing can be certified
+        return ("empty_reply", None)
+    first = text.splitlines()[0].strip()
+    if first.startswith("DONE:"):
+        detail = first[len("DONE:"):].strip()
+        if detail == "contact":
+            return ("contact", None)
+        if detail == "full":
+            return ("full", None)
+        if detail == "no_data":
+            return ("no_data", None)
+        return ("done", detail)
+    if first.startswith("DONE"):
+        return ("done", None)
+    if first.startswith("Q:"):
+        return ("query", first[2:].strip())
+    if first.startswith("STATE:"):
+        return ("state", first[6:].strip())
+    return ("unknown", first)
