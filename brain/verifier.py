@@ -1010,3 +1010,8 @@ def _guard_reply(kind: str, detail: str | None) -> Verdict | None:
 # ── little helpers for reading observations ───────────────────────────────────
 
 
+def _grip(obs: WorldObservation | None):
+    """GripState or None (missing observation/grip)."""
+    if obs is None:
+        return None
+    return getattr(obs, "grip", None)
