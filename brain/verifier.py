@@ -1123,3 +1123,26 @@ SILENT_EMPTY_NOTE = (
     "longer on the table - from the gateway's post-lift detections wait)")
 
 
+def _silence_is_empty_scene(tool_result, obs=None) -> bool:
+    """B8h: True only when the pick reply says the detections node DID publish
+    after the dispatch (``det_seen_since_dispatch=1``), has at least one
+    publisher (``det_publishers>=1``) and stayed silent for the whole
+    post-motion wait (``det_wait=still_silent``).  Anything else -- publishers
+    0 or unknown (-1), nothing ever seen, a ``det_wait=fresh`` token, no token
+    at all, a non-string reply -- is False, so the old dead-node verdict
+    stands.  With ``obs`` given, a packet stamped at or after the reply's
+    ``grip_state_ts`` (the motion's end) is a frame the node published AFTER
+    the lift: the silence is over and that frame is judged the normal way.
+    The caller additionally requires hold == "held"."""
+    if not isinstance(tool_result, str) or _DET_FRESH_RE.search(tool_result):
+        return False
+    hits = _DET_SILENT_RE.findall(tool_result)
+    if len(hits) != 1:
+        return False
+    if obs is not None:
+        motion_ts = _parse_grip_state_ts(tool_result)
+        det_ts = getattr(obs, "detections_ts", 0.0) or 0.0
+        if motion_ts is None or det_ts >= motion_ts:
+            return False
+    pubs, seen = int(hits[0][0]), int(hits[0][1])
+    return pubs >= 1 and seen == 1
