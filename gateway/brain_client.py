@@ -834,3 +834,55 @@ class GatewayCallerBackend(GatewayBackend):
         ok('DONE return_home: ...') or fail('ERROR:return_home ...')."""
         return self._roundtrip("return_home", {})
 
+    def approach_person(self, args: Optional[dict] = None) -> dict:
+        """B8l-hf5: turn until the person is centred, then close in with short
+        forward pulses until they are within the arm's reach (``{x, y}`` = the
+        person row meant).  BLOCKS <= ~20 s.  ok('DONE approach_person: ...;
+        APPROACH_RESULT=arrived') or fail('ERROR:approach_person ...;
+        APPROACH_RESULT=...').  Only the place tool calls it, for a handover.
+        The mock backend has no such method (inert)."""
+        named: Dict[str, Any] = {}
+        for key in ("x", "y"):
+            if isinstance(args, dict) and args.get(key) is not None:
+                named[key] = args.get(key)
+        return self._roundtrip("approach_person", named)
+
+    def aim_turn(self, args: dict) -> dict:
+        """B8l-hf7: turn in place until ``label`` (row at x/y) sits ``shift_m``
+        further right (a pick refused cross-body).  BLOCKS <= ~15 s.
+        ok('DONE aim_turn: ...; X=; Y=; Z=; AIM_RESULT=aimed') or
+        fail('ERROR:aim_turn ...; AIM_RESULT=...').  Only the pick tool calls
+        it.  The mock backend has no such method (inert)."""
+        named: Dict[str, Any] = {}
+        for key in ("label", "x", "y", "shift_m"):
+            if isinstance(args, dict) and args.get(key) is not None:
+                named[key] = args.get(key)
+        return self._roundtrip("aim_turn", named)
+
+    def step_back(self, args: Optional[dict] = None) -> dict:
+        """B8l-hf6: walk backward at the gait floor (``{m}`` metres, optional;
+        the gateway switch and cap win) before a navigate sweep.  BLOCKS
+        <= ~5 s.  ok('DONE step_back: ...; STEPBACK_RESULT=done|off') or
+        fail('ERROR:step_back ...; STEPBACK_RESULT=...').  Only the navigate
+        tool calls it, when the target is not in view.  The mock backend has
+        no such method (inert)."""
+        named: Dict[str, Any] = {}
+        if isinstance(args, dict) and args.get("m") is not None:
+            named["m"] = args.get("m")
+        return self._roundtrip("step_back", named)
+
+
+# --- the in-process mock backend -----------------------------------------------
+
+
+class MockGatewayBackend(GatewayBackend):
+    """In-process GatewayBackend for the fully-offline laptop path.
+
+    ``observe()`` returns a WorldObservation built from scripted
+    detections (event-driven: silence == empty scene, never 'no data');
+    tool methods return the results from ``scripted`` ({tool name ->
+    envelope dict}) or honest scripted defaults.  Nothing here can claim a
+    real world action — it matches the GatewayBackend protocol declared in
+    brain/agent/tools.py so the laptop agent runs entirely offline.
+    """
+
