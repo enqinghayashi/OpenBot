@@ -1017,3 +1017,40 @@ def _grip(obs: WorldObservation | None):
     return getattr(obs, "grip", None)
 
 
+def classify_finger_lag(grip) -> str | None:
+    """BATCH 5 B1: 'held' | 'empty' | None from the MEASURED-vs-COMMANDED
+    finger lag of a RIGHT-hand grip read (shape gates only; the caller owns
+    freshness / ordering).
+
+    Index 0 (thumb rotation) is EXCLUDED: on the seven run21 post-pick rows
+    (4 held, 3 empty) its signed lag is -0.049..+0.041 rad in BOTH groups
+    (MEASURED), so it carries no hold signal.  n = joints 1..6 with
+    |commanded - joints| >= FINGER_HOLD_LAG_RAD; n >= FINGER_HOLD_MIN_JOINTS
+    -> 'held', n == 0 -> 'empty', otherwise None (no claim).  Any missing /
+    odd field -> None.
+    """
+    if grip is None or getattr(grip, "available", False) is not True:
+        return None
+    if getattr(grip, "side", None) != "right":
+        return None
+    if getattr(grip, "is_open", None) is True:
+        return None
+    joints = list(getattr(grip, "joints", None) or [])
+    commanded = list(getattr(grip, "commanded", None) or [])
+    if len(joints) != 7 or len(commanded) != 7:
+        return None
+    n = 0
+    for i in range(1, 7):
+        try:
+            a, c = float(joints[i]), float(commanded[i])
+        except (TypeError, ValueError):
+            return None
+        if not (math.isfinite(a) and math.isfinite(c)):
+            return None
+        if abs(c - a) >= FINGER_HOLD_LAG_RAD:
+            n += 1
+    if n >= FINGER_HOLD_MIN_JOINTS:
+        return "held"
+    if n == 0:
+        return "empty"
+    return None
