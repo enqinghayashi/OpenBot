@@ -1005,3 +1005,8 @@ def _guard_reply(kind: str, detail: str | None) -> Verdict | None:
             "re-observe; the drop reply text was empty — no world "
             "post-condition signal (the release cannot be confirmed)")
     return None
+
+
+# ── little helpers for reading observations ───────────────────────────────────
+
+
