@@ -1072,3 +1072,54 @@ def _finger_hold(obs: WorldObservation | None, tool_result: str | None,
     if motion_ts is None or stale_ts is None or stale_ts < motion_ts:
         return None
     return classify_finger_lag(grip)
+
+
+#: the honest 'you missed' text
+#: it never says grasp_failed, because a failure verdict would block the re-pick
+PICK_MISSED_EVIDENCE = (
+    "pick MISSED: after the lift the fingers reached their close command (no "
+    "joint held off it by >= %.2f rad, MEASURED from the grip state) - nothing "
+    "is between them; the hand is EMPTY, closed on nothing (hand_state=empty). "
+    "Tell the operator the pick missed; never say you have it"
+    % FINGER_HOLD_LAG_RAD)
+#: for a place whose release passed but whose containment is unconfirmed: the
+#: object is out of the hand, only the landing is unmeasured
+PLACE_RELEASED_NOTE = (
+    " || BUT THE OBJECT WAS RELEASED (%s): it is no longer in the hand - do "
+    "not say it is still held, and do not pick or place it again unless the "
+    "operator asks; ONLY whether it landed inside the container is not "
+    "confirmed by measurement. LOOK at the camera image attached to this "
+    "turn (or call scene_brief): if you can see where it landed, tell the "
+    "operator what you see and say it is YOUR VISUAL CHECK from the camera, "
+    "not a measured confirmation; if you cannot see it, say exactly that")
+PLACE_TASK_DONE_SUFFIX = (
+    " — this place step is complete; if it was the last step of the "
+    "operator's request, the request is DONE: report it and stop (do not "
+    "pick the object again)")
+#: state what the fingers support: caveats read as doubt, and the lack of a
+#: touch sensor is not doubt
+HELD_SAY = (
+    ". IT IS PICKED: tell the operator the object is in the hand - after the "
+    "lift the fingers are MEASURED held open by it (there is no touch sensor, "
+    "and that is not doubt); do not open the hand unless the operator asks")
+#: tacked on to the evidence, never prepended
+HELD_AFTER_LIFT_SUFFIX = (
+    " ; post-lift finger check: fingers still held off the close command by "
+    "an object (MEASURED), pick_outcome=held_after_lift")
+HELD_AFTER_LIFT_SUFFIX = HELD_SAY + HELD_AFTER_LIFT_SUFFIX   # statement first
+
+
+#: a quiet event-driven node with nothing in view is not a dead node
+#: only these three tokens count, adjacent and in this order:
+#: det_wait=still_silent@<s>; det_publishers=<n>; det_seen_since_dispatch=<n>
+_DET_SILENT_RE = re.compile(
+    r"det_wait=still_silent@[0-9]+(?:\.[0-9]+)?s;\s*det_publishers=(-?\d+);\s*"
+    r"det_seen_since_dispatch=(\d+)(?!\d)")
+_DET_FRESH_RE = re.compile(r"det_wait=fresh@")
+#: appended to a pick judged off that silence
+SILENT_EMPTY_NOTE = (
+    " (detections stayed silent after the lift: for an event-driven node "
+    "silence means nothing else is in view, so the picked object is no "
+    "longer on the table - from the gateway's post-lift detections wait)")
+
+
