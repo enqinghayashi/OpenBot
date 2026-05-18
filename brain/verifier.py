@@ -1198,3 +1198,20 @@ def _detections_dead_cause(obs: WorldObservation | None, now: float) -> str:
             "DETECTIONS_ALIVE_S = %.1f s)" % (now - ts, DETECTIONS_ALIVE_S))
 
 
+def _state_available(detail: str | None) -> bool | None:
+    """Read the 'available' flag out of a grip 'state [side]' JSON reply
+    (DONE:<json>). None when the payload is not a state reply.
+    """
+    if not detail:
+        return None
+    try:
+        payload = json.loads(detail)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    avail = [v.get("available") for v in payload.values()
+             if isinstance(v, dict) and "available" in v]
+    if not avail:
+        return None
+    return bool(all(avail))
