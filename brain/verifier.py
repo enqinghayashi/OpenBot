@@ -1231,3 +1231,8 @@ def _verdict_fresh(ts: float | None, now: float) -> bool:
         and (now - ts) <= CLOSE_CONTACT_WINDOW_S
 
 
+def _grip_fresh(grip, now: float) -> bool:
+    """The grip's state read is fresh (a never-read grip is not)."""
+    if grip is None:
+        return False
+    return _ts_fresh(getattr(grip, "stale_ts", None), now)
