@@ -1359,3 +1359,32 @@ def _target_present(obs: WorldObservation | None, label: str | None,
     if label is not None:
         return any((d.label or "").lower() == label.lower() for d in dets)
     return None
+
+
+# ── the verifier itself ───────────────────────────────────────────────────────
+
+_HANDLER_METHOD = {
+    "pick": "verify_pick",
+    "place": "verify_place",
+    "navigate": "verify_navigate",
+    "open_hand": "verify_open_hand",
+    "close_hand": "verify_close_hand",
+    "pose": "verify_pose",
+    "turn_around": "verify_turn_around",
+}
+
+
+# grasp->brain token for a blocked close with no tactile proof
+# the gateway wraps it into engine_reply=
+_GRASP_CAVEAT_RE = re.compile(r"\bgrasp_evidence=blocked_no_tactile\b")
+
+
+#: engine wire token `; zfloor_limited=<s>`, where s is the smallest applied
+#: scale on the reply line of the clamped move
+_ZFLOOR_LIMITED_RE = re.compile(r"zfloor_limited=(\d+(?:\.\d+)?)")
+_ZFLOOR_LIMITED_TOKEN_RE = re.compile(r";\s*zfloor_limited=\d+(?:\.\d+)?")
+#: the note goes on the evidence, never on the status
+ZFLOOR_NOTE = (" — NOTE: the arm stopped at the table floor after %d%% of this "
+               "move; it is clear of the table but NOT fully at the %s")
+
+
