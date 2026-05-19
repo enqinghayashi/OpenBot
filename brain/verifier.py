@@ -1260,3 +1260,10 @@ def _resolve_target(contract) -> tuple[str | None, str | None]:
     if m:
         return m.group(1), None
     return None, None
+
+
+#: an absent label outside the active vocabulary proves nothing
+VOCAB_INACTIVE_EVIDENCE = (
+    "re-observe; target label is not in the active vocabulary")
+
+
