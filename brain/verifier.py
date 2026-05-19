@@ -1267,3 +1267,64 @@ VOCAB_INACTIVE_EVIDENCE = (
     "re-observe; target label is not in the active vocabulary")
 
 
+def _label_vocab_inactive(obs: WorldObservation | None,
+                          label: str | None) -> bool:
+    """True when ``label`` names an EXTRA class the detector is not running.
+
+    D13: a hint label outside ``known_labels.TRACKED_CLASSES`` can only ever
+    be published by the YOLOE backend with that label in its extras.  When
+    the observation's ``vocab`` DICT does not show that (backend not
+    'yoloe', or the label not in ``extras``), the label's absence from the
+    packet is NOT evidence that the object is gone — the detector simply
+    cannot see it — so the caller must treat it as unconfirmable.
+    A base label (or a non-str / absent label) is never affected: today's
+    logic runs unchanged.
+
+    WHAT COUNTS AS A BASE LABEL (round-2 fix, reviewer finding P10-H1).  The
+    raw hint text is NOT the only form a base object arrives in.  The gateway
+    hint mirror (`gateway_node._pick_hint_label`) forwards the model's label
+    verbatim — no sighting gate, no stem — and `make_pick` ADMITS a scene ref
+    ('bottle_1', brain/agent/tools.py resolve_ref -> ref label) and a target
+    alias ('me' -> 'person').  So a label is base when its text, its
+    '_<n>'-stripped stem (mirrors brain/hooks.py), that stem with '_' read
+    as a space (SceneGraph sanitizes 'cell phone' into the ref key
+    'cell_phone_1'), or its TARGET_ALIASES value is a tracked class.
+    With NO vocabulary block (`vocab` not a dict: the shipped OFF form, field
+    None) the rule is OFF for EVERY label (returns False): every switch
+    absent keeps today's verdict byte-for-byte, including the regex-truncated
+    first word of a multi-word hint ('potted' from 'potted plant').
+    """
+    if not isinstance(label, str):
+        return False
+    text = label.strip().lower()
+    stem = re.sub(r"_\d+$", "", text)
+    cands = (text, stem)
+    # a narrowed detector cannot see a label outside its set, so that label's
+    # absence is no evidence
+    _v = getattr(obs, "vocab", None)
+    _s = _v.get("strict") if isinstance(_v, dict) else None
+    if isinstance(_s, (list, tuple)) and _s:
+        allowed = set(str(x).strip().lower() for x in _s)
+        names = set(cands) | {stem.replace("_", " ")}
+        names |= set(_TARGET_ALIASES.get(c) for c in list(names)
+                     if _TARGET_ALIASES.get(c))
+        if not (names & allowed):
+            return True
+    for cand in cands + (stem.replace("_", " "),):
+        if (cand in _TRACKED_CLASSES
+                or _TARGET_ALIASES.get(cand) in _TRACKED_CLASSES):
+            return False
+    vocab = getattr(obs, "vocab", None)
+    if not isinstance(vocab, dict):
+        # no vocab block: the rule is off and the normal label logic applies
+        # the hint regex chops at the first space ('potted plant' -> 'potted'),
+        # so keying on the full label would fail real picks
+        return False
+    if vocab.get("backend") == "yoloe":
+        extras = vocab.get("extras")
+        if isinstance(extras, (list, tuple)):
+            for extra in extras:
+                if (isinstance(extra, str)
+                        and extra.strip().lower() in cands):
+                    return False
+    return True
