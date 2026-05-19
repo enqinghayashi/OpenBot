@@ -1489,3 +1489,8 @@ class SkillVerifier:
         #: silence switch: True means an empty detection set is confirmable
         self.silence_means_empty = silence_means_empty
 
+    def reset(self) -> None:
+        """Clear instance-held verification state."""
+        self._nav_last_success_epoch = 0.0
+        self._containment_record = {}
+
