@@ -1781,3 +1781,137 @@ class SkillVerifier:
 
     # -- place: grip open AND object out of hand? ----------------------------
 
+    @_zfloor_limited_note("drop point")
+    def verify_place(self, contract, obs, tool_result: str,
+                     now: float | None = None) -> Verdict:
+        """Post-condition: grip open AND object out of hand (release-only).
+
+        HELD-THEN-OPEN (world-truth round 4): post-drop contact == False is
+        GUARANTEED — the drop itself clears both sides' close verdicts, so
+        contact==False alone would certify ANY drop by command-inference,
+        not observation.  Success requires ALL of:
+          (a) drop DONE (any engine ERROR is a definitive failure);
+          (b) the post state read FRESH (within GRIP_STATE_MAX_AGE_S),
+              available, and the hand MEASURED-OPEN (is_open True — joints
+              at the trusted measured-open reference);
+          (c) the hold is established by EITHER:
+              - a TRANSITION: the PRE-DROP fresh state poll measured the
+                hand in a NON-open shape (``prev_is_open=<side>:False``) —
+                the drop moved it from closed to open; OR
+              - a VERIFIED HOLD: ``prev_pick_verified=<side>:True`` — the
+                gateway's per-side bookkeeping records that the hold was
+                created by an engine-verified pick (lane up, same side,
+                this session; recorded at pick time, cleared on the next
+                drop / open / new pick).
+        NO success on measured-open alone when the hold itself is unverified
+        AND no transition was observed — the drop's open is then
+        command-inferred, not observed.  A missing/None pre-drop judgment, a
+        stale/offline read, or no trusted open reference yet (bootstrap) is
+        in_progress 're-observe'.  Verifier v2 (ADDITIVE): when the reply
+        carries the agent-lane into: annotation (into_ref/into_label/
+        placed_object — see _parse_place_into) a CONTAINMENT half follows
+        the release chain: the placed object's projected position must lie
+        inside the container's containment region (CONTAINER_FIT_M half-
+        extent around the container's projected detection, torso frame).
+        The containment half enforces the fix-round honesty gates: a
+        POST-DROP FRESH packet (POST_DROP_FRESHNESS_S), a stateful
+        two-observation stationarity record SCOPED TO THE TASK EXECUTION
+        (the drop epoch dropped_at re-anchors it on every new drop), a
+        RE_OBSERVE_WINDOW_S bound between the two agreeing frames
+        (first_ts is read), and the pre-existing-object exclusion anchored
+        on the tool layer's PRE-DROP observation (an unchanged in-region
+        same-label object is never success — see
+        _verify_place_containment).  Without into: this stays
+        RELEASE-ONLY — NEVER claims in-bin, no region check runs.
+        """
+        now = time.time() if now is None else now
+        if _task_was_cancelled(tool_result):
+            return Verdict.failure(
+                "the operator cancelled this place while it was running - the "
+                "arm was stopped and the release did NOT complete; the object "
+                "may still be in the hand. This was an intentional stop, not "
+                "a failed release. Acknowledge it. The stop ended ONLY this "
+                "place: do not retry it on your own, but treat the "
+                "operator's next request as a new instruction and carry "
+                "it out",
+                "cancelled_by_operator")
+        kind, detail = _classify_reply(tool_result)
+        verdict = _guard_reply(kind, detail)
+        if verdict is not None:
+            return verdict
+        prev_is_open = _parse_prev_is_open(tool_result)
+        pick_verified = _parse_pick_verified(tool_result)
+        if prev_is_open is None and pick_verified is None:
+            return Verdict.in_progress(
+                "re-observe; no pre-drop evidence recorded for the drop "
+                "(no prev_is_open / prev_pick_verified annotations; cannot "
+                "confirm the hand held before it)")
+        side = (prev_is_open or pick_verified)[0]
+        grip = _grip(obs)
+        if grip is None:
+            return Verdict.in_progress("re-observe; grip state missing")
+        if str(grip.side).lower() != side.lower():
+            return Verdict.in_progress(
+                "re-observe; observed grip side %r does not match the "
+                "pre-drop evidence side %r" % (grip.side, side))
+        if not _ts_fresh(getattr(grip, "stale_ts", None), now):
+            return Verdict.in_progress(
+                "re-observe; grip state read stale (older than "
+                "GRIP_STATE_MAX_AGE_S) — cannot confirm the release")
+        if not grip.available:
+            return Verdict.in_progress(
+                "re-observe; grip offline (state [side] available=False)")
+        release_measured_open = False
+        if grip.is_open is not True:
+            # the lift parks the holding hand closed before DONE, because open
+            # fingers sweeping down would hit the table, so is_open can never
+            # hold here
+            # the release is measured at drop time instead, and that
+            # release_open=<side>:<bool> counts
+            rel = _parse_release_open(tool_result)
+            if not (rel is not None and rel[0].lower() == side.lower()
+                    and rel[1] == "True"):
+                return Verdict.in_progress(
+                    "re-observe; post-drop hand not measured-open (is_open=%s — "
+                    "no trusted measured-open reference yet or joints away from "
+                    "it); cannot confirm the release" % grip.is_open)
+            release_measured_open = True
+        open_evidence = (
+            "the engine measured the hand OPEN AT THE RELEASE (step 6, finger "
+            "joints vs the OPEN preset in measured motor-q); the LIFT closeout "
+            "parked it closed afterwards (PLACE_PARK_HAND_CLOSED)"
+            if release_measured_open else "grip measured-open after drop")
+        transition = prev_is_open is not None \
+            and prev_is_open[0].lower() == side.lower() \
+            and prev_is_open[1] == "False"
+        verified_hold = pick_verified is not None \
+            and pick_verified[0].lower() == side.lower() \
+            and pick_verified[1] == "True"
+        if not (transition or verified_hold):
+            return Verdict.in_progress(
+                "re-observe; the hold is unverified (pre-drop is_open=%s, "
+                "prev_pick_verified=%s:%s) and no open transition was "
+                "observed (pre-drop hand not measured in a non-open shape) — "
+                "cannot confirm the drop released anything"
+                % (prev_is_open[1] if prev_is_open is not None else "None",
+                   pick_verified[0] if pick_verified is not None else side,
+                   pick_verified[1] if pick_verified is not None else "False"))
+        hold_evidence = ("pre-drop measured non-open (is_open False)"
+                         if transition else
+                         "hold from an engine-verified pick (lane up)")
+        into_ref, into_label, placed_object = _parse_place_into(tool_result)
+        if into_ref is not None:
+            _cv = self._verify_place_containment(
+                obs, now, into_ref, into_label, placed_object, hold_evidence,
+                tool_result, open_evidence)
+            # a release read as in_progress makes the model say the object is
+            # still in the hand, so append the release note
+            if _cv.status == "in_progress":
+                _cv = Verdict.in_progress(
+                    (_cv.evidence or "") + PLACE_RELEASED_NOTE % (open_evidence,))
+            return _cv
+        return Verdict.success(
+            "drop DONE, %s; hold evidence: %s — "
+            "object released (release-only, no in-bin claim)%s"
+            % (open_evidence, hold_evidence, PLACE_TASK_DONE_SUFFIX))
+
