@@ -1330,3 +1330,32 @@ def _label_vocab_inactive(obs: WorldObservation | None,
     return True
 
 
+def _target_present(obs: WorldObservation | None, label: str | None,
+                    ref: str | None, silence_means_empty: bool = True,
+                    ) -> bool | None:
+    """Is the target still visible in the latest detections packet?
+
+    Callers gate on channel-liveness FIRST (_detections_alive): this
+    function reads the latest packet only.
+
+    True  - a matching detection is present
+    False - confirmed absent (empty scene, or no detection matches the hint)
+    None  - unconfirmable: scene non-empty but no target hint, a ref hint
+            with no ref-bearing detections to compare against, or an EMPTY
+            scene under silence_means_empty=False (silence is then never
+            empty-scene evidence), or (D13) a label hint naming an extra
+            class the detector is not currently running
+    """
+    if ref is None and _label_vocab_inactive(obs, label):
+        return None  # inactive extra's absence proves nothing
+    dets = getattr(obs, "detections", None) or []
+    if not dets:
+        # an empty packet counts only with the switch on
+        return False if silence_means_empty else None
+    if ref is not None:
+        if not any(d.ref is not None for d in dets):
+            return None  # no refs in the scene, so absence is unconfirmable
+        return any(d.ref == ref for d in dets)
+    if label is not None:
+        return any((d.label or "").lower() == label.lower() for d in dets)
+    return None
