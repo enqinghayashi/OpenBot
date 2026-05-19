@@ -1414,3 +1414,69 @@ def _zfloor_limited_note(target):
     return deco
 
 
+class SkillVerifier:
+    """Deterministic post-condition judge for pick/place/navigate/open_hand/close_hand.
+
+    verify(contract, obs, tool_result[, now]) dispatches on the contract name
+    to the per-skill method. Post-conditions per brain/tool_contract.py
+    CONTRACTS:
+      pick     - 'object gone from source AND grip contact' — PICK GRASP LAW
+                 (world-truth round 4): the grasp half is confirmed ONLY by
+                 the gateway's post-pick lane poll (lane_state=up + fresh
+                 grip_state_ts <=> the engine's DONE was engine-verified);
+                 lane down/unknown -> in_progress 're-observe; state [side]'
+                 (blind mode — no evidence available); a serialized close
+                 verdict NEVER certifies a pick (tabletop-only; a floor pick
+                 is a capability-block, refused before any motion)
+      place    - 'grip open AND object out of hand' — the RELEASE-ONLY
+                 chain (no in-bin claim, no region check) is the round-5
+                 HELD-THEN-OPEN: drop DONE + post state fresh +
+                 MEASURED-OPEN (is_open True) AND (pre-drop is_open False
+                 [transition] OR the hold was created by an engine-verified
+                 pick).  Verifier v2 (ADDITIVE): when the reply carries the
+                 agent-lane into: annotation (into_ref/into_label/
+                 placed_object) a CONTAINMENT half runs after the release
+                 chain — the placed object's projected position must lie
+                 inside the container's containment region (CONTAINER_FIT_M
+                 around the container's projected detection, torso frame);
+                 success ONLY on demonstrated containment across TWO
+                 consecutive post-drop in-region observations of a NEW
+                 arrival on a POST-DROP FRESH packet (never one
+                 instantaneous detection, never a pre-existing same-label
+                 object); the stationarity record is SCOPED TO THE TASK
+                 EXECUTION — keyed on the tool layer's drop epoch
+                 (dropped_at) so a new drop of the same container/object
+                 resets the record (fix round 2, D4) — its pre-existing
+                 set is anchored on the tool layer's PRE-DROP observation
+                 (predrop_state/predrop_obj; D5), never the first
+                 post-drop frame, and the two agreeing observations must
+                 be distinct frames within RE_OBSERVE_WINDOW_S (first_ts
+                 is read); any ambiguity, staleness or unavailable
+                 projection -> in_progress 're-observe' (never a guessed
+                 in-bin)
+      navigate - walk_status == REACHED ONLY within the dispatch epoch
+                 (NAVIGATE EPOCH GATE: NAV_EPOCH + LATEST_WALK_TS + a
+                 non-REACHED phase in PHASES_SEEN defeat stale/hold REACHED);
+                 NEVER odom (/unitree/slam_mapping/odom does not exist);
+                 'stop' claims no goal post-condition (no verdict, fix E)
+      open_hand - grip open by MEASURED state: fresh read + is_open True
+                 (CAUSAL measured-open reference — forms only from reads
+                 after a gateway-dispatched open command) + NO literal
+                 contact verdict on file; open_both checks the LEFT hand
+                 independently too (fix 5)
+      close_hand- grip closed (literal close_adaptive DONE:contact folded
+                 with its verdict ts within CLOSE_CONTACT_WINDOW_S on a
+                 FRESH read, or the full-stroke DONE:full — never success on
+                 an unobserved/offline left hand, fix 4; a stale folded
+                 contact never confirms, round-4 fix 2)
+
+    Conservative rule: any missing/unfresh data, offline grip, indistinguishable
+    target, or no-world-signal reply (Q:/STATE:) -> in_progress with evidence
+    starting 're-observe'. Never false success.
+
+    Instance-held state: the navigate epoch gate remembers the dispatch epoch
+    of the last success (refuse re-success on the SAME epoch). Call
+    :meth:`reset` to clear it. One instance must be shared across calls
+    (the gateway keeps a single SkillVerifier).
+    """
+
