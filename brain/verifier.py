@@ -1503,3 +1503,21 @@ class SkillVerifier:
         """
         return self._nav_last_success_epoch
 
+    def verify(self, contract, obs, tool_result: str,
+               now: float | None = None) -> Verdict:
+        """Verify one tool invocation. `contract` is a ToolContract (or its name).
+
+        ``now`` (optional) pins the clock for freshness checks — tests and
+        replay use it; callers without it get time.time().  hooks.py calls
+        this with the classic 3 arguments.
+        """
+        name = contract.name if isinstance(contract, ToolContract) else str(contract)
+        method = getattr(self, _HANDLER_METHOD.get(name, ""), None)
+        if method is None:
+            return Verdict.in_progress(
+                f"re-observe; no verifier registered for tool {name!r}")
+        now = time.time() if now is None else now
+        return method(contract, obs, tool_result, now=now)
+
+    # -- pick: object gone AND grip contact? ---------------------------------
+
