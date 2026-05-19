@@ -1521,3 +1521,263 @@ class SkillVerifier:
 
     # -- pick: object gone AND grip contact? ---------------------------------
 
+    def verify_pick(self, contract, obs, tool_result: str,
+                    now: float | None = None) -> Verdict:
+        """Post-condition: object gone from source AND grip contact.
+
+        PICK GRASP LAW (world-truth round 4): during a REAL pick the engine
+        closes the grip over ITS OWN socket — the gateway never sees the
+        close_adaptive verdict, so a serialized gateway-close verdict can
+        NEVER certify a pick.  An engine pick DONE is COMMAND evidence only:
+        in BLIND MODE (palm DDS lane down) the engine skips its grasp
+        verification and returns DONE anyway; when the lane is UP the engine
+        VERIFIES its own grasp (quadrant/palm-data check) and fails with
+        ERROR:grasp_failed on an air-grab.  The gateway's immediate post-pick
+        ``state [side]`` poll CANNOT see the engine's grip-socket traffic,
+        but the poll's per-side available flag IS the lane-health probe:
+        ``lane_state=up`` (available True on a poll no older than
+        GRIP_STATE_MAX_AGE_S) <=> this engine DONE was engine-verified.
+        The grasp half is confirmed IFF ``lane_state == up`` with a fresh
+        ``grip_state_ts``; lane_state down/unknown -> in_progress
+        're-observe; state [side]' (blind mode — no evidence available).
+        The literal folded-close-verdict contact path is close_hand evidence
+        ONLY and is NOT pick evidence (removed).
+
+        Tool-level failures are definitive (engine ERROR -> failure,
+        close_adaptive 'DONE:full' = closed without contact).  The target
+        (contract.context 'target='/'target_label=' hint, else only an empty
+        scene) must be absent from the latest detections packet —
+        DETECTIONS-ALIVE GATE (world-truth round 5, fix 3): target-gone is
+        confirmable when the channel is ALIVE (ever spoke, within
+        DETECTIONS_ALIVE_S) and the latest packet lacks the target ref (or
+        is empty — silence == empty scene); a dead node (never spoke, or
+        silent beyond the liveness window) -> in_progress 're-observe;
+        detections node silent'.  A fresh NON-EMPTY packet is NEVER required
+        for target-gone.
+        """
+        now = time.time() if now is None else now
+        if _task_was_cancelled(tool_result):
+            # the cancel phase decides: 'nothing picked up' only before the
+            # close, otherwise the hand state stays unknown
+            _where = _self_state.parse_cancel_where(tool_result)
+            if _self_state.cancel_hand_state(_where) == "empty":
+                return Verdict.failure(
+                    "the operator cancelled this pick while it was running - "
+                    "the arm was stopped and NOTHING was picked up (hand_state="
+                    "empty); this was an intentional stop, not a failed grasp. "
+                    "Acknowledge it. The stop ended ONLY this pick: do not "
+                    "retry it on your own, but treat the operator's next request "
+                    "as a new instruction and carry it out (navigate or pick as "
+                    "needed, without asking permission)",
+                    "cancelled_by_operator")
+            return Verdict.failure(
+                "the operator cancelled this pick while it was running "
+                "(phase %s) - the arm was stopped; the hand state is UNKNOWN "
+                "(hand_state=unknown): it may or may not hold the object - "
+                "check, or call open_hand. This was an intentional stop, not "
+                "a failed grasp. "
+                "Acknowledge it. The stop ended ONLY this pick: do not "
+                "retry it on your own, but treat the operator's next request "
+                "as a new instruction and carry it out (navigate or pick as "
+                "needed, without asking permission)" % (_where or "?"),
+                "cancelled_by_operator")
+        kind, detail = _classify_reply(tool_result)
+        verdict = _guard_reply(kind, detail)
+        if verdict is not None:
+            return verdict
+        if kind == "full":
+            return Verdict.failure(
+                "pick closed to full stroke without contact",
+                "closed to full without contact")
+        if kind == "no_data":
+            return Verdict.in_progress(
+                "re-observe; close_adaptive returned no tactile data")
+        lane = _parse_lane_state(tool_result)
+        grip_ts = _parse_grip_state_ts(tool_result)
+        if lane == "up" and _ts_fresh(grip_ts, now):
+            grasp = "engine-verified (lane up)"
+            # cloud hold token, lane-up only: STILL_ON_TABLE / MOVED are
+            # negative evidence, ABSENT_UNPROVEN / UNKNOWN prove nothing and
+            # only add words
+            # it never promotes a verdict; without a token nothing changes
+            _pc = _parse_pc_hold(tool_result)
+            if _pc in ("STILL_ON_TABLE", "MOVED"):
+                return Verdict.failure(
+                    "point-cloud hold check: the target %s" %
+                    ("never left its footprint" if _pc == "STILL_ON_TABLE"
+                     else "was knocked"),
+                    "pc_hold=%s" % _pc)
+            if _pc in ("ABSENT_UNPROVEN", "UNKNOWN"):
+                grasp = "engine-verified (lane up); point cloud: no evidence either way"
+            _eng = _parse_engine_reply(tool_result)
+            if _eng is not None and not _eng.startswith("DONE"):
+                return Verdict.in_progress(
+                    "re-observe; state [side] - the pick reply's "
+                    "engine_reply=%r is not a DONE, so lane_state=up (a "
+                    "DDS-writer-exists flag) is the ONLY grasp evidence; "
+                    "cannot confirm the pick grasp" % _eng)
+        else:
+            # blind: no grasp evidence from the lane, so 'state [side]' is the
+            # real path; a later poll may find the lane up, or a grasp failure
+            if lane is None:
+                return Verdict.in_progress(
+                    "re-observe; state [side] — the pick reply carries no "
+                    "lane_state annotation; grasp evidence: none; cannot "
+                    "confirm the pick grasp")
+            if not _ts_fresh(grip_ts, now):
+                return Verdict.in_progress(
+                    "re-observe; state [side] — the post-pick lane poll is "
+                    "stale (grip_state_ts older than GRIP_STATE_MAX_AGE_S); "
+                    "grasp evidence: none; cannot confirm the pick grasp")
+            return Verdict.in_progress(
+                "re-observe; state [side] — grasp evidence: none "
+                "(lane_state=%s — the palm lane was not up during the pick, "
+                "so the engine DONE carries no verified grasp); cannot "
+                "confirm the pick grasp" % lane)
+        # lane up with a bare DONE and the target gone also matches an empty
+        # close, so the finger lag separates the two
+        hold = _finger_hold(obs, tool_result, now)
+        if hold == "empty":
+            return Verdict.failure(PICK_MISSED_EVIDENCE,
+                                   "pick_missed_empty_hand")
+        # silence after a lift with the fingers held means an empty scene, not
+        # a dead node; a stale pre-lift packet never feeds the object-gone half
+        _silent_empty = (hold == "held"
+                         and _silence_is_empty_scene(tool_result, obs))
+        label, ref = _resolve_target(contract)
+        if not _detections_alive(obs, now) and not _silent_empty:
+            if hold == "held":
+                # this never upgrades a status (a limp hand can freeze off
+                # command)
+                return Verdict.in_progress(
+                    "re-observe; MAY BE HOLDING - after the lift the fingers "
+                    "are still held off their close command by an object "
+                    "(MEASURED from the grip state), but the detections node "
+                    "is silent (%s), so the object-gone half could NOT BE "
+                    "MEASURED. Grasp half: %s. This silence is never evidence "
+                    "against the grasp: do not re-pick (a re-pick re-opens "
+                    "the hand and would drop what it may be holding); place "
+                    "is allowed if the operator asked for it."
+                    % (_detections_dead_cause(obs, now), grasp))
+            # unmeasurable, not a measured negative: the grasp half is established
+            # and only the object-gone half is missing
+            # the rule still forbids success here, because a DONE on an air-close
+            # can read as success, and a false success is the worse error
+            # a dead channel is not grasp evidence either
+            # re-observe cannot help while the loop only feeds newer packets, so
+            # get the channel back and never re-pick
+            return Verdict.in_progress(
+                "re-observe; detections node silent (%s) — the object-gone "
+                "half of the pick post-condition could NOT BE MEASURED, so "
+                "this pick is UNCONFIRMED, not failed. Grasp half: %s. "
+                "This is a PERCEPTION-LANE fault, and never evidence against "
+                "the grasp (a target still visible would have said so): "
+                "re-observing cannot resolve it until the detections node "
+                "publishes again, and a re-pick is NOT warranted on this "
+                "evidence alone — the hand may already be holding the object."
+                % (_detections_dead_cause(obs, now), grasp))
+        present = _target_present(obs, label, ref,
+                                  silence_means_empty=self.silence_means_empty)
+        lifted_note = ""
+        if _silent_empty:
+            present = False
+            lifted_note = SILENT_EMPTY_NOTE
+        # every same-label detection is provably another object
+        bystander_note = ""
+        if present is True and ref is None and _only_bystanders(
+                obs, label,
+                _parse_pick_point(getattr(contract, "context", "") or "",
+                                  tool_result),
+                _parse_preaction_dets(getattr(contract, "context", "") or "")):
+            present = False
+            bystander_note = (
+                " (the %s still seen on the table is a DIFFERENT %s that "
+                "was already there or has another colour; the one you "
+                "picked is the one in the hand)" % (label, label))
+        if present is True:
+            # a label match cannot tell the table from a parked hand
+            # with pick_point, far and above means lifted
+            # no annotation keeps the conservative answer
+            lifted, worst = _target_lifted_with_hand(
+                obs, label, ref,
+                _parse_pick_point(getattr(contract, "context", "") or "",
+                                  tool_result))
+            # the fingers are held and a matching detection sits near the pick
+            # point but risen: that is the held object, in view
+            if not lifted and hold == "held":
+                lifted, worst = _target_held_in_view(
+                    obs, label, ref,
+                    _parse_pick_point(getattr(contract, "context", "") or "",
+                                      tool_result))
+            if not lifted:
+                if hold == "held":
+                    return Verdict.in_progress(
+                        "re-observe; target still visible in the latest "
+                        "detections — but the fingers are still held off the "
+                        "close command by an object (MEASURED): you MAY be "
+                        "holding something; a same-label object is still "
+                        "detected near the pick point")
+                return Verdict.in_progress(
+                    "re-observe; target still visible in the latest detections")
+            if worst[1] <= 0.0:
+                lifted_note = (
+                    " (the pick point is empty - the nearest same-label "
+                    "detection is %.2f m away, another object - and the "
+                    "fingers are MEASURED held open by an object: the target "
+                    "is in the hand, out of the camera's view)" % worst[0])
+            else:
+                lifted_note = (
+                    " (the same-label detection now sits %.2f m from and %.2f m "
+                    "above the pick point: it moved up with the hand, MEASURED "
+                    "from detections)" % worst)
+            present = False
+        if present is None:
+            if ref is None and _label_vocab_inactive(obs, label):
+                vocab = getattr(obs, "vocab", None)
+                # only advise a tool the detector vocabulary actually supports
+                if not isinstance(vocab, dict):
+                    return Verdict.in_progress(
+                        "%s (hint label %r; vocabulary backend None, extras "
+                        "None) — its absence from the detections cannot be "
+                        "read as the object gone; the label is not a "
+                        "detectable class on this robot; re-observe" % (
+                            VOCAB_INACTIVE_EVIDENCE, label))
+                return Verdict.in_progress(
+                    "%s (hint label %r; vocabulary backend %r, extras %r) — "
+                    "its absence from the detections cannot be read as the "
+                    "object gone; re-observing alone cannot settle this — "
+                    "the label must be in the detector's vocabulary first "
+                    "(look_for), then re-observe" % (
+                        VOCAB_INACTIVE_EVIDENCE, label,
+                        vocab.get("backend"), vocab.get("extras")))
+            return Verdict.in_progress(
+                "re-observe; cannot confirm object gone (no target ref/label "
+                "in contract context and scene non-empty%s)"
+                % (", or silence is not empty-scene evidence "
+                   "(silence_means_empty=False)" if not self.silence_means_empty
+                   else ""))
+        # an absent target reads as good news, so the wording says so; no check
+        # is relaxed
+        # a bare DONE is a blocked close, more than 0.06 rad short of the close
+        # preset, and the explicit token counts the same way
+        # no engine_reply uses the plain wording
+        lifted_note += bystander_note  # stays empty unless bystanders are ruled out
+        if (_GRASP_CAVEAT_RE.search(tool_result or "")
+                or _engine_reply_is_bare_done(_parse_engine_reply(tool_result))):
+            return Verdict.success(
+                "grasp evidence: %s; fingers closed on an object and were "
+                "blocked short of the close preset (grasp_evidence="
+                "blocked_no_tactile: NO tactile confirmation); the object has left the table%s and MAY be in "
+                "the hand (INFERRED: lane up + target gone; no in-hand sensor "
+                "exists) — pick complete%s" % (
+                    grasp, lifted_note,
+                    HELD_AFTER_LIFT_SUFFIX if hold == "held" else ""))
+        return Verdict.success(
+            "grasp evidence: %s; the object has left the table%s and MAY be "
+            "in the hand (INFERRED: lane up + target gone; no in-hand sensor "
+            "exists) — pick complete%s" % (
+                grasp, lifted_note,
+                HELD_AFTER_LIFT_SUFFIX if hold == "held" else ""))
+
+    # -- place: grip open AND object out of hand? ----------------------------
+
