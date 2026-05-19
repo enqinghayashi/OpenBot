@@ -1388,3 +1388,27 @@ ZFLOOR_NOTE = (" — NOTE: the arm stopped at the table floor after %d%% of this
                "move; it is clear of the table but NOT fully at the %s")
 
 
+def _zfloor_limited_note(target):
+    """B8g G3: wraps verify_pose ('requested pose') and verify_place ('drop
+    point').  The token is removed before the verdict is computed, so the status
+    is the one the reply earns without it; when a token with s < 0.98 is
+    present, the note is appended to the evidence of the verdict returned."""
+
+    def deco(method):
+        def wrapper(self, contract, obs, tool_result, *args, **kwargs):
+            text = tool_result if isinstance(tool_result, str) else ""
+            scales = [float(s) for s in _ZFLOOR_LIMITED_RE.findall(text)]
+            if not scales:
+                return method(self, contract, obs, tool_result, *args, **kwargs)
+            verdict = method(self, contract, obs,
+                             _ZFLOOR_LIMITED_TOKEN_RE.sub("", text), *args, **kwargs)
+            if min(scales) >= 0.98:
+                return verdict
+            return Verdict(status=verdict.status,
+                           evidence=(verdict.evidence or "") + ZFLOOR_NOTE % (
+                               round(100 * min(scales)), target),
+                           failure_reason=verdict.failure_reason)
+        wrapper.__name__ = method.__name__
+        wrapper.__doc__ = method.__doc__
+        return wrapper
+    return deco
