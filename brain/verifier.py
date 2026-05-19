@@ -2434,3 +2434,83 @@ class SkillVerifier:
 
     # -- close_hand: did it really close on something? -----------------------
 
+    def verify_close_hand(self, contract, obs, tool_result: str,
+                          now: float | None = None) -> Verdict:
+        """Post-condition: grip closed — literal contact OR full-stroke stop.
+
+        close_adaptive replies are decisive: DONE:contact = the real grasp
+        signal; DONE:full = full-stroke stop (post-condition met); DONE:no_data
+        = no tactile evidence -> in_progress.  Plain DONE relies on grip
+        state: the FOLDED contact (the gateway's OWN serialized
+        close_adaptive verdict for this close).
+
+        CLOSE FRESHNESS (world-truth round 4, fix 2): ALL success paths
+        require a FRESH grip state read (GRIP_STATE_MAX_AGE_S), and the
+        folded-contact path additionally requires the folded verdict's own
+        timestamp (GripState.contact_ts) within CLOSE_CONTACT_WINDOW_S — a
+        daemon'd grip's stale folded contact must NOT confirm.
+
+        BOTH HANDS (world-truth round 5): the gateway's close_both dispatch
+        is now REAL per-side close_adaptive (RIGHT then LEFT — per-side
+        tactile evidence), and the tool result lists the per-side verdicts
+        (``right_close=contact|full|no_data; left_close=...``).  Success
+        requires BOTH sides' verdicts contact|full on FRESH, available
+        reads — the both-hands check runs BEFORE any right-only success.  A
+        no_data / missing / offline / stale side -> in_progress
+        (re-observe), never success.  Replies without per-side fields fall
+        back to the folded-contact path (both hands' literal contact, all
+        fresh).
+        """
+        now = time.time() if now is None else now
+        kind, detail = _classify_reply(tool_result)
+        verdict = _guard_reply(kind, detail)
+        if verdict is not None:
+            return verdict
+        if kind == "contact":
+            if self._close_fresh(obs, now):
+                return Verdict.success(
+                    "close_adaptive DONE:contact on a fresh grip read — grip "
+                    "closed on object")
+            return Verdict.in_progress(
+                "re-observe; close_adaptive DONE:contact but the grip state "
+                "read is missing/stale/offline — cannot confirm on a dead "
+                "lane")
+        if kind == "full":
+            if self._close_fresh(obs, now):
+                return Verdict.success(
+                    "close_adaptive DONE:full on a fresh grip read — closed "
+                    "to full-stroke stop")
+            return Verdict.in_progress(
+                "re-observe; close_adaptive DONE:full but the grip state "
+                "read is missing/stale/offline — cannot confirm on a dead "
+                "lane")
+        if kind == "no_data":
+            return Verdict.in_progress(
+                "re-observe; close_adaptive returned no tactile data")
+        if _parse_sides(tool_result) == "both":
+            return self._verify_close_both(obs, now, tool_result)
+        grip = _grip(obs)
+        if grip is None:
+            available = _state_available(detail)
+            if available is False:
+                return Verdict.in_progress(
+                    "re-observe; grip offline (state reply available=False)")
+            return Verdict.in_progress(
+                "re-observe; grip state missing (state reply carries no contact)")
+        if not grip.available:
+            return Verdict.in_progress(
+                "re-observe; grip offline (state [side] available=False)")
+        # a fresh read and a folded verdict timestamp inside the window
+        if grip.contact and _verdict_fresh(getattr(grip, "contact_ts", None),
+                                           now) \
+                and _ts_fresh(getattr(grip, "stale_ts", None), now):
+            return Verdict.success(
+                "grip state literal contact True on a fresh read — grip "
+                "closed on object")
+        return Verdict.in_progress(
+            "re-observe; grip not confirmed closed (no fresh literal contact "
+            "evidence: folded verdict missing/stale or the state read is "
+            "not fresh)")
+
+    # -- pose: did the posture get commanded? --------------------------------
+
