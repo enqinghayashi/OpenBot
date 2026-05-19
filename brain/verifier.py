@@ -1915,3 +1915,300 @@ class SkillVerifier:
             "object released (release-only, no in-bin claim)%s"
             % (open_evidence, hold_evidence, PLACE_TASK_DONE_SUFFIX))
 
+    def _verify_place_containment(
+        self, obs, now: float, into_ref: str, into_label: str | None,
+        placed_object: str | None, hold_evidence: str,
+        tool_result: str | None = None,
+        open_evidence: str = "grip measured-open after drop") -> Verdict:
+        """Verifier v2 containment half (place into:<container_ref>).
+
+        Runs ONLY after the release chain above passed and the reply
+        carried the into: annotation.  Containment is demonstrated when the
+        placed object's PROJECTED position (same depth-projector data the
+        observation already carries — the observation has no pixel box and
+        no refs on detections, so identity is by LABEL plus the temporal
+        evidence this pass enforces, never fabricated) lies within
+        CONTAINER_FIT_M (torso-frame half-extent) of the container's
+        projected detection.  Fix-round honesty ladder (D1-D3 + nit ii):
+          (a) missing into_label/placed_object annotations -> in_progress
+              (the reply named the container but the tool layer did not
+              name the object / container label — nothing to check);
+          (b) detections channel not alive (DETECTIONS_ALIVE_S) ->
+              in_progress (silence == empty scene; no projection available);
+          (c) POST-DROP FRESHNESS (fix D2): the packet must be at most
+              POST_DROP_FRESHNESS_S old — a packet up to 10 s old can
+              predate the drop's completion and must not certify it;
+          (d) container by label (lowered match): 0 candidates ->
+              in_progress 'not in the current scene'; when the tool layer
+              annotated the resolved scene-graph ref's fresh position
+              (into_x/into_y/into_z) the same-label detection nearest it
+              within PREEXISTING_ASSOC_M is used ('ref-unique' in the
+              evidence — the scene graph identified ONE container); >1
+              candidates without a ref-unique match -> in_progress 'cannot
+              tell which received the drop';
+          (e) object (by placed_object label, container identity excluded)
+              0 candidates -> in_progress 'not observed after the drop'
+              (occluded or out of frame — containment not demonstrated);
+          (f) object >1 candidate -> in_progress ambiguity;
+          (g) STATIONARITY + PRE-EXISTING (fixes D2/D3, fix round 2
+              D4/D5): ONE observation never certifies.  A stateful
+              per-(container, object) record (mirror of the navigate epoch
+              guard) is SCOPED TO THE TASK EXECUTION: the tool layer
+              stamps the drop epoch (dropped_at) onto every into: place
+              reply, and the record re-anchors whenever the epoch changes
+              — a NEW drop of the same key resets the record, so the
+              previous task's frames can never pair with this task's first
+              observation (the containment state leak).  The record's
+              PRE-EXISTING set is built from a REAL PRE-DROP observation
+              (the tool layer's predrop_state/predrop_obj annotations,
+              read from the observation it held before executing the
+              drop) — NEVER from the first post-drop frame; when no
+              pre-drop observation was usable the set is UNKNOWN and
+              success additionally requires displacement evidence (the
+              object observed OUTSIDE the region at least once in this
+              task's sequence, then in-region, then agree).  Success
+              additionally requires this pass AND the previous pass to be
+              in-region (two CONSECUTIVE agreeing in-region observations
+              of THIS task) with the in-region candidate a NEW ARRIVAL —
+              outside PREEXISTING_ASSOC_M of every pre-drop in-region
+              position — and the two agreeing observations to be two
+              DISTINCT frames within RE_OBSERVE_WINDOW_S of each other
+              (first_ts is READ; a re-delivered packet or a pair
+              straddling the window re-anchors instead of certifying).  A
+              same-label object already in the container can never certify
+              a drop: Detection.ref is always None, so an unchanged
+              in-region object is consistent with pre-existence and reads
+              in_progress-and-diagnose;
+          (h) (g) satisfied with |offset| <= CONTAINER_FIT_M on all axes ->
+              success with the measured offsets, the stationarity state
+              actually held, and the settling caveat in the evidence;
+          (i) any axis beyond the half-extent -> in_progress (the drop may
+              still be settling or may have missed the container;
+              're-observe' with the measured offsets).
+        No branch below ever reads as success unless containment is
+        demonstrated across two observations; no geometry is ever
+        fabricated.
+        """
+        if into_label is None or placed_object is None:
+            return Verdict.in_progress(
+                "re-observe; the place reply named the container (%r) but "
+                "carried no into_label/placed_object annotations — cannot "
+                "check containment yet" % into_ref)
+        if not _detections_alive(obs, now):
+            # three distinct causes collapse here: no observation at all, the
+            # node never spoke, or it went silent past the window
+            return Verdict.in_progress(
+                "re-observe; detections node silent (%s) — no projection "
+                "available to check containment"
+                % _detections_dead_cause(obs, now))
+        det_ts = getattr(obs, "detections_ts", 0.0) or 0.0
+        if det_ts <= 0.0 or (now - det_ts) > POST_DROP_FRESHNESS_S:
+            return Verdict.in_progress(
+                "re-observe; the detections packet is not post-drop fresh "
+                "(%.1f s old; POST_DROP_FRESHNESS_S=%.1f s) — a packet that "
+                "old can predate the drop's completion; cannot check "
+                "containment" % (now - det_ts, POST_DROP_FRESHNESS_S))
+        containers = [d for d in obs.detections
+                      if str(d.label).lower() == into_label.lower()]
+        # the instance id survives a relabel
+        _iid = _parse_into_iid(tool_result)
+        _fp = _parse_into_fp(tool_result)
+        if _iid is not None:
+            _by_id = [d for d in obs.detections
+                      if getattr(d, "instance_id", None) == _iid]
+            if _by_id:
+                containers = _by_id
+        if not containers:
+            return Verdict.in_progress(
+                "re-observe; container %r (%r) is not in the current scene "
+                "— containment is not demonstrated" % (into_ref, into_label))
+        # the scene graph resolved into: to one ref, so take the nearest
+        # same-label detection; the offsets still come from the current one
+        container = None
+        ref_note = ""
+        ref_pos = _parse_into_ref_position(tool_result)
+        if ref_pos is not None:
+            best, best_d2 = None, None
+            for d in containers:
+                d2 = ((d.x - ref_pos[0]) ** 2
+                      + (d.y - ref_pos[1]) ** 2
+                      + (d.z - ref_pos[2]) ** 2)
+                if d2 <= PREEXISTING_ASSOC_M ** 2 \
+                        and (best_d2 is None or d2 < best_d2):
+                    best, best_d2 = d, d2
+            if best is not None:
+                container = best
+                ref_note = " (container resolved ref-unique via scene graph)"
+        if container is None:
+            if len(containers) > 1:
+                return Verdict.in_progress(
+                    "re-observe; %d container candidates labelled %r — cannot "
+                    "tell which received the drop" % (len(containers), into_label))
+            container = containers[0]
+        objects = [d for d in obs.detections
+                   if d is not container
+                   and str(d.label).lower() == placed_object.lower()]
+        if not objects:
+            if _fp is not None:   # a deep container hides its inside
+                return Verdict.in_progress(
+                    "re-observe; the placed object (%r) is not observed after "
+                    "the drop (occluded or out of frame) — containment is not "
+                    "demonstrated (the inside of a deep container is mostly "
+                    "out of the camera's view)" % placed_object)
+            return Verdict.in_progress(
+                "re-observe; the placed object (%r) is not observed after "
+                "the drop (occluded or out of frame) — containment is not "
+                "demonstrated" % placed_object)
+        if len(objects) > 1:
+            return Verdict.in_progress(
+                "re-observe; %d candidates labelled %r after the drop — "
+                "cannot tell which was placed" % (len(objects), placed_object))
+        obj = objects[0]
+        dx = abs(obj.x - container.x)
+        dy = abs(obj.y - container.y)
+        dz = abs(obj.z - container.z)
+        in_region = dx <= CONTAINER_FIT_M and dy <= CONTAINER_FIT_M \
+            and dz <= CONTAINER_FIT_M
+        if _fp is not None:   # the footprint the place aimed into
+            _xc, _ny, _fy, _hx, _rz, _bz = _fp
+            in_region = (abs(obj.x - _xc) <= _hx - DEEP_FIT_MARGIN_M
+                         and _ny + DEEP_FIT_MARGIN_M <= obj.y
+                         <= _fy - DEEP_FIT_MARGIN_M
+                         and _bz - DEEP_BOT_BELOW_M <= obj.z
+                         <= _rz + DEEP_RIM_ABOVE_M)
+            ref_note += (" (deep container footprint x %.3f+-%.3f, y "
+                         "%.3f..%.3f, z %.3f..%.3f)"
+                         % (_xc, _hx - DEEP_FIT_MARGIN_M,
+                            _ny + DEEP_FIT_MARGIN_M, _fy - DEEP_FIT_MARGIN_M,
+                            _bz - DEEP_BOT_BELOW_M, _rz + DEEP_RIM_ABOVE_M))
+        # stationarity and pre-existing record: mirror of the navigate epoch
+        # guard, one per (container, object) key and scoped to the task
+        # execution
+        epoch = _parse_dropped_at(tool_result)
+        if epoch is None:
+            return Verdict.in_progress(
+                "re-observe; the place reply carries no dropped_at drop-"
+                "epoch annotation — the stationarity record cannot be "
+                "scoped to this task execution (a record without its epoch "
+                "cannot be safely re-anchored); cannot check containment")
+        key = (into_ref, into_label, placed_object)
+        rec = self._containment_record.get(key)
+        if rec is None or rec["epoch"] != epoch:
+            # a new task re-anchors on its epoch and its pre-drop snapshot,
+            # never on this post-drop frame
+            pre_state, pre_positions = _parse_predrop(tool_result)
+            self._containment_record[key] = rec = {
+                "epoch": epoch,
+                "preexisting_state": pre_state,   # 'known' | 'unknown'
+                "preexisting": pre_positions,     # pre-drop in-region positions
+                "prev_in_region": False,          # no in-region sighting yet
+                "first_ts": None,                 # first in-region det_ts
+                "has_outside": False,             # outside sighting = displacement
+            }
+        if not in_region:
+            # outside the region: record the displacement evidence; the
+            # in-region chain breaks anyway
+            rec["has_outside"] = True
+            rec["prev_in_region"] = False
+            return Verdict.in_progress(
+                "re-observe; the placed object (%r) projects OUTSIDE "
+                "container %r region (±%.2f m around (%.3f, %.3f, %.3f); "
+                "measured offsets dx=%.3f dy=%.3f dz=%.3f m)%s — the drop "
+                "may still be settling or may have missed the container; "
+                "cannot confirm containment"
+                % (placed_object, into_label, CONTAINER_FIT_M,
+                   container.x, container.y, container.z, dx, dy, dz,
+                   ref_note))
+        if rec["prev_in_region"] is not True:
+            # first in-region frame: note it and stay in_progress, since one
+            # frame proves nothing
+            rec["first_ts"] = det_ts
+            rec["prev_in_region"] = True
+            return Verdict.in_progress(
+                "re-observe; first post-drop observation of this drop "
+                "(dropped_at=%.6f) recorded: %r detected INSIDE container "
+                "%r region (offsets dx=%.3f dy=%.3f dz=%.3f m, within "
+                "CONTAINER_FIT_M=%.2f m)%s — one observation never "
+                "certifies: at this point the object is indistinguishable "
+                "from one that was already in the container (no refs on "
+                "detections); re-observe on the next turn — a SECOND "
+                "consecutive in-region observation within "
+                "RE_OBSERVE_WINDOW_S=%.1f s showing the object as a NEW "
+                "arrival (a position change or an object that was not "
+                "there before) is required before success"
+                % (epoch, placed_object, into_label, dx, dy, dz,
+                   CONTAINER_FIT_M, ref_note, RE_OBSERVE_WINDOW_S))
+        # the pair needs a distinct newer frame within the window, else
+        # re-anchor
+        first_ts = rec["first_ts"]
+        if first_ts is None or det_ts <= first_ts \
+                or (det_ts - first_ts) > RE_OBSERVE_WINDOW_S:
+            rec["first_ts"] = det_ts  # re-anchor the pair here instead
+            return Verdict.in_progress(
+                "re-observe; %r detected INSIDE container %r region "
+                "(offsets dx=%.3f dy=%.3f dz=%.3f m, within "
+                "CONTAINER_FIT_M=%.2f m)%s — the previous in-region "
+                "observation does not pair with this one (not a distinct "
+                "newer frame within RE_OBSERVE_WINDOW_S=%.1f s of the "
+                "first); the stationarity pair re-anchors on this frame; "
+                "re-observe on the next turn"
+                % (placed_object, into_label, dx, dy, dz, CONTAINER_FIT_M,
+                   ref_note, RE_OBSERVE_WINDOW_S))
+        # the object must be a new arrival against the pre-drop set, else an
+        # unchanged object would certify
+        preexisting = rec["preexisting"]
+        if rec["preexisting_state"] == "known" and preexisting:
+            min_d2 = min((obj.x - px) ** 2 + (obj.y - py) ** 2
+                         + (obj.z - pz) ** 2
+                         for (px, py, pz) in preexisting)
+            if min_d2 <= PREEXISTING_ASSOC_M ** 2:
+                return Verdict.in_progress(
+                    "re-observe; the in-region object matches a same-label "
+                    "object that was ALREADY inside container %r region in "
+                    "the PRE-DROP observation (within PREEXISTING_ASSOC_M="
+                    "%.2f m of a pre-existing position)%s — the only "
+                    "in-region evidence is consistent with an object that "
+                    "was already there, so the drop cannot be certified "
+                    "(no refs on detections; a re-place or a position "
+                    "change is required before success)"
+                    % (into_label, PREEXISTING_ASSOC_M, ref_note))
+            moved = (" the in-region object's position is OUTSIDE "
+                     "PREEXISTING_ASSOC_M of every pre-drop in-region "
+                     "position (displacement %.3f m) — a new arrival "
+                     "relative to the pre-drop contents"
+                     % math.sqrt(min_d2))
+        elif rec["preexisting_state"] == "known":
+            moved = (" the PRE-DROP observation showed NO same-label "
+                     "object inside the container region — a new arrival")
+        elif rec["has_outside"]:
+            moved = (" no pre-drop observation was available, but the "
+                     "object was observed OUTSIDE the container region at "
+                     "least once during this task before settling "
+                     "in-region — displacement evidence names it a new "
+                     "arrival")
+        else:
+            return Verdict.in_progress(
+                "re-observe; no PRE-DROP observation was available to name "
+                "the container's pre-existing contents (predrop_state=unknown) "
+                "and the placed object (%r) was never observed OUTSIDE "
+                "container %r region during this task — the in-region "
+                "evidence is consistent with an object that was already "
+                "there, so the drop cannot be certified; re-observe (a "
+                "sighting outside the region, then two agreeing in-region "
+                "observations, is required before success)"
+                % (placed_object, into_label))
+        return Verdict.success(
+            "drop DONE, %s; hold evidence: "
+            "%s — containment: %r projected INSIDE container %r "
+            "region on TWO CONSECUTIVE fresh post-drop observations of "
+            "this drop (dropped_at=%.6f; offsets dx=%.3f dy=%.3f dz=%.3f "
+            "m, within CONTAINER_FIT_M=%.2f m);%s%s — the object was "
+            "observed in-region across two frames within "
+            "RE_OBSERVE_WINDOW_S, so a still-settling or in-flight object "
+            "cannot read success (the drop is confirmed as landed in the "
+            "container region, not merely passed through it)"
+            % (open_evidence, hold_evidence, placed_object, into_label, epoch,
+               dx, dy, dz, CONTAINER_FIT_M, ref_note, moved))
+
+    # -- navigate: did it actually get there? --------------------------------
+
