@@ -923,3 +923,21 @@ class MockGatewayBackend(GatewayBackend):
     def place(self, args: dict) -> dict:
         return self._result("place", args)
 
+    def navigate(self, args: dict) -> dict:
+        return self._result("navigate", args)
+
+    def turn_around(self, args: dict) -> dict:
+        """Laptop parity for the sweep verb (no motion here; the mock says
+        what it is).  Mirrors navigate."""
+        return self._result("turn_around", args)
+
+    def return_home(self, args: Optional[dict] = None) -> dict:
+        """B8l laptop parity (no motion here).  Mirrors navigate."""
+        return self._result("return_home", args or {})
+
+    def open_hand(self, args: dict) -> dict:
+        return self._result("open_hand", args)
+
+    def close_hand(self, args: dict) -> dict:
+        return self._result("close_hand", args)
+
