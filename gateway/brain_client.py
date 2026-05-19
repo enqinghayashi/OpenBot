@@ -886,3 +886,40 @@ class MockGatewayBackend(GatewayBackend):
     brain/agent/tools.py so the laptop agent runs entirely offline.
     """
 
+    def __init__(
+        self,
+        detections: Optional[List[Any]] = None,
+        fresh: bool = True,
+        detections_ts: Optional[float] = None,
+        scripted: Optional[Dict[str, dict]] = None,
+    ) -> None:
+        self._detections = list(detections or [])
+        self._fresh = bool(fresh)
+        self._detections_ts = (
+            detections_ts if detections_ts is not None else time.time()
+        )
+        self._scripted = dict(scripted or {})
+
+    def observe(self) -> Any:
+        from brain.observation import WorldObservation  # imported lazily
+
+        return WorldObservation(
+            detections=list(self._detections),
+            detections_ts=self._detections_ts,
+            fresh=self._fresh,
+        )
+
+    def _result(self, name: str, args: dict) -> dict:
+        scripted = self._scripted.get(name)
+        if scripted is not None:
+            return dict(scripted)
+        return ok(
+            f"DONE mock {name} (scripted default; the laptop has no robot)"
+        )
+
+    def pick(self, args: dict) -> dict:
+        return self._result("pick", args)
+
+    def place(self, args: dict) -> dict:
+        return self._result("place", args)
+
