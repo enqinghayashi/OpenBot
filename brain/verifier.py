@@ -2344,3 +2344,93 @@ class SkillVerifier:
 
     # -- open_hand: is the hand measured open? -------------------------------
 
+    def verify_open_hand(self, contract, obs, tool_result: str,
+                         now: float | None = None) -> Verdict:
+        """Post-condition: grip open — the MEASURED hand state, never
+        command-inference.
+
+        MEASURED OPEN (world-truth round 3 fix 3 + round 4/5): the open
+        itself clears the close verdicts, so post contact==False is
+        GUARANTEED and proves nothing.  Success requires the post state read
+        FRESH (within GRIP_STATE_MAX_AGE_S), the hand MEASURED-OPEN (joints
+        at the CAUSAL measured-open reference — per side it forms ONLY from
+        reads taken after a gateway-dispatched open command for that side,
+        via a double-read agreement; is_open True) and NO literal contact
+        verdict on file (grip.contact True = a close_adaptive DONE:contact
+        still folded — the hand was holding at that close).  A still-folded
+        literal contact is a failure; a stale read, an offline grip, or NO
+        reference yet (no open command dispatched for the side, or the
+        double-read hasn't completed — the verifying read is the FIRST of
+        the two, so one re-observe confirms) is in_progress 're-observe'.
+        A measured-open read on an open-commanded hand is a REAL
+        confirmation path.  The pre-open prev_contact annotations are
+        INFORMATIONAL ONLY.
+
+        BOTH HANDS (fix 5): an open_both (sides=both) verifies the LEFT hand
+        independently (left_available True + left state read fresh +
+        left_contact not True + left measured-open); an unobserved, offline
+        or unmeasurable left state is in_progress, never success — world
+        truth runs on the left side as well.
+        """
+        now = time.time() if now is None else now
+        kind, detail = _classify_reply(tool_result)
+        verdict = _guard_reply(kind, detail)
+        if verdict is not None:
+            return verdict
+        if kind in ("contact", "full"):
+            return Verdict.failure(
+                f"hand not open: close_adaptive reported {kind}", f"close_adaptive {kind}")
+        sides = _parse_sides(tool_result) or "right"
+        grip = _grip(obs)
+        if grip is None:
+            available = _state_available(detail)
+            if available is False:
+                return Verdict.in_progress(
+                    "re-observe; grip offline (state reply available=False)")
+            return Verdict.in_progress(
+                "re-observe; grip state missing (state reply carries no contact)")
+        if not _ts_fresh(getattr(grip, "stale_ts", None), now):
+            return Verdict.in_progress(
+                "re-observe; grip state read stale (older than "
+                "GRIP_STATE_MAX_AGE_S) — cannot confirm the open")
+        if not grip.available:
+            return Verdict.in_progress(
+                "re-observe; grip offline (state [side] available=False)")
+        if grip.contact is True:
+            return Verdict.failure(
+                "hand still holding (literal close_adaptive contact verdict "
+                "on file after open)", "still holding after open")
+        if grip.is_open is not True:
+            return Verdict.in_progress(
+                "re-observe; hand not measured-open (is_open=%s — no "
+                "trusted measured-open reference yet or joints away from "
+                "it); cannot confirm the open" % grip.is_open)
+        if sides == "both":
+            left_available = getattr(grip, "left_available", None)
+            left_stale_ts = getattr(grip, "left_stale_ts", None)
+            left_is_open = getattr(grip, "left_is_open", None)
+            left_contact = getattr(grip, "left_contact", None)
+            if left_available is not True:
+                return Verdict.in_progress(
+                    "re-observe; left grip offline (left_available=%s) — "
+                    "open_both cannot be confirmed" % left_available)
+            if not _ts_fresh(left_stale_ts, now):
+                return Verdict.in_progress(
+                    "re-observe; left grip state read stale — open_both "
+                    "cannot be confirmed")
+            if left_contact is True:
+                return Verdict.failure(
+                    "left hand still holding after open_both (literal "
+                    "close_adaptive contact verdict on file for the left "
+                    "hand)", "left still holding after open")
+            if left_is_open is not True:
+                return Verdict.in_progress(
+                    "re-observe; left hand not measured-open (left_is_open=%s) "
+                    "— open_both cannot be confirmed" % left_is_open)
+            return Verdict.success(
+                "grip measured-open, no literal contact verdict on either hand")
+        return Verdict.success(
+            "grip measured-open, no literal contact verdict on file")
+
+    # -- close_hand: did it really close on something? -----------------------
+
