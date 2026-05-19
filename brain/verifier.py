@@ -1494,3 +1494,12 @@ class SkillVerifier:
         self._nav_last_success_epoch = 0.0
         self._containment_record = {}
 
+    def last_confirmed_epoch(self) -> float:
+        """The navigate dispatch epoch this instance confirmed (0.0 = none).
+
+        The gateway reads this from its ONE persistent SkillVerifier so the
+        navigate reuse gate can force a fresh epoch after a confirmed arrival
+        (fix spec A-e).
+        """
+        return self._nav_last_success_epoch
+
