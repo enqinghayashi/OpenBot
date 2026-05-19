@@ -1480,3 +1480,12 @@ class SkillVerifier:
     (the gateway keeps a single SkillVerifier).
     """
 
+    def __init__(self, silence_means_empty: bool = True) -> None:
+        self._nav_last_success_epoch = 0.0
+        #: place-into record: mirror of the navigate epoch guard, keyed by
+        #: (into_ref, into_label, placed_object) and scoped to the drop epoch,
+        #: so one task never pairs with another
+        self._containment_record: dict = {}
+        #: silence switch: True means an empty detection set is confirmable
+        self.silence_means_empty = silence_means_empty
+
