@@ -2212,3 +2212,135 @@ class SkillVerifier:
 
     # -- navigate: did it actually get there? --------------------------------
 
+    def verify_navigate(self, contract, obs, tool_result: str,
+                        now: float | None = None) -> Verdict:
+        """Post-condition: robot at target — walk_status == REACHED ONLY,
+        confirmed within the DISPATCH EPOCH (the NAVIGATE EPOCH GATE).
+
+        NEVER odom distance: /unitree/slam_mapping/odom does NOT exist on
+        Stuart. The gateway stamps ``nav_epoch`` on each /walk_go publish and
+        annotates the tool result with NAV_EPOCH, NAV_LABEL (the requested
+        target), LATEST_WALK_TS (latest walk_status message time) and
+        PHASES_SEEN (phases observed with ts >= epoch). Success requires ALL
+        of:
+          (a) nav_epoch parsed from the tool result;
+          (b) latest walk_status ts >= nav_epoch (the FSM reacted to THIS
+              dispatch — not a pre-dispatch snapshot);
+          (c) walk_status phase == REACHED;
+          (d) at least one NON-REACHED phase (SEARCHING/APPROACHING) observed
+              in this epoch — the transition guard that defeats a stale or
+              hold REACHED from a previous arrival (the FSM re-publishes
+              REACHED at 1 Hz for REACHED_HOLD_S = 5 s after arrival);
+          (e) this epoch was not already confirmed (no re-success on one
+              epoch);
+          (f) the walk_status payload label matches NAV_LABEL (fix 1): a
+              REACHED for a DIFFERENT label is a stale arrival of an earlier
+              target — mismatch -> in_progress 're-observe'.  Case-insensitive
+              (the FSM lowercases /walk_target labels).
+        Any miss -> in_progress with evidence 're-observe'. SEARCHING/
+        APPROACHING = still moving; IDLE is ambiguous (arrived-and-finished
+        vs never-started) -> in_progress, re-observe.
+
+        THE ONE TERMINAL NON-SUCCESS (C5, 2026-10-01): when the operator
+        cancelled the walk while it was running, this returns
+        ``failure(reason='cancelled_by_operator')`` — checked BEFORE every
+        epoch gate above, because a cancel clears the dispatch epoch.  It is
+        deliberately NOT in_progress: re-observe is an instruction to try
+        again, and the operator asked for the opposite.
+        """
+        kind, detail = _classify_reply(tool_result)
+        verdict = _guard_reply(kind, detail)
+        if verdict is not None:
+            return verdict
+        # terminal, checked before the epoch gates: a cancel clears the epoch,
+        # so every epoch-gated outcome would read in_progress
+        # failure with a reason is the honest status; the budget only acts on
+        # success and failure, so a fourth status would sit inert
+        if _walk_was_cancelled(tool_result):
+            return Verdict.failure(
+                "the operator cancelled this navigate while it was running — "
+                "the walk FSM was stopped and the target was NOT reached; "
+                "this was an intentional stop, not a failure to arrive. "
+                "Acknowledge it; it ended ONLY this navigate. Do not repeat "
+                "it on your own, but walk again (no permission needed) once the "
+                "operator gives a new instruction",
+                "cancelled_by_operator")
+        nav_epoch = _parse_nav_epoch(tool_result)
+        if nav_epoch is None:
+            return Verdict.in_progress(
+                "re-observe; navigate tool result carries no NAV_EPOCH — "
+                "cannot gate the verdict on the dispatch epoch")
+        # already at the target: REACHED standby, a fresh packet with no
+        # transition, so the live phase and label decide
+        if "WALK_WAIT=already_reached" in (tool_result or ""):
+            walk = getattr(obs, "walk", None) if obs is not None else None
+            phase = ((getattr(walk, "phase", None) or "") if walk else "").upper()
+            nav_label = _parse_nav_label(tool_result)
+            walk_label = (getattr(walk, "label", None) or "") if walk else ""
+            if phase == "REACHED" and (nav_label is None or
+                                       walk_label.strip().lower()
+                                       == nav_label.strip().lower()):
+                self._nav_last_success_epoch = nav_epoch
+                return Verdict.success(
+                    "already at the target: walk_status == REACHED standby on "
+                    "%r (no new walk was needed) — do NOT navigate again; "
+                    "go on with the next step (place / pick)" % (nav_label,))
+            return Verdict.in_progress(
+                "re-observe; gateway reported already_reached but the live "
+                "walk_status is %r on %r" % (phase, walk_label))
+        if nav_epoch > 0.0 and nav_epoch == self._nav_last_success_epoch:
+            return Verdict.in_progress(
+                "re-observe; dispatch epoch %.6f already confirmed — "
+                "refusing re-success on the same epoch" % nav_epoch)
+        latest_ts = _parse_latest_walk_ts(tool_result)
+        if latest_ts is None or latest_ts < nav_epoch:
+            return Verdict.in_progress(
+                "re-observe; no walk_status observed since dispatch epoch "
+                "%.6f (latest walk ts %.6f)"
+                % (nav_epoch, latest_ts if latest_ts is not None else 0.0))
+        phases_seen = _parse_phases_seen(tool_result)
+        if not phases_seen:
+            return Verdict.in_progress(
+                "re-observe; no walk phases observed in dispatch epoch %.6f"
+                % nav_epoch)
+        walk = getattr(obs, "walk", None) if obs is not None else None
+        if walk is None:
+            return Verdict.in_progress("re-observe; no walk_status")
+        phase = (walk.phase or "").upper()
+        if phase != "REACHED":
+            if phase in ("SEARCHING", "APPROACHING"):
+                return Verdict.in_progress(
+                    "re-observe; walk FSM still %s (epoch %.6f)"
+                    % (phase, nav_epoch))
+            if phase == "IDLE":
+                return Verdict.in_progress(
+                    "re-observe; walk FSM IDLE (REACHED not seen — ambiguous, "
+                    "epoch %.6f)" % nav_epoch)
+            return Verdict.in_progress(
+                "re-observe; unknown walk phase %r (epoch %.6f)"
+                % (phase, nav_epoch))
+        # REACHED, which means a SEARCHING/APPROACHING phase came first this epoch
+        if not any(p in ("SEARCHING", "APPROACHING") for p in phases_seen):
+            return Verdict.in_progress(
+                "re-observe; only REACHED observed in dispatch epoch %.6f — "
+                "stale/hold REACHED from a previous arrival (no transition "
+                "evidence; phases seen: %s)"
+                % (nav_epoch, ",".join(phases_seen)))
+        # the label must match the requested target; an absent NAV_LABEL skips
+        # the check
+        nav_label = _parse_nav_label(tool_result)
+        if nav_label is not None:
+            walk_label = getattr(walk, "label", None)
+            if (walk_label or "").strip().lower() != \
+                    (nav_label or "").strip().lower():
+                return Verdict.in_progress(
+                    "re-observe; walk_status payload label %r does not match "
+                    "the requested target %r (epoch %.6f)"
+                    % (walk_label, nav_label, nav_epoch))
+        self._nav_last_success_epoch = nav_epoch
+        return Verdict.success(
+            "walk_status == REACHED within dispatch epoch %.6f (transition "
+            "observed: %s)" % (nav_epoch, ",".join(phases_seen)))
+
+    # -- open_hand: is the hand measured open? -------------------------------
+
