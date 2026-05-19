@@ -1238,3 +1238,25 @@ def _grip_fresh(grip, now: float) -> bool:
     return _ts_fresh(getattr(grip, "stale_ts", None), now)
 
 
+def _resolve_target(contract) -> tuple[str | None, str | None]:
+    """Target hint from contract.context -> (label, ref); (None, None) if absent.
+
+    Conventions (context is free-form; hints separated by ';' or ','):
+      target=<ref>          scene-graph ref, e.g. 'target=bottle_3'
+      target_label=<label>  detection label, e.g. 'target_label=bottle'
+      label=<label>         alias of target_label
+    'target=' wins over label hints when both are present. Without a hint the
+    verifier cannot name the picked object, so 'object gone' is only
+    confirmable against an empty scene.
+    """
+    context = getattr(contract, "context", "") or ""
+    m = re.search(r"target\s*=\s*([A-Za-z0-9_.\-]+)", context)
+    if m:
+        return None, m.group(1)
+    m = re.search(r"target_label\s*=\s*([A-Za-z0-9_.\-]+)", context)
+    if m:
+        return m.group(1), None
+    m = re.search(r"(?<![A-Za-z0-9_])label\s*=\s*([A-Za-z0-9_.\-]+)", context)
+    if m:
+        return m.group(1), None
+    return None, None
