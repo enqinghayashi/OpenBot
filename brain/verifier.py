@@ -1236,3 +1236,5 @@ def _grip_fresh(grip, now: float) -> bool:
     if grip is None:
         return False
     return _ts_fresh(getattr(grip, "stale_ts", None), now)
+
+
