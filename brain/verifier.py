@@ -1328,3 +1328,5 @@ def _label_vocab_inactive(obs: WorldObservation | None,
                         and extra.strip().lower() in cands):
                     return False
     return True
+
+
