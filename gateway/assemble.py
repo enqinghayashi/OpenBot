@@ -276,3 +276,28 @@ def _joint_vector(mapping: dict) -> List[float]:
     return out
 
 
+def _measured_vector(actual) -> List[float]:
+    """The reply's ``actual`` mapping -> MEASURED vector, or ``[]``.
+
+    ``[]`` (unmeasurable) whenever ``actual`` is absent, not a mapping, has
+    no digit-keyed entry, or carries ANY non-numeric / bool / non-finite
+    value — a partially-readable measurement is no measurement (a NaN
+    passes every abs-delta test in is_open, the exact false-pass the grip
+    server's own NaN guard exists to prevent).  Never faked from the
+    commanded values.
+    """
+    if not isinstance(actual, dict):
+        return []
+    keys = [k for k in actual.keys() if isinstance(k, str) and k.isdigit()]
+    if not keys:
+        return []
+    out: List[float] = []
+    for key in sorted(keys, key=int):
+        value = actual[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return []
+        q = float(value)
+        if not math.isfinite(q):
+            return []
+        out.append(q)
+    return out
