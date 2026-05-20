@@ -966,3 +966,43 @@ class MockGatewayBackend(GatewayBackend):
         """The laptop has no camera — always None (honest no-source)."""
         return None
 
+    def resolve_ref(self, args: dict) -> dict:
+        return self._result("resolve_ref", args)
+
+    def scene_brief(self, args: dict) -> dict:
+        return self._result("scene_brief", args)
+
+    def yolo_classes(self, args: dict) -> dict:
+        """Laptop parity for the vocabulary verb.  There is no yolo node
+        here, so the default NEVER says 'applied': it says the request was
+        not confirmed.  A test that needs an applied reply scripts it."""
+        scripted = self._scripted.get("yolo_classes")
+        if scripted is not None:
+            return dict(scripted)
+        return ok("DONE:requested seq=1 (unconfirmed: mock)")
+
+
+# --- the config seam -----------------------------------------------------------
+
+
+def backend_from_config(cfg: Any) -> Any:
+    """Build the GatewayBackend the ``gateway:`` config segment demands.
+
+    ``gateway.transport`` 'mock' -> :class:`MockGatewayBackend` (laptop,
+    fully offline); 'real' -> :class:`GatewayCallerBackend` wired to
+    ``gateway.host`` / ``gateway.port`` — the gateway node's tools server
+    (refuses a placeholder host with :class:`ConfigError`); any OTHER
+    transport value raises :class:`ConfigError` — never guess a
+    transport.  The gateway node OWNS the writer/grip/engine sockets;
+    this client never touches them.  This is the documented seam the
+    deploy kit / agent lane uses to pick the transport.
+    """
+    gateway = getattr(cfg, "gateway", None)
+    transport = str(getattr(gateway, "transport", "mock") or "mock").strip().lower()
+    if transport == "mock":
+        return MockGatewayBackend()
+    if transport == "real":
+        return GatewayCallerBackend.from_config(cfg)
+    raise ConfigError(
+        "gateway.transport must be 'mock' or 'real', got %r" % transport
+    )
