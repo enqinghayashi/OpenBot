@@ -347,3 +347,24 @@ def parse_grip_line(line: str) -> Dict[str, GripState]:
     return states
 
 
+def parse_walk_status(payload: dict, ts: float = 0.0) -> Optional[WalkStatus]:
+    """Normalize a ``/walk_status`` payload dict -> ``WalkStatus``.
+
+    The walk node publishes ``{"state": <phase>, "label": ..., "detail": ...}``
+    JSON (the payload carries NO timestamp — the caller stamps ``ts`` on
+    arrival; the gateway does exactly that). DETECTED is a vocabulary event
+    inside SEARCHING (see ``WALK_STATE_MAP``); any other state string passes
+    through as-is.  The payload ``label`` is captured so the navigate
+    verifier can reject a REACHED whose label does not match the requested
+    target (fix 1).
+    """
+    if not isinstance(payload, dict):
+        return None
+    state = payload.get("state")
+    if not isinstance(state, str) or not state:
+        return None
+    label = payload.get("label")
+    if label is not None and not isinstance(label, str):
+        label = None
+    return WalkStatus(phase=WALK_STATE_MAP.get(state, state),
+                      label=label, ts=ts)
