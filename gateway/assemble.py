@@ -1,0 +1,174 @@
+"""assemble.py — pure-stdlib assembly of raw skill payloads into WorldObservation.
+
+Turns the raw payload dicts the skill lane produces (detections rows on
+``/object_detections_body``, the grip server's ``state`` reply line, the
+walk node's ``/walk_status`` JSON) into the shared ``brain.observation``
+dataclasses. No IO, no third-party imports, laptop-testable.
+
+Freshness model (event-driven perception):
+* every detections packet is timestamped on arrival; a packet (even an empty
+  list) marks the scene as freshly observed;
+* every ``/walk_status`` packet is timestamped on arrival too, and the walk
+  frame is DROPPED (``walk=None``) once it is older than
+  ``walk_max_stale_s`` — a latched phase must never be reported as current;
+* silence == empty scene (WHEN ``silence_means_empty`` is True — the shipped
+  profile, see below): ``detections`` stays at the last known rows (or
+  ``[]``), but ``fresh`` flips to False once ``max_stale_s`` has passed
+  without any packet;
+* a scene never observed at all is ``fresh=False`` with ``detections=[]``.
+
+SILENCE SWITCH (world-truth round 5): ``silence_means_empty`` (constructor
+param, default True — the shipped profile MUST have True, from
+``embodiment.perception.silence_means_empty``) is the switch behind the
+silence semantics:
+  True  — a live channel's empty last packet IS an empty scene (target-gone
+          is confirmable), and a channel that is silent forever (never
+          spoke, or beyond the liveness window) is a DEAD node, not an
+          empty scene — :meth:`Assembler.detections_alive` is exactly that
+          liveness signal (generous window, distinct from packet
+          freshness);
+  False — silence/emptiness is NOT empty-scene evidence: consumers (the
+          verifier's target-gone path, wired from the same config) must
+          treat a quiet scene as unconfirmable, never as a confirmed empty
+          scene.
+
+DETECTIONS FRAME (world-truth round 5, ``embodiment.perception.frame``):
+detections arrive in the frame named by the config ('torso' on Stuart):
+x = lateral RIGHT, y = forward, z = up (metres).  The same right-handed
+frame governs the writer's ``cmd_set <vx> <vy> <omega>`` sign convention:
+positive omega is the left-hand rule about +z (counter-clockwise seen from
+above, yaw toward +x); a negative target x requires a positive omega, etc.
+The gateway serves this mapping from the config value (see
+gateway/gateway_node.py ``resolve_embodiment_config``); this module
+documents it.
+
+Grip semantics: the grip server does NOT auto-verify. ``contact`` is ONLY
+the literal ``close_adaptive`` verdict (DONE:contact): the caller records the
+verdict with ``Assembler.note_close_result`` and the next ``GripState`` folds
+it in for ``contact_window_s``, exposing the verdict's own timestamp as
+``contact_ts`` so stale folds can be aged by their own window.  CONTACT LAW
+(world-truth round 4): contact is NEVER derived from joints — the deployed
+grip_server ``_state_payload`` emits, per side, the last COMMANDED q as
+top-level per-joint keys (``last_q``), the MEASURED motor q under the
+``actual`` mapping (OMITTED — never faked from ``last_q`` — when the dex3
+lane has no state; skills/arm/grip_server.py:1036-1048) + the per-side
+``available`` flag (the dex3 hand-state/DDS lane-health probe), and there is
+NO literal hand-state contact field in the state reply.  A hand closed at boot can match
+a wrong first-read reference, so a ``not is_open`` derivation would claim
+contact for an EMPTY closed hand — that derivation is REMOVED.
+
+MEASURED SPACE (round 7 — the confirmed HIGH): ``GripState.joints`` is the
+``actual`` vector (joint-id order 0..6; EMPTY when the reply carries no
+usable ``actual``) and ``GripState.commanded`` the top-level ``last_q``
+vector.  ``is_open``, ``_agree``, ``_update_open_ref`` and the observation
+fold all operate on ``joints`` — measured space, exactly what their
+docstrings below say.  Judging ``last_q`` instead 'would pass
+unconditionally' (the grip server's own words): a latched motor (mode 0)
+stays closed while ``last_q`` advances to the open preset, so the commanded
+vector would verify a release that never happened.  With ``actual`` absent
+the hand is UNMEASURABLE: no reference can form from it, and ``is_open`` is
+None (no reference) or False — never True.
+
+World-truth round 4 (fixes 1-2):
+
+GRIP STATE AGING: every successful ``state`` reply stamps a per-side
+``last_state_ts``. A GripState whose read is older than ``GRIP_STATE_MAX_AGE_S``
+(5.0 s), or whose read errored (``Assembler.note_grip_read_error`` or an
+``ERROR:``/malformed state line), is reported with ``available=False`` and
+``stale_ts=last_state_ts`` — a daemon'd grip keeps its last good
+``available=True`` forever no more. The error is superseded by the next
+successful read (the ts comparison ``error_ts > last_read_ts`` decides).
+
+World-truth round 5 (fix 1) — OPEN REFERENCE IS CAUSAL (the round-4
+boot-window path is DELETED):
+
+Per side, ``open_joints_ref(side)`` is the measured shape the hand takes
+when COMMANDED open — the reference forms ONLY from state reads taken AFTER
+a gateway-dispatched open command for that side (``note_open_commanded``:
+open / open_left / open_both, or a successful drop which opens both hands).
+TWO CONSECUTIVE agreeing reads (within ``OPEN_JOINT_TOLERANCE``), both
+taken in that post-open context, define the reference.  The round-4 BOOT
+WINDOW is gone: boot reads carry NO semantic guarantee (the robot can boot
+mid-grasp or power down mid-task with the hands closed — two agreeing boot
+reads on a closed shape would make the closed shape the 'open' reference
+and a closed hand would verify 'open' — the round-5 finding).  Without an
+open command, NO read — however agreeing — ever forms a reference.
+``note_hand_command`` (a pick/close for that side) ends the side's
+open-trust: reads after it no longer qualify until the next open command.
+The reference is UPDATED only from a NEW post-open qualifying agreement
+that is within tolerance of the current reference (drift: servo settling /
+thermal drift) or when the reference is None (formation); a far or
+untrusted read never moves it.
+
+``is_open(side, joints)`` = reference exists AND max joint delta <
+``OPEN_JOINT_TOLERANCE``; None (unknown) while no reference exists — open
+and place verification answer in_progress 're-observe'.  FIRST OPEN OF A
+SESSION: the verifying ``state`` read after the open command is the FIRST of
+the two required reads; the second agreeing read arrives on the next
+re-observe (one re-observe confirms — the natural workflow
+``open -> verify -> (re-observe) -> pick -> drop -> place`` makes the path
+real).
+
+``OPEN_JOINT_TOLERANCE`` is 0.35 rad, a measured-space tolerance, NOT a
+preset guess — the open/closed presets differ by up to ~2.4 rad on joints
+3-6, so 0.35 rad cleanly separates them while tolerating servo noise.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import time
+from dataclasses import replace
+from typing import Dict, List, Optional
+
+from brain.observation import (
+    Detection,
+    GripState,
+    WalkStatus,
+    WorldObservation,
+    _opt_body_side,
+    _opt_color_name,
+    _opt_hue, _opt_instance_id,
+)
+
+#: stale after this.
+MAX_STALE_S = 5.0
+#: walk frame dropped past this, not aged.
+#: NOT MAX_STALE_S: worst live gap is
+#: 5.0 + 1.047 + 0.3 ~= 6.35 s
+#: (skills/locomotion/walk_node.py), so 5.0 s
+#: would report a live search as dead.
+#: APPROACHING heartbeats 5.0 s, REACHED 1 Hz.
+#: 15.0 = >2x the worst gap; see
+#: docs/STOP-KILLS-TASK-DESIGN.md section 3 C2.
+WALK_MAX_STALE_S = 15.0
+#: liveness window for detections_alive:
+#: ever spoke = alive, even when quiet.
+DETECTIONS_ALIVE_S = 10.0
+#: how long a close verdict counts as contact.
+CLOSE_CONTACT_WINDOW_S = 15.0
+#: max age of a grip state read.
+#: older -> available=False, stale_ts = last good.
+#: polled every verify/observe, so only a dead
+#: grip ages out.
+GRIP_STATE_MAX_AGE_S = 5.0
+#: measured-open tolerance (rad). NOT a preset
+#: guess: presets differ by ~2.4 rad on the
+#: fingers, so 0.35 separates them and absorbs
+#: servo drift.
+OPEN_JOINT_TOLERANCE = 0.35
+#: a reference must be an open shape. Dex3
+#: closed preset: joints 5/6 at ~1.4-1.7 rad,
+#: open at ~0.0-0.2; above this bound = closed.
+#: MEASURED: place parks the hand CLOSED after
+#: release, side already open-commanded, and two
+#: agreeing closed reads (1.54/1.71) became the
+#: "open" reference - every later closed read
+#: said is_open=True, the open hand False.
+OPEN_REF_MAX_FINGER_RAD = 1.0
+#: non-phase /walk_status events. DETECTED
+#: fires once per hold entry -> SEARCHING.
+WALK_STATE_MAP = {"DETECTED": "SEARCHING"}
+
+
