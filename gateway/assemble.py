@@ -274,3 +274,5 @@ def _joint_vector(mapping: dict) -> List[float]:
         except (TypeError, ValueError):
             continue
     return out
+
+
