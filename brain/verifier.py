@@ -2584,3 +2584,87 @@ class SkillVerifier:
             "reported, NOT sensor-measured — no posture sensor exists)"
             % ("+".join(reported), named[0]))
 
+    def verify_turn_around(self, contract, obs, tool_result: str,
+                           now: float | None = None) -> Verdict:
+        """Post-condition: the sweep ran and the person was CENTRED.
+
+        BATCH-2 UPDATE (TURN interface): the gateway verb now blocks, sweeps
+        for the label, stops, then rotates in place (omega only) until the
+        detection bearing is ~0, and replies 'DONE turn_around: ... ;
+        TURN_RESULT=centred' ONLY for a verified centring (every other
+        outcome leads 'ERROR:turn_around').  Success therefore requires the
+        DONE prefix AND the TURN_RESULT=centred token.  The historical notes
+        below describe the pre-batch-2 fire-and-forget sweep.
+
+        READ THIS BEFORE STRENGTHENING THE SUCCESS PATH.
+
+        turn_around is NOT navigate, and it must never borrow navigate's
+        verdict.  verify_navigate requires walk_status == REACHED inside the
+        dispatch epoch; a turn-around sweep NEVER produces REACHED, by
+        design — the FSM's _phase_hold stops the sweep on first sight and
+        deliberately never approaches (skills/locomotion/walk_node.py
+        _phase_hold, the DETECTED hold).  Gating on REACHED would answer
+        in_progress forever and burn the model's budget on a task that had
+        already succeeded.
+
+        There is also NO epoch to gate on, unlike navigate.  The gateway's
+        reply carries no NAV_EPOCH / PHASES_SEEN annotation (gateway_node's
+        _do_turn_around returns the DONE line alone), and obs.walk carries
+        only the LATEST phase — so a 'SEARCHING' seen here cannot be
+        distinguished from a SEARCHING that predates this dispatch.
+        Requiring a fresh phase WITHOUT an epoch is exactly the stale-arrival
+        false success that navigate's (b)/(d) gates exist to defeat, and
+        false-success is the worse error, so this verifier does not attempt
+        it.  Adding an epoch to the turn_around reply is the prerequisite for
+        ever tightening this.
+
+        What it therefore certifies, and nothing more: the gateway accepted
+        the verb and published the label on /walk_target.  Whether anyone is
+        in view is NOT verified here and is never claimed — the FSM reports
+        that later on /walk_status as DETECTED, which no tool result carries.
+
+        What it refuses:
+          - any non-DONE reply (the shared prologue: ERROR -> failure);
+          - a bare 'DONE' that does not name the sweep — it certifies that
+            SOME command succeeded, not that a sweep was published.
+        """
+        kind, detail = _classify_reply(tool_result)
+        verdict = _guard_reply(kind, detail)
+        if verdict is not None:
+            return verdict
+        first = ""
+        if tool_result is not None and tool_result.strip():
+            first = tool_result.strip().splitlines()[0].strip()
+        # lazy import again, same cycle; the constant is the single source of
+        # truth
+        try:
+            from gateway.brain_client import TURN_AROUND_DONE_PREFIX
+        except Exception as exc:  # pragma: no cover - import environment only
+            return Verdict.in_progress(
+                "re-observe; cannot reach the turn_around reply vocabulary "
+                "(%s) — refusing to certify a sweep against a shape I cannot "
+                "check" % exc.__class__.__name__)
+        # centring needs the DONE prefix and the TURN_RESULT=centred token; this
+        # check runs first, and the prefix gate below stays the guard for a reply
+        # that names no sweep
+        if (first.startswith(TURN_AROUND_DONE_PREFIX)
+                and _TURN_CENTRED_RE.search(first) is None):
+            return Verdict.in_progress(
+                "re-observe; turn_around reply does not carry "
+                "TURN_RESULT=centred (%r) — the person was not verified "
+                "centred in the frame" % first[:160])
+        if not first.startswith(TURN_AROUND_DONE_PREFIX):
+            return Verdict.in_progress(
+                "re-observe; turn_around reply %r does not name the sweep "
+                "(expected one starting %r) — a reply that does not name the "
+                "sweep certifies no sweep was published"
+                % (first[:120], TURN_AROUND_DONE_PREFIX))
+        return Verdict.success(
+            "gateway reported %r — the robot turned in place and the gateway "
+            "rotated it until the target sat at the centre of the camera "
+            "frame, then stopped (no walking; the bearing is gateway-measured "
+            "from /object_detections_body; gateway-reported, NOT "
+            "sensor-measured by any body-pose sensor; /walk_status was not "
+            "consulted)"
+            % first)
+
