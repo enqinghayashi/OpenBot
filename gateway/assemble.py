@@ -370,3 +370,11 @@ def parse_walk_status(payload: dict, ts: float = 0.0) -> Optional[WalkStatus]:
                       label=label, ts=ts)
 
 
+class Assembler:
+    """Stateful, pure-stdlib assembler of skill payloads -> WorldObservation.
+
+    The gateway node keeps one instance and feeds it every packet it sees;
+    ``observation()`` is called on every poll (even silent ones) so the
+    ``fresh`` flag always reflects the current gap since the last packet.
+    """
+
