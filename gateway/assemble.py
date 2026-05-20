@@ -368,3 +368,5 @@ def parse_walk_status(payload: dict, ts: float = 0.0) -> Optional[WalkStatus]:
         label = None
     return WalkStatus(phase=WALK_STATE_MAP.get(state, state),
                       label=label, ts=ts)
+
+
