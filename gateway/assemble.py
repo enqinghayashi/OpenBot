@@ -172,3 +172,89 @@ OPEN_REF_MAX_FINGER_RAD = 1.0
 WALK_STATE_MAP = {"DETECTED": "SEARCHING"}
 
 
+def parse_detections(rows: List[dict], now: float) -> List[Detection]:
+    """Normalize raw detection rows into ``Detection`` objects.
+
+    Rows are the torso-frame payload of ``/object_detections_body``:
+    ``{label, conf, x, y, z, orientation, ...}`` with x = lateral right,
+    y = forward, z = height above the torso link (all metres).
+    Malformed rows (missing label or non-numeric x/y/z) are dropped —
+    perception emits well-formed rows, so a malformed one must not poison
+    the verifier with NaNs.
+
+    ORIENTATION (fix 2026-09-07): the depth projector emits the grasp
+    approach ``orientation`` ('upright' | 'horizontal') for every row.  It
+    is CARRIED onto the Detection (previously dropped, so a lying bottle
+    defaulted to the upright approach upstream).  Absent/unknown values
+    default to 'upright' (the safe/legacy approach) — never a guess.
+    Optional object extents ``width_m`` / ``height_m`` are carried through
+    when present; a non-numeric extent is dropped to None (informational,
+    not a position).
+
+    Optional perception colour + body-side semantics are carried through
+    too: ``hue`` (degrees 0-360), ``color_name`` (colour band) and
+    ``body_side`` ('left' | 'right') are read off each row so the model's
+    scene prose can distinguish e.g. the red cup on the left from the green
+    cup on the right.  ``frame_side`` (display-only) is DROPPED.  A
+    malformed value parses to None (informational, not a position).
+
+    NaN/Inf rows are DROPPED (world-truth round 2, fix 8): a NaN z would
+    silently bypass the tabletop floor refusal (NaN < -0.35 is False) and a
+    non-finite position is not a world state.  Dropping cannot fabricate —
+    the row simply does not exist in the scene.  A non-finite ``conf``
+    coerces to 0.0 (confidence, not a position — no phantom-object risk).
+    """
+    out: List[Detection] = []
+    for row in rows:
+        try:
+            label = str(row["label"])
+            x = float(row["x"])
+            y = float(row["y"])
+            z = float(row["z"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
+            continue  # non-finite row: can't invent a position
+        try:
+            conf = float(row.get("conf", 0.0))
+        except (TypeError, ValueError):
+            conf = 0.0
+        if not math.isfinite(conf):
+            conf = 0.0
+        # absent/unknown -> safe upright approach.
+        raw_ori = row.get("orientation")
+        if isinstance(raw_ori, str) and raw_ori.strip().lower() in (
+            "upright", "horizontal"
+        ):
+            orientation = raw_ori.strip().lower()
+        else:
+            orientation = "upright"
+        width_m = height_m = None
+        for extent_key in ("width_m", "height_m"):
+            val = row.get(extent_key)
+            if val is None or isinstance(val, bool):
+                continue
+            try:
+                val = float(val)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(val):
+                if extent_key == "width_m":
+                    width_m = val
+                else:
+                    height_m = val
+        # colour + body side; frame_side is display-only.
+        # malformed -> None: colour is not a position.
+        hue = _opt_hue(row.get("hue"))
+        color_name = _opt_color_name(row.get("color_name"))
+        body_side = _opt_body_side(row.get("body_side"))
+        # optional track id (yolo + OPENBOT_INSTANCE_IDS=1).
+        # int >= 1 or None - never guessed.
+        instance_id = _opt_instance_id(row.get("instance_id"))
+        # ref is from the scene graph, never perception
+        out.append(Detection(label=label, x=x, y=y, z=z, conf=conf,
+                             ref=None, ts=now, orientation=orientation,
+                             width_m=width_m, height_m=height_m,
+                             hue=hue, color_name=color_name,
+                             body_side=body_side, instance_id=instance_id))
+    return out
