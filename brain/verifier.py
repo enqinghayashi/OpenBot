@@ -2668,3 +2668,17 @@ class SkillVerifier:
             "consulted)"
             % first)
 
+    def _close_fresh(self, obs, now: float) -> bool:
+        """The grip state read behind a close is FRESH and available.
+
+        All close_hand success paths require a fresh grip state read
+        (GRIP_STATE_MAX_AGE_S) — a dead/daemon'd grip lane can never
+        confirm (world-truth round 4, fix 2).
+        """
+        grip = _grip(obs)
+        if grip is None:
+            return False
+        if not grip.available:
+            return False
+        return _ts_fresh(getattr(grip, "stale_ts", None), now)
+
