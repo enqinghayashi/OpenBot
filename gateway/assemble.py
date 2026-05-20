@@ -260,3 +260,17 @@ def parse_detections(rows: List[dict], now: float) -> List[Detection]:
     return out
 
 
+def _joint_vector(mapping: dict) -> List[float]:
+    """Top-level per-joint keys -> commanded vector (joint-id order).
+
+    Non-digit keys (``available``, ``actual``, ``mode``, ``motorstate``)
+    never masquerade as joints; an unparseable value is skipped.
+    """
+    out: List[float] = []
+    for key in sorted((k for k in mapping.keys()
+                       if isinstance(k, str) and k.isdigit()), key=int):
+        try:
+            out.append(float(mapping[key]))
+        except (TypeError, ValueError):
+            continue
+    return out
