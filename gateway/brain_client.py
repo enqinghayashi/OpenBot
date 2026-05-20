@@ -941,3 +941,28 @@ class MockGatewayBackend(GatewayBackend):
     def close_hand(self, args: dict) -> dict:
         return self._result("close_hand", args)
 
+    def pose(self, args: dict) -> dict:
+        """Named pose.  No motion here, but the vocabulary IS enforced, so a
+        bad name fails on the laptop exactly as it would against the real
+        gateway instead of passing a mock and failing on the robot."""
+        name = str(args.get("name") or "").strip().lower()
+        if name not in POSE_ENGINE_VERBS:
+            return fail(
+                f"unknown pose {name!r}; valid: "
+                + ", ".join(sorted(POSE_ENGINE_VERBS))
+            )
+        return self._result("pose", args)
+
+    def query_user(self, args: dict) -> dict:
+        return self._result("query_user", args)
+
+    def notify_user(self, args: dict) -> dict:
+        return self._result("notify_user", args)
+
+    def stop(self, args: dict) -> dict:
+        return self._result("stop", args)
+
+    def capture_image(self) -> Optional[dict]:
+        """The laptop has no camera — always None (honest no-source)."""
+        return None
+
