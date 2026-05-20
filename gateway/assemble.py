@@ -303,3 +303,45 @@ def _measured_vector(actual) -> List[float]:
     return out
 
 
+def parse_grip_line(line: str) -> Dict[str, GripState]:
+    """Parse one grip-server ``state`` reply line -> per-side ``GripState``.
+
+    Reply grammar (skills/arm/grip_server.py ``_state_payload``):
+    ``DONE:<json>`` where the json is, for one or both sides,
+    ``{side: {"<jid>": last_q, ..., "available": bool,
+              "actual": {"<jid>": q, ...},      # OPTIONAL: measured motor q
+              "mode": {...}, "motorstate": {...}}}``   # OPTIONAL (B0.2)
+    The TOP-LEVEL digit keys are the last COMMANDED q (``controller.last_q``)
+    -> ``GripState.commanded``.  ``actual`` is the MEASURED motor q, present
+    whenever the Dex3 DDS lane has state and OMITTED otherwise — never faked
+    from ``last_q`` (grip_server.py:1036-1048: comparing against ``last_q``
+    'would pass unconditionally') -> ``GripState.joints``, ordered by joint
+    id; ``[]`` when ``actual`` is absent or malformed (see
+    :func:`_measured_vector`).  ``mode`` / ``motorstate`` are not read here.
+    ``ERROR:`` / malformed lines yield ``{}`` (grip unknown — never a guess).
+    ``contact`` is left False here; the caller folds the last
+    ``close_adaptive`` verdict in via :meth:`Assembler.note_close_result`.
+    CONTACT LAW (world-truth round 4): contact is NEVER derived from the
+    joints, and no hand-state field is read from the reply; there is no
+    literal hand-state contact in a state reply.
+    """
+    if not line.startswith("DONE:"):
+        return {}
+    try:
+        payload = json.loads(line[len("DONE:"):])
+    except (ValueError, TypeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    states: Dict[str, GripState] = {}
+    for side, data in payload.items():
+        if side not in ("right", "left") or not isinstance(data, dict):
+            continue
+        states[side] = GripState(
+            side=side,
+            joints=_measured_vector(data.get("actual")),
+            contact=False,
+            available=bool(data.get("available", False)),
+            commanded=_joint_vector(data),
+        )
+    return states
