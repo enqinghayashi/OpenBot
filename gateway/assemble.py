@@ -258,3 +258,5 @@ def parse_detections(rows: List[dict], now: float) -> List[Detection]:
                              hue=hue, color_name=color_name,
                              body_side=body_side, instance_id=instance_id))
     return out
+
+
