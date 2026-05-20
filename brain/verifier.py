@@ -2514,3 +2514,73 @@ class SkillVerifier:
 
     # -- pose: did the posture get commanded? --------------------------------
 
+    @_zfloor_limited_note("requested pose")
+    def verify_pose(self, contract, obs, tool_result: str,
+                    now: float | None = None) -> Verdict:
+        """Post-condition: the named posture was COMMANDED and the engine
+        reported the move complete.
+
+        READ THIS BEFORE WEAKENING OR STRENGTHENING THE SUCCESS PATH.
+
+        There is no posture sensor in this system.  WorldObservation carries
+        grip, walk, detections and a scene graph, and NOTHING that measures
+        where the arm joints are.  So a pose cannot be MEASURED the way 'grip
+        open' (a fresh joint/hand-state read) or 'walk REACHED' (the walk
+        FSM) can.  The only evidence that exists is the pick engine's own
+        completion report, which reaches us as 'DONE:<v1>[+<v2>]'.
+
+        That is a WEAKER class of evidence, and this verifier says so in the
+        evidence string instead of dressing it up as a measurement.  It
+        accepts the engine's DONE because the engine is the arm's AUTHORITY —
+        it drives the arm_sdk writer and blocks on the motion — which is the
+        same footing on which verify_navigate accepts the walk FSM's REACHED
+        as an independent subsystem report.  It is NOT the same footing as
+        verify_open_hand, which reads the world back.
+
+        What it refuses:
+          - any reply that is not a DONE: error/query/state/unknown/empty all
+            fall through the shared prologue;
+          - a DONE with NO verb list (the mock form) — it names no posture, so
+            it certifies nothing;
+          - a DONE whose verb list is not ONE WHOLE POSE.  This is the check
+            that matters: 'tuck' is TWO sequential engine moves (carry, then
+            carry_left) because the engine's carry pose is per-arm.  A reply
+            naming only 'carry' means the sequence died with the right arm
+            parked and the left still where it was — a real, half-finished
+            posture that must never read as done.  See
+            tests/test_pose_tool.py scenario 4 for the matching backend pin.
+        """
+        kind, detail = _classify_reply(tool_result)
+        verdict = _guard_reply(kind, detail)
+        if verdict is not None:
+            return verdict
+        reported = tuple(v for v in (detail or "").split("+") if v.strip())
+        if not reported:
+            return Verdict.in_progress(
+                "re-observe; pose reply carries no engine verb list — it names "
+                "no posture, so it certifies none")
+        # lazy import, because a module-scope import closes a cycle
+        # the backend's table is the single source of truth: a drifted copy
+        # would certify the wrong pose
+        try:
+            from gateway.brain_client import POSE_ENGINE_VERBS
+        except Exception as exc:  # pragma: no cover - import environment only
+            return Verdict.in_progress(
+                "re-observe; cannot reach the pose verb table (%s) — refusing "
+                "to certify a posture against a vocabulary I cannot check"
+                % exc.__class__.__name__)
+        named = [name for name, verbs in POSE_ENGINE_VERBS.items()
+                 if tuple(verbs) == reported]
+        if not named:
+            return Verdict.in_progress(
+                "re-observe; engine reported %r, which is not a whole pose "
+                "(known sequences: %s) — a partial sequence is a half-finished "
+                "posture, not a reached one"
+                % ("+".join(reported),
+                   ", ".join("+".join(v) for v in
+                             sorted(POSE_ENGINE_VERBS.values()))))
+        return Verdict.success(
+            "engine reported DONE:%s == the %r posture, in full (engine-"
+            "reported, NOT sensor-measured — no posture sensor exists)"
+            % ("+".join(reported), named[0]))
+
