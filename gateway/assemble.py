@@ -449,3 +449,17 @@ class Assembler:
                 self._last_walk_ts = now
         return self.observation(now=now)
 
+    def note_close_result(self, side: str, verdict: str,
+                          now: Optional[float] = None) -> None:
+        """Record a ``close_adaptive`` reply (DONE:contact|full|no_data).
+
+        This is the only source of truth for ``GripState.contact`` — the grip
+        server does not auto-verify, so contact exists only right after a
+        commanded close. Also marks ``side`` as the active one for
+        ``WorldObservation.grip``.
+        """
+        if side not in ("right", "left"):
+            return
+        self._close_verdicts[side] = (verdict, time.time() if now is None else now)
+        self._active_side = side
+
