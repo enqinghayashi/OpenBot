@@ -463,3 +463,8 @@ class Assembler:
         self._close_verdicts[side] = (verdict, time.time() if now is None else now)
         self._active_side = side
 
+    def set_active_side(self, side: str) -> None:
+        """Which side ``WorldObservation.grip`` reports (default 'right')."""
+        if side in ("right", "left"):
+            self._active_side = side
+
