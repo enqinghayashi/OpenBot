@@ -526,3 +526,15 @@ class Assembler:
         if side in ("right", "left"):
             self._open_trusted[side] = False
 
+    def _read_qualifies(self, side: str) -> bool:
+        """Is a state read for ``side`` in a qualifying context right now?
+
+        Only post-open reads qualify: ``side`` must be open-trusted — a
+        gateway-dispatched open command ran since the last hand-affecting
+        command.  WITHOUT an open command no read — however agreeing —
+        ever forms a reference (causal law; the boot window is gone).
+        """
+        return self._open_trusted.get(side, False)
+
+    # ── the measured-open reference ────────────────────────────────────────
+
