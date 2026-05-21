@@ -567,3 +567,9 @@ class Assembler:
         return max(abs(a - b) for a, b in zip(joints, ref)) \
             < OPEN_JOINT_TOLERANCE
 
+    def _agree(self, a: List[float], b: List[float]) -> bool:
+        """Two reads agree within ``OPEN_JOINT_TOLERANCE`` (double-read test)."""
+        if not a or len(a) != len(b):
+            return False
+        return max(abs(x - y) for x, y in zip(a, b)) < OPEN_JOINT_TOLERANCE
+
