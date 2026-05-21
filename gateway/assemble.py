@@ -517,3 +517,12 @@ class Assembler:
         if side in ("right", "left"):
             self._open_trusted[side] = True
 
+    def note_hand_command(self, side: str) -> None:
+        """A pick/close was dispatched for ``side`` — the open-trust mark ends.
+
+        The hand may now be in a non-open shape, so reads for that side are
+        no longer post-open-qualifying until the next open command.
+        """
+        if side in ("right", "left"):
+            self._open_trusted[side] = False
+
