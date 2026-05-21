@@ -468,3 +468,8 @@ class Assembler:
         if side in ("right", "left"):
             self._active_side = side
 
+    @property
+    def active_side(self) -> str:
+        """The side ``WorldObservation.grip`` reports (default 'right')."""
+        return self._active_side
+
