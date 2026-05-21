@@ -495,3 +495,13 @@ class Assembler:
 
     # ── what qualifies for the CAUSAL OPEN REFERENCE ──────────────────────
 
+    def note_motion_dispatched(self) -> None:
+        """RETAINED as a compatibility no-op (world-truth round 5).
+
+        The round-4 boot window is deleted: a read qualifies for the open
+        reference ONLY when the side is open-trusted (a gateway-dispatched
+        open command ran since the last hand-affecting command).  Motion
+        dispatch no longer changes qualifying context — callers may keep
+        calling this, but it does nothing.
+        """
+
