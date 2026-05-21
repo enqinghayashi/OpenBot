@@ -171,3 +171,10 @@ _ZFLOOR_LIMITED_RE = re.compile(r"zfloor_limited=(\d+(?:\.\d+)?)")
 TURN_AROUND_DONE_PREFIX = "DONE turn_around:"
 
 
+class GatewayTransportError(ConnectionError):
+    """Every socket/transport failure.  ``phase`` names where it
+    happened: 'connect' — the connection was never established (refused /
+    unreachable); 'reply' — the connection SUCCEEDED but the exchange or
+    reply failed (EOF, non-JSON, non-object reply).  Callers convert it
+    to a failure envelope — never a fake success."""
+
