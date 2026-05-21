@@ -708,3 +708,9 @@ class Assembler:
         return self._last_detections_ts > 0.0 and \
             (now - self._last_detections_ts) <= DETECTIONS_ALIVE_S
 
+    @property
+    def silence_means_empty(self) -> bool:
+        """The silence switch: True = silence is an empty scene (shipped
+        profile); False = silence is never empty-scene evidence."""
+        return self._silence_means_empty
+
