@@ -473,3 +473,12 @@ class Assembler:
         """The side ``WorldObservation.grip`` reports (default 'right')."""
         return self._active_side
 
+    def clear_close_result(self, side: str) -> None:
+        """Drop the recorded ``close_adaptive`` verdict for a side.
+
+        Called when the hand is commanded open: an open invalidates any
+        prior grasp signal, so ``GripState.contact`` must not linger.
+        """
+        if side in ("right", "left"):
+            self._close_verdicts.pop(side, None)
+
