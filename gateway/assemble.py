@@ -586,3 +586,52 @@ class Assembler:
         return len(joints) > 6 and (abs(joints[5]) > OPEN_REF_MAX_FINGER_RAD
                                     or abs(joints[6]) > OPEN_REF_MAX_FINGER_RAD)
 
+    def _update_open_ref(self, side: str, joints: List[float]) -> None:
+        """CAUSAL OPEN REFERENCE maintenance (module docstring, round 5).
+
+        A read only participates when it is QUALIFYING (the side is
+        open-trusted — a gateway-dispatched open command ran for it since
+        the last hand-affecting command); an untrusted read discards any
+        pending candidate (the "two CONSECUTIVE qualifying reads" rule) and
+        never forms or moves a reference.  With a reference None, a
+        qualifying read becomes the candidate; the NEXT qualifying read that
+        agrees with it forms the reference (double-read agreement — NO
+        single-first-read bootstrap; the verifying read after the open is
+        the FIRST of the two, and one re-observe confirms).  With a
+        reference set, only a new qualifying agreement whose candidate is
+        within tolerance of the CURRENT reference drifts it (servo settling
+        / thermal drift); a far read never moves it.
+        """
+        if not joints:
+            return
+        if not self._read_qualifies(side):
+            self._open_candidates.pop(side, None)  # keeps the reads consecutive
+            return
+        ref = self._open_refs.get(side)
+        candidate = self._open_candidates.get(side)
+        if ref is None and self._closed_shape(joints):
+            # closed shape can't be the candidate or finish
+            # a double-read; pending candidate dropped too.
+            self._open_candidates.pop(side, None)
+            return
+        if ref is None:
+            if candidate is None:
+                self._open_candidates[side] = list(joints)
+            elif self._agree(candidate, joints):
+                # double-read agreement - ref forms
+                self._open_refs[side] = list(candidate)
+                self._open_candidates.pop(side, None)
+            else:
+                # disagree: restart from the newer read.
+                self._open_candidates[side] = list(joints)
+        else:
+            if candidate is None:
+                if self.is_open(side, joints):
+                    self._open_candidates[side] = list(joints)
+            elif self._agree(candidate, joints) and self.is_open(side, candidate):
+                # near the current reference -> drift.
+                self._open_refs[side] = list(candidate)
+                self._open_candidates.pop(side, None)
+            else:
+                self._open_candidates.pop(side, None)
+
