@@ -699,3 +699,43 @@ class DescentContext:
         self.hold_deadline = None
         self.writer_stand_m = None
 
+    def begin_run(self, now_monotonic: float) -> None:
+        """Stamp the start of ONE lane run (the gateway calls this under the
+        lane lock, before the sequence runs)."""
+        self.run_start_mono = float(now_monotonic)
+
+    def request_cancel(self, now_monotonic: float) -> None:
+        """Record an operator cancel at ``now_monotonic``."""
+        self.cancel_mono = float(now_monotonic)
+
+    def cancelled_this_run(self) -> bool:
+        """True iff a cancel was stamped at or after the current run began.
+
+        A context whose run was never stamped (every direct caller of the
+        sequences, every legacy test) answers False, so behaviour without the
+        gateway's :meth:`begin_run` is unchanged.
+        """
+        c, r = self.cancel_mono, self.run_start_mono
+        return _finite_num(c) and _finite_num(r) and float(c) >= float(r)
+
+    def in_flight(self) -> bool:
+        """True while a body height is outstanding (the refusal predicate).
+
+        A context that is not ``IDLE`` — including one parked in ``RETREATING``
+        by an UNCONFIRMED retreat — means the body may not be where the caller
+        thinks it is, so the next lane skill must refuse rather than act.
+        """
+        return self.state != IDLE
+
+    def stand_m(self, fallback: float) -> float:
+        """The frame a shift is measured in: the writer's OWN stand, else
+        ``fallback``.
+
+        The ``fallback`` is the envelope's ``height_stand_m`` and is honest
+        only for the FIRST command, before any poll has reported the writer's
+        own reference — every later shift reads the writer's number.
+        """
+        if _finite_num(self.writer_stand_m):
+            return float(self.writer_stand_m)
+        return float(fallback)
+
