@@ -680,3 +680,8 @@ class Assembler:
             fresh=fresh,
         )
 
+    @property
+    def last_detections_ts(self) -> float:
+        """Timestamp of the last detections packet (0.0 == never observed)."""
+        return self._last_detections_ts
+
