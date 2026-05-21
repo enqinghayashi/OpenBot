@@ -549,3 +549,21 @@ class Assembler:
         """
         return self._open_refs.get(side)
 
+    def is_open(self, side: str, joints: List[float]) -> Optional[bool]:
+        """Measured-open judgment for one side in measured joint space.
+
+        True when ``joints`` are within ``OPEN_JOINT_TOLERANCE`` of the
+        side's reference; False when they are not (or the readback is
+        missing/mismatched); None when no reference exists yet (no open
+        command for that side, or the double-read hasn't completed) —
+        nothing can be judged, and open/place verification is in_progress
+        're-observe'.
+        """
+        ref = self._open_refs.get(side)
+        if ref is None:
+            return None
+        if not joints or len(joints) != len(ref):
+            return False  # missing readback can't be open
+        return max(abs(a - b) for a, b in zip(joints, ref)) \
+            < OPEN_JOINT_TOLERANCE
+
