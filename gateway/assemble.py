@@ -685,3 +685,13 @@ class Assembler:
         """Timestamp of the last detections packet (0.0 == never observed)."""
         return self._last_detections_ts
 
+    @property
+    def last_walk_ts(self) -> float:
+        """Timestamp of the last ``/walk_status`` packet (0.0 == never seen).
+
+        The walk lane's own liveness clock: ``observation()`` serves no walk
+        frame once ``now - last_walk_ts`` exceeds ``walk_max_stale_s``, so a
+        reader can tell when the lane last spoke without polling the node.
+        """
+        return self._last_walk_ts
+
