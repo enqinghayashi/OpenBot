@@ -582,3 +582,120 @@ def height_command(z: float, law: LaneLaw) -> float:
     """
     d = descent_law.descent_for_z(z, law.max_descent_m)
     return min(max(law.height_stand_m - d, law.height_min_m), law.height_stand_m)
+
+
+def descent_negligible(z: Any, law: Any) -> bool:
+    """True iff the body descent target ``z`` needs is within
+    :data:`NO_DESCENT_BAND_M` — i.e. the skill runs AT STANDING.
+
+    FAIL CLOSED to "not negligible" (False) for a non-finite ``z`` or a law
+    that is not :func:`usable`: those cases keep every pre-existing refusal.
+    """
+    if not _finite_num(z) or not usable(law):
+        return False
+    return descent_law.descent_for_z(z, law.max_descent_m) <= NO_DESCENT_BAND_M
+
+
+def deep_floor_refusal(z: Any, law: LaneLaw) -> str:
+    """The lane-ON refusal for a target below the rescue floor.
+
+    NAMES the floor it refused against, because "below the floor" is only
+    actionable if the operator can see where the floor is and read off how much
+    band a wider writer clamp would buy.  The floor and the budget are both
+    DERIVED (``brain.descent_law.rescue_floor``) — no number here is a literal.
+
+    THE BUDGET IS NAMED FOR WHAT IT IS.  ``law.max_descent_m`` is
+    ``height_stand_m - height_min_m`` — the WRITER'S CLAMP BAND, i.e. a COMMAND
+    delta in ``height_cmd`` units, NOT the body's measured descent (that is a
+    different, simulated quantity: plan §4's correction, 0.907 realized per
+    commanded at the clamp).  Saying "the body's available descent" would be the
+    exact conflation plan §4 corrects, at the one moment an operator decides
+    whether to widen the band — so this clause names the command band and marks
+    it SIMULATED.  The honesty boundary is appended like every other lane text.
+    """
+    if not usable(law) or not _finite_num(z):
+        return honest("ERROR:low-workspace pick/place refused: target height is "
+                      "not usable (z=%r)" % (z,))
+    floor = descent_law.rescue_floor(law.tabletop_min_z, law.max_descent_m)
+    return honest(
+        "ERROR:low-workspace pick/place refused: z=%.3f is below the rescue "
+        "floor %.3f m (tabletop floor %.3f m minus the writer's %.3f m height "
+        "clamp band — a COMMAND delta in height_cmd units, SIMULATED "
+        "(MuJoCo GR00T-Balance), not a measured body descent) - floor/ground "
+        "pick refused, no ground-pick skill exists"
+        % (z, floor, law.tabletop_min_z, law.max_descent_m))
+
+
+# ────────────────────────────────────────────────────── where the lease lives
+class DescentContext:
+    """The shared body-height state both skills ask (plan §6 D2).
+
+    ONE instance lives on the ``GatewayNode`` — NOT a module singleton (which
+    would leak across gateway instances and reconnects) and not per-connection
+    (body height is process-global, and the low pick -> low place pair spans
+    two separate calls).
+
+    ``height_cmd`` is the last CONFIRMED reference, never the requested command:
+    that is what makes the fail-closed precondition real rather than assumed.
+    ``effective_z`` is the torso-frame height the engine was actually handed.
+    ``hold_deadline`` is a MONOTONIC deadline, so a wall-clock step cannot
+    extend a hold.
+
+    ``writer_stand_m`` is the writer's OWN reported standing reference, read
+    from a ``status`` poll and used for every frame shift thereafter (see
+    :meth:`stand_m`).  The envelope's ``law.height_stand_m`` is a FALLBACK for
+    the first command only: the two numbers drift, and a drift biases
+    ``z_engine`` by exactly its size.
+
+    A CONFIRMED DESCENT IS CHECKED, NOT DRIVEN.  ``height <m>`` is a LIFETIME
+    on the writer: it arms a monotonic deadline and re-stands the body on the
+    CLOCK alone whether or not this process is alive, and a ``status`` poll does
+    not refresh it.  This context holds NO thread that re-issues the command —
+    the writer's own ``height_hold_s`` (a config value) is set long enough to
+    cover a whole lane operation, so a renewal thread is unnecessary, and a
+    latched verdict that outlived a refusal is exactly the class of defect that
+    removal eliminates.  The live gate is instead a FRESH ``status`` poll taken
+    immediately before each dispatch (:func:`probe_active`) plus the fail-closed
+    lifetime guard (:func:`_lifetime_refusal`).  Every piece of writer traffic —
+    the lane's own polls and commands — is serialized through ``writer_lock``,
+    which is NEVER held across an engine call.
+    """
+
+    __slots__ = ("state", "height_cmd", "effective_z", "hold_deadline",
+                 "writer_stand_m", "writer_lock", "cancel_mono",
+                 "run_start_mono", "last_retreat_was_noop", "stepped")
+
+    def __init__(self) -> None:
+        self.state: str = IDLE
+        self.height_cmd: Optional[float] = None
+        self.effective_z: Optional[float] = None
+        self.hold_deadline: Optional[float] = None
+        self.writer_stand_m: Optional[float] = None
+        self.writer_lock = threading.Lock()
+#: Monotonic stamps of the last operator cancel and of the run start: a cancel
+#: counts only when stamped at or after the run began.
+        self.cancel_mono: Optional[float] = None
+        self.run_start_mono: Optional[float] = None
+#: Set when a confirmed retreat found the writer already standing. reset() does
+#: not clear it, so the next reply can say who raised the body.
+        self.last_retreat_was_noop: bool = False
+#: True while a pre-descent stance step may be installed. reset() keeps it so the
+#: next retreat can still drop the step.
+        self.stepped: bool = False
+
+    def reset(self) -> None:
+        """Back to ``IDLE`` with no body height outstanding.
+
+        ``cancel_mono`` is DELIBERATELY NOT cleared here (deviation from the
+        R4 L2 spec text, stated): ``reset`` runs inside a run's own retreat
+        (e.g. the rise before a re-descend), and clearing there would WIPE a
+        cancel that landed during that rise, so the run would go on to descend
+        and dispatch the engine the operator had just stopped.  Stickiness is
+        prevented by the run stamp instead (:meth:`cancelled_this_run`).
+        """
+        self.state = IDLE
+        self.height_cmd = None
+        self.effective_z = None
+        self.hold_deadline = None
+        self.writer_stand_m = None
+
