@@ -412,3 +412,40 @@ class Assembler:
 
     # ── taking packets in ──────────────────────────────────────────────────
 
+    def update(self, detections: Optional[List[dict]] = None,
+               grip_line: Optional[str] = None,
+               walk_payload: Optional[dict] = None,
+               now: Optional[float] = None) -> WorldObservation:
+        """Ingest any subset of raw payloads, return the current observation.
+
+        ``detections`` rows are timestamped on arrival (a packet, even an
+        empty list, is a fresh observation of the scene). ``grip_line`` is the
+        grip server's ``state`` reply. ``walk_payload`` is the parsed
+        ``/walk_status`` dict, timestamped on arrival and served only while
+        younger than ``walk_max_stale_s``.
+        """
+        now = time.time() if now is None else now
+        if detections is not None:
+            self._detections = parse_detections(detections, now)
+            self._last_detections_ts = now
+        if grip_line:
+            # kept raw (contact=False); contact is derived on
+            # read from verdict + window, so expiry is right.
+            states = parse_grip_line(grip_line)
+            if not states:
+                # ERROR:/malformed = READ FAILURE: last good
+                # state must not confirm forever. next good read
+                # supersedes it (grip_state compares ts).
+                self._grip_error_ts = now
+            else:
+                for side, st in states.items():
+                    self._grip_states[side] = st
+                    self._grip_state_ts[side] = now
+                    self._update_open_ref(side, st.joints)
+        if walk_payload is not None:
+            walk = parse_walk_status(walk_payload, ts=now)
+            if walk is not None:
+                self._walk = walk
+                self._last_walk_ts = now
+        return self.observation(now=now)
+
