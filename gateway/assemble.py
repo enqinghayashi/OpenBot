@@ -803,3 +803,5 @@ class Assembler:
                 left_available=left_available, left_stale_ts=left_stale_ts,
                 left_is_open=left_is_open)
         return state
+
+
