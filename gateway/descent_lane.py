@@ -483,3 +483,102 @@ def slew_margin_s(law: Any) -> float:
 
 
 # ──────────────────────────────────────────────────── what the law is fed with
+class LaneLaw:
+    """The four law inputs, threaded in — never restated (REUSE LAW).
+
+    ``tabletop_min_z`` is the envelope's ``pick_min_height_m`` (the authority);
+    the two ``height_*`` numbers are the WRITER's own clamp band; ``hold_tol_m``
+    is the operator's hold tolerance.  ``max_descent_m`` is DERIVED here —
+    ``height_stand_m - height_min_m`` — exactly as ``brain.descent_law``
+    requires, so no band number exists anywhere in this file as a literal and
+    widening the writer's band moves the rescue floor with no code change.
+
+    ``timeout_s`` is the confirm window threaded in from config
+    (``embodiment.envelope.descent_confirm_timeout_s``).  It DEFAULTS to
+    :data:`DESCENT_CONFIRM_TIMEOUT_S`, so a config that omits the key behaves
+    exactly as before; a value that is not a finite positive number falls back to
+    that same default rather than shrinking the window to nothing.
+
+    ``operation_budget_s`` is the declared lane operation budget, threaded the
+    SAME way: it defaults to :data:`LANE_OPERATION_BUDGET_S`, a value that is
+    not a finite positive number falls back to that default, and the gateway may
+    override it from ``embodiment.envelope.lane_operation_budget_s`` (a stub
+    config that never sets it still constructs — the lane keeps its own module
+    default).  The guard that consumes it reads the writer's own reported ``rem``
+    and REFUSES a descended dispatch below it — the bar is ``operation_budget_s``
+    itself; the slew margin is added only to the ``height_hold_s`` the refusal
+    names, never to the bar.
+
+    A plain object rather than a ``NamedTuple``/``dataclass``: this crosses from
+    the laptop to a robot whose Python is older than the laptop's, and it needs
+    no behaviour beyond one derived value.
+    """
+
+    __slots__ = ("tabletop_min_z", "height_stand_m", "height_min_m",
+                 "hold_tol_m", "timeout_s", "operation_budget_s")
+
+    def __init__(self, tabletop_min_z: float, height_stand_m: float,
+                 height_min_m: float, hold_tol_m: float = HOLD_TOL_M,
+                 timeout_s: float = DESCENT_CONFIRM_TIMEOUT_S,
+                 operation_budget_s: float = LANE_OPERATION_BUDGET_S):
+        self.tabletop_min_z = tabletop_min_z
+        self.height_stand_m = height_stand_m
+        self.height_min_m = height_min_m
+        self.hold_tol_m = hold_tol_m
+        window = None
+        if _finite_num(timeout_s):
+            window = float(timeout_s)
+        self.timeout_s = (window if window is not None and window > 0.0
+                          else float(DESCENT_CONFIRM_TIMEOUT_S))
+        budget = None
+        if _finite_num(operation_budget_s):
+            budget = float(operation_budget_s)
+        self.operation_budget_s = (
+            budget if budget is not None and budget > 0.0
+            else float(LANE_OPERATION_BUDGET_S))
+
+    @property
+    def max_descent_m(self) -> float:
+        """The writer clamp's own band: ``height_stand_m - height_min_m``."""
+        return self.height_stand_m - self.height_min_m
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostics only
+        return ("LaneLaw(tabletop_min_z=%r, height_stand_m=%r, height_min_m=%r,"
+                " hold_tol_m=%r, timeout_s=%r, operation_budget_s=%r)"
+                % (self.tabletop_min_z, self.height_stand_m,
+                   self.height_min_m, self.hold_tol_m, self.timeout_s,
+                   self.operation_budget_s))
+
+
+def usable(law: Any) -> bool:
+    """True iff ``law`` describes a real, non-empty descent band.
+
+    A degenerate band (non-finite, zero-width, or inverted) must make the lane
+    INERT rather than raise: a misconfigured envelope degrades to today's
+    honest refusal, never to a crash and never to a silently widened workspace
+    (plan §8).  The caller that routes a target into the lane
+    (``GatewayNode._low_lane_claim``) consults this first, so a broken law can
+    never route a target into the lane.
+    """
+    if law is None:
+        return False
+    try:
+        stand = law.height_stand_m
+        hmin = law.height_min_m
+        floor = law.tabletop_min_z
+    except AttributeError:
+        return False
+    return (_finite_num(stand) and _finite_num(hmin) and _finite_num(floor)
+            and stand > hmin)
+
+
+def height_command(z: float, law: LaneLaw) -> float:
+    """The writer ``height`` command for a target at torso-frame ``z``.
+
+    ``clamp(height_stand_m - d(z), height_min_m, height_stand_m)`` — plan §4.
+    The command is clamped to the STANDING reference at the top, so a target
+    that needs no descent produces the identity command, and the lane can
+    never command the body higher than standing.
+    """
+    d = descent_law.descent_for_z(z, law.max_descent_m)
+    return min(max(law.height_stand_m - d, law.height_min_m), law.height_stand_m)
