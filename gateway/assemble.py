@@ -695,3 +695,16 @@ class Assembler:
         """
         return self._last_walk_ts
 
+    def detections_alive(self, now: Optional[float] = None) -> bool:
+        """True if the detection node has spoken recently (generous window).
+
+        Channel-liveness signal (world-truth round 5), distinct from
+        ``fresh``: a quiet-but-running node is alive while its observation
+        ages out of freshness.  Under ``silence_means_empty`` (True),
+        alive + empty last packet == empty scene (target-gone confirmable);
+        never spoke / beyond the window == DEAD node (nothing confirmable).
+        """
+        now = time.time() if now is None else now
+        return self._last_detections_ts > 0.0 and \
+            (now - self._last_detections_ts) <= DETECTIONS_ALIVE_S
+
