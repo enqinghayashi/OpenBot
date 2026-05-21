@@ -635,3 +635,15 @@ class Assembler:
             else:
                 self._open_candidates.pop(side, None)
 
+    def grip_state_read_ts(self, side: str) -> Optional[float]:
+        """Timestamp of the last successful ``state`` read for a side.
+
+        None when the side was never successfully read.  The gateway's
+        post-pick lane poll uses this to tell whether THIS reply carried the
+        side (a poll whose reply omits the side leaves the old ts in place).
+        """
+        ts = self._grip_state_ts.get(side, 0.0)
+        return ts if ts > 0.0 else None
+
+    # ── reading it back out ────────────────────────────────────────────────
+
