@@ -573,3 +573,16 @@ class Assembler:
             return False
         return max(abs(x - y) for x, y in zip(a, b)) < OPEN_JOINT_TOLERANCE
 
+    @staticmethod
+    def _closed_shape(joints: List[float]) -> bool:
+        """B8h: |joints 5/6| above OPEN_REF_MAX_FINGER_RAD -- a closed hand.
+
+        abs(): the left hand closes NEGATIVE (L_HAND_CLOSE 5/6 = -1.571/-1.745,
+        skills/arm/grip_server.py); an open hand reads about 0 on both sides.
+
+        Shorter readbacks (no joints 5/6) are not judged here (False), so the
+        old agreement rules still apply to them.
+        """
+        return len(joints) > 6 and (abs(joints[5]) > OPEN_REF_MAX_FINGER_RAD
+                                    or abs(joints[6]) > OPEN_REF_MAX_FINGER_RAD)
+
