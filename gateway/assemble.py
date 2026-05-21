@@ -714,3 +714,7 @@ class Assembler:
         profile); False = silence is never empty-scene evidence."""
         return self._silence_means_empty
 
+    @silence_means_empty.setter
+    def silence_means_empty(self, value: bool) -> None:
+        self._silence_means_empty = bool(value)
+
