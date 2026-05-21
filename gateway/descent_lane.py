@@ -383,3 +383,103 @@ def release_only_args(args: Any) -> bool:
         return len(args) == 0
     except TypeError:
         return False
+
+
+def honest(text: Any) -> str:
+    """``text`` ending with :data:`HONESTY_SUFFIX`, appended exactly once.
+
+    Never double-appends, so a detail that is passed through two layers still
+    reads as one statement.  The result always ENDS with the suffix: trailing
+    punctuation after it would make the boundary look like an afterthought.
+    """
+    body = str(text or "").rstrip()
+    if not body:
+        return HONESTY_SUFFIX
+    if body.endswith(HONESTY_SUFFIX):
+        return body
+    return "%s — %s" % (body, HONESTY_SUFFIX)
+
+
+def _loud(text: str) -> None:
+    """One LOUD stderr line.  The operator must not have to read a table.
+
+    stderr, not stdout: a warning about a body that may still be low has to be
+    visible even when the caller is rendering the phase table.
+    """
+    sys.stderr.write("!! [descent] %s\n" % text)
+    sys.stderr.flush()
+
+
+def lockout_notice(lockout_s: Any) -> str:
+    """The operator-facing HOLD WINDOW statement: how long the body is held
+    low, and what the sticks can and cannot do inside that window.
+
+    WHY THIS EXISTS.  A held descent must never be SILENT (D2), and it must
+    never be described as something it is not (R4 HRC-2, corrected
+    2026-10-03).  The previous text said the operator's sticks "will NOT take
+    it back during that window".  That is false for the hold window itself:
+    the sticks are clamped only while the arm engine holds ``rc_hold`` — the
+    writer forces ``rc_live = False`` under that clamp and nowhere else
+    (``skills/writer/main_merged_writer.py:2719-2742``: the RC height-suspend
+    is gated on ``rc_live``, and only the ``rc_hold`` / shutdown / autopilot
+    branches zero it) — and the pick engine RELEASES the clamp when the pick
+    completes (``skills/arm/pick_engine_v3.py``,
+    ``_hold_rc_writer(arm, False, 'pick complete (step 5)')``).  So inside the
+    window a stick push SUSPENDS the squat.  DERIVED from source; the box's
+    behaviour is UNVERIFIABLE-FROM-HERE.  The window is bounded: the writer's
+    own ``height_hold_s`` lifetime re-stands the body on the clock alone, and
+    this lane gives the body back on its next retreat.
+
+    NOT A DETECTOR.  This says what the lane IS holding; it makes no claim to
+    observe the operator.  The lane cannot see a takeover, which is why the
+    deleted ``TAKEOVER_VERBS`` table is not replaced by a guess (D3).
+
+    ``lockout_s`` is the window the caller ACTUALLY honoured — for a hold entry
+    that is ``DescentContext.holding``'s return (``min(hold_s, the writer's own
+    remaining hold)``), never the un-capped request.  A non-finite or negative
+    value reads as 0.0 rather than propagating a bad number into operator text.
+    """
+    window = (float(lockout_s)
+              if _finite_num(lockout_s) and float(lockout_s) > 0.0 else 0.0)
+    return ("HOLD WINDOW: the body is held low for up to %.1fs from now. The "
+            "operator's sticks are clamped only while the arm engine holds "
+            "`rc_hold` (during an arm motion; the writer console escape for "
+            "that is `hold_rc off`); the engine releases that clamp when the "
+            "pick completes, so inside this window a stick push suspends the "
+            "squat. The writer's own `height_hold_s` lifetime re-stands the "
+            "body at its deadline regardless, and the lane gives the body back "
+            "on its next retreat" % window)
+
+
+def slew_margin_s(law: Any) -> float:
+    """The descent's OWN consumption of the writer's clock, in seconds.
+
+    The writer's height reference is RATE LIMITED
+    (:data:`HEIGHT_SLEW_RATE_M_S`, ``height_slew_rate`` in
+    ``skills/writer/config/merge_config.yaml``), so by the time the guard reads
+    the writer's remaining hold the clock is ALREADY down by the slew time of
+    the move it just made: the full clamp band at that rate is ~1.3 s
+    (merge_config.yaml:57-60: "covers the 0.19 m nominal->min span in ~1.3 s").
+    That margin is NOT added to the guard's bar — the bar is the operation
+    budget ALONE.  It is what the refusal ADDS to the ``height_hold_s`` it tells
+    the operator to SET, and the measured D9 defect was exactly that arithmetic:
+    a ``height_hold_s`` set to the bare bar does NOT dispatch, because ``rem`` at
+    the gate is that value minus this margin, so the value that clears the bar is
+    ``operation_budget_s + this margin``.
+
+    DERIVED, never invented: the band is ``law.max_descent_m`` — the writer's
+    own clamp band, the widest move this lane can command — divided by the
+    writer's own slew rate.  A law that cannot supply a usable band yields 0.0
+    (no margin), which degrades the guard to the pre-margin behaviour rather
+    than refusing every dispatch over an arithmetic the caller cannot check.
+    """
+    try:
+        band = float(law.max_descent_m)
+    except (AttributeError, TypeError, ValueError):
+        return 0.0
+    if not _finite_num(band) or band <= 0.0:
+        return 0.0
+    return band / HEIGHT_SLEW_RATE_M_S
+
+
+# ──────────────────────────────────────────────────── what the law is fed with
