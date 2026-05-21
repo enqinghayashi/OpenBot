@@ -378,3 +378,37 @@ class Assembler:
     ``fresh`` flag always reflects the current gap since the last packet.
     """
 
+    def __init__(self, max_stale_s: float = MAX_STALE_S,
+                 contact_window_s: float = CLOSE_CONTACT_WINDOW_S,
+                 silence_means_empty: bool = True,
+                 walk_max_stale_s: float = WALK_MAX_STALE_S):
+        self.max_stale_s = max_stale_s
+        self.walk_max_stale_s = walk_max_stale_s
+        self.contact_window_s = contact_window_s
+        #: silence switch. True (shipped): a live channel's
+        #: empty last packet IS an empty scene; silent
+        #: forever = DEAD node. False: silence is never
+        #: empty-scene evidence. the verifier's
+        #: target-gone path wires the same value.
+        self.silence_means_empty = silence_means_empty
+        self._detections: List[Detection] = []
+        self._last_detections_ts = 0.0  # 0.0 = never observed
+        self._grip_states: Dict[str, GripState] = {}
+        self._grip_state_ts: Dict[str, float] = {}  # side -> last read's ts
+        self._grip_error_ts = 0.0  # read failed (0 = never)
+        self._open_refs: Dict[str, List[float]] = {}  # side -> measured ref
+        self._open_candidates: Dict[str, List[float]] = {}  # side -> first read
+        #: what qualifies for the CAUSAL OPEN REFERENCE.
+        #: open-trust starts at a dispatched open
+        #: (note_open_commanded), ends at a pick/close.
+        #: NO boot window: boot reads guarantee nothing -
+        #: a mid-grasp boot would make the closed shape
+        #: the 'open' ref. double-read agreement only.
+        self._open_trusted: Dict[str, bool] = {"right": False, "left": False}
+        self._close_verdicts: Dict[str, tuple] = {}  # side -> (verdict + when)
+        self._active_side = "right"  # pick defaults to the right arm
+        self._walk: Optional[WalkStatus] = None
+        self._last_walk_ts = 0.0  # 0.0 = never seen (see observation())
+
+    # ── taking packets in ──────────────────────────────────────────────────
+
