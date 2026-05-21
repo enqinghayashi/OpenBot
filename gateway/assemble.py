@@ -805,3 +805,18 @@ class Assembler:
         return state
 
 
+def assemble(detections: Optional[List[dict]] = None,
+             grip_line: Optional[str] = None,
+             walk_payload: Optional[dict] = None,
+             now: Optional[float] = None,
+             max_stale_s: float = MAX_STALE_S) -> WorldObservation:
+    """One-shot convenience: feed one packet batch through a fresh Assembler.
+
+    With ``detections`` given, the observation is fresh (the packet is new).
+    With ``detections=None`` there is no last timestamp, so the result is
+    ``fresh=False`` with ``detections=[]`` — the gateway node should use the
+    stateful :class:`Assembler` instead; this exists for tests and mocks.
+    """
+    return Assembler(max_stale_s=max_stale_s).update(
+        detections=detections, grip_line=grip_line,
+        walk_payload=walk_payload, now=now)
