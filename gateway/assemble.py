@@ -538,3 +538,14 @@ class Assembler:
 
     # ── the measured-open reference ────────────────────────────────────────
 
+    def open_joints_ref(self, side: str) -> Optional[List[float]]:
+        """The measured-open reference joints for one side, or None.
+
+        None until a post-open DOUBLE-READ agreement exists (two consecutive
+        reads within ``OPEN_JOINT_TOLERANCE``, both taken after a
+        gateway-dispatched open command for that side).  Documented (module
+        docstring): the reference forms ONLY from open-commanded shapes —
+        a closed hand at boot / mid-grasp never becomes the reference.
+        """
+        return self._open_refs.get(side)
+
