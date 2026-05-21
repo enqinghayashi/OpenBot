@@ -647,3 +647,36 @@ class Assembler:
 
     # ── reading it back out ────────────────────────────────────────────────
 
+    def observation(self, now: Optional[float] = None) -> WorldObservation:
+        """Current WorldObservation — call on every poll, even silent ones.
+
+        Silence == empty scene: the last known detections are kept (or ``[]``
+        if the node never spoke) but ``fresh`` is False once the last packet
+        is older than ``max_stale_s``.
+
+        WALK AGING (STOP-KILLS-TASK C2): ``walk`` is NOT kept past
+        ``walk_max_stale_s`` — it is dropped to None.  A latched phase is not
+        merely age-flagged here because ``WalkStatus`` carries no freshness
+        field for consumers to read and the verifier narrates
+        ``obs.walk.phase`` directly (verifier.py verify_navigate), so the only
+        way a stale phase can never be reported as current is to stop serving
+        it.  None is a value both consumers already handle: the verifier
+        returns in_progress 're-observe; no walk_status' and the gateway
+        serializes it as ``"walk": null``.
+        """
+        now = time.time() if now is None else now
+        ts = self._last_detections_ts
+        fresh = ts > 0.0 and (now - ts) <= self.max_stale_s
+        walk_ts = self._last_walk_ts
+        walk = self._walk if (walk_ts > 0.0
+                              and (now - walk_ts) <= self.walk_max_stale_s) \
+            else None
+        grip = self.grip_state(self._active_side, now=now)
+        return WorldObservation(
+            detections=list(self._detections),
+            grip=grip,
+            walk=walk,
+            detections_ts=ts,
+            fresh=fresh,
+        )
+
