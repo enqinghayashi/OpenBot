@@ -482,3 +482,16 @@ class Assembler:
         if side in ("right", "left"):
             self._close_verdicts.pop(side, None)
 
+    def note_grip_read_error(self, now: Optional[float] = None) -> None:
+        """Record that a ``state`` read FAILED (socket error / daemon dead).
+
+        A GripState whose last successful read is followed by a failed read
+        is reported available=False (fix 2) — the daemon'd-grip case where
+        the last good 'available=True' would otherwise confirm forever.  The
+        error is superseded by the next successful read (grip_state()
+        compares this ts against the last success ts).
+        """
+        self._grip_error_ts = time.time() if now is None else now
+
+    # ── what qualifies for the CAUSAL OPEN REFERENCE ──────────────────────
+
