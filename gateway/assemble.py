@@ -505,3 +505,15 @@ class Assembler:
         calling this, but it does nothing.
         """
 
+    def note_open_commanded(self, side: str) -> None:
+        """A gateway-dispatched open command ran for ``side`` (or both).
+
+        Per the CAUSAL OPEN REFERENCE (module docstring): the reference for
+        a side forms ONLY from state reads taken AFTER this mark — the open
+        command's own measured shape is the trusted open context.  The mark
+        is cleared by :meth:`note_hand_command` when a pick/close could
+        change the shape.
+        """
+        if side in ("right", "left"):
+            self._open_trusted[side] = True
+
