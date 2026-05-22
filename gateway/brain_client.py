@@ -616,3 +616,8 @@ class GatewayCallerBackend(GatewayBackend):
                 named["height_m"] = h_coord
         return self._roundtrip("place", named)
 
+    def navigate(self, args: dict) -> dict:
+        """Walk FSM approach; verification is ONLY via /walk_status ==
+        REACHED (no odom exists)."""
+        return self._roundtrip("navigate", {"target": str(args.get("target") or "")})
+
