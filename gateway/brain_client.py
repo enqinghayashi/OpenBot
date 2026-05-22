@@ -418,3 +418,25 @@ class GatewayCallerBackend(GatewayBackend):
             else _SocketGatewayTransport(self.host, self.port, self.timeout_s)
         )
 
+    @classmethod
+    def from_config(cls, cfg: Any) -> "GatewayCallerBackend":
+        """Build the socket client from a loaded config — consumes
+        ``gateway.host`` / ``gateway.port`` (default 127.0.0.1:3900)."""
+        gateway = getattr(cfg, "gateway", None)
+        host = (
+            getattr(gateway, "host", DEFAULT_HOST)
+            if gateway is not None
+            else DEFAULT_HOST
+        )
+        port = (
+            getattr(gateway, "port", DEFAULT_PORT)
+            if gateway is not None
+            else DEFAULT_PORT
+        )
+        # GATEWAY_CALL_TIMEOUT_S, not DEFAULT_TIMEOUT_S:
+        # the REAL path must outlast a pick's motion.
+        return cls(host=str(host), port=int(port or DEFAULT_PORT),
+                   timeout_s=GATEWAY_CALL_TIMEOUT_S)
+
+    # -- internal helpers ------------------------------------------------------
+
