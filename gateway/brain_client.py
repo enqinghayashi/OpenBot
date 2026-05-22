@@ -542,3 +542,38 @@ class GatewayCallerBackend(GatewayBackend):
             return None
         return payload
 
+    def pick(self, args: dict) -> dict:
+        """Command the pick engine (tabletop only); the server refuses a
+        floor pick honestly.  ``arm`` 'left' maps to the pick_left verb.
+
+        ORIENTATION (fix 2026-09-07): the grasp approach is NEVER stripped
+        here.  A concrete 'upright'/'horizontal' passes through; an
+        'auto'/absent/unknown orientation defaults to 'upright' (the engine
+        default), because THIS thin seam holds no detection store — the
+        binding of 'auto' to the detection's own orientation (horizontal
+        for a lying object) happens one layer up, in the pick tool's
+        prepare hook, on the SAME observation that produced x/y/z.  The
+        wire never carries 'auto' (the engine would reject it).
+        """
+        verb = "pick_left" if str(args.get("arm") or "auto").lower() == "left" else "pick"
+        named: Dict[str, Any] = {}
+        # `label`/`ref` aren't engine args - the
+        # positional grammar is pure geometry and
+        # _shape_named_args reads only geometry keys.
+        # they ride along for the GATEWAY'S OWN
+        # verifier: without them _verify("pick", ...)
+        # got label=None, ref=None, _target_present
+        # went unconfirmable, and EVERY pick came
+        # back `VERDICT:in_progress|... cannot confirm
+        # object gone` however the grasp went.
+        # a good pick reports
+        # unconfirmed. the verdict is minted
+        # gateway-side; the label never got there.
+        # tests/test_pick_verdict_hint.py.
+        for key in ("x", "y", "z", "nx", "ny", "nz", "height_m", "label", "ref"):
+            if args.get(key) is not None:
+                named[key] = args[key]
+        orientation = str(args.get("orientation") or "upright").strip().lower()
+        named["orientation"] = orientation if orientation in ("upright", "horizontal") else "upright"
+        return self._roundtrip(verb, named)
+
