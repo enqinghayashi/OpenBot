@@ -577,3 +577,42 @@ class GatewayCallerBackend(GatewayBackend):
         named["orientation"] = orientation if orientation in ("upright", "horizontal") else "upright"
         return self._roundtrip(verb, named)
 
+    def place(self, args: dict) -> dict:
+        """Drop the held object.
+
+        Coordinate place when x/y/z are present: the engine 'place' drops to
+        the commanded target (drops to the coordinate when present).  Without
+        any coordinate it stays a release-only drop at the current pose
+        (bare 'place').  Each coordinate is coerced defensively — a missing,
+        non-coercible, or non-finite value is skipped, never raised, so the
+        roundtrip cannot crash on a malformed arg.
+        """
+        named: Dict[str, Any] = {}
+        for key in ("x", "y", "z"):
+            value = args.get(key)
+            if value is None:
+                continue
+            try:
+                coord = float(value)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(coord):
+                continue
+            named[key] = coord
+        # optional height token: extra lift at place
+        # time. coerced + finite-checked
+        # like a coordinate, so it never hits the wire
+        # malformed; _do_place applies the
+        # (0, PICK_HEIGHT_M_MAX] range gate. dropped
+        # with no coordinate - the release-only
+        # 'place' would not parse a lone token.
+        h_place = args.get("height_m")
+        if h_place is not None and "x" in named:
+            try:
+                h_coord = float(h_place)
+            except (TypeError, ValueError):
+                h_coord = None
+            if h_coord is not None and math.isfinite(h_coord):
+                named["height_m"] = h_coord
+        return self._roundtrip("place", named)
+
