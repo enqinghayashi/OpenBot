@@ -639,3 +639,7 @@ class GatewayCallerBackend(GatewayBackend):
             "turn_around", {"target": str(args.get("target") or "person")}
         )
 
+    def open_hand(self, args: dict) -> dict:
+        """Open the gripper (side: right|left|both)."""
+        return self._roundtrip("open_hand", {"side": str(args.get("side") or "right")})
+
