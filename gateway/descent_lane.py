@@ -1306,3 +1306,248 @@ def poll_retreat(status_verb: Callable[[], str],
 
 
 # ─────────────────────────────────────────── the operator's next-command rule
+def next_command_action(ctx: DescentContext, verb: str, z: Any,
+                        law: LaneLaw, now_monotonic: float,
+                        tol_m: Optional[float] = None,
+                        args: Any = None) -> Tuple[str, str]:
+    """``(action, reason)`` for a command arriving while a height may be held.
+
+    The operator's rule (plan §6, D2), applied when the NEXT command arrives —
+    the previous skill cannot see the future, so this is the only place the
+    hold can be decided:
+
+      * a lane skill needing the SAME height, inside the hold window -> HOLD
+      * a RELEASE-ONLY place (``place []`` — no coordinates at all) arriving
+        inside a live hold -> HOLD, and only then: the body is already at a
+        confirmed height and the drop aims at no target height, so there is
+        nothing an "unknown target" could mis-frame, and rising to drop from
+        standing is strictly worse than dropping from the height the body is
+        already confirmed at
+      * a lane skill needing a DIFFERENT height, or past the window, or a lane
+        skill whose target is high/unknown -> rise first
+      * a ``navigate`` / ``cmd_set`` -> rise AND CONFIRM first (a walk while a
+        descent is held is squat-walking, which is unmeasured)
+      * an arm-only command -> rise best-effort, warn loudly on failure
+      * anything non-motion (observe / status / image / query_user / ...) ->
+        untouched, because a read cannot collide with a lowered body
+
+    THERE IS NO ``NEXT_CLEAR`` AND NO TAKEOVER VERB SET (D3).  The lane cannot
+    observe an operator takeover: nothing dispatches an ``estop``/``rc``/
+    ``rc_takeover``/``suspend`` verb through this gateway, and the writer's own
+    suspend is UNREACHABLE while the arm engine holds the body (D2), so a
+    "forget the hold" branch could never fire honestly.  What the lane does
+    instead is report the lockout it holds (:func:`lockout_notice`).
+
+    ``z`` is the target's TORSO-FRAME height (the raw detection), NOT a body
+    height: the height this target NEEDS is derived here via
+    :func:`height_command`, so the caller never has to know the ladder.
+
+    ``args`` is the lane skill's own argument list, when the caller has it.
+    ``None`` — the default — means NO INFORMATION, so every pre-existing caller
+    keeps this rule's original answer byte for byte; it is read ONLY by the
+    release-only clause below, through :func:`release_only_args`.
+
+    ``now_monotonic`` MUST be the same clock ``DescentContext.hold_deadline``
+    was written from (``time.monotonic``) — a wall-clock value compared against
+    a monotonic deadline would silently extend or truncate the hold across a
+    clock step.
+
+    A context that is ``IDLE`` — and a law that is not :func:`usable` — both
+    answer :data:`NEXT_NONE`: with no descent outstanding the lane has nothing
+    to say about the command, and that keeps the lane-off path inert.
+    """
+    name = str(verb or "")
+    if ctx is None or ctx.state == IDLE or not usable(law):
+        return NEXT_NONE, "no descent in flight"
+    if name in LANE_SKILL_VERBS:
+        if not _finite_num(z):
+            # Release-only place inside a live hold: it carries no coordinates, so
+            # no target height can be mis-placed, and rising first is strictly
+            # worse. Narrowed to a place-family verb, empty args, a live hold.
+            held = ctx.height_cmd
+            if (name in PLACE_FAMILY_VERBS and release_only_args(args)
+                    and ctx.state == HOLDING and held is not None
+                    and ctx.hold_deadline is not None
+                    and now_monotonic < ctx.hold_deadline):
+                return NEXT_HOLD, (
+                    "release-only place: no target height to be framed by, and "
+                    "the body is already held at %.3f m inside the live window "
+                    "(%.1fs left) — drop from the held height"
+                    % (held, ctx.hold_deadline - now_monotonic))
+            return NEXT_RETREAT_BEST_EFFORT, ("target height absent — no body "
+                                              "height can be held for an unknown target")
+        if z >= descent_law.COMFORT_Z:
+            return NEXT_RETREAT_BEST_EFFORT, ("this target needs no descent — "
+                                              "rise before acting on it")
+        need = height_command(z, law)
+        tol = law.hold_tol_m if tol_m is None else float(tol_m)
+        held = ctx.height_cmd
+        if (ctx.state == HOLDING and held is not None
+                and ctx.hold_deadline is not None
+                and now_monotonic < ctx.hold_deadline
+                and descent_law.same_height(need, held, tol)):
+            return NEXT_HOLD, ("held %.3f m is within %.3f m of the %.3f m this "
+                               "target needs" % (held, tol, need))
+        return NEXT_REDESCEND, ("needed %.3f m differs from the held %s m (or "
+                                "the hold window lapsed) — rise, then descend"
+                                % (need, "%.3f" % held if held is not None
+                                   else "none"))
+    if name in BODY_BLOCKING_VERBS:
+        return NEXT_RETREAT_BLOCKING, ("squat-walking is unmeasured — standing "
+                                       "must be CONFIRMED before a walk")
+    if name in BEST_EFFORT_VERBS:
+        return NEXT_RETREAT_BEST_EFFORT, ("arm-only command — rise best-effort, "
+                                          "warn loudly on failure")
+    return NEXT_NONE, "non-motion command — the lane leaves it alone"
+
+
+# ───────────────────────────────────────────────────────── the two sequences
+def _refuse(log: DescentPhaseLog, detail: str,
+            stamp: Callable[[], float]) -> Tuple[str, Any]:
+    """Close a run on a fail-closed refusal (engine NEVER called)."""
+    log.finish("refuse", detail, stamp())
+    return ("ERROR:low-workspace %s" % detail), None
+
+
+def _descend_step(ctx: DescentContext, log: DescentPhaseLog, law: LaneLaw,
+                  z: float, *, writer_verb: Callable[[str], str],
+                  status_verb: Callable[[], str],
+                  stamp: Callable[[], float],
+                  clock: Callable[[], float],
+                  sleep: Callable[[float], None]
+                  ) -> Tuple[bool, Optional[float], str]:
+    """``height <cmd>`` then confirm it.  ``(ok, confirmed_ref, detail)``.
+
+    Writes TWO rows on the happy path — ``descend`` (the writer accepted the
+    command) and ``confirm`` (the reference actually left standing) — because
+    those are two independently falsifiable facts and collapsing them would
+    hide which one failed.
+
+    THE FRAME IS PROBED FIRST.  The writer reports its own standing reference
+    only in the INACTIVE status form, and only while it is tracking nothing;
+    during an ACTIVE descent no poll carries it.  So one ``status`` poll is
+    taken BEFORE the command and its ``stand`` is carried on the context — the
+    frame shift, the confirmation and the reply then all read that ONE number
+    instead of the envelope's (which drifts).  The envelope value is the
+    fallback only when that probe yields nothing, i.e. for a first command.
+
+    A FAILED DESCENT PARKS THE CONTEXT (D7).  ``ctx.state`` is set to
+    ``DESCENDING`` BEFORE the writer is touched, so the writer-rejected and the
+    not-confirmed return paths both leave a context that is NOT ``IDLE`` — the
+    mirror of ``_retreat_step``, which parks ``RETREATING`` before ``height
+    off``.  A failure here means the body may be moving (a lost reply is not a
+    proof the command never landed), and a context that is not ``IDLE`` makes
+    every subsequent consumer refuse rather than act: blocking verbs answer
+    ``NEXT_RETREAT_BLOCKING`` and a lane skill must take a CONFIRMED rise
+    first.  Leaving ``IDLE`` would be a context that has FORGOTTEN an unknown
+    body height, which is the one thing this lane must never do.
+    """
+    target = height_command(z, law)
+    stand = _writer_stand(status_verb, ctx.writer_lock)
+    if stand is None:
+        stand = float(law.height_stand_m)
+    ctx.writer_stand_m = stand
+    # Park the state before touching the writer: `height <m>` may have been
+    # accepted with the reply lost, and a failure here means the body may be
+    # moving. A non-IDLE context makes every later consumer refuse, not act.
+    ctx.state = DESCENDING
+    ok, reply = _issue(writer_verb, "height %.3f" % target, ctx.writer_lock)
+    if not ok:
+        detail = honest("descent refused: writer rejected `height %.3f` (%s)"
+                        % (target, reply or "no reply"))
+        log.add("descend", "refuse", detail, stamp())
+        return False, None, detail
+    # The writer accepted the command. Confirmation below is a separate fact, and
+    # collapsing the two would hide which one failed.
+    log.add("descend", "ok", honest("height %.3f commanded (writer: %s)"
+                                    % (target, reply)), stamp())
+    confirmed, ref, cd = poll_descent(status_verb, target, stand,
+                                      timeout_s=law.timeout_s,
+                                      sleep=sleep, monotonic=clock,
+                                      lock=ctx.writer_lock)
+    if not confirmed:
+        detail = honest("descent NOT confirmed: %s" % cd)
+        log.add("confirm", "refuse", detail, stamp())
+        return False, None, detail
+    ctx.state = DESCENDING          # already parked; restated with ref
+    ctx.height_cmd = ref            # the confirmed ref, not the command
+    # The body stays down on the writer's own `height_hold_s` clock; nothing in
+    # this lane renews it.
+    detail = honest("height %.3f -> %.3f confirmed %s"
+                    % (stand, ref, cd))
+    log.add("confirm", "ok", detail, stamp())
+    return True, ref, detail
+
+
+def _retreat_step(ctx: DescentContext, log: DescentPhaseLog, *,
+                  writer_verb: Callable[[str], str],
+                  status_verb: Callable[[], str],
+                  stamp: Callable[[], float],
+                  clock: Callable[[], float],
+                  sleep: Callable[[float], None]
+                  ) -> Tuple[bool, Optional[float], str]:
+    """``height off`` then confirm standing.  ``(ok, ref, detail)``.
+
+    WARN-AND-HOLD on failure (plan §7): the loud stderr line, NO further motion
+    dispatched, and the context stays NON-``IDLE`` so the next lane skill
+    refuses rather than act on a body height nobody can vouch for.  The
+    writer's ``height_hold_s`` watchdog and its shutdown ascend are the
+    independent backstops.
+
+    NOTHING ELSE CAN RE-ISSUE THE DESCENT.  There is no renewal thread to stop
+    first (the body is held by the writer's own ``height_hold_s`` lifetime and
+    by nothing else), so the ``height off`` below is the only command racing it
+    and it is sent under :attr:`DescentContext.writer_lock` like every other.
+    """
+    ctx.state = RETREATING
+    ctx.last_retreat_was_noop = False
+    # One pre-poll: the writer's watchdog may already have re-stood the body, so
+    # reading before `height off` lets the detail say who raised it. The command
+    # is still sent: it is idempotent and clears any latch the poll cannot see.
+    pre = descent_law.parse_height_status(_safe_status(status_verb,
+                                                       ctx.writer_lock))
+    was_standing, _pre_detail = _judge_retreat(pre, HEIGHT_CONFIRM_TOL_M)
+    ok, reply = _issue(writer_verb, "height off", ctx.writer_lock)
+    if not ok:
+        detail = honest("retreat refused: writer rejected `height off` (%s)"
+                        % (reply or "no reply"))
+        log.add("retreat", "refuse", detail, stamp())
+        _loud(detail)
+        return False, None, detail
+    log.add("retreat", "ok", honest("height off accepted"), stamp())
+    confirmed, ref, cd = poll_retreat(status_verb, sleep=sleep, monotonic=clock,
+                                      lock=ctx.writer_lock)
+    if not confirmed:
+        detail = honest("%s - body height may still be low; HOLD (%s)"
+                        % (RETREAT_UNCONFIRMED, cd))
+        _loud(detail)
+        log.add("confirm", "refuse", detail, stamp())
+        return False, None, detail
+    if was_standing:
+        detail = honest("%s: the writer already reported the body standing "
+                        "BEFORE this lane sent `height off` (it re-stood on "
+                        "its own height_hold_s clock or an earlier rise); this "
+                        "lane did NOT raise it: %s" % (ALREADY_STANDING, cd))
+    else:
+        detail = honest("rise confirmed: %s" % cd)
+    log.add("confirm", "ok", detail, stamp())
+    if ctx.stepped:
+        # The stance step is dropped after the rise, never before: relaxing the
+        # stance snap at depth is the riskier order. A refused `step off` never
+        # turns a confirmed rise into RETREATING; the next retreat retries it.
+        s_ok, s_reply = _issue(writer_verb, "step off", ctx.writer_lock)
+        if s_ok:
+            ctx.stepped = False
+            log.add("step_off", "ok", honest("step off accepted after the "
+                                             "confirmed rise (writer: %s)"
+                                             % s_reply), stamp())
+        else:
+            s_detail = honest("step off REFUSED after the confirmed rise (%s) "
+                              "- the stance step may still be installed; the "
+                              "next retreat or pre-step retries `step off`"
+                              % (s_reply or "no reply"))
+            log.add("step_off", "refuse", s_detail, stamp())
+            _loud(s_detail)
+    ctx.reset()
+    ctx.last_retreat_was_noop = bool(was_standing)
+    return True, ref, detail
