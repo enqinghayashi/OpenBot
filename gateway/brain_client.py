@@ -178,3 +178,6 @@ class GatewayTransportError(ConnectionError):
     reply failed (EOF, non-JSON, non-object reply).  Callers convert it
     to a failure envelope — never a fake success."""
 
+    def __init__(self, message: str, *, phase: str = "reply") -> None:
+        super().__init__(message)
+        self.phase = phase
