@@ -311,3 +311,5 @@ def connect_with_timeout(
     if err is not None:
         raise err
     raise OSError("getaddrinfo returned no usable addresses for %r" % (host,))
+
+
