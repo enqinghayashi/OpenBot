@@ -386,3 +386,13 @@ class _SocketGatewayTransport:
 # --- the socket backend --------------------------------------------------------
 
 
+class GatewayCallerBackend(GatewayBackend):
+    """The brain->gateway socket client (the tools.py GatewayBackend).
+
+    Every method returns the tools.py result envelope
+    (``ok(value)`` / ``fail(reason)``); every transport failure is an
+    honest failure envelope — never a fake success.  Host/port default to
+    127.0.0.1:3900 and are normally read from the ``gateway:`` config
+    segment via :meth:`from_config`.
+    """
+
