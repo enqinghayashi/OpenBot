@@ -396,3 +396,25 @@ class GatewayCallerBackend(GatewayBackend):
     segment via :meth:`from_config`.
     """
 
+    def __init__(
+        self,
+        host: str = DEFAULT_HOST,
+        port: int = DEFAULT_PORT,
+        timeout_s: float = DEFAULT_TIMEOUT_S,
+        transport: Optional[Any] = None,
+    ) -> None:
+        host = str(host or "").strip()
+        if _is_placeholder_host(host):
+            # never connect to a template host
+            # ('TODO-IP' / 'localhost-TODO' / '').
+            # ConfigError, pre-socket.
+            raise ConfigError(PLACEHOLDER_HOST_ERROR)
+        self.host = host
+        self.port = int(port)
+        self.timeout_s = float(timeout_s)
+        self._transport = (
+            transport
+            if transport is not None
+            else _SocketGatewayTransport(self.host, self.port, self.timeout_s)
+        )
+
