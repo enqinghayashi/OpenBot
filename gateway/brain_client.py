@@ -381,3 +381,8 @@ class _SocketGatewayTransport:
                 f"gateway reply is not a JSON object: {reply!r}"
             )
         return reply
+
+
+# --- the socket backend --------------------------------------------------------
+
+
