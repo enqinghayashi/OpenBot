@@ -323,3 +323,13 @@ class _SocketGatewayTransport:
     failure envelope.
     """
 
+    def __init__(
+        self,
+        host: str = DEFAULT_HOST,
+        port: int = DEFAULT_PORT,
+        timeout_s: float = DEFAULT_TIMEOUT_S,
+    ) -> None:
+        self.host = host
+        self.port = int(port)
+        self.timeout_s = float(timeout_s)
+
