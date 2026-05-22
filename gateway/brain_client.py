@@ -202,3 +202,39 @@ def _is_ip_literal(host: str) -> bool:
         return False
 
 
+def _resolve_bounded(
+    host: str, port: int, deadline: float, timeout_s: float
+) -> List[tuple]:
+    """``socket.getaddrinfo`` under a hard deadline.
+
+    Runs the resolution in a daemon thread and joins with the time left to
+    the deadline, so a slow or dead libc resolver cannot stall the caller
+    past ``timeout_s`` and a stuck getaddrinfo cannot block process exit.
+    Returns the addrinfo list; raises the resolver's own exception
+    (gaierror, an OSError) when it fails inside the bound; raises
+    :class:`socket.timeout` when the deadline passes with the resolver
+    still working.
+    """
+    box: Dict[str, Any] = {}
+
+    def _work() -> None:
+        try:
+            box["addrs"] = socket.getaddrinfo(
+                host, port, 0, socket.SOCK_STREAM
+            )
+        except Exception as exc:  # noqa: BLE001 - surfaced to the caller anyway
+            box["error"] = exc
+
+    worker = threading.Thread(
+        target=_work, name="gateway-dns-resolve", daemon=True
+    )
+    worker.start()
+    worker.join(max(0.0, deadline - time.monotonic()))
+    if "addrs" in box:
+        return box["addrs"]
+    if "error" in box:
+        raise box["error"]  # type: ignore[misc] — in practice it's a gaierror/OSError
+    raise socket.timeout(
+        "DNS resolution of %r exceeded the gateway timeout (%.1fs)"
+        % (host, timeout_s)
+    )
