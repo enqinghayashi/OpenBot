@@ -333,3 +333,51 @@ class _SocketGatewayTransport:
         self.port = int(port)
         self.timeout_s = float(timeout_s)
 
+    def roundtrip(self, request: dict) -> dict:
+        """Send one request line, return the parsed reply dict."""
+        payload = json.dumps(request)
+        try:
+            # bounded connect: caps BOTH DNS and TCP via
+            # self.timeout_s (create_connection bounds
+            # connect only - getaddrinfo can stall past
+            # it). IP literals keep the native path.
+            sock = connect_with_timeout(
+                self.host, self.port, self.timeout_s
+            )
+        except OSError as exc:
+            # phase 'connect': never established -
+            # refused, unreachable or resolution failure.
+            raise GatewayTransportError(
+                f"gateway {self.host}:{self.port} unreachable: {exc}",
+                phase="connect",
+            ) from exc
+        try:
+            sock.settimeout(self.timeout_s)
+            sock.sendall((payload + "\n").encode("utf-8"))
+            raw = sock.makefile("r", encoding="utf-8").readline()
+        except OSError as exc:
+            # phase 'reply': connection worked, the
+            # exchange didn't.
+            raise GatewayTransportError(
+                f"gateway roundtrip failed on {payload!r}: {exc}"
+            ) from exc
+        finally:
+            try:
+                sock.close()
+            except OSError:
+                pass
+        if not raw:
+            raise GatewayTransportError(
+                f"gateway closed the connection without a reply to {payload!r}"
+            )
+        try:
+            reply = json.loads(raw)
+        except ValueError as exc:
+            raise GatewayTransportError(
+                f"gateway replied non-JSON ({raw!r}): {exc}"
+            ) from exc
+        if not isinstance(reply, dict):
+            raise GatewayTransportError(
+                f"gateway reply is not a JSON object: {reply!r}"
+            )
+        return reply
