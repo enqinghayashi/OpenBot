@@ -473,3 +473,42 @@ class GatewayCallerBackend(GatewayBackend):
 
     # -- the GatewayBackend protocol --------------------------------------------
 
+    def observe(self) -> Any:
+        """Latest WorldObservation from the gateway server, or None.
+
+        The server's 'observe' verb returns the observation JSON (the
+        gateway's ``observe_dict()``, json.dumps'ed).  The tools server's
+        ``_shape_reply`` ALWAYS sends that value as a STRING — the JSON
+        text of the observation dict (R7-3 envelope: ok:true carries
+        ``value`` = reply text).  This parses BOTH real shapes:
+
+          (a) a str      — the JSON text of the gateway's observe_dict():
+                           json.loads'd into the payload dict;
+          (b) a dict     — the observation payload directly (in-process /
+                           mock paths that never round-trip a string).
+
+        Anything else — malformed JSON, a JSON value that is not an object,
+        a non-dict/non-str value — is None (never raised): the tools.py
+        contract (None = no source; silence == empty, never a guess).  The
+        brain.observation.WorldObservation import stays lazy.
+        """
+        env = self._roundtrip("observe", {})
+        if not env.get("success"):
+            return None
+        value = env.get("value")
+        payload = value
+        if isinstance(value, str):
+            # value = json text of the dict
+            try:
+                payload = json.loads(value)
+            except ValueError:
+                return None  # bad JSON = no source
+        if not isinstance(payload, dict):
+            return None
+        try:
+            from brain.observation import WorldObservation  # imported lazily
+
+            return WorldObservation.from_dict(payload)
+        except Exception:  # noqa: BLE001
+            return None
+
