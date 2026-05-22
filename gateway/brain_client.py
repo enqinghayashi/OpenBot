@@ -238,3 +238,5 @@ def _resolve_bounded(
         "DNS resolution of %r exceeded the gateway timeout (%.1fs)"
         % (host, timeout_s)
     )
+
+
