@@ -181,3 +181,8 @@ class GatewayTransportError(ConnectionError):
     def __init__(self, message: str, *, phase: str = "reply") -> None:
         super().__init__(message)
         self.phase = phase
+
+
+# --- talking to the socket ----------------------------------------------------
+
+
