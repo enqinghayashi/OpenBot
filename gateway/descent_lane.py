@@ -840,3 +840,106 @@ def _clip(text: Any, limit: int = 120) -> str:
     """A writer status line, collapsed onto one line for an operator detail."""
     body = " ".join(str(text or "").split())
     return body if len(body) <= limit else body[:limit] + "..."
+
+
+def _writer_stand(status_verb: Callable[[], str],
+                  lock: Optional[Any] = None) -> Optional[float]:
+    """The writer's OWN standing reference from a single ``status`` poll.
+
+    The writer reports ``stand`` ONLY in the INACTIVE form — the form it emits
+    while it is tracking nothing.  During an ACTIVE descent no poll carries it,
+    so it must be read BEFORE the descent is commanded and carried from there
+    (``DescentContext.writer_stand_m``).
+
+    ``None`` — an unparseable poll, or a writer already tracking a height —
+    means the caller falls back to the envelope's ``height_stand_m``, which is
+    honest for the first command only.
+    """
+    parsed = descent_law.parse_height_status(_safe_status(status_verb, lock))
+    if parsed is None or parsed.get("active") or parsed.get("suspended"):
+        return None
+    stand = parsed.get("stand")
+    return float(stand) if _finite_num(stand) else None
+
+
+def probe_active(status_verb: Callable[[], str], target_m: float,
+                 *, tol_m: float = HEIGHT_CONFIRM_TOL_M,
+                 lock: Optional[Any] = None
+                 ) -> Tuple[bool, Optional[float], str]:
+    """One SYNCHRONOUS ``status`` poll: is the writer still driving
+    ``target_m``?  ``(ok, rem_s, detail)``.
+
+    The lane's LAST LINE before an engine dispatch.  A descent is confirmed by
+    a poll, but ``height <m>`` is a LIFETIME on the writer: it can expire, be
+    suspended by an RC takeover, or be re-issued elsewhere between the
+    confirmation and the moment the arm is actually commanded.  Dispatching
+    against a body nobody is holding is the collision this lane exists to
+    prevent, so this refuses rather than retries.
+
+    ``rem_s`` is the writer's own remaining hold FROM THE SAME POLL — one poll,
+    one frame, one clock — and is what bounds the hold window
+    (:meth:`DescentContext.holding`).  It is ``None`` when the writer reports no
+    parseable ``rem``; the caller may still act on ``ok``, but must not extend a
+    hold past what the poll showed.
+    """
+    raw = _safe_status(status_verb, lock)
+    parsed = descent_law.parse_height_status(raw)
+    if parsed is None:
+        return False, None, honest(
+            "the writer's status is not a height report (got %s) - the body "
+            "height cannot be vouched for" % (_clip(raw) or "no reply"))
+    ref = parsed.get("ref")
+    if parsed.get("suspended"):
+        return False, None, honest(
+            "an RC override SUSPENDED the squat at ref=%.3f - the lane no "
+            "longer owns the body height" % ref)
+    if not parsed.get("active") or parsed.get("target") is None:
+        return False, None, honest(
+            "the writer is no longer driving a height (status: %s)"
+            % _clip(raw))
+    if ref is None or abs(ref - target_m) > tol_m:
+        return False, None, honest(
+            "the writer's reference %.3f has left the held height %.3f "
+            "(tol %.3f)" % (ref, target_m, tol_m))
+    rem = parsed.get("rem")
+    return (True, (float(rem) if _finite_num(rem) else None),
+            "writer still active at ref=%.3f (rem=%s)" % (ref, _clip(raw)))
+
+
+def _lane_budget(law: Any) -> float:
+    """The DECLARED lane operation budget for ``law``, in seconds.
+
+    ONE read of ONE name.  ``LaneLaw.operation_budget_s`` is the threaded field
+    (config key ``embodiment.envelope.lane_operation_budget_s`` — see
+    :data:`LANE_OPERATION_BUDGET_S` for the whole threading), and its
+    constructor already falls back to that module constant for a value that is
+    not a finite positive number.  This repeats the fallback only so a law
+    object that never ran that constructor — a stub, a hand-built duck type —
+    still yields the DECLARED budget instead of an ``AttributeError`` or a zero
+    bar.  It is the number the pre-dispatch guard (:func:`_lifetime_refusal`,
+    which adds the slew margin) and the post-dispatch check
+    (:func:`_post_dispatch_body_check`) both grade against; nothing here
+    invents a second budget.
+    """
+    budget = getattr(law, "operation_budget_s", LANE_OPERATION_BUDGET_S)
+    if _finite_num(budget) and float(budget) > 0.0:
+        return float(budget)
+    return float(LANE_OPERATION_BUDGET_S)
+
+
+def _continued_lockout_s(ctx: Any, now_monotonic: Any) -> float:
+    """The RESIDUAL of the hold a next-command rule answered ``HOLD`` for.
+
+    A ``NEXT_HOLD`` answer means the lane CONTINUES a hold it already entered,
+    so the window the operator is subject to is what is LEFT of it, not the
+    window it was entered with.  Read from ``ctx.hold_deadline`` — the same
+    monotonic deadline the rule itself compared against — so the number
+    reported and the number the rule acted on are one fact.  ``0.0`` for a
+    context with no deadline (nothing to continue) or a non-finite clock; the
+    rule cannot answer ``NEXT_HOLD`` past the deadline, so in the reachable
+    case this is a positive window.
+    """
+    deadline = getattr(ctx, "hold_deadline", None)
+    if not _finite_num(deadline) or not _finite_num(now_monotonic):
+        return 0.0
+    return max(0.0, float(deadline) - float(now_monotonic))
