@@ -186,3 +186,17 @@ class GatewayTransportError(ConnectionError):
 # --- talking to the socket ----------------------------------------------------
 
 
+def _is_ip_literal(host: str) -> bool:
+    """True when ``host`` is an IPv4/IPv6 address literal ('192.168.123.164',
+    '::1', '[::1]').  Numeric addresses never touch DNS — resolving them is
+    pure parsing — so they keep the exact native connect path and are never
+    routed through the bounded (threaded) resolver below.  A bracketed IPv6
+    literal is unwrapped the way socket.create_connection unwraps it."""
+    h = str(host)
+    if h.startswith("[") and h.endswith("]"):
+        h = h[1:-1]
+    try:
+        ipaddress.ip_address(h)
+        return True
+    except ValueError:
+        return False
