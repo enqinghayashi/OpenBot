@@ -1163,3 +1163,146 @@ def _downgrade_verdict(summary: str, engine_verdict: Optional[str]) -> str:
         evidence = ("%s (engine verdict was: %s)" % (evidence, engine_verdict)
                     if evidence else str(engine_verdict))
     return "VERDICT:error|Evidence:(low-workspace) %s" % evidence
+
+
+def _judge_descent(parsed: Optional[dict], target: float, stand: float,
+                   min_descent: float, tol: float) -> Tuple[bool, str]:
+    """``(confirmed, detail)`` for one parsed height fragment.
+
+    Confirmed requires ALL FOUR: the writer is ACTIVELY tracking; its reference
+    has reached the height THIS LANE COMMANDED (``target``); the reference has
+    left standing by more than ``min_descent``; and the comparison is made in
+    the writer's own reported frame (``stand``).
+
+    ``target`` is the COMMANDED height, not the writer's own intermediate
+    ``target``: the writer's internal target can agree with its reference on a
+    move that was never requested (a clamp, a concurrent re-issue), and a
+    confirmation that reads it back would confirm the writer's arithmetic
+    instead of the lane's command.
+
+    The magnitude conjunct is not a formality.  ``STAND_EPS_M`` alone admits a
+    band only ~1 cm wide: the reference moves just past epsilon, the confirm
+    band still calls it a match, and a "descent" that never lowered the body
+    enough to matter reads as CONFIRMED.
+    """
+    if parsed is None:
+        return False, "no parseable height fragment in the writer status"
+    ref = parsed.get("ref")
+    if parsed.get("suspended"):
+        return False, ("descent SUSPENDED by an RC override at ref=%.3f"
+                       % ref)
+    if not parsed.get("active") or parsed.get("target") is None:
+        if parsed.get("stand") is not None:
+            return False, ("descent was a no-op (writer height band not "
+                           "widened): height=%.2f(stand %.2f)"
+                           % (ref, parsed["stand"]))
+        return False, "writer status carries no tracked height target"
+    if abs(ref - target) > tol:
+        return False, ("ref %.3f has not reached the commanded %.3f (tol %.2f)"
+                       % (ref, target, tol))
+    if abs(ref - stand) <= min_descent:
+        return False, ("ref %.3f sits %.3f m from standing (%.3f) - a descent "
+                       "must clear %.3f m"
+                       % (ref, abs(ref - stand), stand, min_descent))
+    return True, "ref=%.3f commanded=%.3f (<= %.3f)" % (ref, target, tol)
+
+
+def _judge_retreat(parsed: Optional[dict], tol: float) -> Tuple[bool, str]:
+    """``(confirmed, detail)`` for one parsed height fragment, retreating.
+
+    Confirmed requires the INACTIVE form (the writer is tracking nothing) with
+    the reference back at the standing reference it itself reports.  Reading
+    the standing value off the fragment rather than re-supplying it keeps the
+    two ends of the comparison from the same emitter.
+    """
+    if parsed is None:
+        return False, "no parseable height fragment in the writer status"
+    ref = parsed.get("ref")
+    if parsed.get("suspended"):
+        return False, ("writer holds a SUSPENDED squat at ref=%.3f" % ref)
+    if parsed.get("active"):
+        return False, ("still tracking a height: ref=%.3f target=%s"
+                       % (ref, parsed.get("target")))
+    stand = parsed.get("stand")
+    if stand is None:
+        return False, "writer status carries no standing reference"
+    if abs(ref - stand) > tol:
+        return False, ("ref %.3f has not returned to stand %.3f (tol %.2f)"
+                       % (ref, stand, tol))
+    return True, "ref=%.3f stand=%.3f" % (ref, stand)
+
+
+def _poll(status_verb: Callable[[], str], judge: Callable[[Optional[dict], float], Tuple[bool, str]],
+          tol: float, *, timeout_s: float, interval_s: float,
+          sleep: Callable[[float], None],
+          monotonic: Callable[[], float],
+          lock: Optional[Any] = None) -> Tuple[bool, Optional[float], str]:
+    """Poll ``status`` until ``judge`` confirms or the window expires.
+
+    The FIRST poll happens before any sleep, so a writer that is already in the
+    commanded state confirms with no latency at all.  The iteration count is
+    capped as well as the clock, so a caller-supplied clock that never advances
+    cannot spin forever.  ``lock`` serializes each poll against the lane's own
+    other writer traffic; it is taken per poll, never across the loop.
+    """
+    interval = float(interval_s)
+    deadline = monotonic() + max(0.0, float(timeout_s))
+    max_polls = 2
+    if interval > 0.0:
+        max_polls = int(math.ceil(max(0.0, float(timeout_s)) / interval)) + 2
+    last_detail = "the writer was never polled"
+    for _ in range(max(max_polls, 1)):
+        parsed = descent_law.parse_height_status(_safe_status(status_verb, lock))
+        confirmed, detail = judge(parsed, tol)
+        last_detail = detail
+        if confirmed:
+            return True, parsed.get("ref"), detail
+        if monotonic() >= deadline:
+            break
+        sleep(interval)
+    return False, None, last_detail
+
+
+def poll_descent(status_verb: Callable[[], str], target_m: float, stand_m: float,
+                 *, timeout_s: float = DESCENT_CONFIRM_TIMEOUT_S,
+                 tol_m: float = HEIGHT_CONFIRM_TOL_M,
+                 min_descent_m: float = MIN_CONFIRMED_DESCENT_M,
+                 interval_s: float = DESCENT_POLL_INTERVAL_S,
+                 sleep: Optional[Callable[[float], None]] = None,
+                 monotonic: Optional[Callable[[], float]] = None,
+                 lock: Optional[Any] = None
+                 ) -> Tuple[bool, Optional[float], str]:
+    """``(confirmed, ref, detail)`` — poll until the descent is CONFIRMED.
+
+    ``target_m`` is the COMMANDED height and ``stand_m`` the writer's own
+    nominal standing reference (``DescentContext.writer_stand_m``, read from a
+    poll taken before the command was issued); both are needed because the
+    writer's ACTIVE fragment reports the current reference and its own target
+    but not the nominal it started from.  ``timeout_s`` defaults to the module
+    constant so a caller that never populates ``LaneLaw.timeout_s`` behaves
+    exactly as before.
+    """
+    return _poll(status_verb,
+                 lambda parsed, tol: _judge_descent(parsed, target_m, stand_m,
+                                                    float(min_descent_m), tol),
+                 float(tol_m), timeout_s=timeout_s, interval_s=interval_s,
+                 sleep=sleep or time.sleep, monotonic=monotonic or time.monotonic,
+                 lock=lock)
+
+
+def poll_retreat(status_verb: Callable[[], str],
+                 *, timeout_s: float = DESCENT_CONFIRM_TIMEOUT_S,
+                 tol_m: float = HEIGHT_CONFIRM_TOL_M,
+                 interval_s: float = DESCENT_POLL_INTERVAL_S,
+                 sleep: Optional[Callable[[float], None]] = None,
+                 monotonic: Optional[Callable[[], float]] = None,
+                 lock: Optional[Any] = None
+                 ) -> Tuple[bool, Optional[float], str]:
+    """``(confirmed, ref, detail)`` — poll until standing is CONFIRMED."""
+    return _poll(status_verb, lambda parsed, tol: _judge_retreat(parsed, tol),
+                 float(tol_m), timeout_s=timeout_s, interval_s=interval_s,
+                 sleep=sleep or time.sleep, monotonic=monotonic or time.monotonic,
+                 lock=lock)
+
+
+# ─────────────────────────────────────────── the operator's next-command rule
