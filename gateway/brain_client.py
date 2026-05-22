@@ -621,3 +621,21 @@ class GatewayCallerBackend(GatewayBackend):
         REACHED (no odom exists)."""
         return self._roundtrip("navigate", {"target": str(args.get("target") or "")})
 
+    def turn_around(self, args: dict) -> dict:
+        """Turn in place and sweep for a person, holding (no walk) on sight.
+
+        Operator directive 2026-10-03: *"just the simple turn around sweep
+        when i ask it to turn around, it will turn around to look for person,
+        once detected person, it stopped sweeping"*.  The sweep itself is the
+        walk FSM's own; the design of record for the gateway-side verb is to
+        start it by publishing the label DIRECTLY on /walk_target — never
+        /navigate_target — so the coordinator never sees a navigation request
+        and its auto-approach (/walk_go on the 3rd detection beat) can never
+        fire: the FSM reaches its DETECTED hold and stays there.
+
+        The brain half only names the label; the gateway owns the publish.
+        """
+        return self._roundtrip(
+            "turn_around", {"target": str(args.get("target") or "person")}
+        )
+
