@@ -313,3 +313,13 @@ def connect_with_timeout(
     raise OSError("getaddrinfo returned no usable addresses for %r" % (host,))
 
 
+class _SocketGatewayTransport:
+    """JSON-lines request/response over a TCP stream socket.
+
+    One request line -> one reply line, exactly like the gateway node's
+    tools server.  A fresh connection per request is safe (the server is
+    multi-client, thread-per-connection).  Every failure raises
+    :class:`GatewayTransportError` — the backend converts it to an honest
+    failure envelope.
+    """
+
