@@ -943,3 +943,223 @@ def _continued_lockout_s(ctx: Any, now_monotonic: Any) -> float:
     if not _finite_num(deadline) or not _finite_num(now_monotonic):
         return 0.0
     return max(0.0, float(deadline) - float(now_monotonic))
+
+
+def _lifetime_refusal(rem_s: Any, budget_s: Any, verb: str,
+                      slew_margin_s: Any = 0.0) -> Optional[str]:
+    """The fail-closed budget guard: ``None`` to proceed, else the refusal.
+
+    ``height <m>`` is a LIFETIME on the writer, and the lane does NOT renew it,
+    so a dispatched action needs the writer's own reported remaining hold to
+    cover the whole thing.  This is the guard that REPLACES a renewal thread:
+    instead of re-issuing a short clock in the background, it REFUSES to
+    operate on one and names the config key that fixes it.
+
+    THE BAR IS ``budget``, AND THE REFUSAL ALSO QUOTES THE SLEW MARGIN.
+    ``budget`` is :data:`LANE_OPERATION_BUDGET_S` (or
+    ``LaneLaw.operation_budget_s``, which config threads into it) — the
+    ENGINE-CALL budget, the same number :func:`_post_dispatch_body_check`
+    grades the MEASURED engine elapsed against, so ``rem`` must cover it whole.
+
+    ``slew_margin_s`` (:func:`slew_margin_s`) is NOT added to that bar, and
+    adding it would be a double count: the descent's own slew+confirm is
+    dispatched BEFORE this reads ``rem``, so the writer's own clock has already
+    deducted it (this function reads ``rem`` after ``_descend_step`` returns).
+    That is exactly why a ``height_hold_s`` equal to the bare budget does not
+    dispatch (D9) — and the remedy for D9 is the VALUE TO SET, never a higher
+    bar: a gate at ``budget + margin`` would refuse a body the writer is
+    provably still holding, and would demand ``budget + 2 * margin`` of
+    ``height_hold_s``, which lengthens the operator lockout 1:1 for no safety
+    gain.  So the refusal quotes the observed ``rem``, the required bar, the
+    budget, the margin, and the value to SET — the bar plus the margin, since
+    that margin is spent before this gate reads the clock — so the operator
+    does not have to rediscover it by bisection.
+
+    REFUSES on every value that is not a usable number at or above the bar:
+    an absent or unparseable ``rem`` (``None`` — no parseable fragment, a
+    suspended hold, a dead socket), a non-finite value, and a NEGATIVE one.
+    The same discipline applies to the budget: a missing, non-finite or
+    non-positive ``budget_s`` falls back to :data:`LANE_OPERATION_BUDGET_S`, so
+    a bad override can never silently lift the bar to zero, and a bad
+    ``slew_margin_s`` degrades to 0.0 rather than to a guess.  Nothing is
+    guessed and nothing defaults to ok — an unknown lifetime is not a long
+    lifetime, and the permissive direction here is a body that re-stands
+    mid-operation.
+    """
+    if _finite_num(budget_s) and float(budget_s) > 0.0:
+        budget = float(budget_s)
+    else:
+        budget = float(LANE_OPERATION_BUDGET_S)
+    margin = (float(slew_margin_s)
+              if _finite_num(slew_margin_s) and float(slew_margin_s) > 0.0
+              else 0.0)
+    # The bar is the budget alone: `rem` is read after the descent's own
+    # slew+confirm, so the writer's clock has already deducted the margin.
+    required = budget
+    if _finite_num(rem_s) and float(rem_s) >= required:
+        return None
+    observed = ("%.1fs" % float(rem_s) if _finite_num(rem_s)
+                else "absent/unreadable (%r)" % (rem_s,))
+    return honest(
+        "refusing to dispatch %s: the writer's height lifetime is too short "
+        "for a lane operation (rem=%s, required >= %.1fs = LANE_OPERATION_"
+        "BUDGET_S %.1fs; slew_margin %.1fs of the SAME clock is already spent "
+        "by the descent's own slew+confirm before this reads `rem`) — so set "
+        "`height_hold_s` in "
+        "skills/writer/config/merge_config.yaml to at least %.1fs so ONE "
+        "`height` command covers the whole descent->pick->place"
+        % (verb, observed, required, budget, margin, required + margin))
+
+
+def hold_unusable_reason(body_rem: Any, law: Any) -> Optional[str]:
+    """``None`` when a hold entered now could be reused by a matching place,
+    else the honest reason it is NOT offered (R4 HRC-1).
+
+    A matching place re-runs the lifetime guard at its own dispatch
+    (:func:`_lifetime_refusal` with the bar :func:`_lane_budget`), so a hold
+    entered with the writer's remaining lifetime already BELOW that bar can
+    never be reused: the place would refuse it.  MEASURED on the box (brief):
+    ``height_hold_s`` 66.0 vs ``lane_operation_budget_s`` 60.0, holds offered at
+    45.6 s / 21.1 s rem, every one refused at the place.  So the hold is not
+    offered and the pick retreats instead.
+
+    DECIDABILITY.  Only the LIFETIME half can be decided here: the place's own
+    drop point (and whether it classifies DESCEND) is built only at place time
+    (``brain/agent/tools.py``) and is not an input of :func:`pick_sequence`.
+    The text of the hold row says so instead of guessing.
+    """
+    budget = _lane_budget(law)
+    if _finite_num(body_rem) and float(body_rem) >= budget:
+        return None
+    observed = (("%.1fs" % float(body_rem)) if _finite_num(body_rem)
+                else "absent/unreadable")
+    return honest("hold NOT offered: the writer reports %s of height lifetime "
+                  "left and a matching place needs rem >= %.1fs "
+                  "(lane_operation_budget_s) at its own dispatch, so its "
+                  "lifetime guard would refuse it" % (observed, budget))
+
+
+def _rise_phrase(ctx: Any, default: str) -> str:
+    """``default`` ("rose to" / "stood back up to"), or the honest phrase when
+    the last CONFIRMED retreat found the body ALREADY standing (R4 HRC-6/7)."""
+    if getattr(ctx, "last_retreat_was_noop", False) is True:
+        return "was already standing at"
+    return default
+
+
+def _post_dispatch_body_check(status_verb: Callable[[], str],
+                              held_ref: Any, *, elapsed_s: Any, budget_s: Any,
+                              lock: Optional[Any] = None
+                              ) -> Tuple[bool, Optional[float],
+                                         List[Tuple[str, str]], str]:
+    """``(ok, rem_s, rows, summary)`` — the POST-DISPATCH body check (D4).
+
+    A guard in FRONT of a dispatch only says the body was low when the arm was
+    COMMANDED.  The seconds that follow are when the writer's own lifetime can
+    expire, an RC takeover can suspend the squat, or the engine call can outrun
+    the budget this lane declared — and until this round the lane's sole
+    observable of that was conditional on the grasp SUCCEEDING, so a
+    mid-operation re-stand was byte-indistinguishable from a normal run.  This
+    is that observable, and BOTH sequences take it, on every path: the
+    grasp-succeeded and the grasp-FAILED alike.
+
+    ONE FRESH SYNCHRONOUS POLL, not a latched flag.  ``probe_active`` is the
+    same gate the pre-dispatch side uses, so "still holding" means the same
+    thing on both ends of the operation — the writer is ACTIVE at the reference
+    this lane confirmed, within :data:`HEIGHT_CONFIRM_TOL_M` — and the ``rem``
+    it returns is the writer's OWN remaining hold from that same poll.
+
+    TWO ANOMALY CLASSES, ONE HANDLING.  A writer that is no longer holding the
+    reference (re-stood on its own clock, suspended by an RC takeover, or
+    unreachable) raises :data:`BODY_RESTOOD`; an engine call whose MEASURED
+    elapsed outran the declared budget raises :data:`BUDGET_OVERRUN`.  Both are
+    the same claim — an operation this lane cannot vouch for — and both are
+    returned as a LOUD ``(phase, detail)`` row so the operator reads which one
+    fired, what was measured, and the writer's own words.  The phase names are
+    distinct from the generic ``hold``/``grasp``/``verify`` rows on purpose: a
+    re-stand must not have to be inferred from a row that also means "the hold
+    was declined".
+
+    FAIL CLOSED on the values as well as the state.  An absent or non-finite
+    ``held_ref`` cannot be compared against anything, so it raises the same
+    class; an absent or non-finite ``elapsed_s`` cannot be shown to be WITHIN
+    the budget, so it raises the overrun rather than passing by default.  A
+    missing, non-finite or non-positive ``budget_s`` falls back to
+    :data:`LANE_OPERATION_BUDGET_S` (see :func:`_lane_budget`), never to a bar
+    of zero.  ``summary`` is the SAME anomalies as ONE suffix-free clause for a
+    reply or a verdict — the rows carry the writer's prose, which already ends
+    with the honesty boundary, and splicing a boundary-terminated string into
+    the middle of a longer one is how a text ends up claiming a boundary it no
+    longer ends on.
+    """
+    held = float(held_ref) if _finite_num(held_ref) else None
+    if held is None:
+        held_ok, held_rem, held_detail = False, None, honest(
+            "the run never established a held reference to check against")
+    else:
+        held_ok, held_rem, held_detail = probe_active(status_verb, held,
+                                                      lock=lock)
+    budget = (float(budget_s)
+              if _finite_num(budget_s) and float(budget_s) > 0.0
+              else float(LANE_OPERATION_BUDGET_S))
+    measured = ("%.1fs" % float(elapsed_s) if _finite_num(elapsed_s)
+                else "absent/unreadable (%r)" % (elapsed_s,))
+    rows: List[Tuple[str, str]] = []
+    notes: List[str] = []
+    if not held_ok:
+        notes.append("%s - the writer was not still holding %s when the engine "
+                     "returned (the engine call measured %s)"
+                     % (BODY_RESTOOD,
+                        "%.3f m" % held if held is not None else "a height",
+                        measured))
+        rows.append(("body_restood", honest("%s; %s"
+                                           % (notes[-1], held_detail))))
+    # The fresh poll above, not the clock, is the bound: a writer still holding
+    # the reference held it for the whole call, so an overrun fails only when the
+    # poll cannot vouch for the body or the elapsed time is unreadable.
+    _over = not (_finite_num(elapsed_s) and float(elapsed_s) <= budget)
+    if _over and held_ok and _finite_num(elapsed_s):
+        print("[lane] B8j-hf14: %s - the engine call measured %s against %.1fs, "
+              "but the writer still held %.3f m when it returned (rem=%s): "
+              "not an anomaly, the engine verdict stands"
+              % (BUDGET_OVERRUN, measured, budget, held, held_rem),
+              flush=True)
+        _over = False
+    if _over:
+        notes.append("%s - the engine call measured %s against the declared "
+                     "lane operation budget %.1fs"
+                     % (BUDGET_OVERRUN, measured, budget))
+        rows.append(("budget", honest(
+            "%s - the engine call measured %s against the declared lane "
+            "operation budget %.1fs (embodiment.envelope.lane_operation_budget_s)"
+            % (BUDGET_OVERRUN, measured, budget))))
+    return (not rows), held_rem, rows, "; ".join(notes)
+
+
+def _downgrade_verdict(summary: str, engine_verdict: Optional[str]) -> str:
+    """The ANOMALY verdict: the lane's own ``VERDICT:error``, never a success.
+
+    A mid-operation re-stand must never be REPORTED as a success, and the
+    folded ``_do_pick``/``_do_place`` verdict is the engine's claim about the
+    arm alone — it cannot see the body.  So the lane OWNS the downgrade: the
+    string returned here does not start with ``VERDICT:success``, which is what
+    every consumer in this repo reads (``place_target.verdict_row`` -> the
+    VERDICT row; ``GatewayNode._shape_reply`` -> ``ok``), so no caller can
+    render this run as a pass.
+
+    THE ENGINE'S VERDICT IS EVIDENCE, NOT SOMETHING TO ERASE.  It is carried
+    inside the evidence clause, so the operator still sees exactly what the
+    verifier said about the grasp; only the LABEL is the lane's.
+
+    THE PREFIX IS THE VERIFIER'S OWN GRAMMAR.  ``VERDICT:error|Evidence:`` is
+    what ``brain/verifier.py`` emits and what ``GatewayNode._shape_reply``
+    slices a ``reason`` out of, so a downgraded verdict surfaces there as
+    ``ok: false`` with the anomaly as the reason rather than as an unreadable
+    string.  The honesty boundary is appended by :func:`_honest_verdict` on the
+    way out, like every other verdict this module returns.
+    """
+    evidence = str(summary or "").strip()
+    if engine_verdict:
+        evidence = ("%s (engine verdict was: %s)" % (evidence, engine_verdict)
+                    if evidence else str(engine_verdict))
+    return "VERDICT:error|Evidence:(low-workspace) %s" % evidence
