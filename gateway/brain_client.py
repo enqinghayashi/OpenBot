@@ -440,3 +440,36 @@ class GatewayCallerBackend(GatewayBackend):
 
     # -- internal helpers ------------------------------------------------------
 
+    def _roundtrip(self, tool: str, args: dict) -> dict:
+        """One named-args request; any failure is an honest error envelope.
+
+        Outcome-aware wording (round-4): a failure where the connection
+        was NEVER established is 'gateway unreachable'; a failure where
+        the connection SUCCEEDED but the exchange/reply was malformed is
+        'gateway reply error'.  A server-side ok:false reason passes
+        through verbatim (no prefix) — it IS the server's reason.
+        """
+        try:
+            reply = self._transport.roundtrip(
+                {"tool": tool, "args": dict(args)}
+            )
+        except GatewayTransportError as exc:
+            if exc.phase == "connect":
+                return fail(f"{tool} gateway unreachable: {exc}")
+            return fail(f"{tool} gateway reply error: {exc}")
+        except Exception as exc:  # noqa: BLE001 - wrap it up, never propagate
+            return fail(f"{tool} transport failure: {exc}")
+        if not isinstance(reply, dict):
+            return fail(f"{tool} gateway reply is not a JSON object: {reply!r}")
+        if reply.get("ok"):
+            return ok(reply.get("value", reply.get("reply")))
+        return fail(
+            str(
+                reply.get("reason")
+                or reply.get("reply")
+                or "gateway refused the request"
+            )
+        )
+
+    # -- the GatewayBackend protocol --------------------------------------------
+
