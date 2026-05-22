@@ -739,3 +739,49 @@ class DescentContext:
             return float(self.writer_stand_m)
         return float(fallback)
 
+    def holding(self, now_monotonic: float, hold_s: float,
+                writer_rem_s: Optional[float] = None) -> float:
+        """Enter ``HOLDING`` for ``min(hold_s, writer_rem_s)`` seconds.
+
+        The cap is the WRITER's own reported remaining hold.  The body re-stands
+        when the writer's lifetime expires no matter what this window says, so a
+        window reaching past that expiry would promise a hold the body cannot
+        keep.  A ``None`` (or non-finite) ``writer_rem_s`` leaves ``hold_s`` as
+        the window — the caller is expected to have refused the hold already in
+        that case (see :func:`probe_active`).
+
+        RETURNS THE WINDOW IT ACTUALLY HONOURED.  The caller MUST report this
+        number, not its own ``hold_s``: the two differ whenever the writer's
+        remaining lifetime is the shorter one, and reporting the uncapped
+        ``hold_s`` would claim a hold the body will not keep (measured overclaim
+        in round 2: claimed 5.0 s, honoured 0.400 s).  ``hold_deadline`` is
+        stamped from the same window in the caller's clock, so the number
+        returned and the deadline the next-command rule reads are one fact.
+        """
+        window = max(0.0, float(hold_s))
+        if writer_rem_s is not None and _finite_num(writer_rem_s):
+            window = min(window, max(0.0, float(writer_rem_s)))
+        self.state = HOLDING
+        self.hold_deadline = now_monotonic + window
+        return window
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostics only
+        return ("DescentContext(state=%s, height_cmd=%r, effective_z=%r, "
+                "hold_deadline=%r, writer_stand_m=%r)"
+                % (self.state, self.height_cmd, self.effective_z,
+                   self.hold_deadline, self.writer_stand_m))
+
+
+# ──────────────────────────────────────────────────────────────── the log table
+class DescentPhaseLog(_place_target.PhaseLog):
+    """``place_target.PhaseLog`` with a descent-specific header.
+
+    Overrides ``header()`` ONLY.  Every other behaviour — a row's elapsed time
+    MEASURED against the previous row, the total carried on the VERDICT row,
+    the wrap width — is inherited, so the repo keeps exactly ONE table
+    renderer.  Render with ``place_target.render_table``; publish with
+    ``place_target.status_message``.
+    """
+
+    def header(self) -> str:
+        return "LOW-WORKSPACE  skill=%s  side=%s" % (self.label, self.side or "?")
