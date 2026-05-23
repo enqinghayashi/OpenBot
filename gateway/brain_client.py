@@ -859,3 +859,14 @@ class GatewayCallerBackend(GatewayBackend):
                 named[key] = args.get(key)
         return self._roundtrip("aim_turn", named)
 
+    def step_back(self, args: Optional[dict] = None) -> dict:
+        """B8l-hf6: walk backward at the gait floor (``{m}`` metres, optional;
+        the gateway switch and cap win) before a navigate sweep.  BLOCKS
+        <= ~5 s.  ok('DONE step_back: ...; STEPBACK_RESULT=done|off') or
+        fail('ERROR:step_back ...; STEPBACK_RESULT=...').  Only the navigate
+        tool calls it, when the target is not in view.  The mock backend has
+        no such method (inert)."""
+        named: Dict[str, Any] = {}
+        if isinstance(args, dict) and args.get("m") is not None:
+            named["m"] = args.get("m")
+        return self._roundtrip("step_back", named)
