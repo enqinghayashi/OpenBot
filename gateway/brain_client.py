@@ -886,3 +886,17 @@ class MockGatewayBackend(GatewayBackend):
     brain/agent/tools.py so the laptop agent runs entirely offline.
     """
 
+    def __init__(
+        self,
+        detections: Optional[List[Any]] = None,
+        fresh: bool = True,
+        detections_ts: Optional[float] = None,
+        scripted: Optional[Dict[str, dict]] = None,
+    ) -> None:
+        self._detections = list(detections or [])
+        self._fresh = bool(fresh)
+        self._detections_ts = (
+            detections_ts if detections_ts is not None else time.time()
+        )
+        self._scripted = dict(scripted or {})
+
