@@ -783,3 +783,11 @@ class GatewayCallerBackend(GatewayBackend):
                 named[key] = args.get(key)
         return self._roundtrip("yolo_strict", named)
 
+    def container(self, args: Optional[dict] = None) -> dict:
+        """B8j: the gateway's CONTAINER LOCK (the container the last navigate
+        REACHED, followed by instance id across label changes).  ok('DONE:
+        container {json}') or ok('DONE:container none (<why>)'); an older
+        gateway answers its unknown-verb error.  No motion.  The mock backend
+        has no such method (inert)."""
+        return self._roundtrip("container", {})
+
