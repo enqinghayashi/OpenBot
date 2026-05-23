@@ -749,3 +749,7 @@ class GatewayCallerBackend(GatewayBackend):
         forwards it (otherwise the server's honest unknown-verb error)."""
         return self._roundtrip("resolve_ref", dict(args))
 
+    def scene_brief(self, args: dict) -> dict:
+        """Passthrough (see :meth:`resolve_ref`)."""
+        return self._roundtrip("scene_brief", dict(args))
+
