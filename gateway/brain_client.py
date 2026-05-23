@@ -791,3 +791,15 @@ class GatewayCallerBackend(GatewayBackend):
         has no such method (inert)."""
         return self._roundtrip("container", {})
 
+    def creep(self, args: dict) -> dict:
+        """B8j: the last centimetres to a container in short forward pulses
+        (``{label, iid, x, y, z, w, dd, h[, dry]}``).  ok('DONE creep: ...;
+        CREEP_RESULT=...') or fail('ERROR:creep ...; CREEP_RESULT=...').  Only
+        the place tool calls it, after the confirm gate.  The mock backend
+        has no such method (inert)."""
+        named: Dict[str, Any] = {}
+        for key in ("label", "iid", "x", "y", "z", "w", "dd", "h", "dry"):
+            if args.get(key) is not None:
+                named[key] = args.get(key)
+        return self._roundtrip("creep", named)
+
