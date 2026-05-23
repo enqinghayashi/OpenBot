@@ -771,3 +771,15 @@ class GatewayCallerBackend(GatewayBackend):
             named["min_conf"] = args.get("min_conf")
         return self._roundtrip("yolo_classes", named)
 
+    def yolo_strict(self, args: dict) -> dict:
+        """B8i strict detection hold: ``{op: 'begin', labels, owner}`` or
+        ``{op: 'end', hold}`` (optional ``wait_s`` 0-5 caps the gateway's
+        wait for a fresh packet).  The gateway answers 'DONE:strict ...' or an
+        'ERROR:yolo_strict ...' refusal (the brain then keeps the full
+        vocabulary).  The mock backend has no such method (inert)."""
+        named: Dict[str, Any] = {"op": str(args.get("op") or "")}
+        for key in ("labels", "owner", "hold", "wait_s"):
+            if args.get(key) is not None:
+                named[key] = args.get(key)
+        return self._roundtrip("yolo_strict", named)
+
