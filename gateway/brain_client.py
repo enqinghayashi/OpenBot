@@ -828,3 +828,9 @@ class GatewayCallerBackend(GatewayBackend):
                 named[key] = str(args.get(key))
         return self._roundtrip("home", named)
 
+    def return_home(self, args: Optional[dict] = None) -> dict:
+        """B8l: walk back to the fetch start point on odometry and face the
+        person who asked.  BLOCKS until arrival (<= ~130 s).
+        ok('DONE return_home: ...') or fail('ERROR:return_home ...')."""
+        return self._roundtrip("return_home", {})
+
