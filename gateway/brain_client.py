@@ -917,3 +917,6 @@ class MockGatewayBackend(GatewayBackend):
             f"DONE mock {name} (scripted default; the laptop has no robot)"
         )
 
+    def pick(self, args: dict) -> dict:
+        return self._result("pick", args)
+
