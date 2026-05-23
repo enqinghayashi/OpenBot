@@ -909,3 +909,11 @@ class MockGatewayBackend(GatewayBackend):
             fresh=self._fresh,
         )
 
+    def _result(self, name: str, args: dict) -> dict:
+        scripted = self._scripted.get(name)
+        if scripted is not None:
+            return dict(scripted)
+        return ok(
+            f"DONE mock {name} (scripted default; the laptop has no robot)"
+        )
+
