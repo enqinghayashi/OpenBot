@@ -643,3 +643,12 @@ class GatewayCallerBackend(GatewayBackend):
         """Open the gripper (side: right|left|both)."""
         return self._roundtrip("open_hand", {"side": str(args.get("side") or "right")})
 
+    def close_hand(self, args: dict) -> dict:
+        """Close the gripper (side: right|left|both); optional adaptive
+        params passthrough."""
+        named: Dict[str, Any] = {"side": str(args.get("side") or "right")}
+        params = args.get("params")
+        if isinstance(params, list) and params:
+            named["params"] = params
+        return self._roundtrip("close_hand", named)
+
