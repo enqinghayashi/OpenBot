@@ -875,3 +875,14 @@ class GatewayCallerBackend(GatewayBackend):
 # --- the in-process mock backend -----------------------------------------------
 
 
+class MockGatewayBackend(GatewayBackend):
+    """In-process GatewayBackend for the fully-offline laptop path.
+
+    ``observe()`` returns a WorldObservation built from scripted
+    detections (event-driven: silence == empty scene, never 'no data');
+    tool methods return the results from ``scripted`` ({tool name ->
+    envelope dict}) or honest scripted defaults.  Nothing here can claim a
+    real world action — it matches the GatewayBackend protocol declared in
+    brain/agent/tools.py so the laptop agent runs entirely offline.
+    """
+
