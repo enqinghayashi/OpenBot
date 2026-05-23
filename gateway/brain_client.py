@@ -920,3 +920,6 @@ class MockGatewayBackend(GatewayBackend):
     def pick(self, args: dict) -> dict:
         return self._result("pick", args)
 
+    def place(self, args: dict) -> dict:
+        return self._result("place", args)
+
