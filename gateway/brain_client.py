@@ -753,3 +753,21 @@ class GatewayCallerBackend(GatewayBackend):
         """Passthrough (see :meth:`resolve_ref`)."""
         return self._roundtrip("scene_brief", dict(args))
 
+    def yolo_classes(self, args: dict) -> dict:
+        """Open-vocabulary request (batch 4): ``{op, classes, min_conf}``.
+
+        The gateway validates and answers ``DONE:applied ...`` only on the
+        yolo node's matching state echo; every other outcome is an
+        ``ERROR:yolo_classes ...`` refusal surfaced verbatim as a failure.
+        ``op`` defaults to 'set' (the only op that carries classes);
+        ``min_conf`` is sent only when given.  An older gateway without the
+        verb answers its honest unknown-verb error.
+        """
+        named: Dict[str, Any] = {
+            "op": str(args.get("op") or "set"),
+            "classes": list(args.get("classes") or []),
+        }
+        if args.get("min_conf") is not None:
+            named["min_conf"] = args.get("min_conf")
+        return self._roundtrip("yolo_classes", named)
+
