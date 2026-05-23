@@ -710,3 +710,7 @@ class GatewayCallerBackend(GatewayBackend):
         """Blocking human question (server forwards it or refuses honestly)."""
         return self._roundtrip("query_user", dict(args))
 
+    def notify_user(self, args: dict) -> dict:
+        """Non-blocking notice (server forwards it or refuses honestly)."""
+        return self._roundtrip("notify_user", dict(args))
+
