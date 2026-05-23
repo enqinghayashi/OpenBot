@@ -803,3 +803,16 @@ class GatewayCallerBackend(GatewayBackend):
                 named[key] = args.get(key)
         return self._roundtrip("creep", named)
 
+    def pc_rim(self, args: dict) -> dict:
+        """B8k: the point-cloud bowl-rim fit of a container the place tool is
+        about to aim into while standing (``{label, x, y[, ts]}``).
+        ok('DONE:pc_rim applied drop_z=<z>') only when the gateway's
+        ``pc_place_rim`` switch is on and every fit gate passed;
+        ok('DONE:pc_rim none') / ok('NOPC:...') otherwise.  The mock backend
+        has no such method (inert)."""
+        named: Dict[str, Any] = {}
+        for key in ("label", "x", "y", "ts"):
+            if args.get(key) is not None:
+                named[key] = args.get(key)
+        return self._roundtrip("pc_rim", named)
+
