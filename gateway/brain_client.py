@@ -743,3 +743,9 @@ class GatewayCallerBackend(GatewayBackend):
 
     # -- passthrough verbs (same as the tools registry) -------------------------
 
+    def resolve_ref(self, args: dict) -> dict:
+        """Passthrough.  The tools registry resolves refs against its OWN
+        scene graph locally; this verb is only meaningful when the server
+        forwards it (otherwise the server's honest unknown-verb error)."""
+        return self._roundtrip("resolve_ref", dict(args))
+
