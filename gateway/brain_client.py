@@ -834,3 +834,16 @@ class GatewayCallerBackend(GatewayBackend):
         ok('DONE return_home: ...') or fail('ERROR:return_home ...')."""
         return self._roundtrip("return_home", {})
 
+    def approach_person(self, args: Optional[dict] = None) -> dict:
+        """B8l-hf5: turn until the person is centred, then close in with short
+        forward pulses until they are within the arm's reach (``{x, y}`` = the
+        person row meant).  BLOCKS <= ~20 s.  ok('DONE approach_person: ...;
+        APPROACH_RESULT=arrived') or fail('ERROR:approach_person ...;
+        APPROACH_RESULT=...').  Only the place tool calls it, for a handover.
+        The mock backend has no such method (inert)."""
+        named: Dict[str, Any] = {}
+        for key in ("x", "y"):
+            if isinstance(args, dict) and args.get(key) is not None:
+                named[key] = args.get(key)
+        return self._roundtrip("approach_person", named)
+
