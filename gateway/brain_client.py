@@ -706,3 +706,7 @@ class GatewayCallerBackend(GatewayBackend):
             reply += "; zfloor_limited=%.2f" % min(zfloor)
         return ok(reply)
 
+    def query_user(self, args: dict) -> dict:
+        """Blocking human question (server forwards it or refuses honestly)."""
+        return self._roundtrip("query_user", dict(args))
+
