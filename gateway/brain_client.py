@@ -847,3 +847,15 @@ class GatewayCallerBackend(GatewayBackend):
                 named[key] = args.get(key)
         return self._roundtrip("approach_person", named)
 
+    def aim_turn(self, args: dict) -> dict:
+        """B8l-hf7: turn in place until ``label`` (row at x/y) sits ``shift_m``
+        further right (a pick refused cross-body).  BLOCKS <= ~15 s.
+        ok('DONE aim_turn: ...; X=; Y=; Z=; AIM_RESULT=aimed') or
+        fail('ERROR:aim_turn ...; AIM_RESULT=...').  Only the pick tool calls
+        it.  The mock backend has no such method (inert)."""
+        named: Dict[str, Any] = {}
+        for key in ("label", "x", "y", "shift_m"):
+            if isinstance(args, dict) and args.get(key) is not None:
+                named[key] = args.get(key)
+        return self._roundtrip("aim_turn", named)
+
