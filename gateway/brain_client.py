@@ -870,3 +870,8 @@ class GatewayCallerBackend(GatewayBackend):
         if isinstance(args, dict) and args.get("m") is not None:
             named["m"] = args.get("m")
         return self._roundtrip("step_back", named)
+
+
+# --- the in-process mock backend -----------------------------------------------
+
+
