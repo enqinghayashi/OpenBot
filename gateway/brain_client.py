@@ -816,3 +816,15 @@ class GatewayCallerBackend(GatewayBackend):
                 named[key] = args.get(key)
         return self._roundtrip("pc_rim", named)
 
+    def home(self, args: Optional[dict] = None) -> dict:
+        """B8l: the fetch START POINT (odometry) and the requester, ``{op:
+        status|mark|auto|clear[, why]}``.  ok('DONE:home {json}') /
+        ok('DONE:home marked|kept {json}') / ok('DONE:home none (<why>)');
+        an older gateway answers its unknown-verb error.  No motion.  The
+        mock backend has no such method (inert)."""
+        named: Dict[str, Any] = {}
+        for key in ("op", "why"):
+            if isinstance(args, dict) and args.get(key) is not None:
+                named[key] = str(args.get(key))
+        return self._roundtrip("home", named)
+
