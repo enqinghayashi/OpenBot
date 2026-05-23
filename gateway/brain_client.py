@@ -900,3 +900,12 @@ class MockGatewayBackend(GatewayBackend):
         )
         self._scripted = dict(scripted or {})
 
+    def observe(self) -> Any:
+        from brain.observation import WorldObservation  # imported lazily
+
+        return WorldObservation(
+            detections=list(self._detections),
+            detections_ts=self._detections_ts,
+            fresh=self._fresh,
+        )
+
