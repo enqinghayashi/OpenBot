@@ -714,3 +714,32 @@ class GatewayCallerBackend(GatewayBackend):
         """Non-blocking notice (server forwards it or refuses honestly)."""
         return self._roundtrip("notify_user", dict(args))
 
+    def stop(self, args: dict) -> dict:
+        """Immediate halt — no confirmation (stopping is always allowed).
+
+        TWO LANES, AND THE ORDER MATTERS (2026-10-01, mid-task cancel).
+        Until now this mapped ONLY to ``navigate`` 'stop' — /walk_target
+        'stop' queues ('stop', None) in the walk FSM (walk_node.py).  That
+        stops the LEGS and nothing else: a pick/place is minutes of arm
+        motion driven by the engine process, which the walk FSM has no
+        handle on, so "stop" during a pick stopped a robot that was not
+        walking and the arm kept moving.
+
+        The gateway now owns ``stop``/``cancel`` (gateway_node.py, verb
+        dispatch -> _do_cancel), which cancels the ENGINE and stops the walk
+        in one call — a strict superset of the old path.  It is tried FIRST.
+
+        FALLBACK, NOT DEAD CODE: an older deployed gateway has no ``stop``
+        verb, and the reply for an unknown verb is an honest failure.  In
+        that case we fall back to ``navigate`` target=stop, so this method
+        can never be WORSE than the walk-only behaviour it replaces.  The
+        fallback is silent about which path ran — the returned envelope is
+        whichever lane answered.
+        """
+        env = self._roundtrip("stop", {})
+        if isinstance(env, dict) and env.get("success"):
+            return env
+        return self._roundtrip("navigate", {"target": "stop"})
+
+    # -- passthrough verbs (same as the tools registry) -------------------------
+
