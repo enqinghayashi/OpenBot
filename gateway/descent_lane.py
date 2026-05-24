@@ -398,3 +398,5 @@ def honest(text: Any) -> str:
     if body.endswith(HONESTY_SUFFIX):
         return body
     return "%s — %s" % (body, HONESTY_SUFFIX)
+
+
