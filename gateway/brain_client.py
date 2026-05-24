@@ -923,3 +923,6 @@ class MockGatewayBackend(GatewayBackend):
     def place(self, args: dict) -> dict:
         return self._result("place", args)
 
+    def navigate(self, args: dict) -> dict:
+        return self._result("navigate", args)
+
