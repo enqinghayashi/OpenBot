@@ -385,3 +385,16 @@ def release_only_args(args: Any) -> bool:
         return False
 
 
+def honest(text: Any) -> str:
+    """``text`` ending with :data:`HONESTY_SUFFIX`, appended exactly once.
+
+    Never double-appends, so a detail that is passed through two layers still
+    reads as one statement.  The result always ENDS with the suffix: trailing
+    punctuation after it would make the boundary look like an afterthought.
+    """
+    body = str(text or "").rstrip()
+    if not body:
+        return HONESTY_SUFFIX
+    if body.endswith(HONESTY_SUFFIX):
+        return body
+    return "%s — %s" % (body, HONESTY_SUFFIX)
