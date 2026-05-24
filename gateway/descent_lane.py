@@ -358,3 +358,28 @@ def _finite_num(value: Any) -> bool:
     return math.isfinite(value)
 
 
+def release_only_args(args: Any) -> bool:
+    """True when a lane skill's argument list carries NO coordinates at all.
+
+    A RELEASE-ONLY place (the brain's ``place []``, seen on the robot at
+    ``run18`` 20:14:36) is the one lane skill that aims at NO target height: it
+    drops whatever the hand holds, exactly where the body already is.  That is
+    what makes it safe to run at a HELD height — there is no target height for
+    the held frame to mis-place (see :func:`next_command_action`).
+
+    ONLY A LITERALLY EMPTY LIST QUALIFIES, and a caller with no argument list
+    (``None``, the default on :func:`next_command_action`) gets False: "no
+    information" must never read as "no coordinates", or a caller that forgot
+    to thread the args would silently start reusing holds.  Anything else —
+    one token, two tokens, a token that only fails to parse as a float, a
+    non-sequence — is NOT release-only and keeps the fail-closed retreat: the
+    cheap mislabel (retreating when a reuse was possible) is a lost reuse,
+    while the expensive one (reusing when the place had coordinates) drops from
+    a height nobody vetted.
+    """
+    if args is None:
+        return False
+    try:
+        return len(args) == 0
+    except TypeError:
+        return False
