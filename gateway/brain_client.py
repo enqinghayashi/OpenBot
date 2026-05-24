@@ -980,3 +980,8 @@ class MockGatewayBackend(GatewayBackend):
         if scripted is not None:
             return dict(scripted)
         return ok("DONE:requested seq=1 (unconfirmed: mock)")
+
+
+# --- the config seam -----------------------------------------------------------
+
+
