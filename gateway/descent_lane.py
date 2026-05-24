@@ -383,3 +383,5 @@ def release_only_args(args: Any) -> bool:
         return len(args) == 0
     except TypeError:
         return False
+
+
