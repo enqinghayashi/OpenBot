@@ -972,3 +972,11 @@ class MockGatewayBackend(GatewayBackend):
     def scene_brief(self, args: dict) -> dict:
         return self._result("scene_brief", args)
 
+    def yolo_classes(self, args: dict) -> dict:
+        """Laptop parity for the vocabulary verb.  There is no yolo node
+        here, so the default NEVER says 'applied': it says the request was
+        not confirmed.  A test that needs an applied reply scripts it."""
+        scripted = self._scripted.get("yolo_classes")
+        if scripted is not None:
+            return dict(scripted)
+        return ok("DONE:requested seq=1 (unconfirmed: mock)")
