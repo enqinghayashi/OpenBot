@@ -931,3 +931,7 @@ class MockGatewayBackend(GatewayBackend):
         what it is).  Mirrors navigate."""
         return self._result("turn_around", args)
 
+    def return_home(self, args: Optional[dict] = None) -> dict:
+        """B8l laptop parity (no motion here).  Mirrors navigate."""
+        return self._result("return_home", args or {})
+
