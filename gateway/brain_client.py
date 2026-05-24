@@ -938,3 +938,6 @@ class MockGatewayBackend(GatewayBackend):
     def open_hand(self, args: dict) -> dict:
         return self._result("open_hand", args)
 
+    def close_hand(self, args: dict) -> dict:
+        return self._result("close_hand", args)
+
