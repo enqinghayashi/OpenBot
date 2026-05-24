@@ -962,3 +962,7 @@ class MockGatewayBackend(GatewayBackend):
     def stop(self, args: dict) -> dict:
         return self._result("stop", args)
 
+    def capture_image(self) -> Optional[dict]:
+        """The laptop has no camera — always None (honest no-source)."""
+        return None
+
