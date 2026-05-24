@@ -959,3 +959,6 @@ class MockGatewayBackend(GatewayBackend):
     def notify_user(self, args: dict) -> dict:
         return self._result("notify_user", args)
 
+    def stop(self, args: dict) -> dict:
+        return self._result("stop", args)
+
