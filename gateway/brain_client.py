@@ -969,3 +969,6 @@ class MockGatewayBackend(GatewayBackend):
     def resolve_ref(self, args: dict) -> dict:
         return self._result("resolve_ref", args)
 
+    def scene_brief(self, args: dict) -> dict:
+        return self._result("scene_brief", args)
+
