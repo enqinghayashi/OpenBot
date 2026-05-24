@@ -985,3 +985,24 @@ class MockGatewayBackend(GatewayBackend):
 # --- the config seam -----------------------------------------------------------
 
 
+def backend_from_config(cfg: Any) -> Any:
+    """Build the GatewayBackend the ``gateway:`` config segment demands.
+
+    ``gateway.transport`` 'mock' -> :class:`MockGatewayBackend` (laptop,
+    fully offline); 'real' -> :class:`GatewayCallerBackend` wired to
+    ``gateway.host`` / ``gateway.port`` — the gateway node's tools server
+    (refuses a placeholder host with :class:`ConfigError`); any OTHER
+    transport value raises :class:`ConfigError` — never guess a
+    transport.  The gateway node OWNS the writer/grip/engine sockets;
+    this client never touches them.  This is the documented seam the
+    deploy kit / agent lane uses to pick the transport.
+    """
+    gateway = getattr(cfg, "gateway", None)
+    transport = str(getattr(gateway, "transport", "mock") or "mock").strip().lower()
+    if transport == "mock":
+        return MockGatewayBackend()
+    if transport == "real":
+        return GatewayCallerBackend.from_config(cfg)
+    raise ConfigError(
+        "gateway.transport must be 'mock' or 'real', got %r" % transport
+    )
