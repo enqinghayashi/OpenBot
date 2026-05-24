@@ -298,3 +298,10 @@ PRE_STEP_SHIFT_MARGIN_S = 1.0
 PRE_STEP_GO_READY_PHASES = ("IDLE", "DONE")
 
 
+def pre_step_shift_timeout_s(shift_deg: Any,
+                             slew_deg_s: float = PRE_STEP_SLEW_DEG_S) -> float:
+    """Bound (s) on the post-``step shift`` settle poll, DERIVED from the
+    commanded shift and the writer's slew rate: ``|shift| / rate * SLACK +
+    MARGIN``.  10 deg at 8 deg/s -> 1.25 s -> 3.5 s."""
+    return (abs(float(shift_deg)) / float(slew_deg_s) * PRE_STEP_SHIFT_SLACK
+            + PRE_STEP_SHIFT_MARGIN_S)
