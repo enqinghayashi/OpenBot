@@ -966,3 +966,6 @@ class MockGatewayBackend(GatewayBackend):
         """The laptop has no camera — always None (honest no-source)."""
         return None
 
+    def resolve_ref(self, args: dict) -> dict:
+        return self._result("resolve_ref", args)
+
