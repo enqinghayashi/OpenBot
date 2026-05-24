@@ -305,3 +305,44 @@ def pre_step_shift_timeout_s(shift_deg: Any,
     MARGIN``.  10 deg at 8 deg/s -> 1.25 s -> 3.5 s."""
     return (abs(float(shift_deg)) / float(slew_deg_s) * PRE_STEP_SHIFT_SLACK
             + PRE_STEP_SHIFT_MARGIN_S)
+
+# ── the state machine's vocabulary ──────────────────────────────────────────
+#: `DescentContext.state` values. A context that is not IDLE means a body height
+#: is outstanding, so the next lane skill must refuse.
+IDLE = "IDLE"
+DESCENDING = "DESCENDING"
+HOLDING = "HOLDING"
+RETREATING = "RETREATING"
+
+# ── next-command actions (the operator rule, written as a predicate) ─────────
+NEXT_NONE = "NONE"                              # lane not involved
+NEXT_HOLD = "HOLD"                              # run at the held height
+NEXT_REDESCEND = "RETREAT_THEN_DESCEND"         # rise, then descend again
+NEXT_RETREAT_BLOCKING = "RETREAT_BLOCKING"      # rise and confirm before acting
+NEXT_RETREAT_BEST_EFFORT = "RETREAT_BEST_EFFORT"  # rise, warn loudly on failure
+
+#: Verbs the lane owns. A lane skill's own height need decides hold versus
+#: retreat-and-re-descend; everything else sits outside the lane.
+LANE_SKILL_VERBS = frozenset({"pick", "pick_left", "place", "place_left"})
+
+#: The place-family verbs, the only ones a release-only reuse may hold for: a
+#: place can carry no coordinates at all, so its absent target height does not
+#: mean an unknown target.
+PLACE_FAMILY_VERBS = frozenset({"place", "place_left"})
+
+#: Commands that need the body standing first. Squat-walking is unmeasured, so a
+#: walk blocks until standing is confirmed; `cmd_set` is the writer's own
+#: locomotion verb, and leaving it out would let a walk run at a lowered body.
+BODY_BLOCKING_VERBS = frozenset({"navigate", "cmd_set"})
+
+#: Commands that only need the body risen best-effort with a loud warning. An
+#: arm-only posture cannot threaten the reach, so a failed rise must not block it.
+BEST_EFFORT_VERBS = frozenset({"pose", "open_hand", "close_hand",
+                               "engine", "writer"})
+
+# There is no takeover verb set: nothing dispatches a takeover, suspend or estop
+# verb through the gateway, so a "forget the hold" branch could never fire. The
+# lane reports the lockout it holds instead of guessing at a release.
+
+
+# ────────────────────────────────────────────────────── sanity checks on values
