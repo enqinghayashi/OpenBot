@@ -926,3 +926,8 @@ class MockGatewayBackend(GatewayBackend):
     def navigate(self, args: dict) -> dict:
         return self._result("navigate", args)
 
+    def turn_around(self, args: dict) -> dict:
+        """Laptop parity for the sweep verb (no motion here; the mock says
+        what it is).  Mirrors navigate."""
+        return self._result("turn_around", args)
+
