@@ -346,3 +346,13 @@ BEST_EFFORT_VERBS = frozenset({"pose", "open_hand", "close_hand",
 
 
 # ────────────────────────────────────────────────────── sanity checks on values
+def _finite_num(value: Any) -> bool:
+    """True only for a real, finite ``int``/``float`` (``bool`` excluded).
+
+    ``bool`` is an ``int`` in Python; a boolean that reached a height
+    comparison would be a wiring bug, and treating it as a height is the
+    permissive direction.  Mirrors ``brain/descent_law._is_finite_number``.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(value)
