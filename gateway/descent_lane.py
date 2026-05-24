@@ -356,3 +356,5 @@ def _finite_num(value: Any) -> bool:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
     return math.isfinite(value)
+
+
