@@ -935,3 +935,6 @@ class MockGatewayBackend(GatewayBackend):
         """B8l laptop parity (no motion here).  Mirrors navigate."""
         return self._result("return_home", args or {})
 
+    def open_hand(self, args: dict) -> dict:
+        return self._result("open_hand", args)
+
