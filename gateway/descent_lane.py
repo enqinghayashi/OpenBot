@@ -483,3 +483,37 @@ def slew_margin_s(law: Any) -> float:
 
 
 # ──────────────────────────────────────────────────── what the law is fed with
+class LaneLaw:
+    """The four law inputs, threaded in — never restated (REUSE LAW).
+
+    ``tabletop_min_z`` is the envelope's ``pick_min_height_m`` (the authority);
+    the two ``height_*`` numbers are the WRITER's own clamp band; ``hold_tol_m``
+    is the operator's hold tolerance.  ``max_descent_m`` is DERIVED here —
+    ``height_stand_m - height_min_m`` — exactly as ``brain.descent_law``
+    requires, so no band number exists anywhere in this file as a literal and
+    widening the writer's band moves the rescue floor with no code change.
+
+    ``timeout_s`` is the confirm window threaded in from config
+    (``embodiment.envelope.descent_confirm_timeout_s``).  It DEFAULTS to
+    :data:`DESCENT_CONFIRM_TIMEOUT_S`, so a config that omits the key behaves
+    exactly as before; a value that is not a finite positive number falls back to
+    that same default rather than shrinking the window to nothing.
+
+    ``operation_budget_s`` is the declared lane operation budget, threaded the
+    SAME way: it defaults to :data:`LANE_OPERATION_BUDGET_S`, a value that is
+    not a finite positive number falls back to that default, and the gateway may
+    override it from ``embodiment.envelope.lane_operation_budget_s`` (a stub
+    config that never sets it still constructs — the lane keeps its own module
+    default).  The guard that consumes it reads the writer's own reported ``rem``
+    and REFUSES a descended dispatch below it — the bar is ``operation_budget_s``
+    itself; the slew margin is added only to the ``height_hold_s`` the refusal
+    names, never to the bar.
+
+    A plain object rather than a ``NamedTuple``/``dataclass``: this crosses from
+    the laptop to a robot whose Python is older than the laptop's, and it needs
+    no behaviour beyond one derived value.
+    """
+
+    __slots__ = ("tabletop_min_z", "height_stand_m", "height_min_m",
+                 "hold_tol_m", "timeout_s", "operation_budget_s")
+
