@@ -582,3 +582,5 @@ def height_command(z: float, law: LaneLaw) -> float:
     """
     d = descent_law.descent_for_z(z, law.max_descent_m)
     return min(max(law.height_stand_m - d, law.height_min_m), law.height_stand_m)
+
+
