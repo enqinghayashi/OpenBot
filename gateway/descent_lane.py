@@ -1949,3 +1949,106 @@ def _pc_dict(value: Any) -> Dict[str, Any]:
     if isinstance(value, dict):
         return value
     return {"status": "UNKNOWN", "reason": "bad_result"}
+
+
+def _pc_warm(pc: Any, log: DescentPhaseLog,
+             stamp: Callable[[], float]) -> None:
+    """H-GW-1: ``pc.warm`` once, at the START of a descended run.
+
+    DDS discovery between the gateway and the consumer takes seconds, so the
+    warm goes out before the first writer command of the descent and the
+    baseline - asked for only after the descent is confirmed - finds the
+    consumer ready.  FIRE-AND-FORGET: a failure is one phase row and changes
+    nothing else.
+    """
+    try:
+        pc.warm(LANE_PC_WARM_TTL_S)
+    except Exception as exc:  # noqa: BLE001 - a point-cloud failure never refuses
+        _pc_row(log, stamp, "pc_warm",
+                "pc warm failed with %s: %s - ignored, nothing else changed"
+                % (type(exc).__name__, exc))
+
+
+def _pc_baseline(pc: Any, pc_label: Optional[str], args: List[Any],
+                 w_rem: Any, law: Any, log: DescentPhaseLog,
+                 stamp: Callable[[], float]) -> Dict[str, Any]:
+    """H-GW-1: the footprint baseline, requested just before the engine moves.
+
+    Returns ``{"rid": <request id or None>, "result": <dict>}``; NEVER raises,
+    adds no writer traffic, and a failed request is just UNKNOWN.  ``ref`` is
+    the torso-frame x, y the arm is sent to - the lane's own input ``args``,
+    never a re-detection.  It costs up to :data:`LANE_PC_BASELINE_DEADLINE_S`
+    of the writer's hold, so it is SKIPPED (a row, no request) when the hold
+    left over after the lane's operation budget cannot pay for that, and when
+    there is no label (the consumer cannot select a target without one).
+    """
+    if not pc_label:
+        _pc_row(log, stamp, "pc_baseline", "pc_baseline skipped: no label")
+        return {"rid": None,
+                "result": {"status": "UNKNOWN", "reason": "no_label"}}
+    budget = _lane_budget(law)
+    spare = (float(w_rem) - budget) if _finite_num(w_rem) else 0.0
+    if spare < LANE_PC_BASELINE_DEADLINE_S:
+        _pc_row(log, stamp, "pc_baseline",
+                "pc_baseline skipped: budget (the writer's remaining hold "
+                "leaves %.1fs beyond the %.1fs lane operation budget, the "
+                "baseline needs %.1fs)"
+                % (spare, budget, LANE_PC_BASELINE_DEADLINE_S))
+        return {"rid": None,
+                "result": {"status": "UNKNOWN", "reason": "budget"}}
+    rid = None
+    try:
+        rid = pc.new_rid("hb")
+        request = {"rid": rid, "task": "hold_baseline", "label": pc_label,
+                   "ref": [float(args[0]), float(args[1])],
+                   "pose": pc.measured_pose(), "ttl_s": LANE_PC_BASELINE_TTL_S}
+        result = _pc_dict(pc.request(request,
+                                     deadline_s=LANE_PC_BASELINE_DEADLINE_S))
+    except Exception as exc:  # noqa: BLE001 - a point-cloud failure is UNKNOWN
+        _pc_row(log, stamp, "pc_baseline",
+                "pc hold_baseline failed with %s: %s - UNKNOWN, nothing else "
+                "changed" % (type(exc).__name__, exc))
+        return {"rid": rid,
+                "result": {"status": "UNKNOWN", "reason": "exception"}}
+    _pc_row(log, stamp, "pc_baseline",
+            "pc hold_baseline status=%s verdict=%s reason=%s"
+            % (result.get("status"), result.get("verdict"),
+               result.get("reason")))
+    return {"rid": rid, "result": result}
+
+
+def _pc_decisive(pc: Any) -> bool:
+    """True ONLY for ``pc.decisive is True``.  Anything else - the shadow
+    default, a truthy non-bool, an unreadable attribute - is SHADOW."""
+    try:
+        return pc.decisive is True
+    except Exception:  # noqa: BLE001 - an unreadable switch is shadow
+        return False
+
+
+def _pc_downgrade(result: Dict[str, Any], decisive: bool) -> Optional[str]:
+    """The evidence clause that DOWNGRADES the verdict, or ``None``.
+
+    ONLY a decisive ``pc`` (``decisive`` True), a verdict that is exactly
+    STILL_ON_TABLE or MOVED, and NO ``degraded`` flag (every frame paired in
+    exact mode) downgrade.  ABSENT_UNPROVEN, UNKNOWN and anything else prove
+    nothing and answer ``None``; so does heuristic pairing (``degraded``): that
+    result is logged and never acted on.
+    """
+    verdict = result.get("verdict")
+    if (decisive
+            and isinstance(verdict, str) and verdict in PC_DECISIVE_VERDICTS
+            and not result.get("degraded")):
+        return ("point-cloud hold check: %s (the target did not leave its "
+                "footprint / was knocked)" % verdict)
+    return None
+
+
+def _pc_token(result: Dict[str, Any]) -> str:
+    """The ``pc_hold=`` token: the consumer's verdict when it is one of
+    :data:`PC_HOLD_TOKENS`, UNKNOWN for anything else (missing, garbage,
+    BASELINE_OK, RIM_FIT, ...)."""
+    verdict = result.get("verdict")
+    if isinstance(verdict, str) and verdict in PC_HOLD_TOKENS:
+        return verdict
+    return "UNKNOWN"
