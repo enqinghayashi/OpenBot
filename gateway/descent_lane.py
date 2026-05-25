@@ -400,3 +400,11 @@ def honest(text: Any) -> str:
     return "%s — %s" % (body, HONESTY_SUFFIX)
 
 
+def _loud(text: str) -> None:
+    """One LOUD stderr line.  The operator must not have to read a table.
+
+    stderr, not stdout: a warning about a body that may still be low has to be
+    visible even when the caller is rendering the phase table.
+    """
+    sys.stderr.write("!! [descent] %s\n" % text)
+    sys.stderr.flush()
