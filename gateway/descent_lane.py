@@ -584,3 +584,13 @@ def height_command(z: float, law: LaneLaw) -> float:
     return min(max(law.height_stand_m - d, law.height_min_m), law.height_stand_m)
 
 
+def descent_negligible(z: Any, law: Any) -> bool:
+    """True iff the body descent target ``z`` needs is within
+    :data:`NO_DESCENT_BAND_M` — i.e. the skill runs AT STANDING.
+
+    FAIL CLOSED to "not negligible" (False) for a non-finite ``z`` or a law
+    that is not :func:`usable`: those cases keep every pre-existing refusal.
+    """
+    if not _finite_num(z) or not usable(law):
+        return False
+    return descent_law.descent_for_z(z, law.max_descent_m) <= NO_DESCENT_BAND_M
