@@ -451,3 +451,32 @@ def lockout_notice(lockout_s: Any) -> str:
             "on its next retreat" % window)
 
 
+def slew_margin_s(law: Any) -> float:
+    """The descent's OWN consumption of the writer's clock, in seconds.
+
+    The writer's height reference is RATE LIMITED
+    (:data:`HEIGHT_SLEW_RATE_M_S`, ``height_slew_rate`` in
+    ``skills/writer/config/merge_config.yaml``), so by the time the guard reads
+    the writer's remaining hold the clock is ALREADY down by the slew time of
+    the move it just made: the full clamp band at that rate is ~1.3 s
+    (merge_config.yaml:57-60: "covers the 0.19 m nominal->min span in ~1.3 s").
+    That margin is NOT added to the guard's bar — the bar is the operation
+    budget ALONE.  It is what the refusal ADDS to the ``height_hold_s`` it tells
+    the operator to SET, and the measured D9 defect was exactly that arithmetic:
+    a ``height_hold_s`` set to the bare bar does NOT dispatch, because ``rem`` at
+    the gate is that value minus this margin, so the value that clears the bar is
+    ``operation_budget_s + this margin``.
+
+    DERIVED, never invented: the band is ``law.max_descent_m`` — the writer's
+    own clamp band, the widest move this lane can command — divided by the
+    writer's own slew rate.  A law that cannot supply a usable band yields 0.0
+    (no margin), which degrades the guard to the pre-margin behaviour rather
+    than refusing every dispatch over an arithmetic the caller cannot check.
+    """
+    try:
+        band = float(law.max_descent_m)
+    except (AttributeError, TypeError, ValueError):
+        return 0.0
+    if not _finite_num(band) or band <= 0.0:
+        return 0.0
+    return band / HEIGHT_SLEW_RATE_M_S
