@@ -517,3 +517,23 @@ class LaneLaw:
     __slots__ = ("tabletop_min_z", "height_stand_m", "height_min_m",
                  "hold_tol_m", "timeout_s", "operation_budget_s")
 
+    def __init__(self, tabletop_min_z: float, height_stand_m: float,
+                 height_min_m: float, hold_tol_m: float = HOLD_TOL_M,
+                 timeout_s: float = DESCENT_CONFIRM_TIMEOUT_S,
+                 operation_budget_s: float = LANE_OPERATION_BUDGET_S):
+        self.tabletop_min_z = tabletop_min_z
+        self.height_stand_m = height_stand_m
+        self.height_min_m = height_min_m
+        self.hold_tol_m = hold_tol_m
+        window = None
+        if _finite_num(timeout_s):
+            window = float(timeout_s)
+        self.timeout_s = (window if window is not None and window > 0.0
+                          else float(DESCENT_CONFIRM_TIMEOUT_S))
+        budget = None
+        if _finite_num(operation_budget_s):
+            budget = float(operation_budget_s)
+        self.operation_budget_s = (
+            budget if budget is not None and budget > 0.0
+            else float(LANE_OPERATION_BUDGET_S))
+
