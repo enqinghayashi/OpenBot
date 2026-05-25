@@ -596,3 +596,31 @@ def descent_negligible(z: Any, law: Any) -> bool:
     return descent_law.descent_for_z(z, law.max_descent_m) <= NO_DESCENT_BAND_M
 
 
+def deep_floor_refusal(z: Any, law: LaneLaw) -> str:
+    """The lane-ON refusal for a target below the rescue floor.
+
+    NAMES the floor it refused against, because "below the floor" is only
+    actionable if the operator can see where the floor is and read off how much
+    band a wider writer clamp would buy.  The floor and the budget are both
+    DERIVED (``brain.descent_law.rescue_floor``) — no number here is a literal.
+
+    THE BUDGET IS NAMED FOR WHAT IT IS.  ``law.max_descent_m`` is
+    ``height_stand_m - height_min_m`` — the WRITER'S CLAMP BAND, i.e. a COMMAND
+    delta in ``height_cmd`` units, NOT the body's measured descent (that is a
+    different, simulated quantity: plan §4's correction, 0.907 realized per
+    commanded at the clamp).  Saying "the body's available descent" would be the
+    exact conflation plan §4 corrects, at the one moment an operator decides
+    whether to widen the band — so this clause names the command band and marks
+    it SIMULATED.  The honesty boundary is appended like every other lane text.
+    """
+    if not usable(law) or not _finite_num(z):
+        return honest("ERROR:low-workspace pick/place refused: target height is "
+                      "not usable (z=%r)" % (z,))
+    floor = descent_law.rescue_floor(law.tabletop_min_z, law.max_descent_m)
+    return honest(
+        "ERROR:low-workspace pick/place refused: z=%.3f is below the rescue "
+        "floor %.3f m (tabletop floor %.3f m minus the writer's %.3f m height "
+        "clamp band — a COMMAND delta in height_cmd units, SIMULATED "
+        "(MuJoCo GR00T-Balance), not a measured body descent) - floor/ground "
+        "pick refused, no ground-pick skill exists"
+        % (z, floor, law.tabletop_min_z, law.max_descent_m))
