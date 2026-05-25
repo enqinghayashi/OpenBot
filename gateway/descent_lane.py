@@ -570,3 +570,5 @@ def usable(law: Any) -> bool:
         return False
     return (_finite_num(stand) and _finite_num(hmin) and _finite_num(floor)
             and stand > hmin)
+
+
