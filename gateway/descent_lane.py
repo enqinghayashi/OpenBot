@@ -542,3 +542,9 @@ class LaneLaw:
         """The writer clamp's own band: ``height_stand_m - height_min_m``."""
         return self.height_stand_m - self.height_min_m
 
+    def __repr__(self) -> str:  # pragma: no cover - diagnostics only
+        return ("LaneLaw(tabletop_min_z=%r, height_stand_m=%r, height_min_m=%r,"
+                " hold_tol_m=%r, timeout_s=%r, operation_budget_s=%r)"
+                % (self.tabletop_min_z, self.height_stand_m,
+                   self.height_min_m, self.hold_tol_m, self.timeout_s,
+                   self.operation_budget_s))
