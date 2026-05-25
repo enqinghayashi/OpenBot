@@ -410,3 +410,42 @@ def _loud(text: str) -> None:
     sys.stderr.flush()
 
 
+def lockout_notice(lockout_s: Any) -> str:
+    """The operator-facing HOLD WINDOW statement: how long the body is held
+    low, and what the sticks can and cannot do inside that window.
+
+    WHY THIS EXISTS.  A held descent must never be SILENT (D2), and it must
+    never be described as something it is not (R4 HRC-2, corrected
+    2026-10-03).  The previous text said the operator's sticks "will NOT take
+    it back during that window".  That is false for the hold window itself:
+    the sticks are clamped only while the arm engine holds ``rc_hold`` — the
+    writer forces ``rc_live = False`` under that clamp and nowhere else
+    (``skills/writer/main_merged_writer.py:2719-2742``: the RC height-suspend
+    is gated on ``rc_live``, and only the ``rc_hold`` / shutdown / autopilot
+    branches zero it) — and the pick engine RELEASES the clamp when the pick
+    completes (``skills/arm/pick_engine_v3.py``,
+    ``_hold_rc_writer(arm, False, 'pick complete (step 5)')``).  So inside the
+    window a stick push SUSPENDS the squat.  DERIVED from source; the box's
+    behaviour is UNVERIFIABLE-FROM-HERE.  The window is bounded: the writer's
+    own ``height_hold_s`` lifetime re-stands the body on the clock alone, and
+    this lane gives the body back on its next retreat.
+
+    NOT A DETECTOR.  This says what the lane IS holding; it makes no claim to
+    observe the operator.  The lane cannot see a takeover, which is why the
+    deleted ``TAKEOVER_VERBS`` table is not replaced by a guess (D3).
+
+    ``lockout_s`` is the window the caller ACTUALLY honoured — for a hold entry
+    that is ``DescentContext.holding``'s return (``min(hold_s, the writer's own
+    remaining hold)``), never the un-capped request.  A non-finite or negative
+    value reads as 0.0 rather than propagating a bad number into operator text.
+    """
+    window = (float(lockout_s)
+              if _finite_num(lockout_s) and float(lockout_s) > 0.0 else 0.0)
+    return ("HOLD WINDOW: the body is held low for up to %.1fs from now. The "
+            "operator's sticks are clamped only while the arm engine holds "
+            "`rc_hold` (during an arm motion; the writer console escape for "
+            "that is `hold_rc off`); the engine releases that clamp when the "
+            "pick completes, so inside this window a stick push suspends the "
+            "squat. The writer's own `height_hold_s` lifetime re-stands the "
+            "body at its deadline regardless, and the lane gives the body back "
+            "on its next retreat" % window)
