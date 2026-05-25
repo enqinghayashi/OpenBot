@@ -624,3 +624,6 @@ def deep_floor_refusal(z: Any, law: LaneLaw) -> str:
         "(MuJoCo GR00T-Balance), not a measured body descent) - floor/ground "
         "pick refused, no ground-pick skill exists"
         % (z, floor, law.tabletop_min_z, law.max_descent_m))
+
+
+# ────────────────────────────────────────────────────── where the lease lives
