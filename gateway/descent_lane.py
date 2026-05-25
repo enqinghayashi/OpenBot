@@ -627,3 +627,41 @@ def deep_floor_refusal(z: Any, law: LaneLaw) -> str:
 
 
 # ────────────────────────────────────────────────────── where the lease lives
+class DescentContext:
+    """The shared body-height state both skills ask (plan §6 D2).
+
+    ONE instance lives on the ``GatewayNode`` — NOT a module singleton (which
+    would leak across gateway instances and reconnects) and not per-connection
+    (body height is process-global, and the low pick -> low place pair spans
+    two separate calls).
+
+    ``height_cmd`` is the last CONFIRMED reference, never the requested command:
+    that is what makes the fail-closed precondition real rather than assumed.
+    ``effective_z`` is the torso-frame height the engine was actually handed.
+    ``hold_deadline`` is a MONOTONIC deadline, so a wall-clock step cannot
+    extend a hold.
+
+    ``writer_stand_m`` is the writer's OWN reported standing reference, read
+    from a ``status`` poll and used for every frame shift thereafter (see
+    :meth:`stand_m`).  The envelope's ``law.height_stand_m`` is a FALLBACK for
+    the first command only: the two numbers drift, and a drift biases
+    ``z_engine`` by exactly its size.
+
+    A CONFIRMED DESCENT IS CHECKED, NOT DRIVEN.  ``height <m>`` is a LIFETIME
+    on the writer: it arms a monotonic deadline and re-stands the body on the
+    CLOCK alone whether or not this process is alive, and a ``status`` poll does
+    not refresh it.  This context holds NO thread that re-issues the command —
+    the writer's own ``height_hold_s`` (a config value) is set long enough to
+    cover a whole lane operation, so a renewal thread is unnecessary, and a
+    latched verdict that outlived a refusal is exactly the class of defect that
+    removal eliminates.  The live gate is instead a FRESH ``status`` poll taken
+    immediately before each dispatch (:func:`probe_active`) plus the fail-closed
+    lifetime guard (:func:`_lifetime_refusal`).  Every piece of writer traffic —
+    the lane's own polls and commands — is serialized through ``writer_lock``,
+    which is NEVER held across an engine call.
+    """
+
+    __slots__ = ("state", "height_cmd", "effective_z", "hold_deadline",
+                 "writer_stand_m", "writer_lock", "cancel_mono",
+                 "run_start_mono", "last_retreat_was_noop", "stepped")
+
