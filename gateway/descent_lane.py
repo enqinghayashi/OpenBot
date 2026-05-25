@@ -594,3 +594,5 @@ def descent_negligible(z: Any, law: Any) -> bool:
     if not _finite_num(z) or not usable(law):
         return False
     return descent_law.descent_for_z(z, law.max_descent_m) <= NO_DESCENT_BAND_M
+
+
