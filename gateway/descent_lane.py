@@ -537,3 +537,8 @@ class LaneLaw:
             budget if budget is not None and budget > 0.0
             else float(LANE_OPERATION_BUDGET_S))
 
+    @property
+    def max_descent_m(self) -> float:
+        """The writer clamp's own band: ``height_stand_m - height_min_m``."""
+        return self.height_stand_m - self.height_min_m
+
