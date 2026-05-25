@@ -550,3 +550,23 @@ class LaneLaw:
                    self.operation_budget_s))
 
 
+def usable(law: Any) -> bool:
+    """True iff ``law`` describes a real, non-empty descent band.
+
+    A degenerate band (non-finite, zero-width, or inverted) must make the lane
+    INERT rather than raise: a misconfigured envelope degrades to today's
+    honest refusal, never to a crash and never to a silently widened workspace
+    (plan §8).  The caller that routes a target into the lane
+    (``GatewayNode._low_lane_claim``) consults this first, so a broken law can
+    never route a target into the lane.
+    """
+    if law is None:
+        return False
+    try:
+        stand = law.height_stand_m
+        hmin = law.height_min_m
+        floor = law.tabletop_min_z
+    except AttributeError:
+        return False
+    return (_finite_num(stand) and _finite_num(hmin) and _finite_num(floor)
+            and stand > hmin)
