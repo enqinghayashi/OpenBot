@@ -572,3 +572,13 @@ def usable(law: Any) -> bool:
             and stand > hmin)
 
 
+def height_command(z: float, law: LaneLaw) -> float:
+    """The writer ``height`` command for a target at torso-frame ``z``.
+
+    ``clamp(height_stand_m - d(z), height_min_m, height_stand_m)`` — plan §4.
+    The command is clamped to the STANDING reference at the top, so a target
+    that needs no descent produces the identity command, and the lane can
+    never command the body higher than standing.
+    """
+    d = descent_law.descent_for_z(z, law.max_descent_m)
+    return min(max(law.height_stand_m - d, law.height_min_m), law.height_stand_m)
