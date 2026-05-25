@@ -665,3 +665,21 @@ class DescentContext:
                  "writer_stand_m", "writer_lock", "cancel_mono",
                  "run_start_mono", "last_retreat_was_noop", "stepped")
 
+    def __init__(self) -> None:
+        self.state: str = IDLE
+        self.height_cmd: Optional[float] = None
+        self.effective_z: Optional[float] = None
+        self.hold_deadline: Optional[float] = None
+        self.writer_stand_m: Optional[float] = None
+        self.writer_lock = threading.Lock()
+#: Monotonic stamps of the last operator cancel and of the run start: a cancel
+#: counts only when stamped at or after the run began.
+        self.cancel_mono: Optional[float] = None
+        self.run_start_mono: Optional[float] = None
+#: Set when a confirmed retreat found the writer already standing. reset() does
+#: not clear it, so the next reply can say who raised the body.
+        self.last_retreat_was_noop: bool = False
+#: True while a pre-descent stance step may be installed. reset() keeps it so the
+#: next retreat can still drop the step.
+        self.stepped: bool = False
+
