@@ -480,3 +480,6 @@ def slew_margin_s(law: Any) -> float:
     if not _finite_num(band) or band <= 0.0:
         return 0.0
     return band / HEIGHT_SLEW_RATE_M_S
+
+
+# ──────────────────────────────────────────────────── what the law is fed with
