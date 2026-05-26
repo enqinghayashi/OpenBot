@@ -683,3 +683,19 @@ class DescentContext:
 #: next retreat can still drop the step.
         self.stepped: bool = False
 
+    def reset(self) -> None:
+        """Back to ``IDLE`` with no body height outstanding.
+
+        ``cancel_mono`` is DELIBERATELY NOT cleared here (deviation from the
+        R4 L2 spec text, stated): ``reset`` runs inside a run's own retreat
+        (e.g. the rise before a re-descend), and clearing there would WIPE a
+        cancel that landed during that rise, so the run would go on to descend
+        and dispatch the engine the operator had just stopped.  Stickiness is
+        prevented by the run stamp instead (:meth:`cancelled_this_run`).
+        """
+        self.state = IDLE
+        self.height_cmd = None
+        self.effective_z = None
+        self.hold_deadline = None
+        self.writer_stand_m = None
+
