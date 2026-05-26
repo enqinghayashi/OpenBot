@@ -817,3 +817,20 @@ def _issue(writer_verb: Callable[[str], str], line: str,
     return text.startswith("DONE"), text
 
 
+def _safe_status(status_verb: Callable[[], str],
+                 lock: Optional[Any] = None) -> Optional[str]:
+    """One status poll -> the line, or ``None`` when the call itself failed.
+
+    A failed poll is NOT a parse failure: it is retried inside the confirm
+    window, and only a window that expires with nothing usable refuses.
+    ``lock`` is the context's writer lock, held for this call only.
+    """
+    try:
+        if lock is None:
+            reply = status_verb()
+        else:
+            with lock:
+                reply = status_verb()
+    except Exception:  # noqa: BLE001 - treated exactly like an unparseable poll
+        return None
+    return reply if isinstance(reply, str) else None
