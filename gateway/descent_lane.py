@@ -773,3 +773,13 @@ class DescentContext:
 
 
 # ──────────────────────────────────────────────────────────────── the log table
+class DescentPhaseLog(_place_target.PhaseLog):
+    """``place_target.PhaseLog`` with a descent-specific header.
+
+    Overrides ``header()`` ONLY.  Every other behaviour — a row's elapsed time
+    MEASURED against the previous row, the total carried on the VERDICT row,
+    the wrap width — is inherited, so the repo keeps exactly ONE table
+    renderer.  Render with ``place_target.render_table``; publish with
+    ``place_target.status_message``.
+    """
+
