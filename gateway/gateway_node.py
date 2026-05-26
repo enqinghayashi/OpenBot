@@ -1,0 +1,373 @@
+"""gateway_node.py — rclpy Foxy node bridging brain tools to the skill sockets.
+
+Purpose: the Stuart-deploy-only ROS node that (1) subscribes
+``/object_detections_body`` and ``/walk_status``, (2) assembles a
+``WorldObservation`` (see gateway/assemble.py), (3) exposes tool verbs to the
+brain agent over a JSON-lines socket (single-reader; thread-per-connection),
+(4) bridges to the merged-writer / grip_server sockets and the pick engine
+(stdin protocol), and (5) runs the SkillVerifier post-hook after motion verbs,
+publishing the verdict on ``/skill_verdict``.
+
+Platform laws enforced here (verified on Stuart):
+* Locomotion ONLY via the writer ``cmd_set`` verb or the walk FSM topics
+  (``/walk_target`` + ``/walk_go``). NEVER sport RPC 3102 while the writer
+  owns the robot — this node never calls sport RPC at all.
+* Navigate verifies on ``/walk_status == REACHED`` ONLY (no odom exists).
+* Pick is TABLETOP-ONLY (workspace torso-frame z >= ~-0.35 m: z=0 is the
+  torso link, ground objects read ~-0.75): a floor pick request is
+  refused honestly with an ERROR — there is no ground-pick skill.
+* Detections are event-driven: silence == empty scene; the observation's
+  ``fresh`` flag derives from the gap since the last packet.
+* GRASP EVIDENCE LAW (world-truth round 3, restated round 4): during a REAL
+  pick the engine closes the grip over ITS OWN socket — the gateway never
+  sees the close_adaptive verdict, so a serialized gateway-close verdict can
+  never certify a real pick.  When the palm DDS lane is UP the engine
+  VERIFIES its own grasp (quadrant/palm-data check) and fails with
+  ERROR:grasp_failed on an air-grab; in BLIND MODE (lane down) it skips
+  verification and returns DONE anyway.  The gateway CANNOT see the engine's
+  grip-socket traffic; its IMMEDIATE post-pick ``state [side]`` poll's
+  per-side available flag IS the lane-health probe the gateway CAN see:
+  ``_do_pick`` records ``lane_state=up|down|unknown`` + ``grip_state_ts``
+  into the tool result (lane up <=> this engine DONE was engine-verified).
+  The serialized close-verdict path remains ONLY as evidence for the
+  close_hand tool itself (and its informational prev_contact annotations on
+  open_hand).  CONTACT LAW: contact is ONLY a literal close_adaptive
+  DONE:contact — never derived from joints.  The grip state read AGES
+  (GRIP_STATE_MAX_AGE_S): a daemon'd grip keeps its last good
+  'available=True' forever no more, and open verification uses the MEASURED
+  hand state (joints vs the CAUSAL measured-open reference — world-truth
+  round 5: per side the reference forms ONLY from a double-read agreement
+  taken AFTER a gateway-dispatched open command for that side; boot reads
+  never qualify; never a single-first-read bootstrap), never
+  command-inference.  close_both (sides=both) dispatches close_adaptive
+  RIGHT then close_adaptive LEFT and lists the per-side verdicts — the
+  plain 'close_both' verb survives ONLY as the grip passthrough, not the
+  brain close_hand tool.  The detections channel gates target-gone on
+  LIVENESS (DETECTIONS_ALIVE_S), not packet freshness; silence == empty
+  scene per the silence_means_empty switch.
+* navigate 'stop' claims NO goal post-condition: it is always routed to the
+  coordinator (pick_walk_coordinator.py), which resets its own epoch/flow
+  state and forwards the FSM's real stop trigger (/walk_target 'stop') — the
+  gateway publishes /navigate_target only and gets NO verdict.
+
+IMPORTANT — module top level imports ONLY stdlib. rclpy and the brain modules
+are imported lazily inside methods, so this module imports cleanly on a laptop
+with neither ROS nor brain/ present (self-test requirement).
+
+Tools socket protocol (json lines, one request -> one reply line):
+    IN:  {"verb": "<verb>", "args": [<json values>]}
+    OUT: {"ok": true|false, "reply": "<text>", "verdict": "<VERDICT:...|null>"}
+Verbs:
+    pick <x> <y> <z> [nx ny nz] [orientation] [height_m]   -> pick engine
+    pick_left ...                                          -> pick engine (left arm)
+    place                                                  -> engine 'place' (release-only)
+    navigate <label> | stop                                -> /navigate_target (two-step: the LABEL
+                                                             then auto-'confirm' — coordinator does
+                                                             the search-then-go handshake)
+    turn_around [label]                                    -> BLOCKS (<= 115 s sweep + 12 s centre):
+                                                             label (default 'person') goes
+                                                             DIRECTLY on /walk_target (never
+                                                             /walk_go); on sight the walk is
+                                                             stopped and the person is CENTRED
+                                                             in the frame by writer cmd_set
+                                                             omega-only pulses (no walking).
+                                                             Reply ends TURN_RESULT=centred
+                                                             (only that one starts 'DONE') |
+                                                             seen_not_centred | not_seen |
+                                                             cancelled
+    open_hand [side]                                       -> grip socket open
+    close_hand [side] [max_fraction steps dt stop_threshold min_steps]
+                                                           -> grip socket close_adaptive
+    observe                                                -> current WorldObservation JSON
+    image                                                  -> latest camera frame JSON
+                                                             ({jpeg_b64, w, h, ts, fresh};
+                                                             fresh:false + reason when
+                                                             stale/no_camera/encode_error)
+    status                                                 -> writer + grip + walk snapshot
+    query_user <question>                                  -> print the question, wait for ONE
+                                                             human answer line on stdin; reply
+                                                             DONE:<answer> | ERROR:no_user_reply:timeout
+    notify_user <message>                                  -> print a notice (non-blocking);
+                                                             reply DONE:notified
+    cmd_set <vx> <vy> <omega> [dur] | off                  -> writer cmd_set
+    writer <verb> [args...]                                -> passthrough to writer socket
+    grip <verb> [args...]                                  -> passthrough to grip socket
+    engine <verb> [args...]                                -> passthrough to the
+                                                              engine (its unix
+                                                              socket when one is
+                                                              live, else a spawn)
+    ping                                                   -> PONG
+The human-confirm gate is the brain agent's pre-hook (brain/hooks.py); this
+node executes what it is told and reports honest results.
+
+ROS topic (not a tools verb): /place_target <label> is the ONE-SHOT
+"place the held object ON <label>" lane.  It resolves <label> against the
+fresh /object_detections_body scene, computes a wrist target just above that
+object and dispatches the coordinate place above -> the shipped
+'place x y z' engine lane, so the held-side law, the unheld refusal and the
+post-place verifier are inherited rather than re-derived.  It answers with a
+phase table (resolve / target / execute / verify / VERDICT) on BOTH channels:
+the gateway log, and one JSON object per phase on /place_status whose LAST
+object also carries the table.  There is no confirm step.  Every unresolvable
+target REFUSES with no engine command — the lane never degrades to a bare
+current-pose release.  The pure half lives in gateway/place_target.py.
+"""
+
+from __future__ import annotations
+
+import inspect
+import json
+import math
+import os
+import re
+import select
+import socket
+import statistics
+import subprocess
+import sys
+import threading
+import time
+from typing import Any, Dict, List, Optional, Tuple
+
+# ── defaults (most can be overridden via ROS params) ────────────────────────
+WRITER_SOCK_DEFAULT = "/tmp/merged_writer.sock"
+GRIP_SOCK_DEFAULT = "/tmp/grip_server.sock"
+TOOLS_SOCK_DEFAULT = "/tmp/openbot_gateway.sock"
+#: the engine's own listener. connect first and spawn only when
+#: nothing is listening: a second engine would drive both arms to
+#: neutral and drop the arms before a place starts.
+ENGINE_SOCK_DEFAULT = "/tmp/pick_engine.sock"
+#: newest /object_detections_body packet, all rows, written
+#: atomically so the engine can re-detect between attempts.
+#: OPENBOT_BODY_ROWS=0 turns it off.
+BODY_ROWS_FILE = "/tmp/openbot_body_rows.json"
+
+
+def write_body_rows(rows, path=BODY_ROWS_FILE, now=None, environ=None):
+    """Write {"t": now, "rows": rows} atomically; never raises.  True = written."""
+    env = os.environ if environ is None else environ
+    if str(env.get("OPENBOT_BODY_ROWS", "1")).strip() == "0":
+        return False
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump({"t": time.time() if now is None else float(now), "rows": rows},
+                      fh, separators=(",", ":"))
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        return False
+
+
+#: a transport failure after the command left: pipe readline dies
+#: or times out, socket sendall fails, socket readline dies. a
+#: failed send must not read as an engine error, so classify by the
+#: prefix. 'pick engine not running' is pre-send and stays a plain
+#: ConnectionError.
+ENGINE_TRANSPORT_ERROR_PREFIX = "ERROR:transport:"
+# ── measuring Dex3 closure (the daemon-hold tier) ───────────────────────────
+#: the presets mirror the grip server's open/closed tables, which are
+#: the source of truth. the gateway needs them to score a hand the
+#: engine closed, because the grip server has no 'what fraction' verb.
+#: if the presets move, keep these in step: a stale table feeds a
+#: wrong fraction into the held-side call.
+#: left mirrors right for j3-j6 only; j0-j2 differ in endpoints and
+#: travel, so a both-closed compare lands on different rulers there.
+#: a side that reads nothing yields None, so only a hand that
+#: measures can be scored.
+DEX3_JOINT_IDS = (0, 1, 2, 3, 4, 5, 6)
+DEX3_OPEN = {
+    "right": {0: 0.48, 1: 0.30, 2: 0.0, 3: 0.0, 4: 0.0, 5: 0.0, 6: 0.0},
+    "left": {0: -0.48, 1: -0.30, 2: 0.0, 3: 0.0, 4: 0.0, 5: 0.0, 6: 0.0},
+}
+DEX3_CLOSE = {
+    "right": {0: -0.02676787, 1: -1.01299822, 2: -1.68802154,
+              3: 1.57079632, 4: 1.74532925, 5: 1.57079632, 6: 1.74532925},
+    "left": {0: 0.00, 1: 0.45, 2: 1.00, 3: -1.57079632, 4: -1.74532925,
+             5: -1.57079632, 6: -1.74532925},
+}
+#: sides whose absence from a measurement is excused: a missing
+#: reading cannot name a holder, though a present one still can.
+#: empty this tuple to require every hand to measure, which leaves
+#: the tier inert while the left hand never measures.
+#: load-bearing: a left pick opens both hands, and in the
+#: mode-absent regime the right latch triad (j1/j3/j5 at close)
+#: still reads 3/7 = 0.43 >= CLOSED_EFF_MIN, naming 'right' while
+#: the left holds.
+DEX3_OUT_OF_SERVICE_SIDES = ("left",)
+#: mean closure at which a hand counts as meaningfully closed. the
+#: failure mode is asymmetric by design: a false closed releases an
+#: empty hand, one wasted motion, while a false not-closed refuses a
+#: place while holding. so stay permissive; the daemon's own `held`
+#: gate is what keeps it honest.
+#: no joint-space rule separates a hand parked closed on air from
+#: one holding (a parked empty pose still scores 0.3745), so this
+#: is a not-open check, not a hold detector.
+CLOSED_EFF_MIN = 0.25
+#: budget (s) per `state <side>` probe: a wedged grip server then
+#: delays a place by a known amount, not the 15 s verb default. two
+#: probes run per place.
+CLOSURE_PROBE_TIMEOUT_S = 2.0
+#: a joint is scored only with a usable span between presets. j0
+#: travels 0.507 rad and every other right joint at least 1.0; below
+#: this the division amplifies noise into a fake fraction.
+MIN_SPAN_RAD = 0.05
+#: joints that must survive to score a hand at all. below this the
+#: hand is unmeasurable (None) rather than scored on the remainder:
+#: two limp joints can sum to ~1.0 and license a place into an empty
+#: hand. a hard close latches three joints (j1/j3/j5), leaving four,
+#: so do not raise this above 4.
+#: with mode reported, mode 0 (limp) is excluded and the floor counts
+#: live joints; without mode nothing is excluded and the floor counts
+#: scored joints, so a live hold reads 0.668 instead of 0.786. do not
+#: raise CLOSED_EFF_MIN to chase the filtered reading.
+MIN_SCORED_JOINTS = 4
+PICK_MIN_Z_M = -0.35        # tabletop-only pick bound, in the torso frame
+#: z is height above the torso link. ground objects read ~-0.75;
+#: tabletop detections land in [0.00, +0.07].
+#: the engine applies the same bound as its sanity gate: a height_m
+#: <= 0 or above the max falls back to the plain path. the
+#: named-args shaper drops a bad height_m, so junk tolerance never
+#: shifts the positional grammar.
+PICK_HEIGHT_M_MAX = 0.5
+#: torso-frame match radius (m) for resolving an 'auto' or missing
+#: pick orientation to the freshest nearby detection's. the brain
+#: binds orientation one layer up and passes it concretely, so this
+#: only covers a direct caller that leaves it out and a lying object
+#: still gets an upright approach. nothing in range, or a stale or
+#: empty scene, gives the safe 'upright' default.
+PICK_ORIENTATION_MATCH_M = 0.3
+#: radius park: a row's radius history counts only if the row sits
+#: within this distance (m) of the commanded point, and only for
+#: samples this recent (s).
+RADIUS_PARK_MATCH_M = 0.05
+RADIUS_PARK_WINDOW_S = 4.0
+# the projector's surface normal per object (nx, ny, nz, torso
+# frame, fit at the mask centre) rides on the engine pick line:
+# `pick x y z nx ny nz <orientation> [height_m] [x_off]`.
+# looked up like radius_park: row within RADIUS_PARK_MATCH_M, its
+# instance id, that instance's newest normal, no older than
+# PICK_NORMAL_MAX_AGE_S and within PICK_NORMAL_NORM_TOL of unit
+# length. the engine logs it but grips with fixed wrist targets, so
+# normal-driven wrists stay a gantry decision.
+# OPENBOT_PICK_NORMALS=0 (gateway env) turns it off.
+PICK_NORMAL_MAX_AGE_S = 2.0
+PICK_NORMAL_NORM_TOL = 0.1
+#: a 'pca' fit's object_radius is a point spread, and 'sphere'
+#: never publishes a radius (constant 0.035 default). for those,
+#: take half the row's lateral width (p95-p5 of torso x).
+#: OPENBOT_PICK_RADIUS_WIDTH=0 puts the fit radius back.
+RADIUS_PARK_WIDTH_TYPES = ('pca', 'sphere')
+#: default park margin (m) and the clamp for
+#: OPENBOT_PICK_RADIUS_MARGIN_M. the engine caps the park at
+#: 0.115 m, which must stay under the 0.13 m approach offset.
+#: env 0.015 gives a tighter park margin.
+RADIUS_PARK_MARGIN_DEFAULT_M = 0.050
+RADIUS_PARK_MARGIN_MIN_M = 0.005
+RADIUS_PARK_MARGIN_MAX_M = 0.060
+#: a DONE place line carries `release_open=<side>:True` when the
+#: engine measured the hand open at release, and the lift closeout
+#: then parks that hand closed. that shape is the park-closed
+#: marker: the next reading is closed, so the place must not mark
+#: the side open-commanded, or the closed shape becomes the open
+#: reference and flips every later is_open.
+PLACE_PARK_CLOSED_RE = re.compile(r"release_open=(right|left):True")
+#: how long (s) a DONE place keeps its name in the unheld refusal.
+PLACE_RELEASE_NOTE_S = 300.0
+#: default floor on arm-dispatch duration (s). the writer clamps at
+#: 1.5 s, so the effective floor is max(embodiment min_arm_dur_s,
+#: 1.5), resolved at runtime.
+MIN_ARM_DUR_S_DEFAULT = 1.5
+# ── descent-lane defaults for the low workspace ─────────────────────────────
+#: nominal standing reference (m) the writer reports as
+#: ``height_stand``. simulated, and only a gateway default: the live
+#: value comes from ``embodiment.envelope.height_stand_m`` and the
+#: lane is off.
+HEIGHT_STAND_M_DEFAULT = 0.74
+#: floor of the writer's height clamp (m). the descent budget is
+#: HEIGHT_STAND_M_DEFAULT - HEIGHT_MIN_M_DEFAULT, and the writer
+#: ships that band shut (min == max == standing), so descent is
+#: mechanically impossible until the band is widened. matches the
+#: EnvelopeConfig default.
+HEIGHT_MIN_M_DEFAULT = 0.55
+#: same-height hold tolerance (m of body height): reuse a descent
+#: only if |h_need - h_cur| <= this. same as EnvelopeConfig.
+HOLD_TOL_M_DEFAULT = 0.05
+#: status-poll budget (s) for a confirmed descent or retreat. same
+#: as EnvelopeConfig and as the lane's own
+#: DESCENT_CONFIRM_TIMEOUT_S.
+DESCENT_CONFIRM_TIMEOUT_S_DEFAULT = 3.0
+#: default frame for detections (embodiment.perception.frame:
+#: 'torso'; x lateral right, y forward, z up, in metres). the same
+#: right-handed frame fixes the cmd_set omega sign.
+DETECTIONS_FRAME_DEFAULT = "torso"
+MAX_STALE_S_DEFAULT = 5.0
+# ── turn_around centring ────────────────────────────────────────────────────
+#: sweep budget (s), from a full 360 deg sweep at 77 s: 12 turns x
+#: (DETECT_WINDOW_S 5.0 + TURN_DURATION_S 1.047 + TURN_SETTLE_S 0.3).
+TURN_SWEEP_BUDGET_S = 90.0
+#: longest wait (s) for the walk FSM to go IDLE after stop_walk(),
+#: before the first centre pulse.
+TURN_STOP_SETTLE_S = 2.0
+#: centring budget (s): 180 deg at OMEGA_MAX 0.40 rad/s is 7.9 s,
+#: plus settling.
+TURN_CENTRE_BUDGET_S = 12.0
+#: whole-call budget for the sweep wait (s). it must stay below
+#: brain_client.GATEWAY_CALL_TIMEOUT_S 150.0, so the ladder is
+#: 115 < 150 < Tool 180. centring can add TURN_CENTRE_BUDGET_S, and
+#: a re-sweep is refused unless that much is left, so the worst case
+#: is 115 + 12 = 127 s, still under 150.
+TURN_TOTAL_BUDGET_S = 115.0
+#: bearing that counts as in tolerance (rad), about 5 deg.
+TURN_TOL_RAD = 0.09
+#: yaw gain for the centring loop.
+TURN_K_THETA = 1.5
+#: yaw-rate clamp (rad/s).
+TURN_OMEGA_MAX = 0.40
+#: +omega turns left while body-frame +x points right, so the sign
+#: is -1.
+TURN_OMEGA_SIGN = -1.0
+#: floor for yaw gait speed (rad/s).
+TURN_OMEGA_MIN = 0.15
+#: one centre pulse (s). the writer's cmd_set auto-expires through
+#: cmd_auto_deadline, so a dead gateway stops the robot within
+#: 0.35 s.
+TURN_PULSE_S = 0.35
+#: loop tick (s).
+TURN_TICK_S = 0.1
+#: a detection older than this (s) is not a bearing.
+TURN_ROW_MAX_AGE_S = 0.8
+#: target gone this long (s) counts as lost.
+TURN_LOST_S = 2.0
+#: in-tolerance reads, all distinct, needed to call it centred.
+TURN_CONFIRM_READS = 2
+#: re-sweeps allowed after losing the target mid-centring.
+TURN_MAX_RESWEEPS = 2
+#: 'person' plausibility: confidence floor for treating a
+#: detection as a person. label 'person' only; stray detections read
+#: 0.36-0.54 confidence and ~0.11 m height, real people 0.68-0.90
+#: and ~0.94-0.97 m.
+TURN_PERSON_MIN_CONF = 0.50
+#: minimum height (m) for a person detection.
+TURN_PERSON_MIN_HEIGHT_M = 0.30
+#: confidence floor for non-person labels.
+TURN_OTHER_MIN_CONF = 0.25
+#: association gate (rad): once locked, a row more than this off the
+#: locked bearing is a different object and is ignored, leaving nothing
+#: inside the gate for TURN_LOST_S. about 2.3 pulses of travel at
+#: OMEGA_MAX.
+TURN_ASSOC_GATE_RAD = 0.35
+
+
+def _turn_wrap_pi(a: float) -> float:
+    """Wrap an angle to (-pi, pi]."""
+    return math.atan2(math.sin(a), math.cos(a))
+
+
+def _turn_bearing(x: float, y: float) -> float:
+    """Bearing (rad) of a torso-frame point: x = RIGHT, y = forward.
+
+    The SAME law as walk_node.py:1394/1423 ``yaw_err = _wrap_pi(
+    math.atan2(x_b, y_b))``.  Positive = target is to the RIGHT of centre.
+    """
+    return _turn_wrap_pi(math.atan2(x, y))
