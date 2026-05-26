@@ -708,3 +708,13 @@ class DescentContext:
         """Record an operator cancel at ``now_monotonic``."""
         self.cancel_mono = float(now_monotonic)
 
+    def cancelled_this_run(self) -> bool:
+        """True iff a cancel was stamped at or after the current run began.
+
+        A context whose run was never stamped (every direct caller of the
+        sequences, every legacy test) answers False, so behaviour without the
+        gateway's :meth:`begin_run` is unchanged.
+        """
+        c, r = self.cancel_mono, self.run_start_mono
+        return _finite_num(c) and _finite_num(r) and float(c) >= float(r)
+
