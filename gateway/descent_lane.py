@@ -699,3 +699,8 @@ class DescentContext:
         self.hold_deadline = None
         self.writer_stand_m = None
 
+    def begin_run(self, now_monotonic: float) -> None:
+        """Stamp the start of ONE lane run (the gateway calls this under the
+        lane lock, before the sequence runs)."""
+        self.run_start_mono = float(now_monotonic)
+
