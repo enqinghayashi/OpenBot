@@ -727,3 +727,15 @@ class DescentContext:
         """
         return self.state != IDLE
 
+    def stand_m(self, fallback: float) -> float:
+        """The frame a shift is measured in: the writer's OWN stand, else
+        ``fallback``.
+
+        The ``fallback`` is the envelope's ``height_stand_m`` and is honest
+        only for the FIRST command, before any poll has reported the writer's
+        own reference — every later shift reads the writer's number.
+        """
+        if _finite_num(self.writer_stand_m):
+            return float(self.writer_stand_m)
+        return float(fallback)
+
