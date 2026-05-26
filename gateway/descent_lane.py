@@ -927,3 +927,19 @@ def _lane_budget(law: Any) -> float:
     return float(LANE_OPERATION_BUDGET_S)
 
 
+def _continued_lockout_s(ctx: Any, now_monotonic: Any) -> float:
+    """The RESIDUAL of the hold a next-command rule answered ``HOLD`` for.
+
+    A ``NEXT_HOLD`` answer means the lane CONTINUES a hold it already entered,
+    so the window the operator is subject to is what is LEFT of it, not the
+    window it was entered with.  Read from ``ctx.hold_deadline`` — the same
+    monotonic deadline the rule itself compared against — so the number
+    reported and the number the rule acted on are one fact.  ``0.0`` for a
+    context with no deadline (nothing to continue) or a non-finite clock; the
+    rule cannot answer ``NEXT_HOLD`` past the deadline, so in the reachable
+    case this is a positive window.
+    """
+    deadline = getattr(ctx, "hold_deadline", None)
+    if not _finite_num(deadline) or not _finite_num(now_monotonic):
+        return 0.0
+    return max(0.0, float(deadline) - float(now_monotonic))
