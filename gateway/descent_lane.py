@@ -862,3 +862,45 @@ def _writer_stand(status_verb: Callable[[], str],
     return float(stand) if _finite_num(stand) else None
 
 
+def probe_active(status_verb: Callable[[], str], target_m: float,
+                 *, tol_m: float = HEIGHT_CONFIRM_TOL_M,
+                 lock: Optional[Any] = None
+                 ) -> Tuple[bool, Optional[float], str]:
+    """One SYNCHRONOUS ``status`` poll: is the writer still driving
+    ``target_m``?  ``(ok, rem_s, detail)``.
+
+    The lane's LAST LINE before an engine dispatch.  A descent is confirmed by
+    a poll, but ``height <m>`` is a LIFETIME on the writer: it can expire, be
+    suspended by an RC takeover, or be re-issued elsewhere between the
+    confirmation and the moment the arm is actually commanded.  Dispatching
+    against a body nobody is holding is the collision this lane exists to
+    prevent, so this refuses rather than retries.
+
+    ``rem_s`` is the writer's own remaining hold FROM THE SAME POLL — one poll,
+    one frame, one clock — and is what bounds the hold window
+    (:meth:`DescentContext.holding`).  It is ``None`` when the writer reports no
+    parseable ``rem``; the caller may still act on ``ok``, but must not extend a
+    hold past what the poll showed.
+    """
+    raw = _safe_status(status_verb, lock)
+    parsed = descent_law.parse_height_status(raw)
+    if parsed is None:
+        return False, None, honest(
+            "the writer's status is not a height report (got %s) - the body "
+            "height cannot be vouched for" % (_clip(raw) or "no reply"))
+    ref = parsed.get("ref")
+    if parsed.get("suspended"):
+        return False, None, honest(
+            "an RC override SUSPENDED the squat at ref=%.3f - the lane no "
+            "longer owns the body height" % ref)
+    if not parsed.get("active") or parsed.get("target") is None:
+        return False, None, honest(
+            "the writer is no longer driving a height (status: %s)"
+            % _clip(raw))
+    if ref is None or abs(ref - target_m) > tol_m:
+        return False, None, honest(
+            "the writer's reference %.3f has left the held height %.3f "
+            "(tol %.3f)" % (ref, target_m, tol_m))
+    rem = parsed.get("rem")
+    return (True, (float(rem) if _finite_num(rem) else None),
+            "writer still active at ref=%.3f (rem=%s)" % (ref, _clip(raw)))
