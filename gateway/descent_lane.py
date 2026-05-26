@@ -718,3 +718,12 @@ class DescentContext:
         c, r = self.cancel_mono, self.run_start_mono
         return _finite_num(c) and _finite_num(r) and float(c) >= float(r)
 
+    def in_flight(self) -> bool:
+        """True while a body height is outstanding (the refusal predicate).
+
+        A context that is not ``IDLE`` — including one parked in ``RETREATING``
+        by an UNCONFIRMED retreat — means the body may not be where the caller
+        thinks it is, so the next lane skill must refuse rather than act.
+        """
+        return self.state != IDLE
+
