@@ -834,3 +834,5 @@ def _safe_status(status_verb: Callable[[], str],
     except Exception:  # noqa: BLE001 - treated exactly like an unparseable poll
         return None
     return reply if isinstance(reply, str) else None
+
+
