@@ -371,3 +371,121 @@ def _turn_bearing(x: float, y: float) -> float:
     math.atan2(x_b, y_b))``.  Positive = target is to the RIGHT of centre.
     """
     return _turn_wrap_pi(math.atan2(x, y))
+
+
+def _turn_omega(yaw_err: float) -> float:
+    """Yaw rate (rad/s) that turns the body toward the bearing.
+
+    walk_node.py:1424 law, ``OMEGA_SIGN * K_THETA * max(-OMEGA_MAX,
+    min(OMEGA_MAX, yaw_err))``, with two additions made here: the final
+    magnitude is clamped to TURN_OMEGA_MAX (walk_node's clamp is on the
+    ERROR, so its output can reach 0.60; the TURN spec caps the rate at 0.40),
+    and a non-zero command is raised to TURN_OMEGA_MIN (gait floor).  Inside
+    the TURN_TOL_RAD dead-band the answer is exactly 0.0.
+    """
+    if abs(yaw_err) <= TURN_TOL_RAD:
+        return 0.0
+    omega = TURN_OMEGA_SIGN * TURN_K_THETA * max(
+        -TURN_OMEGA_MAX, min(TURN_OMEGA_MAX, yaw_err))
+    mag = min(abs(omega), TURN_OMEGA_MAX)
+    if mag < TURN_OMEGA_MIN:
+        mag = TURN_OMEGA_MIN
+    return math.copysign(mag, omega)
+# ── hold evidence from the pick daemon (the /pick_state fold) ───────────────
+#: the pick daemon's state topic (JSON at 5 Hz: state / label / held /
+#: daemon_alive / side). the gateway refuses an unheld place, and its
+#: other two hold tiers are made by the gateway itself, so a pick on the
+#: daemon lane is invisible to both and a place on a payload it holds
+#: refuses with 'nothing verified held'. the daemon already knows, so
+#: read it here.
+#: scope: consulted only inside the unheld-refusal branch. as a peer
+#: branch above the refusal it would pre-empt the ambiguous-hint `else`
+#: and release the daemon's hand where that path releases active_side.
+#: the payload's `side` is required: it is the hand the daemon actually
+#: closed. no side means the tier is inert and the refusal stands. never
+#: fall back to a declared constant, because the daemon picks either
+#: hand and a constant would open the empty right hand while the payload
+#: stays gripped.
+PICK_STATE_TOPIC_DEFAULT = "/pick_state"
+#: older than this (s) is not evidence. the daemon publishes at 5 Hz,
+#: so 2.0 s rides out ~10 dropped messages and stays far too short for
+#: a dead daemon's last 'held: true' to authorise a place.
+PICK_STATE_MAX_AGE_S = 2.0
+#: marks a new pick cycle: _execute_pick's first act, before it
+#: touches `held`. it ends the previous hold epoch in _on_pick_state,
+#: which releases the consumed latch.
+PICK_STATE_BUSY = "busy"
+#: how long _await_pick_daemon waits for a pick motion before giving
+#: up. the engine answers DONE about 3 s after the command while the
+#: arm still moves; a grasp verdict lands near t+26 s and the carry tuck
+#: near t+33 s, so 120 s covers about 3.5 cycles. a wait bound, not a
+#: gate: past it nothing is refused, the wait stops and reports
+#: `timeout`. do not drop below ~60 s.
+PICK_DAEMON_WAIT_S = 120.0
+#: how long _await_pick_daemon gives a cycle to begin (the daemon's
+#: `busy` frame). a live daemon writes it well under a second after the
+#: engine answered DONE, so 5.0 s is 25 publish periods at 5 Hz and a
+#: lane with no daemon pays 5 s once instead of the whole motion
+#: budget.
+PICK_DAEMON_START_S = 5.0
+#: poll period (s) while waiting. publishing is 5 Hz, so 0.1 s cannot
+#: miss a frame; it only bounds how late the edge is noticed.
+PICK_DAEMON_POLL_S = 0.1
+#: how long `cancel` waits for the engine socket. the engine answers
+#: from its connection thread, so the reply is immediate by
+#: construction and this bounds only a wedged listener or an overloaded
+#: host. short on purpose: a blocking cancel is useless to an operator
+#: watching the arm keep moving.
+CANCEL_REPLY_TIMEOUT_S = 5.0
+
+
+def _defang_error_token(text: str) -> str:
+    """Break the ``ERROR:`` literal so an embedded echo cannot poison a reply.
+
+    ``_shape_reply`` (see its docstring) sets ``ok:false`` when ``ERROR:``
+    appears ANYWHERE in the reply body, and the verifier's ``_classify_reply``
+    reads it as a failure.  The cancel reply ECHOES the engine's own words for
+    the wire trace — and the engine's error vocabulary is exactly ``ERROR:``.
+    So an engine that answers a cancel with, say, ``ERROR:not busy`` would turn
+    a cancel that WORKED into a failure envelope: the brain would report the
+    stop as failed and the operator would be told the opposite of the truth.
+
+    This is the same bug class the ``_shape_reply`` docstring already names for
+    ``close_both`` (``right_close=ERROR:no_dds`` inside a DONE lead).
+
+    The substitution is deliberately LOUD rather than silent — an underscore is
+    visible in the wire trace, so a reader can still see what the engine said
+    while the token no longer parses as an error.  Only the ECHO is defanged;
+    a reply that genuinely IS an error still leads with its own ``ERROR:`` and
+    is shaped as one.
+    """
+    return text.replace("ERROR:", "ERROR_")
+
+
+#: Reason on every verdict minted for a cancelled pick or place. same
+#: token the brain verifier uses for a cancelled navigate.
+CANCEL_REASON = "cancelled_by_operator"
+
+_CANCEL_PHASE_RE = re.compile(r"[A-Za-z0-9_.\-]+")
+
+
+def _cancel_phase(reply: str) -> str:
+    """The ``<where>`` of an engine ``CANCELLED:<where>`` reply, sanitised.
+
+    Text after the first ``CANCELLED:``, cut at the first whitespace, kept only
+    while it is ``[A-Za-z0-9_.-]`` and at most 40 characters; anything else
+    (empty, or a first character outside the charset) is ``"unknown"``.  The
+    phase is interpolated into a ``|``-delimited verdict, so a ``|`` or a
+    newline must never survive this.
+    """
+    text = str(reply or "")
+    idx = text.find("CANCELLED:")
+    if idx < 0:
+        return "unknown"
+    tail = text[idx + len("CANCELLED:"):]
+    parts = tail.split(None, 1)
+    token = parts[0] if parts else ""
+    m = _CANCEL_PHASE_RE.match(token)
+    if m is None:
+        return "unknown"
+    return m.group(0)[:40]
