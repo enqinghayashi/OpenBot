@@ -489,3 +489,64 @@ def _cancel_phase(reply: str) -> str:
     if m is None:
         return "unknown"
     return m.group(0)[:40]
+
+
+def _cancelled_verdict(tool: str, where: str) -> str:
+    """The VERDICT for a cancelled ``tool`` — the verifier's own grammar.
+
+    Byte-equal to ``brain.verifier.Verdict.failure(evidence,
+    'cancelled_by_operator').to_string()`` (pinned in
+    tests/lane_cancel_and_verdict_pins.py).  ``status`` failure: a cancel is
+    NEVER a completed pick or place, and the gateway does not add a 4th status.
+    """
+    return ("VERDICT:failure|Evidence:%s cancelled by the operator at phase %s "
+            "- the arm was frozen mid-motion; this is NOT a completed %s"
+            "|Reason:%s" % (tool, where, tool, CANCEL_REASON))
+
+
+def _pre_descent_step_flag(envelope: Any) -> bool:
+    """``embodiment.envelope.pre_descent_step`` — armed ONLY by a real ``True``
+    (the loader's strict-bool discipline; a stub or an omitted key is False)."""
+    return getattr(envelope, "pre_descent_step", False) is True
+
+
+#: every shape the engine's command loop puts on the wire, from its
+#: own stdout writes: READY at boot, DONE / DONE:<names> /
+#: DONE; release_open=... for pick and place, ERROR:... (including the
+#: ERROR:transport: label) and CANCELLED:<where>.
+_ENGINE_REPLY_PREFIXES = ("DONE", "ERROR:", "CANCELLED:", "READY")
+
+
+def _is_engine_reply(text: str) -> bool:
+    """True iff ``text`` is shaped like something the ENGINE actually wrote.
+
+    WHY THIS EXISTS (run10, 2026-10-01 — the operator's "the successful pickup
+    was never confirmed").  Ipopt's licence banner is written through the
+    Python ``sys.stdout`` OBJECT, and the daemon's entrypoint routes every
+    Python-level write on ``sys.stdout`` to the CLIENT while a command is in
+    flight.  The banner therefore landed in the reply stream ahead of the real
+    reply and drained ONE LINE PER COMMAND: six successive commands consumed
+    six banner lines (``gateway.log:26,36,45,85,96,103``).
+
+    Both callers were fooled, and neither could tell, because both decided by
+    a NEGATIVE test over a string they had not checked the shape of:
+
+      * ``_do_pick``  — ``if not reply.startswith("ERROR")`` treats *any*
+        non-error string, including ``""`` and ``"****"``, as an executed
+        pick.  Three engine REFUSALS (OUT OF REACH) were reported to the brain
+        as ``DONE pick executed``.
+      * ``_do_place`` — ``if reply.startswith("ERROR")`` is its ENTIRE control
+        flow, so a banner line takes the SUCCESS branch: the daemon hold record
+        is not restored and the hand is recorded as released.
+
+    This predicate makes "is this the engine's answer at all" a question that
+    must be answered YES before either caller interprets it.  An unreadable
+    reply is not a verdict — it is an UNKNOWN, and both callers now say so
+    instead of guessing in the optimistic direction.
+
+    The root cause is fixed where it belongs (``_SuppressStdout`` in
+    ``pick_engine_v3.py`` now rebinds ``sys.stdout`` as well as fd 1) — this is
+    the defence in depth, and it holds for a banner written by ANY library, or
+    by a resident engine whose stream is already poisoned.
+    """
+    return (text or "").strip().startswith(_ENGINE_REPLY_PREFIXES)
