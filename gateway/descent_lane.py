@@ -815,3 +815,5 @@ def _issue(writer_verb: Callable[[str], str], line: str,
         return False, "%s: %s" % (type(exc).__name__, exc)
     text = str(reply or "").strip()
     return text.startswith("DONE"), text
+
+
