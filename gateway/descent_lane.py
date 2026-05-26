@@ -860,3 +860,5 @@ def _writer_stand(status_verb: Callable[[], str],
         return None
     stand = parsed.get("stand")
     return float(stand) if _finite_num(stand) else None
+
+
