@@ -788,3 +788,30 @@ class DescentPhaseLog(_place_target.PhaseLog):
 
 
 # ───────────────────────────────────────────────────── the writer-socket verbs
+def _issue(writer_verb: Callable[[str], str], line: str,
+           lock: Optional[Any] = None) -> Tuple[bool, str]:
+    """Send one writer line -> ``(accepted, reply_text)``.
+
+    A raise from the socket layer is a REFUSAL, never a pass: ``_send_unix_verb``
+    raises on a timeout or a closed socket, and an unanswered ``height`` command
+    is not a descent.  The reply must START with ``DONE`` (the writer's height
+    verb answers ``DONE`` on success and ``ERROR:<why>`` otherwise —
+    ``skills/writer/main_merged_writer.py:475-479``).
+
+    ``lock`` is the context's writer lock.  It is held for THIS call and no
+    longer: the call is the traffic, so serializing around it is the point, and
+    holding it any wider would leave the writer socket held across the lane's
+    own other polls.  Never pass it with an engine call outstanding — the engine
+    (``do_pick`` / ``do_place``) is a separate device and must not queue behind
+    writer traffic.
+    """
+    try:
+        if lock is None:
+            reply = writer_verb(line)
+        else:
+            with lock:
+                reply = writer_verb(line)
+    except Exception as exc:  # noqa: BLE001 - a dead socket is a refusal
+        return False, "%s: %s" % (type(exc).__name__, exc)
+    text = str(reply or "").strip()
+    return text.startswith("DONE"), text
