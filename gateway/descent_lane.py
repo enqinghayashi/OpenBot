@@ -2052,3 +2052,397 @@ def _pc_token(result: Dict[str, Any]) -> str:
     if isinstance(verdict, str) and verdict in PC_HOLD_TOKENS:
         return verdict
     return "UNKNOWN"
+
+
+def _pc_annotate(reply: Any, token: str, key: str = "pc_hold") -> str:
+    """``reply`` with ``; pc_hold=<TOKEN>`` added OUTSIDE the engine's own
+    ``engine_reply=...`` capture (the brain-side parse reads everything after
+    ``engine_reply=`` to the end of the line as the engine's words): the token
+    goes in front of the first ``; engine_reply=`` (right after the gateway's
+    ``lane_state=`` annotation).  A reply with no such annotation gets it
+    appended, in FRONT of an honesty boundary the text already ends with, so
+    the boundary stays the last thing in the text and is never stated twice."""
+    text = str(reply)
+    marker = "; engine_reply="
+    at = text.find(marker)
+    if at >= 0:
+        return "%s; %s=%s%s" % (text[:at], key, token, text[at:])
+    tail = " — " + HONESTY_SUFFIX
+    if text.endswith(tail):
+        return "%s; %s=%s%s" % (text[:-len(tail)], key, token, tail)
+    return "%s; %s=%s" % (text, key, token)
+
+
+#: Reply key of a non-decisive (shadow) hold check. The verifier reads `pc_hold=`
+#: and turns STILL_ON_TABLE / MOVED into a failed pick on its own, so a shadow
+#: result rides as this key instead: logged for calibration, never read.
+PC_SHADOW_KEY = "pc_hold_shadow"
+
+
+def _pc_reply_key(pc: Any) -> str:
+    """``pc_hold`` for a decisive client, :data:`PC_SHADOW_KEY` otherwise."""
+    return "pc_hold" if _pc_decisive(pc) else PC_SHADOW_KEY
+
+
+def _pc_hold_check(pc: Any, pc_base: Dict[str, Any], reply: Any, w_rem: Any,
+                   engine_elapsed_s: Any, log: DescentPhaseLog,
+                   stamp: Callable[[], float]
+                   ) -> Tuple[Dict[str, Any], Optional[str]]:
+    """H-GW-2: the hold check after the engine returned.
+    ``(result, downgrade)``.
+
+    ``result`` is always a dict (UNKNOWN when nothing could be asked or the
+    answer is not a dict) and ``downgrade`` the evidence clause of
+    :func:`_pc_downgrade`, or ``None``.  It runs BEFORE ``_grasp_state`` is read
+    and before the post-dispatch body check, takes NO fresh writer poll (the
+    body check that follows does its own), and every request is bounded by its
+    deadline, so the retreat is never delayed by more than the window plus
+    :data:`LANE_PC_DEADLINE_SLACK_S`.  The window comes from the writer's
+    remaining hold estimated off the PRE-dispatch poll,
+    ``rem = w_rem - engine_elapsed_s``, less :data:`LANE_PC_MARGIN_S`, capped at
+    :data:`LANE_PC_CHECK_MAX_S`; under :data:`LANE_PC_CHECK_MIN_S` the check is
+    not asked for (``deadline_budget``).  An exception from any ``pc`` call is
+    caught: the result is UNKNOWN and one phase row says so.
+    """
+    base_result = pc_base.get("result") if isinstance(pc_base, dict) else None
+    base_rid = pc_base.get("rid") if isinstance(pc_base, dict) else None
+    rem = 0.0
+    if _finite_num(w_rem) and _finite_num(engine_elapsed_s):
+        rem = max(0.0, float(w_rem) - float(engine_elapsed_s))
+    window = min(LANE_PC_CHECK_MAX_S, max(0.0, rem - LANE_PC_MARGIN_S))
+    note = ""
+    try:
+        t_reply = stamp()
+        pc.t_reply_wall = t_reply
+        phase = pc.phase_of(reply)
+        if not (isinstance(base_result, dict)
+                and base_result.get("status") == "OK"
+                and isinstance(base_rid, str) and base_rid):
+            result = {"status": "UNKNOWN", "reason": "no_baseline"}
+        elif window < LANE_PC_CHECK_MIN_S:
+            result = {"status": "UNKNOWN", "reason": "deadline_budget"}
+        else:
+            request = {"rid": pc.new_rid("hc"), "task": "hold_check",
+                       "baseline_rid": base_rid, "phase": phase,
+                       "t_reply_wall": t_reply, "pose": pc.measured_pose(),
+                       "ttl_s": window}
+            result = _pc_dict(pc.request(
+                request, deadline_s=window + LANE_PC_DEADLINE_SLACK_S))
+    except Exception as exc:  # noqa: BLE001 - a point-cloud failure is UNKNOWN
+        result = {"status": "UNKNOWN", "reason": "exception"}
+        note = " [%s: %s]" % (type(exc).__name__, exc)
+    decisive = _pc_decisive(pc)
+    down = _pc_downgrade(result, decisive)
+    _pc_row(log, stamp, "pc_hold",
+            "pc hold_check status=%s verdict=%s reason=%s degraded=%s "
+            "decisive=%s downgrade=%s%s"
+            % (result.get("status"), result.get("verdict"),
+               result.get("reason"), result.get("degraded"), decisive,
+               "yes" if down else "no", note))
+    return result, down
+
+
+def pick_sequence(ctx: DescentContext, log: DescentPhaseLog, *, verb: str,
+                  z: float, args: List[Any], law: LaneLaw,
+                  writer_verb: Callable[[str], str],
+                  status_verb: Callable[[], str],
+                  do_pick: Callable[[str, List[Any]], Tuple[str, Optional[str]]],
+                  wall: Optional[Callable[[], float]] = None,
+                  sleep: Optional[Callable[[float], None]] = None,
+                  monotonic: Optional[Callable[[], float]] = None,
+                  hold_on_grasp: bool = True,
+                  hold_s: float = HOLD_WINDOW_S,
+                  pre_descent_step: bool = False,
+                  pc: Any = None,
+                  pc_label: Optional[str] = None
+                  ) -> Tuple[str, Optional[str]]:
+    """descend -> pick -> verify -> hold-or-retreat.  Returns ``(reply, verdict)``.
+
+    THE GRASP CHECK IS THE FOLDED ``_do_pick`` PAIR.  ``do_pick`` is
+    ``GatewayNode._do_pick``, which returns ``(reply, self._verify("pick",
+    reply))`` with the lane state stamped into the reply.  A grasp is confirmed
+    ONLY when that folded verdict says ``VERDICT:success``; anything else —
+    including a missing verdict — is UNCONFIRMED and retreats immediately
+    (there is no payload, so no low-to-low pair is coming).
+
+    ON SUCCESS THE LANE DOES NOT RISE.  It enters ``HOLDING`` and says so in
+    the reply, so a matching place can reuse the height with a single rise at
+    its own end (plan §6 D2).  The window is ``min(hold_s, the writer's own
+    reported remaining hold)``, read from a ``status`` poll taken AT hold
+    entry: ``do_pick`` can take seconds, so the pre-dispatch poll is stale by
+    then, and a hold nobody is driving is one the body cannot keep.  A writer
+    that is no longer at the held height does NOT get a hold — the run takes
+    the retreat path, as if no hold had been on offer.  ``hold_on_grasp=False``
+    forces the immediate-rise behaviour, which is what a standalone low pick
+    wants.  A hold a matching place could never reuse — the writer's remaining
+    lifetime already below the place's own lifetime-guard bar — is NOT offered
+    (:func:`hold_unusable_reason`, R4 HRC-1): the run rises instead and the
+    reply says so.  An operator cancel flagged during the run also forbids the
+    hold (R4 L2).
+
+    THE WRITER IS RE-POLLED IMMEDIATELY BEFORE THE DISPATCH, and a writer that
+    is no longer ACTIVE at the commanded height refuses the dispatch outright:
+    a confirmation is a poll in the past, and ``height <m>`` is a LIFETIME on
+    the writer.  That poll is the ONLY dispatch gate — there is no latched
+    verdict, so a transient failure is not sticky.  It is followed by the
+    FAIL-CLOSED LIFETIME GUARD, which refuses unless the writer's own reported
+    remaining hold covers ``LaneLaw.operation_budget_s`` ALONE, and names
+    ``height_hold_s`` — advising ``budget + slew margin``, the value that
+    actually clears that bar — when it does not: the lane no longer renews a
+    short clock, it refuses to operate on one.
+
+    ``pc`` / ``pc_label`` (batch 3b, both default ``None``) are the optional
+    POINT-CLOUD HOLD CHECK.  ``pc`` is duck-typed — ``decisive``,
+    ``t_reply_wall``, ``new_rid``, ``measured_pose``, ``request``, ``warm`` and
+    ``phase_of`` — and ``pc_label`` is the label the gateway holds for this call
+    (the consumer cannot select a target without one).  The hook is NEGATIVE
+    EVIDENCE ONLY (see :data:`LANE_PC_MARGIN_S`): a decisive STILL_ON_TABLE /
+    MOVED answer with no ``degraded`` flag turns the verdict into the lane's
+    failure BEFORE ``_grasp_state`` is read, so no hold is entered and the body
+    rises; ABSENT_UNPROVEN, UNKNOWN and everything else prove nothing and change
+    nothing but a ``; pc_hold=<TOKEN>`` annotation on the reply.  With
+    ``pc=None`` every new line is skipped and the function behaves exactly as
+    it did before the hooks existed.
+
+    ``args`` is the pick's own argument list (``x y z [nx ny nz] [orientation]
+    [height_m]``); only the z is rewritten, and it is rewritten to the
+    DESCENDED-frame height — the raw target z must never reach the engine.
+    Every other token, ``height_m`` included, passes through untouched.
+
+    ``wall`` / ``sleep`` / ``monotonic`` are injected so a unit test runs with
+    no real waiting: ``wall`` stamps a row (the log's measured elapsed time),
+    ``monotonic`` drives the hold deadline, ``sleep`` advances between polls.
+    Production passes none of them and gets ``time.time`` / ``time.sleep`` /
+    ``time.monotonic``.
+    """
+    stamp = wall or time.time
+    clock = monotonic or time.monotonic
+    sleeper = sleep or time.sleep
+    args = list(args or ())
+    if len(args) < 3:
+        return _refuse(log, honest("pick needs x y z (got %d tokens)"
+                                   % len(args)), stamp)
+    action, reason = _precompute(z, ctx, law, verb, clock())
+    if action == "REFUSE":
+        return _refuse(log, honest(reason), stamp)
+    if descent_negligible(z, law):
+        # A needed descent inside the confirmable band is no descent: run at
+        # standing through the normal path.
+        return _standing_dispatch(
+            ctx, log, verb=verb, z=z, action=action,
+            dispatch=lambda: do_pick(verb, args),
+            writer_verb=writer_verb, status_verb=status_verb, stamp=stamp,
+            clock=clock, sleep=sleeper)
+    # Point-cloud warm, once, before the descent's first writer command, so DDS
+    # discovery has finished by the time the baseline is requested.
+    if pc is not None:
+        _pc_warm(pc, log, stamp)
+    stepped_here = False      # set only if this run's step landed
+    if action == NEXT_REDESCEND:
+        ok, _ref, detail = _retreat_step(ctx, log, writer_verb=writer_verb,
+                                         status_verb=status_verb, stamp=stamp,
+                                         clock=clock, sleep=sleeper)
+        if not ok:
+            return _refuse(log, detail, stamp)
+    if action == NEXT_HOLD:
+        # A continued hold is a continued window, and the notice rides this row
+        # rather than the eventual reply: the residual of the continued hold is
+        # what is in force at this instant.
+        log.add("hold", "ok", honest("reusing the held height %.3f (%s); %s"
+                                     % (ctx.height_cmd, reason,
+                                        lockout_notice(
+                                            _continued_lockout_s(ctx, clock()))),
+                                     ), stamp())
+        ref = ctx.height_cmd
+    else:
+        # Optional pre-descent stance step, off by default. Only on a fresh
+        # descent: a reused hold keeps the stance it has. A refused step refuses
+        # the whole descent.
+        if pre_descent_step:
+            ok_s, d_s = _pre_step(ctx, log, writer_verb=writer_verb,
+                                  stamp=stamp, clock=clock, sleep=sleeper)
+            if not ok_s:
+                return _refuse(log, d_s, stamp)
+            stepped_here = True
+        ok, ref, detail = _descend_step(ctx, log, law, z,
+                                        writer_verb=writer_verb,
+                                        status_verb=status_verb, stamp=stamp,
+                                        clock=clock, sleep=sleeper)
+        if not ok:
+            return _refuse_after_step(ctx, log, detail, stamp,
+                                      writer_verb=writer_verb,
+                                      stepped_here=stepped_here)
+    # The last line before the engine: a confirmation is a poll in the past, and
+    # `height <m>` can expire or be suspended between it and this instant. One
+    # fresh synchronous poll gates the dispatch, and nothing latched does.
+    w_ok, w_rem, w_detail = probe_active(status_verb, ref,
+                                         lock=ctx.writer_lock)
+    if not w_ok:
+        return _refuse_after_step(ctx, log, honest("refusing to dispatch %s: %s"
+                                                   % (verb, w_detail)), stamp,
+                                  writer_verb=writer_verb,
+                                  stepped_here=stepped_here)
+    guard = _lifetime_refusal(w_rem, _lane_budget(law), verb,
+                              slew_margin_s(law))
+    if guard is not None:
+        return _refuse_after_step(ctx, log, guard, stamp,
+                                  writer_verb=writer_verb,
+                                  stepped_here=stepped_here)
+    # The engine gets the descended-frame height: the confirmed reference in the
+    # writer's own reported stand, never the requested command.
+    stand = ctx.stand_m(law.height_stand_m)
+    z_engine = descent_law.engine_z(z, stand, ref)
+    pick_args = [args[0], args[1], z_engine] + args[3:]
+    # Operator cancel at the last gate: the engine is never dispatched and the
+    # body rises.
+    if ctx.cancelled_this_run():
+        log.add("cancel", "refuse",
+                honest("operator cancel received before the engine was "
+                       "dispatched - the %s was NOT sent; rising" % verb),
+                stamp())
+        _ok_c, _r_c, c_detail = _retreat_step(
+            ctx, log, writer_verb=writer_verb, status_verb=status_verb,
+            stamp=stamp, clock=clock, sleep=sleeper)
+        return _refuse(log, honest("cancelled_by_operator: %s" % c_detail),
+                       stamp)
+    # Point-cloud baseline after the confirm, the guard and the cancel gate, and
+    # before the arm moves. At most the baseline deadline, no writer traffic,
+    # UNKNOWN on failure, and never charged to the engine budget.
+    if pc is not None:
+        pc_base = _pc_baseline(pc, pc_label, args, w_rem, law, log, stamp)
+    # Measured engine time, from the lane's injected clock, so the budget is
+    # graded against the same clock the polls and the hold deadline read.
+    t_engine = clock()
+    try:
+        reply, verdict = do_pick(verb, pick_args)
+    except Exception as exc:  # noqa: BLE001 - an exception is a failed grasp
+        # Prefixed with `ERROR:` so the reply grammar classifies it as a failure: a
+        # raised dispatch must never read as an executed pick.
+        reply, verdict = (honest("ERROR:low-workspace pick dispatch raised %s: %s"
+                                 % (type(exc).__name__, exc))), None
+    engine_elapsed_s = clock() - t_engine
+    e_status, _e_detail = _place_target.classify_dispatch(reply, verdict)
+    log.add("pick", e_status, honest("%s z=%.3f z_engine=%.3f"
+                                     % (verb, z, z_engine)), stamp())
+    v_status, v_detail = _place_target.verdict_row(verdict)
+    log.add("verify", v_status, v_detail, stamp())
+    ctx.effective_z = z_engine
+    # The engine's verdict, kept apart from the lane's: `grasp_ok` is a claim
+    # about the arm alone, so a downgraded verdict can never look like a failed
+    # grasp.
+    engine_verdict = verdict
+    # Point-cloud hold check after the engine and before the grasp state is read.
+    # Negative evidence only: ABSENT_UNPROVEN and UNKNOWN change nothing but the
+    # annotation on the reply.
+    if pc is not None:
+        pc_hold, pc_down = _pc_hold_check(pc, pc_base, reply, w_rem,
+                                          engine_elapsed_s, log, stamp)
+        reply = _pc_annotate(reply, _pc_token(pc_hold), _pc_reply_key(pc))
+        if pc_down is not None:
+            verdict = _downgrade_verdict(pc_down, verdict)
+            engine_verdict = verdict
+    # Three grasp states: `grasp_ok` asks whether the grasp landed, while
+    # `grasp_failed` asks whether `ERROR:` is the honest word for the reply lead.
+    grasp_state = _grasp_state(engine_verdict)
+    grasp_ok = (grasp_state == GRASP_CONFIRMED)
+    grasp_failed = (grasp_state == GRASP_FAILED)
+    # ── the post-dispatch body check ────────────────────────────
+    # One fresh poll after the engine, on the succeeded and the failed path
+    # alike; an anomaly downgrades the verdict and is never reported as success.
+    body_ok, body_rem, body_rows, body_note = _post_dispatch_body_check(
+        status_verb, ref, elapsed_s=engine_elapsed_s,
+        budget_s=_lane_budget(law), lock=ctx.writer_lock)
+    for _phase, _a_detail in body_rows:
+        log.add(_phase, "refuse", _a_detail, stamp())
+        _loud(_a_detail)
+    anomaly = ("%s; " % body_note) if body_note else ""
+    verdict = (engine_verdict if not body_rows
+               else _downgrade_verdict(body_note, engine_verdict))
+    # An operator cancel that landed while the engine worked means no hold is
+    # entered; the body rises below.
+    if ctx.cancelled_this_run():
+        hold_on_grasp = False
+        log.add("cancel", "refuse",
+                honest("operator cancel arrived during the pick - no hold is "
+                       "entered"), stamp())
+    # A hold a matching place could never reuse is not offered: that place
+    # re-runs the lifetime guard at its own dispatch and would refuse it.
+    hold_block = (hold_unusable_reason(body_rem, law)
+                  if (grasp_ok and hold_on_grasp and body_ok) else None)
+    if grasp_ok and hold_on_grasp and body_ok and hold_block is None:
+        # The hold rides on the poll above, not a pre-dispatch one: `do_pick` takes
+        # seconds, so the window can never outlive what the poll reported. The
+        # window reported is the one honoured: min(hold_s, the writer's remaining).
+        held_for = ctx.holding(clock(), hold_s, writer_rem_s=body_rem)
+        log.add("hold", "ok",
+                honest("no rise: body held at height %.3f for %.1fs so a "
+                       "matching place whose drop point is in the DESCEND "
+                       "band (torso z < 0.0) can reuse it; a drop point at or "
+                       "above the comfort height rises first; %s"
+                       % (ref, held_for, lockout_notice(held_for))),
+                stamp())
+        return (honest("DONE:low-workspace %s; z=%.3f z_engine=%.3f height="
+                       "%.3f->%.3f; grasp CONFIRMED; held_for=%.1fs for a "
+                       "matching place; %s; %s"
+                       % (verb, z, z_engine, stand, ref,
+                          held_for, lockout_notice(held_for), reply)),
+                _honest_verdict(verdict))
+    if grasp_ok and hold_on_grasp:
+        # The grasp landed but no hold is on offer: nothing vouched for the body,
+        # or the writer's remaining lifetime is short of the place budget.
+        if hold_block is not None:
+            log.add("hold", "refuse", hold_block, stamp())
+        else:
+            log.add("hold", "refuse",
+                    honest("hold refused (fail closed): the body was not still "
+                           "held at %.3f when the engine returned - rising "
+                           "instead" % ref),
+                    stamp())
+    if not grasp_ok:
+        log.add("grasp", "refuse",
+                honest("grasp UNCONFIRMED (folded verdict: %s) - no hold"
+                       % (engine_verdict or "none")), stamp())
+    ok, ref_r, detail = _retreat_step(ctx, log, writer_verb=writer_verb,
+                                      status_verb=status_verb, stamp=stamp,
+                                      clock=clock, sleep=sleeper)
+    if not ok:
+        # A retreat that could not be confirmed already warns and holds. The
+        # anomaly clause leads, so a mid-operation re-stand is never hidden.
+        if not grasp_ok:
+            return _refuse(log, honest("%sgrasp UNCONFIRMED; %s"
+                                       % (anomaly, detail)), stamp)
+        return _refuse(log, honest("%s%s" % (anomaly, detail)), stamp)
+    stood = ref_r if ref_r is not None else law.height_stand_m
+    if not grasp_ok:
+        # The reply's first word is the operator's verdict, chosen from the
+        # measured grasp state: `ERROR:` only for an engine-reported failure, and
+        # `UNCONFIRMED:` when the verifier could not measure, which claims nothing.
+        lead = "ERROR" if grasp_failed else "UNCONFIRMED"
+        return (honest("%s:low-workspace %s; z=%.3f z_engine=%.3f; %sgrasp "
+                       "UNCONFIRMED (folded verdict: %s); %s "
+                       "%.3f; %s" % (lead, verb, z, z_engine, anomaly,
+                                     engine_verdict or "none",
+                                     _rise_phrase(ctx, "stood back up to"),
+                                     stood, reply)),
+                _honest_verdict(verdict))
+    if body_rows:
+        # The grasp landed but the body check did not: an ERROR reply with a
+        # downgraded verdict however the rise went. The object may be in the hand,
+        # but a body the lane cannot vouch for is never a success.
+        return (honest("ERROR:low-workspace %s; z=%.3f z_engine=%.3f height=%.3f"
+                       "->%.3f; %sgrasp CONFIRMED; %s %.3f; %s"
+                       % (verb, z, z_engine, stand, ref, anomaly,
+                          _rise_phrase(ctx, "rose to"), stood, reply)),
+                _honest_verdict(verdict))
+    if hold_block is not None:
+        return (honest("DONE:low-workspace %s; z=%.3f z_engine=%.3f height=%.3f->"
+                       "%.3f; grasp CONFIRMED; %s %.3f (hold not offered: "
+                       "writer lifetime short of the place budget); %s"
+                       % (verb, z, z_engine, stand, ref,
+                          _rise_phrase(ctx, "rose to"), stood, reply)),
+                _honest_verdict(verdict))
+    return (honest("DONE:low-workspace %s; z=%.3f z_engine=%.3f height=%.3f->"
+                   "%.3f; grasp CONFIRMED; %s %.3f (hold disabled); %s"
+                   % (verb, z, z_engine, stand, ref,
+                      _rise_phrase(ctx, "rose to"), stood, reply)),
+            _honest_verdict(verdict))
