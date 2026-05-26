@@ -906,3 +906,22 @@ def probe_active(status_verb: Callable[[], str], target_m: float,
             "writer still active at ref=%.3f (rem=%s)" % (ref, _clip(raw)))
 
 
+def _lane_budget(law: Any) -> float:
+    """The DECLARED lane operation budget for ``law``, in seconds.
+
+    ONE read of ONE name.  ``LaneLaw.operation_budget_s`` is the threaded field
+    (config key ``embodiment.envelope.lane_operation_budget_s`` — see
+    :data:`LANE_OPERATION_BUDGET_S` for the whole threading), and its
+    constructor already falls back to that module constant for a value that is
+    not a finite positive number.  This repeats the fallback only so a law
+    object that never ran that constructor — a stub, a hand-built duck type —
+    still yields the DECLARED budget instead of an ``AttributeError`` or a zero
+    bar.  It is the number the pre-dispatch guard (:func:`_lifetime_refusal`,
+    which adds the slew margin) and the post-dispatch check
+    (:func:`_post_dispatch_body_check`) both grade against; nothing here
+    invents a second budget.
+    """
+    budget = getattr(law, "operation_budget_s", LANE_OPERATION_BUDGET_S)
+    if _finite_num(budget) and float(budget) > 0.0:
+        return float(budget)
+    return float(LANE_OPERATION_BUDGET_S)
