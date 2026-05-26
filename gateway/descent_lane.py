@@ -770,3 +770,6 @@ class DescentContext:
                 "hold_deadline=%r, writer_stand_m=%r)"
                 % (self.state, self.height_cmd, self.effective_z,
                    self.hold_deadline, self.writer_stand_m))
+
+
+# ──────────────────────────────────────────────────────────────── the log table
