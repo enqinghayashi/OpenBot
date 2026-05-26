@@ -836,3 +836,7 @@ def _safe_status(status_verb: Callable[[], str],
     return reply if isinstance(reply, str) else None
 
 
+def _clip(text: Any, limit: int = 120) -> str:
+    """A writer status line, collapsed onto one line for an operator detail."""
+    body = " ".join(str(text or "").split())
+    return body if len(body) <= limit else body[:limit] + "..."
