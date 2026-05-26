@@ -904,3 +904,5 @@ def probe_active(status_verb: Callable[[], str], target_m: float,
     rem = parsed.get("rem")
     return (True, (float(rem) if _finite_num(rem) else None),
             "writer still active at ref=%.3f (rem=%s)" % (ref, _clip(raw)))
+
+
