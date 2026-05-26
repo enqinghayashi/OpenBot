@@ -704,3 +704,7 @@ class DescentContext:
         lane lock, before the sequence runs)."""
         self.run_start_mono = float(now_monotonic)
 
+    def request_cancel(self, now_monotonic: float) -> None:
+        """Record an operator cancel at ``now_monotonic``."""
+        self.cancel_mono = float(now_monotonic)
+
