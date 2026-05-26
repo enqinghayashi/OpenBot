@@ -785,3 +785,6 @@ class DescentPhaseLog(_place_target.PhaseLog):
 
     def header(self) -> str:
         return "LOW-WORKSPACE  skill=%s  side=%s" % (self.label, self.side or "?")
+
+
+# ───────────────────────────────────────────────────── the writer-socket verbs
