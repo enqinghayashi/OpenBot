@@ -765,3 +765,8 @@ class DescentContext:
         self.hold_deadline = now_monotonic + window
         return window
 
+    def __repr__(self) -> str:  # pragma: no cover - diagnostics only
+        return ("DescentContext(state=%s, height_cmd=%r, effective_z=%r, "
+                "hold_deadline=%r, writer_stand_m=%r)"
+                % (self.state, self.height_cmd, self.effective_z,
+                   self.hold_deadline, self.writer_stand_m))
