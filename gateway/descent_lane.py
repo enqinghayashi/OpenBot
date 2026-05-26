@@ -842,3 +842,21 @@ def _clip(text: Any, limit: int = 120) -> str:
     return body if len(body) <= limit else body[:limit] + "..."
 
 
+def _writer_stand(status_verb: Callable[[], str],
+                  lock: Optional[Any] = None) -> Optional[float]:
+    """The writer's OWN standing reference from a single ``status`` poll.
+
+    The writer reports ``stand`` ONLY in the INACTIVE form — the form it emits
+    while it is tracking nothing.  During an ACTIVE descent no poll carries it,
+    so it must be read BEFORE the descent is commanded and carried from there
+    (``DescentContext.writer_stand_m``).
+
+    ``None`` — an unparseable poll, or a writer already tracking a height —
+    means the caller falls back to the envelope's ``height_stand_m``, which is
+    honest for the first command only.
+    """
+    parsed = descent_law.parse_height_status(_safe_status(status_verb, lock))
+    if parsed is None or parsed.get("active") or parsed.get("suspended"):
+        return None
+    stand = parsed.get("stand")
+    return float(stand) if _finite_num(stand) else None
