@@ -1290,3 +1290,16 @@ def poll_descent(status_verb: Callable[[], str], target_m: float, stand_m: float
                  lock=lock)
 
 
+def poll_retreat(status_verb: Callable[[], str],
+                 *, timeout_s: float = DESCENT_CONFIRM_TIMEOUT_S,
+                 tol_m: float = HEIGHT_CONFIRM_TOL_M,
+                 interval_s: float = DESCENT_POLL_INTERVAL_S,
+                 sleep: Optional[Callable[[float], None]] = None,
+                 monotonic: Optional[Callable[[], float]] = None,
+                 lock: Optional[Any] = None
+                 ) -> Tuple[bool, Optional[float], str]:
+    """``(confirmed, ref, detail)`` — poll until standing is CONFIRMED."""
+    return _poll(status_verb, lambda parsed, tol: _judge_retreat(parsed, tol),
+                 float(tol_m), timeout_s=timeout_s, interval_s=interval_s,
+                 sleep=sleep or time.sleep, monotonic=monotonic or time.monotonic,
+                 lock=lock)
