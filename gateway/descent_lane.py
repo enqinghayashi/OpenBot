@@ -1165,3 +1165,43 @@ def _downgrade_verdict(summary: str, engine_verdict: Optional[str]) -> str:
     return "VERDICT:error|Evidence:(low-workspace) %s" % evidence
 
 
+def _judge_descent(parsed: Optional[dict], target: float, stand: float,
+                   min_descent: float, tol: float) -> Tuple[bool, str]:
+    """``(confirmed, detail)`` for one parsed height fragment.
+
+    Confirmed requires ALL FOUR: the writer is ACTIVELY tracking; its reference
+    has reached the height THIS LANE COMMANDED (``target``); the reference has
+    left standing by more than ``min_descent``; and the comparison is made in
+    the writer's own reported frame (``stand``).
+
+    ``target`` is the COMMANDED height, not the writer's own intermediate
+    ``target``: the writer's internal target can agree with its reference on a
+    move that was never requested (a clamp, a concurrent re-issue), and a
+    confirmation that reads it back would confirm the writer's arithmetic
+    instead of the lane's command.
+
+    The magnitude conjunct is not a formality.  ``STAND_EPS_M`` alone admits a
+    band only ~1 cm wide: the reference moves just past epsilon, the confirm
+    band still calls it a match, and a "descent" that never lowered the body
+    enough to matter reads as CONFIRMED.
+    """
+    if parsed is None:
+        return False, "no parseable height fragment in the writer status"
+    ref = parsed.get("ref")
+    if parsed.get("suspended"):
+        return False, ("descent SUSPENDED by an RC override at ref=%.3f"
+                       % ref)
+    if not parsed.get("active") or parsed.get("target") is None:
+        if parsed.get("stand") is not None:
+            return False, ("descent was a no-op (writer height band not "
+                           "widened): height=%.2f(stand %.2f)"
+                           % (ref, parsed["stand"]))
+        return False, "writer status carries no tracked height target"
+    if abs(ref - target) > tol:
+        return False, ("ref %.3f has not reached the commanded %.3f (tol %.2f)"
+                       % (ref, target, tol))
+    if abs(ref - stand) <= min_descent:
+        return False, ("ref %.3f sits %.3f m from standing (%.3f) - a descent "
+                       "must clear %.3f m"
+                       % (ref, abs(ref - stand), stand, min_descent))
+    return True, "ref=%.3f commanded=%.3f (<= %.3f)" % (ref, target, tol)
