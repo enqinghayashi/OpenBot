@@ -1402,3 +1402,8 @@ def next_command_action(ctx: DescentContext, verb: str, z: Any,
 
 
 # ───────────────────────────────────────────────────────── the two sequences
+def _refuse(log: DescentPhaseLog, detail: str,
+            stamp: Callable[[], float]) -> Tuple[str, Any]:
+    """Close a run on a fail-closed refusal (engine NEVER called)."""
+    log.finish("refuse", detail, stamp())
+    return ("ERROR:low-workspace %s" % detail), None
