@@ -1047,3 +1047,90 @@ def _rise_phrase(ctx: Any, default: str) -> str:
     return default
 
 
+def _post_dispatch_body_check(status_verb: Callable[[], str],
+                              held_ref: Any, *, elapsed_s: Any, budget_s: Any,
+                              lock: Optional[Any] = None
+                              ) -> Tuple[bool, Optional[float],
+                                         List[Tuple[str, str]], str]:
+    """``(ok, rem_s, rows, summary)`` — the POST-DISPATCH body check (D4).
+
+    A guard in FRONT of a dispatch only says the body was low when the arm was
+    COMMANDED.  The seconds that follow are when the writer's own lifetime can
+    expire, an RC takeover can suspend the squat, or the engine call can outrun
+    the budget this lane declared — and until this round the lane's sole
+    observable of that was conditional on the grasp SUCCEEDING, so a
+    mid-operation re-stand was byte-indistinguishable from a normal run.  This
+    is that observable, and BOTH sequences take it, on every path: the
+    grasp-succeeded and the grasp-FAILED alike.
+
+    ONE FRESH SYNCHRONOUS POLL, not a latched flag.  ``probe_active`` is the
+    same gate the pre-dispatch side uses, so "still holding" means the same
+    thing on both ends of the operation — the writer is ACTIVE at the reference
+    this lane confirmed, within :data:`HEIGHT_CONFIRM_TOL_M` — and the ``rem``
+    it returns is the writer's OWN remaining hold from that same poll.
+
+    TWO ANOMALY CLASSES, ONE HANDLING.  A writer that is no longer holding the
+    reference (re-stood on its own clock, suspended by an RC takeover, or
+    unreachable) raises :data:`BODY_RESTOOD`; an engine call whose MEASURED
+    elapsed outran the declared budget raises :data:`BUDGET_OVERRUN`.  Both are
+    the same claim — an operation this lane cannot vouch for — and both are
+    returned as a LOUD ``(phase, detail)`` row so the operator reads which one
+    fired, what was measured, and the writer's own words.  The phase names are
+    distinct from the generic ``hold``/``grasp``/``verify`` rows on purpose: a
+    re-stand must not have to be inferred from a row that also means "the hold
+    was declined".
+
+    FAIL CLOSED on the values as well as the state.  An absent or non-finite
+    ``held_ref`` cannot be compared against anything, so it raises the same
+    class; an absent or non-finite ``elapsed_s`` cannot be shown to be WITHIN
+    the budget, so it raises the overrun rather than passing by default.  A
+    missing, non-finite or non-positive ``budget_s`` falls back to
+    :data:`LANE_OPERATION_BUDGET_S` (see :func:`_lane_budget`), never to a bar
+    of zero.  ``summary`` is the SAME anomalies as ONE suffix-free clause for a
+    reply or a verdict — the rows carry the writer's prose, which already ends
+    with the honesty boundary, and splicing a boundary-terminated string into
+    the middle of a longer one is how a text ends up claiming a boundary it no
+    longer ends on.
+    """
+    held = float(held_ref) if _finite_num(held_ref) else None
+    if held is None:
+        held_ok, held_rem, held_detail = False, None, honest(
+            "the run never established a held reference to check against")
+    else:
+        held_ok, held_rem, held_detail = probe_active(status_verb, held,
+                                                      lock=lock)
+    budget = (float(budget_s)
+              if _finite_num(budget_s) and float(budget_s) > 0.0
+              else float(LANE_OPERATION_BUDGET_S))
+    measured = ("%.1fs" % float(elapsed_s) if _finite_num(elapsed_s)
+                else "absent/unreadable (%r)" % (elapsed_s,))
+    rows: List[Tuple[str, str]] = []
+    notes: List[str] = []
+    if not held_ok:
+        notes.append("%s - the writer was not still holding %s when the engine "
+                     "returned (the engine call measured %s)"
+                     % (BODY_RESTOOD,
+                        "%.3f m" % held if held is not None else "a height",
+                        measured))
+        rows.append(("body_restood", honest("%s; %s"
+                                           % (notes[-1], held_detail))))
+    # The fresh poll above, not the clock, is the bound: a writer still holding
+    # the reference held it for the whole call, so an overrun fails only when the
+    # poll cannot vouch for the body or the elapsed time is unreadable.
+    _over = not (_finite_num(elapsed_s) and float(elapsed_s) <= budget)
+    if _over and held_ok and _finite_num(elapsed_s):
+        print("[lane] B8j-hf14: %s - the engine call measured %s against %.1fs, "
+              "but the writer still held %.3f m when it returned (rem=%s): "
+              "not an anomaly, the engine verdict stands"
+              % (BUDGET_OVERRUN, measured, budget, held, held_rem),
+              flush=True)
+        _over = False
+    if _over:
+        notes.append("%s - the engine call measured %s against the declared "
+                     "lane operation budget %.1fs"
+                     % (BUDGET_OVERRUN, measured, budget))
+        rows.append(("budget", honest(
+            "%s - the engine call measured %s against the declared lane "
+            "operation budget %.1fs (embodiment.envelope.lane_operation_budget_s)"
+            % (BUDGET_OVERRUN, measured, budget))))
+    return (not rows), held_rem, rows, "; ".join(notes)
