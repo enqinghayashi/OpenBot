@@ -1232,3 +1232,32 @@ def _judge_retreat(parsed: Optional[dict], tol: float) -> Tuple[bool, str]:
     return True, "ref=%.3f stand=%.3f" % (ref, stand)
 
 
+def _poll(status_verb: Callable[[], str], judge: Callable[[Optional[dict], float], Tuple[bool, str]],
+          tol: float, *, timeout_s: float, interval_s: float,
+          sleep: Callable[[float], None],
+          monotonic: Callable[[], float],
+          lock: Optional[Any] = None) -> Tuple[bool, Optional[float], str]:
+    """Poll ``status`` until ``judge`` confirms or the window expires.
+
+    The FIRST poll happens before any sleep, so a writer that is already in the
+    commanded state confirms with no latency at all.  The iteration count is
+    capped as well as the clock, so a caller-supplied clock that never advances
+    cannot spin forever.  ``lock`` serializes each poll against the lane's own
+    other writer traffic; it is taken per poll, never across the loop.
+    """
+    interval = float(interval_s)
+    deadline = monotonic() + max(0.0, float(timeout_s))
+    max_polls = 2
+    if interval > 0.0:
+        max_polls = int(math.ceil(max(0.0, float(timeout_s)) / interval)) + 2
+    last_detail = "the writer was never polled"
+    for _ in range(max(max_polls, 1)):
+        parsed = descent_law.parse_height_status(_safe_status(status_verb, lock))
+        confirmed, detail = judge(parsed, tol)
+        last_detail = detail
+        if confirmed:
+            return True, parsed.get("ref"), detail
+        if monotonic() >= deadline:
+            break
+        sleep(interval)
+    return False, None, last_detail
