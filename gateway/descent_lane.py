@@ -945,3 +945,67 @@ def _continued_lockout_s(ctx: Any, now_monotonic: Any) -> float:
     return max(0.0, float(deadline) - float(now_monotonic))
 
 
+def _lifetime_refusal(rem_s: Any, budget_s: Any, verb: str,
+                      slew_margin_s: Any = 0.0) -> Optional[str]:
+    """The fail-closed budget guard: ``None`` to proceed, else the refusal.
+
+    ``height <m>`` is a LIFETIME on the writer, and the lane does NOT renew it,
+    so a dispatched action needs the writer's own reported remaining hold to
+    cover the whole thing.  This is the guard that REPLACES a renewal thread:
+    instead of re-issuing a short clock in the background, it REFUSES to
+    operate on one and names the config key that fixes it.
+
+    THE BAR IS ``budget``, AND THE REFUSAL ALSO QUOTES THE SLEW MARGIN.
+    ``budget`` is :data:`LANE_OPERATION_BUDGET_S` (or
+    ``LaneLaw.operation_budget_s``, which config threads into it) — the
+    ENGINE-CALL budget, the same number :func:`_post_dispatch_body_check`
+    grades the MEASURED engine elapsed against, so ``rem`` must cover it whole.
+
+    ``slew_margin_s`` (:func:`slew_margin_s`) is NOT added to that bar, and
+    adding it would be a double count: the descent's own slew+confirm is
+    dispatched BEFORE this reads ``rem``, so the writer's own clock has already
+    deducted it (this function reads ``rem`` after ``_descend_step`` returns).
+    That is exactly why a ``height_hold_s`` equal to the bare budget does not
+    dispatch (D9) — and the remedy for D9 is the VALUE TO SET, never a higher
+    bar: a gate at ``budget + margin`` would refuse a body the writer is
+    provably still holding, and would demand ``budget + 2 * margin`` of
+    ``height_hold_s``, which lengthens the operator lockout 1:1 for no safety
+    gain.  So the refusal quotes the observed ``rem``, the required bar, the
+    budget, the margin, and the value to SET — the bar plus the margin, since
+    that margin is spent before this gate reads the clock — so the operator
+    does not have to rediscover it by bisection.
+
+    REFUSES on every value that is not a usable number at or above the bar:
+    an absent or unparseable ``rem`` (``None`` — no parseable fragment, a
+    suspended hold, a dead socket), a non-finite value, and a NEGATIVE one.
+    The same discipline applies to the budget: a missing, non-finite or
+    non-positive ``budget_s`` falls back to :data:`LANE_OPERATION_BUDGET_S`, so
+    a bad override can never silently lift the bar to zero, and a bad
+    ``slew_margin_s`` degrades to 0.0 rather than to a guess.  Nothing is
+    guessed and nothing defaults to ok — an unknown lifetime is not a long
+    lifetime, and the permissive direction here is a body that re-stands
+    mid-operation.
+    """
+    if _finite_num(budget_s) and float(budget_s) > 0.0:
+        budget = float(budget_s)
+    else:
+        budget = float(LANE_OPERATION_BUDGET_S)
+    margin = (float(slew_margin_s)
+              if _finite_num(slew_margin_s) and float(slew_margin_s) > 0.0
+              else 0.0)
+    # The bar is the budget alone: `rem` is read after the descent's own
+    # slew+confirm, so the writer's clock has already deducted the margin.
+    required = budget
+    if _finite_num(rem_s) and float(rem_s) >= required:
+        return None
+    observed = ("%.1fs" % float(rem_s) if _finite_num(rem_s)
+                else "absent/unreadable (%r)" % (rem_s,))
+    return honest(
+        "refusing to dispatch %s: the writer's height lifetime is too short "
+        "for a lane operation (rem=%s, required >= %.1fs = LANE_OPERATION_"
+        "BUDGET_S %.1fs; slew_margin %.1fs of the SAME clock is already spent "
+        "by the descent's own slew+confirm before this reads `rem`) — so set "
+        "`height_hold_s` in "
+        "skills/writer/config/merge_config.yaml to at least %.1fs so ONE "
+        "`height` command covers the whole descent->pick->place"
+        % (verb, observed, required, budget, margin, required + margin))
