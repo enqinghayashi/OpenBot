@@ -1230,3 +1230,5 @@ def _judge_retreat(parsed: Optional[dict], tol: float) -> Tuple[bool, str]:
         return False, ("ref %.3f has not returned to stand %.3f (tol %.2f)"
                        % (ref, stand, tol))
     return True, "ref=%.3f stand=%.3f" % (ref, stand)
+
+
