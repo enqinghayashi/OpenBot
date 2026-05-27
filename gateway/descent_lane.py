@@ -1263,3 +1263,28 @@ def _poll(status_verb: Callable[[], str], judge: Callable[[Optional[dict], float
     return False, None, last_detail
 
 
+def poll_descent(status_verb: Callable[[], str], target_m: float, stand_m: float,
+                 *, timeout_s: float = DESCENT_CONFIRM_TIMEOUT_S,
+                 tol_m: float = HEIGHT_CONFIRM_TOL_M,
+                 min_descent_m: float = MIN_CONFIRMED_DESCENT_M,
+                 interval_s: float = DESCENT_POLL_INTERVAL_S,
+                 sleep: Optional[Callable[[float], None]] = None,
+                 monotonic: Optional[Callable[[], float]] = None,
+                 lock: Optional[Any] = None
+                 ) -> Tuple[bool, Optional[float], str]:
+    """``(confirmed, ref, detail)`` — poll until the descent is CONFIRMED.
+
+    ``target_m`` is the COMMANDED height and ``stand_m`` the writer's own
+    nominal standing reference (``DescentContext.writer_stand_m``, read from a
+    poll taken before the command was issued); both are needed because the
+    writer's ACTIVE fragment reports the current reference and its own target
+    but not the nominal it started from.  ``timeout_s`` defaults to the module
+    constant so a caller that never populates ``LaneLaw.timeout_s`` behaves
+    exactly as before.
+    """
+    return _poll(status_verb,
+                 lambda parsed, tol: _judge_descent(parsed, target_m, stand_m,
+                                                    float(min_descent_m), tol),
+                 float(tol_m), timeout_s=timeout_s, interval_s=interval_s,
+                 sleep=sleep or time.sleep, monotonic=monotonic or time.monotonic,
+                 lock=lock)
