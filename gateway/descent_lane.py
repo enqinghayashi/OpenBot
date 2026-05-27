@@ -1039,3 +1039,9 @@ def hold_unusable_reason(body_rem: Any, law: Any) -> Optional[str]:
                   "lifetime guard would refuse it" % (observed, budget))
 
 
+def _rise_phrase(ctx: Any, default: str) -> str:
+    """``default`` ("rose to" / "stood back up to"), or the honest phrase when
+    the last CONFIRMED retreat found the body ALREADY standing (R4 HRC-6/7)."""
+    if getattr(ctx, "last_retreat_was_noop", False) is True:
+        return "was already standing at"
+    return default
