@@ -1011,3 +1011,29 @@ def _lifetime_refusal(rem_s: Any, budget_s: Any, verb: str,
         % (verb, observed, required, budget, margin, required + margin))
 
 
+def hold_unusable_reason(body_rem: Any, law: Any) -> Optional[str]:
+    """``None`` when a hold entered now could be reused by a matching place,
+    else the honest reason it is NOT offered (R4 HRC-1).
+
+    A matching place re-runs the lifetime guard at its own dispatch
+    (:func:`_lifetime_refusal` with the bar :func:`_lane_budget`), so a hold
+    entered with the writer's remaining lifetime already BELOW that bar can
+    never be reused: the place would refuse it.  MEASURED on the box (brief):
+    ``height_hold_s`` 66.0 vs ``lane_operation_budget_s`` 60.0, holds offered at
+    45.6 s / 21.1 s rem, every one refused at the place.  So the hold is not
+    offered and the pick retreats instead.
+
+    DECIDABILITY.  Only the LIFETIME half can be decided here: the place's own
+    drop point (and whether it classifies DESCEND) is built only at place time
+    (``brain/agent/tools.py``) and is not an input of :func:`pick_sequence`.
+    The text of the hold row says so instead of guessing.
+    """
+    budget = _lane_budget(law)
+    if _finite_num(body_rem) and float(body_rem) >= budget:
+        return None
+    observed = (("%.1fs" % float(body_rem)) if _finite_num(body_rem)
+                else "absent/unreadable")
+    return honest("hold NOT offered: the writer reports %s of height lifetime "
+                  "left and a matching place needs rem >= %.1fs "
+                  "(lane_operation_budget_s) at its own dispatch, so its "
+                  "lifetime guard would refuse it" % (observed, budget))
