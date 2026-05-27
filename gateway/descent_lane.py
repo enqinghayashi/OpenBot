@@ -1207,3 +1207,26 @@ def _judge_descent(parsed: Optional[dict], target: float, stand: float,
     return True, "ref=%.3f commanded=%.3f (<= %.3f)" % (ref, target, tol)
 
 
+def _judge_retreat(parsed: Optional[dict], tol: float) -> Tuple[bool, str]:
+    """``(confirmed, detail)`` for one parsed height fragment, retreating.
+
+    Confirmed requires the INACTIVE form (the writer is tracking nothing) with
+    the reference back at the standing reference it itself reports.  Reading
+    the standing value off the fragment rather than re-supplying it keeps the
+    two ends of the comparison from the same emitter.
+    """
+    if parsed is None:
+        return False, "no parseable height fragment in the writer status"
+    ref = parsed.get("ref")
+    if parsed.get("suspended"):
+        return False, ("writer holds a SUSPENDED squat at ref=%.3f" % ref)
+    if parsed.get("active"):
+        return False, ("still tracking a height: ref=%.3f target=%s"
+                       % (ref, parsed.get("target")))
+    stand = parsed.get("stand")
+    if stand is None:
+        return False, "writer status carries no standing reference"
+    if abs(ref - stand) > tol:
+        return False, ("ref %.3f has not returned to stand %.3f (tol %.2f)"
+                       % (ref, stand, tol))
+    return True, "ref=%.3f stand=%.3f" % (ref, stand)
