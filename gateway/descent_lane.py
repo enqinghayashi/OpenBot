@@ -1163,3 +1163,5 @@ def _downgrade_verdict(summary: str, engine_verdict: Optional[str]) -> str:
         evidence = ("%s (engine verdict was: %s)" % (evidence, engine_verdict)
                     if evidence else str(engine_verdict))
     return "VERDICT:error|Evidence:(low-workspace) %s" % evidence
+
+
