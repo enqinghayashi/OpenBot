@@ -1306,3 +1306,96 @@ def poll_retreat(status_verb: Callable[[], str],
 
 
 # ─────────────────────────────────────────── the operator's next-command rule
+def next_command_action(ctx: DescentContext, verb: str, z: Any,
+                        law: LaneLaw, now_monotonic: float,
+                        tol_m: Optional[float] = None,
+                        args: Any = None) -> Tuple[str, str]:
+    """``(action, reason)`` for a command arriving while a height may be held.
+
+    The operator's rule (plan §6, D2), applied when the NEXT command arrives —
+    the previous skill cannot see the future, so this is the only place the
+    hold can be decided:
+
+      * a lane skill needing the SAME height, inside the hold window -> HOLD
+      * a RELEASE-ONLY place (``place []`` — no coordinates at all) arriving
+        inside a live hold -> HOLD, and only then: the body is already at a
+        confirmed height and the drop aims at no target height, so there is
+        nothing an "unknown target" could mis-frame, and rising to drop from
+        standing is strictly worse than dropping from the height the body is
+        already confirmed at
+      * a lane skill needing a DIFFERENT height, or past the window, or a lane
+        skill whose target is high/unknown -> rise first
+      * a ``navigate`` / ``cmd_set`` -> rise AND CONFIRM first (a walk while a
+        descent is held is squat-walking, which is unmeasured)
+      * an arm-only command -> rise best-effort, warn loudly on failure
+      * anything non-motion (observe / status / image / query_user / ...) ->
+        untouched, because a read cannot collide with a lowered body
+
+    THERE IS NO ``NEXT_CLEAR`` AND NO TAKEOVER VERB SET (D3).  The lane cannot
+    observe an operator takeover: nothing dispatches an ``estop``/``rc``/
+    ``rc_takeover``/``suspend`` verb through this gateway, and the writer's own
+    suspend is UNREACHABLE while the arm engine holds the body (D2), so a
+    "forget the hold" branch could never fire honestly.  What the lane does
+    instead is report the lockout it holds (:func:`lockout_notice`).
+
+    ``z`` is the target's TORSO-FRAME height (the raw detection), NOT a body
+    height: the height this target NEEDS is derived here via
+    :func:`height_command`, so the caller never has to know the ladder.
+
+    ``args`` is the lane skill's own argument list, when the caller has it.
+    ``None`` — the default — means NO INFORMATION, so every pre-existing caller
+    keeps this rule's original answer byte for byte; it is read ONLY by the
+    release-only clause below, through :func:`release_only_args`.
+
+    ``now_monotonic`` MUST be the same clock ``DescentContext.hold_deadline``
+    was written from (``time.monotonic``) — a wall-clock value compared against
+    a monotonic deadline would silently extend or truncate the hold across a
+    clock step.
+
+    A context that is ``IDLE`` — and a law that is not :func:`usable` — both
+    answer :data:`NEXT_NONE`: with no descent outstanding the lane has nothing
+    to say about the command, and that keeps the lane-off path inert.
+    """
+    name = str(verb or "")
+    if ctx is None or ctx.state == IDLE or not usable(law):
+        return NEXT_NONE, "no descent in flight"
+    if name in LANE_SKILL_VERBS:
+        if not _finite_num(z):
+            # Release-only place inside a live hold: it carries no coordinates, so
+            # no target height can be mis-placed, and rising first is strictly
+            # worse. Narrowed to a place-family verb, empty args, a live hold.
+            held = ctx.height_cmd
+            if (name in PLACE_FAMILY_VERBS and release_only_args(args)
+                    and ctx.state == HOLDING and held is not None
+                    and ctx.hold_deadline is not None
+                    and now_monotonic < ctx.hold_deadline):
+                return NEXT_HOLD, (
+                    "release-only place: no target height to be framed by, and "
+                    "the body is already held at %.3f m inside the live window "
+                    "(%.1fs left) — drop from the held height"
+                    % (held, ctx.hold_deadline - now_monotonic))
+            return NEXT_RETREAT_BEST_EFFORT, ("target height absent — no body "
+                                              "height can be held for an unknown target")
+        if z >= descent_law.COMFORT_Z:
+            return NEXT_RETREAT_BEST_EFFORT, ("this target needs no descent — "
+                                              "rise before acting on it")
+        need = height_command(z, law)
+        tol = law.hold_tol_m if tol_m is None else float(tol_m)
+        held = ctx.height_cmd
+        if (ctx.state == HOLDING and held is not None
+                and ctx.hold_deadline is not None
+                and now_monotonic < ctx.hold_deadline
+                and descent_law.same_height(need, held, tol)):
+            return NEXT_HOLD, ("held %.3f m is within %.3f m of the %.3f m this "
+                               "target needs" % (held, tol, need))
+        return NEXT_REDESCEND, ("needed %.3f m differs from the held %s m (or "
+                                "the hold window lapsed) — rise, then descend"
+                                % (need, "%.3f" % held if held is not None
+                                   else "none"))
+    if name in BODY_BLOCKING_VERBS:
+        return NEXT_RETREAT_BLOCKING, ("squat-walking is unmeasured — standing "
+                                       "must be CONFIRMED before a walk")
+    if name in BEST_EFFORT_VERBS:
+        return NEXT_RETREAT_BEST_EFFORT, ("arm-only command — rise best-effort, "
+                                          "warn loudly on failure")
+    return NEXT_NONE, "non-motion command — the lane leaves it alone"
