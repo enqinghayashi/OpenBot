@@ -1303,3 +1303,6 @@ def poll_retreat(status_verb: Callable[[], str],
                  float(tol_m), timeout_s=timeout_s, interval_s=interval_s,
                  sleep=sleep or time.sleep, monotonic=monotonic or time.monotonic,
                  lock=lock)
+
+
+# ─────────────────────────────────────────── the operator's next-command rule
