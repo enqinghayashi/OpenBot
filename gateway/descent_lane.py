@@ -1009,3 +1009,5 @@ def _lifetime_refusal(rem_s: Any, budget_s: Any, verb: str,
         "skills/writer/config/merge_config.yaml to at least %.1fs so ONE "
         "`height` command covers the whole descent->pick->place"
         % (verb, observed, required, budget, margin, required + margin))
+
+
