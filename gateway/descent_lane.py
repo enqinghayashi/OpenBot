@@ -1407,3 +1407,5 @@ def _refuse(log: DescentPhaseLog, detail: str,
     """Close a run on a fail-closed refusal (engine NEVER called)."""
     log.finish("refuse", detail, stamp())
     return ("ERROR:low-workspace %s" % detail), None
+
+
