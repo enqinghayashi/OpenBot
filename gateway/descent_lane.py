@@ -1136,3 +1136,30 @@ def _post_dispatch_body_check(status_verb: Callable[[], str],
     return (not rows), held_rem, rows, "; ".join(notes)
 
 
+def _downgrade_verdict(summary: str, engine_verdict: Optional[str]) -> str:
+    """The ANOMALY verdict: the lane's own ``VERDICT:error``, never a success.
+
+    A mid-operation re-stand must never be REPORTED as a success, and the
+    folded ``_do_pick``/``_do_place`` verdict is the engine's claim about the
+    arm alone — it cannot see the body.  So the lane OWNS the downgrade: the
+    string returned here does not start with ``VERDICT:success``, which is what
+    every consumer in this repo reads (``place_target.verdict_row`` -> the
+    VERDICT row; ``GatewayNode._shape_reply`` -> ``ok``), so no caller can
+    render this run as a pass.
+
+    THE ENGINE'S VERDICT IS EVIDENCE, NOT SOMETHING TO ERASE.  It is carried
+    inside the evidence clause, so the operator still sees exactly what the
+    verifier said about the grasp; only the LABEL is the lane's.
+
+    THE PREFIX IS THE VERIFIER'S OWN GRAMMAR.  ``VERDICT:error|Evidence:`` is
+    what ``brain/verifier.py`` emits and what ``GatewayNode._shape_reply``
+    slices a ``reason`` out of, so a downgraded verdict surfaces there as
+    ``ok: false`` with the anomaly as the reason rather than as an unreadable
+    string.  The honesty boundary is appended by :func:`_honest_verdict` on the
+    way out, like every other verdict this module returns.
+    """
+    evidence = str(summary or "").strip()
+    if engine_verdict:
+        evidence = ("%s (engine verdict was: %s)" % (evidence, engine_verdict)
+                    if evidence else str(engine_verdict))
+    return "VERDICT:error|Evidence:(low-workspace) %s" % evidence
