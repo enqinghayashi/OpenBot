@@ -1205,3 +1205,5 @@ def _judge_descent(parsed: Optional[dict], target: float, stand: float,
                        "must clear %.3f m"
                        % (ref, abs(ref - stand), stand, min_descent))
     return True, "ref=%.3f commanded=%.3f (<= %.3f)" % (ref, target, tol)
+
+
