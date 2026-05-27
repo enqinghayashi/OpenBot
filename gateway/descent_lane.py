@@ -1399,3 +1399,6 @@ def next_command_action(ctx: DescentContext, verb: str, z: Any,
         return NEXT_RETREAT_BEST_EFFORT, ("arm-only command — rise best-effort, "
                                           "warn loudly on failure")
     return NEXT_NONE, "non-motion command — the lane leaves it alone"
+
+
+# ───────────────────────────────────────────────────────── the two sequences
