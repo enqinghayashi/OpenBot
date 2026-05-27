@@ -1045,3 +1045,5 @@ def _rise_phrase(ctx: Any, default: str) -> str:
     if getattr(ctx, "last_retreat_was_noop", False) is True:
         return "was already standing at"
     return default
+
+
