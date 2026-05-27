@@ -1037,3 +1037,5 @@ def hold_unusable_reason(body_rem: Any, law: Any) -> Optional[str]:
                   "left and a matching place needs rem >= %.1fs "
                   "(lane_operation_budget_s) at its own dispatch, so its "
                   "lifetime guard would refuse it" % (observed, budget))
+
+
