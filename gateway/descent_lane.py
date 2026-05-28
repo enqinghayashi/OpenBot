@@ -1854,3 +1854,5 @@ def _refuse_after_step(ctx: DescentContext, log: DescentPhaseLog, detail: str,
     if stepped_here:
         _drop_step_after_refusal(ctx, log, writer_verb=writer_verb, stamp=stamp)
     return _refuse(log, detail, stamp)
+
+
