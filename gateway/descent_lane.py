@@ -2024,3 +2024,5 @@ def _pc_decisive(pc: Any) -> bool:
         return pc.decisive is True
     except Exception:  # noqa: BLE001 - an unreadable switch is shadow
         return False
+
+
