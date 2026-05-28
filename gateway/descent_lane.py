@@ -1969,3 +1969,49 @@ def _pc_warm(pc: Any, log: DescentPhaseLog,
                 % (type(exc).__name__, exc))
 
 
+def _pc_baseline(pc: Any, pc_label: Optional[str], args: List[Any],
+                 w_rem: Any, law: Any, log: DescentPhaseLog,
+                 stamp: Callable[[], float]) -> Dict[str, Any]:
+    """H-GW-1: the footprint baseline, requested just before the engine moves.
+
+    Returns ``{"rid": <request id or None>, "result": <dict>}``; NEVER raises,
+    adds no writer traffic, and a failed request is just UNKNOWN.  ``ref`` is
+    the torso-frame x, y the arm is sent to - the lane's own input ``args``,
+    never a re-detection.  It costs up to :data:`LANE_PC_BASELINE_DEADLINE_S`
+    of the writer's hold, so it is SKIPPED (a row, no request) when the hold
+    left over after the lane's operation budget cannot pay for that, and when
+    there is no label (the consumer cannot select a target without one).
+    """
+    if not pc_label:
+        _pc_row(log, stamp, "pc_baseline", "pc_baseline skipped: no label")
+        return {"rid": None,
+                "result": {"status": "UNKNOWN", "reason": "no_label"}}
+    budget = _lane_budget(law)
+    spare = (float(w_rem) - budget) if _finite_num(w_rem) else 0.0
+    if spare < LANE_PC_BASELINE_DEADLINE_S:
+        _pc_row(log, stamp, "pc_baseline",
+                "pc_baseline skipped: budget (the writer's remaining hold "
+                "leaves %.1fs beyond the %.1fs lane operation budget, the "
+                "baseline needs %.1fs)"
+                % (spare, budget, LANE_PC_BASELINE_DEADLINE_S))
+        return {"rid": None,
+                "result": {"status": "UNKNOWN", "reason": "budget"}}
+    rid = None
+    try:
+        rid = pc.new_rid("hb")
+        request = {"rid": rid, "task": "hold_baseline", "label": pc_label,
+                   "ref": [float(args[0]), float(args[1])],
+                   "pose": pc.measured_pose(), "ttl_s": LANE_PC_BASELINE_TTL_S}
+        result = _pc_dict(pc.request(request,
+                                     deadline_s=LANE_PC_BASELINE_DEADLINE_S))
+    except Exception as exc:  # noqa: BLE001 - a point-cloud failure is UNKNOWN
+        _pc_row(log, stamp, "pc_baseline",
+                "pc hold_baseline failed with %s: %s - UNKNOWN, nothing else "
+                "changed" % (type(exc).__name__, exc))
+        return {"rid": rid,
+                "result": {"status": "UNKNOWN", "reason": "exception"}}
+    _pc_row(log, stamp, "pc_baseline",
+            "pc hold_baseline status=%s verdict=%s reason=%s"
+            % (result.get("status"), result.get("verdict"),
+               result.get("reason")))
+    return {"rid": rid, "result": result}
