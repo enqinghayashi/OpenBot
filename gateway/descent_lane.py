@@ -1843,3 +1843,14 @@ def _drop_step_after_refusal(ctx: DescentContext, log: DescentPhaseLog, *,
     _loud(detail)
 
 
+def _refuse_after_step(ctx: DescentContext, log: DescentPhaseLog, detail: str,
+                       stamp: Callable[[], float], *,
+                       writer_verb: Callable[[str], str],
+                       stepped_here: bool) -> Tuple[str, Any]:
+    """:func:`_refuse`, preceded by :func:`_drop_step_after_refusal` when THIS
+    run installed a stance step.  ``stepped_here`` is False whenever
+    ``pre_descent_step`` is off, so the switch-off path is :func:`_refuse`
+    exactly."""
+    if stepped_here:
+        _drop_step_after_refusal(ctx, log, writer_verb=writer_verb, stamp=stamp)
+    return _refuse(log, detail, stamp)
