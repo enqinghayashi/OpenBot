@@ -2017,3 +2017,10 @@ def _pc_baseline(pc: Any, pc_label: Optional[str], args: List[Any],
     return {"rid": rid, "result": result}
 
 
+def _pc_decisive(pc: Any) -> bool:
+    """True ONLY for ``pc.decisive is True``.  Anything else - the shadow
+    default, a truthy non-bool, an unreadable attribute - is SHADOW."""
+    try:
+        return pc.decisive is True
+    except Exception:  # noqa: BLE001 - an unreadable switch is shadow
+        return False
