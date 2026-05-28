@@ -1559,3 +1559,61 @@ _STEP_PHASE_RE = re.compile(
 _STEP_NUM = r"([+-]?(?:\d+(?:\.\d*)?|\.\d+|nan|inf))"
 
 
+def parse_step_status(text: Any) -> Optional[Dict[str, Any]]:
+    """The writer's ``step status`` reply -> ``{phase, leg, cm, shift,
+    abort_reason}``, or ``None`` for anything that is not a STEP fragment.
+
+    The grammar is the writer's own ``_step_status``
+    (``skills/writer/main_merged_writer.py``): ``STEP:step=IDLE shift=<s>``,
+    ``step=SHIFT(<tgt>)``, ``step=HOLD(...)``, ``step=LIFT(<leg> K=..)``,
+    ``step=PLACE|RECENTRE(<leg> <cm>cm)``, ``step=DONE(<leg> <cm>cm
+    shift=<s>)``, ``step=ABORT(<reason>)``, each followed by the honesty
+    suffix.  A SHIFT or DONE fragment whose numbers do not parse is ``None``
+    (unparseable, never guessed).
+    """
+    if not isinstance(text, str):
+        return None
+    body = text.strip()
+    if not body.startswith("STEP:"):
+        return None
+    body = body[len("STEP:"):].strip()
+    if body.endswith(HONESTY_SUFFIX):
+        body = body[:-len(HONESTY_SUFFIX)].rstrip()
+    m = _STEP_PHASE_RE.match(body)
+    if m is None:
+        return None
+    phase = m.group(1)
+    rest = body[m.end():]
+    inner = None
+    if rest.startswith("("):
+        close = rest.rfind(")")
+        if close < 0:
+            return None
+        inner = rest[1:close].strip()
+    out: Dict[str, Any] = {"phase": phase, "leg": None, "cm": None,
+                           "shift": None, "abort_reason": None}
+    try:
+        if phase == "IDLE":
+            mm = re.search(r"shift=" + _STEP_NUM, rest)
+            if mm:
+                out["shift"] = float(mm.group(1))
+        elif phase == "SHIFT":
+            out["shift"] = float(inner)
+        elif phase == "DONE":
+            mm = re.match(r"([lr])\s+" + _STEP_NUM + r"cm\s+shift=" + _STEP_NUM
+                          + r"$", inner or "")
+            if mm is None:
+                return None
+            out["leg"] = mm.group(1)
+            out["cm"] = float(mm.group(2))
+            out["shift"] = float(mm.group(3))
+        elif phase == "ABORT":
+            out["abort_reason"] = inner if inner else "unstated"
+        elif phase in ("LIFT", "PLACE", "RECENTRE") and inner:
+            out["leg"] = inner.split()[0]
+            mm = re.search(_STEP_NUM + r"cm", inner)
+            if mm:
+                out["cm"] = float(mm.group(1))
+    except (TypeError, ValueError):
+        return None
+    return out
