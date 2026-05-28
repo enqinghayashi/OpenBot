@@ -1812,3 +1812,32 @@ def _pre_step(ctx: DescentContext, log: DescentPhaseLog, *,
     return True, honest("pre-descent step done: %s" % "; ".join(confirmed))
 
 
+def _drop_step_after_refusal(ctx: DescentContext, log: DescentPhaseLog, *,
+                             writer_verb: Callable[[str], str],
+                             stamp: Callable[[], float]) -> None:
+    """``step off`` + confirm, for a refusal AFTER a successful
+    :func:`_pre_step` (LANE LOW): a refused descent must never leave the feet
+    splayed with nothing to undo them.  Confirmed = ``step off`` answered
+    ``DONE`` AND one ``step status`` reads ``IDLE`` with shift 0.0 (the
+    writer's ``_step_reset``).  Unconfirmed is a LOUD row and ``ctx.stepped``
+    stays True, so the next retreat or pre-step retries ``step off``."""
+    if not ctx.stepped:
+        return
+    o_ok, o_reply = _issue(writer_verb, "step off", ctx.writer_lock)
+    raw = _step_query(writer_verb, ctx.writer_lock) if o_ok else None
+    st = parse_step_status(raw)
+    if (o_ok and st is not None and st["phase"] == "IDLE"
+            and _finite_num(st["shift"]) and abs(float(st["shift"])) < 0.05):
+        ctx.stepped = False
+        log.add("step_off", "ok",
+                honest("step off confirmed after the refused descent "
+                       "(writer: %s; status: %s)" % (o_reply, _clip(raw))),
+                stamp())
+        return
+    detail = honest("STEP OFF UNCONFIRMED after the refused descent (`step "
+                    "off` -> %s; status: %s) - the stance step may still be "
+                    "installed (feet may be splayed); the next retreat or "
+                    "pre-step retries `step off`"
+                    % (o_reply or "no reply", _clip(raw) or "no reply"))
+    log.add("step_off", "refuse", detail, stamp())
+    _loud(detail)
