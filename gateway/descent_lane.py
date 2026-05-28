@@ -1944,3 +1944,8 @@ def _pc_row(log: DescentPhaseLog, stamp: Callable[[], float], phase: str,
     log.add(phase, "info", honest(text), stamp())
 
 
+def _pc_dict(value: Any) -> Dict[str, Any]:
+    """A ``pc.request`` answer as a dict; anything else is no evidence at all."""
+    if isinstance(value, dict):
+        return value
+    return {"status": "UNKNOWN", "reason": "bad_result"}
