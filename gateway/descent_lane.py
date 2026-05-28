@@ -1409,3 +1409,71 @@ def _refuse(log: DescentPhaseLog, detail: str,
     return ("ERROR:low-workspace %s" % detail), None
 
 
+def _descend_step(ctx: DescentContext, log: DescentPhaseLog, law: LaneLaw,
+                  z: float, *, writer_verb: Callable[[str], str],
+                  status_verb: Callable[[], str],
+                  stamp: Callable[[], float],
+                  clock: Callable[[], float],
+                  sleep: Callable[[float], None]
+                  ) -> Tuple[bool, Optional[float], str]:
+    """``height <cmd>`` then confirm it.  ``(ok, confirmed_ref, detail)``.
+
+    Writes TWO rows on the happy path — ``descend`` (the writer accepted the
+    command) and ``confirm`` (the reference actually left standing) — because
+    those are two independently falsifiable facts and collapsing them would
+    hide which one failed.
+
+    THE FRAME IS PROBED FIRST.  The writer reports its own standing reference
+    only in the INACTIVE status form, and only while it is tracking nothing;
+    during an ACTIVE descent no poll carries it.  So one ``status`` poll is
+    taken BEFORE the command and its ``stand`` is carried on the context — the
+    frame shift, the confirmation and the reply then all read that ONE number
+    instead of the envelope's (which drifts).  The envelope value is the
+    fallback only when that probe yields nothing, i.e. for a first command.
+
+    A FAILED DESCENT PARKS THE CONTEXT (D7).  ``ctx.state`` is set to
+    ``DESCENDING`` BEFORE the writer is touched, so the writer-rejected and the
+    not-confirmed return paths both leave a context that is NOT ``IDLE`` — the
+    mirror of ``_retreat_step``, which parks ``RETREATING`` before ``height
+    off``.  A failure here means the body may be moving (a lost reply is not a
+    proof the command never landed), and a context that is not ``IDLE`` makes
+    every subsequent consumer refuse rather than act: blocking verbs answer
+    ``NEXT_RETREAT_BLOCKING`` and a lane skill must take a CONFIRMED rise
+    first.  Leaving ``IDLE`` would be a context that has FORGOTTEN an unknown
+    body height, which is the one thing this lane must never do.
+    """
+    target = height_command(z, law)
+    stand = _writer_stand(status_verb, ctx.writer_lock)
+    if stand is None:
+        stand = float(law.height_stand_m)
+    ctx.writer_stand_m = stand
+    # Park the state before touching the writer: `height <m>` may have been
+    # accepted with the reply lost, and a failure here means the body may be
+    # moving. A non-IDLE context makes every later consumer refuse, not act.
+    ctx.state = DESCENDING
+    ok, reply = _issue(writer_verb, "height %.3f" % target, ctx.writer_lock)
+    if not ok:
+        detail = honest("descent refused: writer rejected `height %.3f` (%s)"
+                        % (target, reply or "no reply"))
+        log.add("descend", "refuse", detail, stamp())
+        return False, None, detail
+    # The writer accepted the command. Confirmation below is a separate fact, and
+    # collapsing the two would hide which one failed.
+    log.add("descend", "ok", honest("height %.3f commanded (writer: %s)"
+                                    % (target, reply)), stamp())
+    confirmed, ref, cd = poll_descent(status_verb, target, stand,
+                                      timeout_s=law.timeout_s,
+                                      sleep=sleep, monotonic=clock,
+                                      lock=ctx.writer_lock)
+    if not confirmed:
+        detail = honest("descent NOT confirmed: %s" % cd)
+        log.add("confirm", "refuse", detail, stamp())
+        return False, None, detail
+    ctx.state = DESCENDING          # already parked; restated with ref
+    ctx.height_cmd = ref            # the confirmed ref, not the command
+    # The body stays down on the writer's own `height_hold_s` clock; nothing in
+    # this lane renews it.
+    detail = honest("height %.3f -> %.3f confirmed %s"
+                    % (stand, ref, cd))
+    log.add("confirm", "ok", detail, stamp())
+    return True, ref, detail
