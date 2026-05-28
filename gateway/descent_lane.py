@@ -2026,3 +2026,19 @@ def _pc_decisive(pc: Any) -> bool:
         return False
 
 
+def _pc_downgrade(result: Dict[str, Any], decisive: bool) -> Optional[str]:
+    """The evidence clause that DOWNGRADES the verdict, or ``None``.
+
+    ONLY a decisive ``pc`` (``decisive`` True), a verdict that is exactly
+    STILL_ON_TABLE or MOVED, and NO ``degraded`` flag (every frame paired in
+    exact mode) downgrade.  ABSENT_UNPROVEN, UNKNOWN and anything else prove
+    nothing and answer ``None``; so does heuristic pairing (``degraded``): that
+    result is logged and never acted on.
+    """
+    verdict = result.get("verdict")
+    if (decisive
+            and isinstance(verdict, str) and verdict in PC_DECISIVE_VERDICTS
+            and not result.get("degraded")):
+        return ("point-cloud hold check: %s (the target did not leave its "
+                "footprint / was knocked)" % verdict)
+    return None
