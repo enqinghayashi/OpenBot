@@ -1913,3 +1913,25 @@ def _standing_dispatch(ctx: DescentContext, log: DescentPhaseLog, *,
     return reply, verdict
 
 
+def _precompute(h_need_z: Any, ctx: DescentContext, law: LaneLaw, verb: str,
+                now_monotonic: float) -> Tuple[str, str]:
+    """The next-command action for a lane skill, with the lane's own defends.
+
+    A context parked in ``RETREATING`` by an UNCONFIRMED retreat answers a
+    fail-closed refusal regardless of the verb: the body height is unknown, so
+    neither HOLDING nor re-descending is honest.  So does a law that is not
+    :func:`usable`: a misconfigured envelope must degrade to the honest refusal
+    (plan §8), never reach :func:`height_command` with a band it cannot compute.
+    """
+    if not usable(law):
+        return "REFUSE", ("the descent band is not usable (tabletop floor / "
+                          "writer clamp misconfigured) — refusing rather than "
+                          "descending blind")
+    action, reason = next_command_action(ctx, verb, h_need_z, law, now_monotonic)
+    if ctx.state == RETREATING:
+        return "REFUSE", ("a previous retreat was not confirmed — the body "
+                          "height is unknown; refusing to move")
+    if action not in (NEXT_NONE, NEXT_HOLD, NEXT_REDESCEND):
+        return "REFUSE", ("this command must not run at a lowered body height "
+                          "(%s: %s)" % (action, reason))
+    return action, reason
