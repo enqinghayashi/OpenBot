@@ -1938,3 +1938,7 @@ def _precompute(h_need_z: Any, ctx: DescentContext, law: LaneLaw, verb: str,
 
 
 # ──────────────────────────────────────── the optional pc hold check, wired in
+def _pc_row(log: DescentPhaseLog, stamp: Callable[[], float], phase: str,
+            text: str) -> None:
+    """One informational phase row for a ``pc`` hook (``info`` status, honest)."""
+    log.add(phase, "info", honest(text), stamp())
