@@ -1619,3 +1619,15 @@ def parse_step_status(text: Any) -> Optional[Dict[str, Any]]:
     return out
 
 
+def _step_query(writer_verb: Callable[[str], str], lock: Optional[Any]
+                ) -> Optional[str]:
+    """One ``step status`` round-trip -> the raw reply, ``None`` on a raise."""
+    try:
+        if lock is None:
+            reply = writer_verb("step status")
+        else:
+            with lock:
+                reply = writer_verb("step status")
+    except Exception:  # noqa: BLE001 - a dead socket reads as unparseable
+        return None
+    return reply if isinstance(reply, str) else None
