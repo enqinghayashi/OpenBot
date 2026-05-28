@@ -1633,3 +1633,180 @@ def _step_query(writer_verb: Callable[[str], str], lock: Optional[Any]
     return reply if isinstance(reply, str) else None
 
 
+def _pre_step(ctx: DescentContext, log: DescentPhaseLog, *,
+              writer_verb: Callable[[str], str],
+              stamp: Callable[[], float],
+              clock: Callable[[], float],
+              sleep: Callable[[float], None],
+              legs: Tuple[str, ...] = PRE_STEP_LEGS,
+              shift_deg: float = PRE_STEP_SHIFT_DEG,
+              cm: float = PRE_STEP_CM,
+              timeout_s: float = PRE_STEP_GO_TIMEOUT_S) -> Tuple[bool, str]:
+    """Widen the stance BEFORE the descent, on the writer's own step verbs.
+    ``(ok, detail)``.
+
+    Per leg: ``step shift <+/-deg>`` (reply must be exactly ``DONE``), ``step
+    status`` POLLED until the writer reports a phase in
+    :data:`PRE_STEP_GO_READY_PHASES` (the settled ``IDLE``), every poll showing
+    a shift of the right sign and at least :data:`PRE_STEP_MIN_SHIFT_DEG` (a
+    clamped-to-zero shift is a SHUT band), bounded by
+    :func:`pre_step_shift_timeout_s` (HIGH-B: the real writer refuses ``go``
+    with "step busy: SHIFT" while the shift slews), ``step go <leg> <cm>``
+    (``DONE`` = STARTED only), then ``step
+    status`` polled until ``DONE(<leg> <cm>cm ...)`` with ``cm > 0``.  The
+    achieved width is the writer's OWN fragment, quoted verbatim — the lane
+    never states a total separation and never calls it measured.
+
+    FAIL CLOSED.  Any ERROR, a shut band, an ``ABORT(...)``, an unparseable or
+    ``IDLE`` status after ``go``, or a poll that outlives ``timeout_s`` sends
+    ``step off`` (best effort) and returns ``(False, detail)``; the caller
+    refuses the WHOLE descent, so ``height`` is never sent and the engine is
+    never called.  ``ctx.stepped`` is set BEFORE the first ``step shift`` (a
+    failed or timed-out step may have moved the body) and cleared only by a
+    ``step off`` the writer answered ``DONE``.
+    """
+    lock = ctx.writer_lock
+
+    def _off_after_failure(why: str) -> Tuple[bool, str]:
+        o_ok, o_reply = _issue(writer_verb, "step off", lock)
+        if o_ok:
+            ctx.stepped = False
+            log.add("step_off", "ok", honest("step off accepted after the "
+                                             "refused step (writer: %s)"
+                                             % o_reply), stamp())
+        else:
+            o_detail = honest("step off REFUSED after the refused step (%s) - "
+                              "the stance step may still be installed"
+                              % (o_reply or "no reply"))
+            log.add("step_off", "refuse", o_detail, stamp())
+            _loud(o_detail)
+        return False, honest("pre-descent step refused, descent NOT "
+                             "commanded: %s" % why)
+
+    if ctx.stepped:
+        o_ok, o_reply = _issue(writer_verb, "step off", lock)
+        if not o_ok:
+            detail = honest("pre-descent step refused: a previous stance step "
+                            "could not be dropped (`step off` -> %s); descent "
+                            "NOT commanded" % (o_reply or "no reply"))
+            log.add("step_off", "refuse", detail, stamp())
+            _loud(detail)
+            return False, detail
+        ctx.stepped = False
+        log.add("step_off", "ok", honest("step off accepted before a new "
+                                         "pre-descent step (writer: %s)"
+                                         % o_reply), stamp())
+    confirmed: List[str] = []
+    for leg in legs:
+        sign = 1.0 if leg == "l" else -1.0
+        shift_line = "step shift %+.3f" % (sign * abs(float(shift_deg)))
+        ctx.stepped = True
+        ok, reply = _issue(writer_verb, shift_line, lock)
+        if not ok or reply != "DONE":
+            log.add("step_shift", "refuse",
+                    honest("`%s` refused by the writer (%s)"
+                           % (shift_line, reply or "no reply")), stamp())
+            return _off_after_failure("`%s` -> %s"
+                                      % (shift_line, reply or "no reply"))
+        # Poll until the writer may legally take `step go`: SHIFT while the slew
+        # settles, then IDLE, and any other phase answers "step busy". Both forms
+        # must carry a shift of the right sign and at least the minimum.
+        s_timeout = pre_step_shift_timeout_s(shift_deg)
+        s_interval = float(DESCENT_POLL_INTERVAL_S)
+        s_deadline = clock() + s_timeout
+        s_polls = int(math.ceil(s_timeout / s_interval)) + 2
+        ready_raw = None
+        installed = None
+        why = ("the shift never settled to IDLE within %.2fs (|%.1f| deg at "
+               "%.1f deg/s)" % (s_timeout, float(shift_deg), PRE_STEP_SLEW_DEG_S))
+        for _ in range(max(s_polls, 1)):
+            st_raw = _step_query(writer_verb, lock)
+            st = parse_step_status(st_raw)
+            if st is None:
+                why = ("step status unparseable after the shift (%s)"
+                       % (_clip(st_raw) or "no reply"))
+                break
+            ph = st["phase"]
+            installed = st.get("shift")
+            if ph in ("SHIFT", "IDLE"):
+                if (not _finite_num(installed)
+                        or sign * float(installed) < PRE_STEP_MIN_SHIFT_DEG):
+                    why = ("step shift clamped to %s - stance band shut/too "
+                           "small (writer: %s)"
+                           % (installed if installed is not None
+                              else "an unreadable value",
+                              _clip(st_raw) or "no reply"))
+                    break
+                if ph in PRE_STEP_GO_READY_PHASES:
+                    ready_raw = st_raw
+                    break
+            elif ph == "ABORT":
+                why = "step ABORTED by the writer during the shift: %s" % (
+                    st["abort_reason"])
+                break
+            else:
+                why = ("unexpected step phase %s while the shift settles (%s)"
+                       % (ph, _clip(st_raw)))
+                break
+            if clock() >= s_deadline:
+                why = ("the shift never settled to IDLE within %.2fs (last: %s)"
+                       % (s_timeout, _clip(st_raw)))
+                break
+            sleep(s_interval)
+        if ready_raw is None:
+            log.add("step_shift", "refuse", honest(why), stamp())
+            return _off_after_failure(why)
+        log.add("step_shift", "ok",
+                honest("`%s` settled IDLE shift=%+.1f (writer-reported)"
+                       % (shift_line, float(installed))), stamp())
+        go_line = "step go %s %s" % (leg, "%g" % float(cm))
+        ok, reply = _issue(writer_verb, go_line, lock)
+        if not ok or reply != "DONE":
+            log.add("step_go", "refuse",
+                    honest("`%s` refused by the writer (%s)"
+                           % (go_line, reply or "no reply")), stamp())
+            return _off_after_failure("`%s` -> %s"
+                                      % (go_line, reply or "no reply"))
+        log.add("step_go", "ok", honest("`%s` STARTED (writer: DONE = started, "
+                                        "not completed)" % go_line), stamp())
+        interval = float(DESCENT_POLL_INTERVAL_S)
+        deadline = clock() + max(0.0, float(timeout_s))
+        max_polls = int(math.ceil(max(0.0, float(timeout_s)) / interval)) + 2
+        done_raw = None
+        why = "the step never reported DONE within %.1fs" % float(timeout_s)
+        for _ in range(max(max_polls, 1)):
+            raw = _step_query(writer_verb, lock)
+            st = parse_step_status(raw)
+            if st is None:
+                why = "step status unparseable (%s)" % (_clip(raw) or "no reply")
+                break
+            ph = st["phase"]
+            if ph == "DONE":
+                if st["leg"] == leg and _finite_num(st["cm"]) and st["cm"] > 0.0:
+                    done_raw = raw
+                else:
+                    why = ("step reported DONE for the wrong leg or no width "
+                           "(%s)" % _clip(raw))
+                break
+            if ph == "ABORT":
+                why = "step ABORTED by the writer: %s" % st["abort_reason"]
+                break
+            if ph == "IDLE":
+                why = "step status went IDLE before DONE (%s)" % _clip(raw)
+                break
+            if clock() >= deadline:
+                why = ("the step never reported DONE within %.1fs (last: %s)"
+                       % (float(timeout_s), _clip(raw)))
+                break
+            sleep(interval)
+        if done_raw is None:
+            log.add("step_confirm", "refuse", honest(why), stamp())
+            return _off_after_failure(why)
+        frag = done_raw.strip()[len("STEP:"):].strip()
+        log.add("step_confirm", "ok",
+                honest("leg %s step confirmed by the writer's own status: %s"
+                       % (leg, frag)), stamp())
+        if frag.endswith(HONESTY_SUFFIX):
+            frag = frag[:-len(HONESTY_SUFFIX)].rstrip()
+        confirmed.append(frag)
+    return True, honest("pre-descent step done: %s" % "; ".join(confirmed))
