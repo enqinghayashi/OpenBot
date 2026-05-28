@@ -1810,3 +1810,5 @@ def _pre_step(ctx: DescentContext, log: DescentPhaseLog, *,
             frag = frag[:-len(HONESTY_SUFFIX)].rstrip()
         confirmed.append(frag)
     return True, honest("pre-descent step done: %s" % "; ".join(confirmed))
+
+
