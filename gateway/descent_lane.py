@@ -1479,3 +1479,75 @@ def _descend_step(ctx: DescentContext, log: DescentPhaseLog, law: LaneLaw,
     return True, ref, detail
 
 
+def _retreat_step(ctx: DescentContext, log: DescentPhaseLog, *,
+                  writer_verb: Callable[[str], str],
+                  status_verb: Callable[[], str],
+                  stamp: Callable[[], float],
+                  clock: Callable[[], float],
+                  sleep: Callable[[float], None]
+                  ) -> Tuple[bool, Optional[float], str]:
+    """``height off`` then confirm standing.  ``(ok, ref, detail)``.
+
+    WARN-AND-HOLD on failure (plan §7): the loud stderr line, NO further motion
+    dispatched, and the context stays NON-``IDLE`` so the next lane skill
+    refuses rather than act on a body height nobody can vouch for.  The
+    writer's ``height_hold_s`` watchdog and its shutdown ascend are the
+    independent backstops.
+
+    NOTHING ELSE CAN RE-ISSUE THE DESCENT.  There is no renewal thread to stop
+    first (the body is held by the writer's own ``height_hold_s`` lifetime and
+    by nothing else), so the ``height off`` below is the only command racing it
+    and it is sent under :attr:`DescentContext.writer_lock` like every other.
+    """
+    ctx.state = RETREATING
+    ctx.last_retreat_was_noop = False
+    # One pre-poll: the writer's watchdog may already have re-stood the body, so
+    # reading before `height off` lets the detail say who raised it. The command
+    # is still sent: it is idempotent and clears any latch the poll cannot see.
+    pre = descent_law.parse_height_status(_safe_status(status_verb,
+                                                       ctx.writer_lock))
+    was_standing, _pre_detail = _judge_retreat(pre, HEIGHT_CONFIRM_TOL_M)
+    ok, reply = _issue(writer_verb, "height off", ctx.writer_lock)
+    if not ok:
+        detail = honest("retreat refused: writer rejected `height off` (%s)"
+                        % (reply or "no reply"))
+        log.add("retreat", "refuse", detail, stamp())
+        _loud(detail)
+        return False, None, detail
+    log.add("retreat", "ok", honest("height off accepted"), stamp())
+    confirmed, ref, cd = poll_retreat(status_verb, sleep=sleep, monotonic=clock,
+                                      lock=ctx.writer_lock)
+    if not confirmed:
+        detail = honest("%s - body height may still be low; HOLD (%s)"
+                        % (RETREAT_UNCONFIRMED, cd))
+        _loud(detail)
+        log.add("confirm", "refuse", detail, stamp())
+        return False, None, detail
+    if was_standing:
+        detail = honest("%s: the writer already reported the body standing "
+                        "BEFORE this lane sent `height off` (it re-stood on "
+                        "its own height_hold_s clock or an earlier rise); this "
+                        "lane did NOT raise it: %s" % (ALREADY_STANDING, cd))
+    else:
+        detail = honest("rise confirmed: %s" % cd)
+    log.add("confirm", "ok", detail, stamp())
+    if ctx.stepped:
+        # The stance step is dropped after the rise, never before: relaxing the
+        # stance snap at depth is the riskier order. A refused `step off` never
+        # turns a confirmed rise into RETREATING; the next retreat retries it.
+        s_ok, s_reply = _issue(writer_verb, "step off", ctx.writer_lock)
+        if s_ok:
+            ctx.stepped = False
+            log.add("step_off", "ok", honest("step off accepted after the "
+                                             "confirmed rise (writer: %s)"
+                                             % s_reply), stamp())
+        else:
+            s_detail = honest("step off REFUSED after the confirmed rise (%s) "
+                              "- the stance step may still be installed; the "
+                              "next retreat or pre-step retries `step off`"
+                              % (s_reply or "no reply"))
+            log.add("step_off", "refuse", s_detail, stamp())
+            _loud(s_detail)
+    ctx.reset()
+    ctx.last_retreat_was_noop = bool(was_standing)
+    return True, ref, detail
