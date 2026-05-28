@@ -1856,3 +1856,58 @@ def _refuse_after_step(ctx: DescentContext, log: DescentPhaseLog, detail: str,
     return _refuse(log, detail, stamp)
 
 
+def _standing_dispatch(ctx: DescentContext, log: DescentPhaseLog, *,
+                       verb: str, z: float, action: str,
+                       dispatch: Callable[[], Tuple[str, Optional[str]]],
+                       writer_verb: Callable[[str], str],
+                       status_verb: Callable[[], str],
+                       stamp: Callable[[], float],
+                       clock: Callable[[], float],
+                       sleep: Callable[[float], None]
+                       ) -> Tuple[str, Optional[str]]:
+    """A lane skill whose descent is negligible (:func:`descent_negligible`)
+    runs AT STANDING — the NORMAL path — never through a descent it would then
+    refuse as unconfirmable (batch 2, R4; run20 gateway.log L377).
+
+    A body height still outstanding (a hold, or a failed descent parked in
+    ``DESCENDING``) is given back FIRST with the lane's one confirmed rise, and
+    an unconfirmed rise refuses with the engine unsent.  After that NOTHING of
+    the descent machinery runs: no stance pre-step, no ``height`` command, no
+    pre-dispatch probe, no lifetime guard, no post-dispatch body check, no
+    hold.  The engine is handed the RAW target (no frame shift: the body is at
+    standing) and its ``(reply, verdict)`` is returned UNCHANGED, so the reply
+    is exactly what the NORMAL path returns; the "no descent needed" fact is a
+    phase-table row only, never reply text.
+    """
+    if action != NEXT_NONE:
+        ok, _ref, detail = _retreat_step(ctx, log, writer_verb=writer_verb,
+                                         status_verb=status_verb, stamp=stamp,
+                                         clock=clock, sleep=sleep)
+        if not ok:
+            return _refuse(log, detail, stamp)
+    log.add("descend", "ok",
+            honest("descent <= %.2f m confirmable band: no descent needed, "
+                   "%s at standing" % (NO_DESCENT_BAND_M,
+                                       "picking" if verb != "place"
+                                       else "placing")), stamp())
+    if ctx.cancelled_this_run():
+        log.add("cancel", "refuse",
+                honest("operator cancel received before the engine was "
+                       "dispatched - the %s was NOT sent; no descent was made"
+                       % verb), stamp())
+        return _refuse(log, honest("cancelled_by_operator: the %s was NOT "
+                                   "sent; the body was not lowered" % verb),
+                       stamp)
+    try:
+        reply, verdict = dispatch()
+    except Exception as exc:  # noqa: BLE001 - an exception is a failed skill
+        reply, verdict = (honest("ERROR:low-workspace %s dispatch raised %s: %s"
+                                 % ("place" if verb == "place" else "pick",
+                                    type(exc).__name__, exc))), None
+    e_status, _e_detail = _place_target.classify_dispatch(reply, verdict)
+    log.add("place" if verb == "place" else "pick", e_status,
+            honest("%s z=%.3f at standing (no descent, raw z to the engine)"
+                   % (verb, z)), stamp())
+    v_status, v_detail = _place_target.verdict_row(verdict)
+    log.add("verify", v_status, v_detail, stamp())
+    return reply, verdict
