@@ -1477,3 +1477,5 @@ def _descend_step(ctx: DescentContext, log: DescentPhaseLog, law: LaneLaw,
                     % (stand, ref, cd))
     log.add("confirm", "ok", detail, stamp())
     return True, ref, detail
+
+
