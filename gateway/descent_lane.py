@@ -1911,3 +1911,5 @@ def _standing_dispatch(ctx: DescentContext, log: DescentPhaseLog, *,
     v_status, v_detail = _place_target.verdict_row(verdict)
     log.add("verify", v_status, v_detail, stamp())
     return reply, verdict
+
+
