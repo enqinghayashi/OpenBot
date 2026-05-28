@@ -1951,3 +1951,19 @@ def _pc_dict(value: Any) -> Dict[str, Any]:
     return {"status": "UNKNOWN", "reason": "bad_result"}
 
 
+def _pc_warm(pc: Any, log: DescentPhaseLog,
+             stamp: Callable[[], float]) -> None:
+    """H-GW-1: ``pc.warm`` once, at the START of a descended run.
+
+    DDS discovery between the gateway and the consumer takes seconds, so the
+    warm goes out before the first writer command of the descent and the
+    baseline - asked for only after the descent is confirmed - finds the
+    consumer ready.  FIRE-AND-FORGET: a failure is one phase row and changes
+    nothing else.
+    """
+    try:
+        pc.warm(LANE_PC_WARM_TTL_S)
+    except Exception as exc:  # noqa: BLE001 - a point-cloud failure never refuses
+        _pc_row(log, stamp, "pc_warm",
+                "pc warm failed with %s: %s - ignored, nothing else changed"
+                % (type(exc).__name__, exc))
