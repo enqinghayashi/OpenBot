@@ -1967,3 +1967,5 @@ def _pc_warm(pc: Any, log: DescentPhaseLog,
         _pc_row(log, stamp, "pc_warm",
                 "pc warm failed with %s: %s - ignored, nothing else changed"
                 % (type(exc).__name__, exc))
+
+
