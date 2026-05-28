@@ -1841,3 +1841,5 @@ def _drop_step_after_refusal(ctx: DescentContext, log: DescentPhaseLog, *,
                     % (o_reply or "no reply", _clip(raw) or "no reply"))
     log.add("step_off", "refuse", detail, stamp())
     _loud(detail)
+
+
