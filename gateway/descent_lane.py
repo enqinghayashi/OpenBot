@@ -1551,3 +1551,11 @@ def _retreat_step(ctx: DescentContext, log: DescentPhaseLog, *,
     ctx.reset()
     ctx.last_retreat_was_noop = bool(was_standing)
     return True, ref, detail
+
+
+# ────────────────────────────── optional pre-descent stance step
+_STEP_PHASE_RE = re.compile(
+    r"step=(IDLE|SHIFT|HOLD|LIFT|PLACE|RECENTRE|DONE|ABORT)(?![A-Za-z])")
+_STEP_NUM = r"([+-]?(?:\d+(?:\.\d*)?|\.\d+|nan|inf))"
+
+
