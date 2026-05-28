@@ -1631,3 +1631,5 @@ def _step_query(writer_verb: Callable[[str], str], lock: Optional[Any]
     except Exception:  # noqa: BLE001 - a dead socket reads as unparseable
         return None
     return reply if isinstance(reply, str) else None
+
+
