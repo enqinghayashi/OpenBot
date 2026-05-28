@@ -1935,3 +1935,6 @@ def _precompute(h_need_z: Any, ctx: DescentContext, law: LaneLaw, verb: str,
         return "REFUSE", ("this command must not run at a lowered body height "
                           "(%s: %s)" % (action, reason))
     return action, reason
+
+
+# ──────────────────────────────────────── the optional pc hold check, wired in
