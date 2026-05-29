@@ -2606,3 +2606,45 @@ def place_sequence(ctx: DescentContext, log: DescentPhaseLog, *,
             _honest_verdict(verdict))
 
 
+def retreat_first_if_held(ctx: DescentContext, log: DescentPhaseLog, *,
+                          writer_verb: Callable[[str], str],
+                          status_verb: Callable[[], str],
+                          wall: Optional[Callable[[], float]] = None,
+                          sleep: Optional[Callable[[float], None]] = None,
+                          monotonic: Optional[Callable[[], float]] = None
+                          ) -> Optional[str]:
+    """Rise first, if a body height is outstanding.  ``None`` on success, a
+    reason STRING on failure (the caller refuses on it).
+
+    The lane's public release.  A caller about to run a command at a height
+    nobody vetted — or a standalone low pick that wants to stand immediately —
+    asks THIS rather than reaching into the context and issuing ``height off``
+    itself, so the one place that knows how a rise is confirmed, and what an
+    unconfirmed one means, stays the only place that does it.
+
+    * nothing outstanding (``IDLE``) -> ``None``.  There is no height to give
+      back, so nothing can fail, and the caller must NOT read a refusal in.
+    * a descent or hold outstanding -> ``height off`` plus a standing
+      confirmation.  ``None`` only once that confirmation lands.
+    * already ``RETREATING`` with an UNCONFIRMED retreat -> a reason string.
+      Re-issuing ``height off`` adds no information, and the honest answer is
+      that the body height is unknown.
+    * a failed retreat -> the :func:`_retreat_step` detail, which already
+      carries the loud warn-and-hold marker.
+
+    FAIL CLOSED: every path other than a CONFIRMED rise, or a genuinely
+    ``IDLE`` context, returns a truthy string.
+    """
+    if ctx is None or ctx.state == IDLE:
+        return None
+    if ctx.state == RETREATING:
+        return honest("a previous retreat was never confirmed - the body "
+                      "height is unknown")
+    ok, _ref, detail = _retreat_step(ctx, log, writer_verb=writer_verb,
+                                     status_verb=status_verb,
+                                     stamp=wall or time.time,
+                                     clock=monotonic or time.monotonic,
+                                     sleep=sleep or time.sleep)
+    if not ok:
+        return detail
+    return None
