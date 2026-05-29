@@ -391,3 +391,51 @@ def _turn_omega(yaw_err: float) -> float:
     if mag < TURN_OMEGA_MIN:
         mag = TURN_OMEGA_MIN
     return math.copysign(mag, omega)
+# ── hold evidence from the pick daemon (the /pick_state fold) ───────────────
+#: the pick daemon's state topic (JSON at 5 Hz: state / label / held /
+#: daemon_alive / side). the gateway refuses an unheld place, and its
+#: other two hold tiers are made by the gateway itself, so a pick on the
+#: daemon lane is invisible to both and a place on a payload it holds
+#: refuses with 'nothing verified held'. the daemon already knows, so
+#: read it here.
+#: scope: consulted only inside the unheld-refusal branch. as a peer
+#: branch above the refusal it would pre-empt the ambiguous-hint `else`
+#: and release the daemon's hand where that path releases active_side.
+#: the payload's `side` is required: it is the hand the daemon actually
+#: closed. no side means the tier is inert and the refusal stands. never
+#: fall back to a declared constant, because the daemon picks either
+#: hand and a constant would open the empty right hand while the payload
+#: stays gripped.
+PICK_STATE_TOPIC_DEFAULT = "/pick_state"
+#: older than this (s) is not evidence. the daemon publishes at 5 Hz,
+#: so 2.0 s rides out ~10 dropped messages and stays far too short for
+#: a dead daemon's last 'held: true' to authorise a place.
+PICK_STATE_MAX_AGE_S = 2.0
+#: marks a new pick cycle: _execute_pick's first act, before it
+#: touches `held`. it ends the previous hold epoch in _on_pick_state,
+#: which releases the consumed latch.
+PICK_STATE_BUSY = "busy"
+#: how long _await_pick_daemon waits for a pick motion before giving
+#: up. the engine answers DONE about 3 s after the command while the
+#: arm still moves; a grasp verdict lands near t+26 s and the carry tuck
+#: near t+33 s, so 120 s covers about 3.5 cycles. a wait bound, not a
+#: gate: past it nothing is refused, the wait stops and reports
+#: `timeout`. do not drop below ~60 s.
+PICK_DAEMON_WAIT_S = 120.0
+#: how long _await_pick_daemon gives a cycle to begin (the daemon's
+#: `busy` frame). a live daemon writes it well under a second after the
+#: engine answered DONE, so 5.0 s is 25 publish periods at 5 Hz and a
+#: lane with no daemon pays 5 s once instead of the whole motion
+#: budget.
+PICK_DAEMON_START_S = 5.0
+#: poll period (s) while waiting. publishing is 5 Hz, so 0.1 s cannot
+#: miss a frame; it only bounds how late the edge is noticed.
+PICK_DAEMON_POLL_S = 0.1
+#: how long `cancel` waits for the engine socket. the engine answers
+#: from its connection thread, so the reply is immediate by
+#: construction and this bounds only a wedged listener or an overloaded
+#: host. short on purpose: a blocking cancel is useless to an operator
+#: watching the arm keep moving.
+CANCEL_REPLY_TIMEOUT_S = 5.0
+
+
