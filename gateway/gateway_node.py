@@ -469,3 +469,23 @@ CANCEL_REASON = "cancelled_by_operator"
 _CANCEL_PHASE_RE = re.compile(r"[A-Za-z0-9_.\-]+")
 
 
+def _cancel_phase(reply: str) -> str:
+    """The ``<where>`` of an engine ``CANCELLED:<where>`` reply, sanitised.
+
+    Text after the first ``CANCELLED:``, cut at the first whitespace, kept only
+    while it is ``[A-Za-z0-9_.-]`` and at most 40 characters; anything else
+    (empty, or a first character outside the charset) is ``"unknown"``.  The
+    phase is interpolated into a ``|``-delimited verdict, so a ``|`` or a
+    newline must never survive this.
+    """
+    text = str(reply or "")
+    idx = text.find("CANCELLED:")
+    if idx < 0:
+        return "unknown"
+    tail = text[idx + len("CANCELLED:"):]
+    parts = tail.split(None, 1)
+    token = parts[0] if parts else ""
+    m = _CANCEL_PHASE_RE.match(token)
+    if m is None:
+        return "unknown"
+    return m.group(0)[:40]
