@@ -2071,3 +2071,11 @@ def _pc_annotate(reply: Any, token: str, key: str = "pc_hold") -> str:
     if text.endswith(tail):
         return "%s; %s=%s%s" % (text[:-len(tail)], key, token, tail)
     return "%s; %s=%s" % (text, key, token)
+
+
+#: Reply key of a non-decisive (shadow) hold check. The verifier reads `pc_hold=`
+#: and turns STILL_ON_TABLE / MOVED into a failed pick on its own, so a shadow
+#: result rides as this key instead: logged for calibration, never read.
+PC_SHADOW_KEY = "pc_hold_shadow"
+
+
