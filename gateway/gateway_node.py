@@ -439,3 +439,24 @@ PICK_DAEMON_POLL_S = 0.1
 CANCEL_REPLY_TIMEOUT_S = 5.0
 
 
+def _defang_error_token(text: str) -> str:
+    """Break the ``ERROR:`` literal so an embedded echo cannot poison a reply.
+
+    ``_shape_reply`` (see its docstring) sets ``ok:false`` when ``ERROR:``
+    appears ANYWHERE in the reply body, and the verifier's ``_classify_reply``
+    reads it as a failure.  The cancel reply ECHOES the engine's own words for
+    the wire trace — and the engine's error vocabulary is exactly ``ERROR:``.
+    So an engine that answers a cancel with, say, ``ERROR:not busy`` would turn
+    a cancel that WORKED into a failure envelope: the brain would report the
+    stop as failed and the operator would be told the opposite of the truth.
+
+    This is the same bug class the ``_shape_reply`` docstring already names for
+    ``close_both`` (``right_close=ERROR:no_dds`` inside a DONE lead).
+
+    The substitution is deliberately LOUD rather than silent — an underscore is
+    visible in the wire trace, so a reader can still see what the engine said
+    while the token no longer parses as an error.  Only the ECHO is defanged;
+    a reply that genuinely IS an error still leads with its own ``ERROR:`` and
+    is shaped as one.
+    """
+    return text.replace("ERROR:", "ERROR_")
