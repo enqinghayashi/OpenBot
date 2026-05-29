@@ -2700,3 +2700,5 @@ def _grasp_state(engine_verdict: Optional[str]) -> str:
     if text.startswith("VERDICT:failure"):
         return GRASP_FAILED
     return GRASP_UNCONFIRMED
+
+
