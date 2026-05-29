@@ -460,3 +460,12 @@ def _defang_error_token(text: str) -> str:
     is shaped as one.
     """
     return text.replace("ERROR:", "ERROR_")
+
+
+#: Reason on every verdict minted for a cancelled pick or place. same
+#: token the brain verifier uses for a cancelled navigate.
+CANCEL_REASON = "cancelled_by_operator"
+
+_CANCEL_PHASE_RE = re.compile(r"[A-Za-z0-9_.\-]+")
+
+
