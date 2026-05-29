@@ -364,3 +364,10 @@ def _turn_wrap_pi(a: float) -> float:
     return math.atan2(math.sin(a), math.cos(a))
 
 
+def _turn_bearing(x: float, y: float) -> float:
+    """Bearing (rad) of a torso-frame point: x = RIGHT, y = forward.
+
+    The SAME law as walk_node.py:1394/1423 ``yaw_err = _wrap_pi(
+    math.atan2(x_b, y_b))``.  Positive = target is to the RIGHT of centre.
+    """
+    return _turn_wrap_pi(math.atan2(x, y))
