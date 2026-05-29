@@ -2648,3 +2648,13 @@ def retreat_first_if_held(ctx: DescentContext, log: DescentPhaseLog, *,
     if not ok:
         return detail
     return None
+
+
+#: The three states a folded pick verdict can put the grasp in. A bool is not
+#: enough: `failure` and `in_progress` are both "not success" but say opposite
+#: things about the hand, and the reply grammar has a different word for each.
+GRASP_CONFIRMED = "confirmed"
+GRASP_FAILED = "failed"
+GRASP_UNCONFIRMED = "unconfirmed"
+
+
