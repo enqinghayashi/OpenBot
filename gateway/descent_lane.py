@@ -2702,3 +2702,15 @@ def _grasp_state(engine_verdict: Optional[str]) -> str:
     return GRASP_UNCONFIRMED
 
 
+def _honest_verdict(verdict: Optional[str]) -> Optional[str]:
+    """The folded verdict, carrying the lane's honesty boundary.
+
+    The boundary is about the DESCENT, not about the grasp, so it is appended
+    rather than substituted: every consumer that reads a verdict with
+    ``startswith("VERDICT:success")`` still reads it identically, and a reader
+    who takes the whole string cannot mistake the descent half for a
+    measurement.
+    """
+    if verdict is None:
+        return None
+    return honest(verdict)
