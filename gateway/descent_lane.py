@@ -2079,3 +2079,6 @@ def _pc_annotate(reply: Any, token: str, key: str = "pc_hold") -> str:
 PC_SHADOW_KEY = "pc_hold_shadow"
 
 
+def _pc_reply_key(pc: Any) -> str:
+    """``pc_hold`` for a decisive client, :data:`PC_SHADOW_KEY` otherwise."""
+    return "pc_hold" if _pc_decisive(pc) else PC_SHADOW_KEY
