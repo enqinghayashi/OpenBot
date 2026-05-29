@@ -2084,3 +2084,59 @@ def _pc_reply_key(pc: Any) -> str:
     return "pc_hold" if _pc_decisive(pc) else PC_SHADOW_KEY
 
 
+def _pc_hold_check(pc: Any, pc_base: Dict[str, Any], reply: Any, w_rem: Any,
+                   engine_elapsed_s: Any, log: DescentPhaseLog,
+                   stamp: Callable[[], float]
+                   ) -> Tuple[Dict[str, Any], Optional[str]]:
+    """H-GW-2: the hold check after the engine returned.
+    ``(result, downgrade)``.
+
+    ``result`` is always a dict (UNKNOWN when nothing could be asked or the
+    answer is not a dict) and ``downgrade`` the evidence clause of
+    :func:`_pc_downgrade`, or ``None``.  It runs BEFORE ``_grasp_state`` is read
+    and before the post-dispatch body check, takes NO fresh writer poll (the
+    body check that follows does its own), and every request is bounded by its
+    deadline, so the retreat is never delayed by more than the window plus
+    :data:`LANE_PC_DEADLINE_SLACK_S`.  The window comes from the writer's
+    remaining hold estimated off the PRE-dispatch poll,
+    ``rem = w_rem - engine_elapsed_s``, less :data:`LANE_PC_MARGIN_S`, capped at
+    :data:`LANE_PC_CHECK_MAX_S`; under :data:`LANE_PC_CHECK_MIN_S` the check is
+    not asked for (``deadline_budget``).  An exception from any ``pc`` call is
+    caught: the result is UNKNOWN and one phase row says so.
+    """
+    base_result = pc_base.get("result") if isinstance(pc_base, dict) else None
+    base_rid = pc_base.get("rid") if isinstance(pc_base, dict) else None
+    rem = 0.0
+    if _finite_num(w_rem) and _finite_num(engine_elapsed_s):
+        rem = max(0.0, float(w_rem) - float(engine_elapsed_s))
+    window = min(LANE_PC_CHECK_MAX_S, max(0.0, rem - LANE_PC_MARGIN_S))
+    note = ""
+    try:
+        t_reply = stamp()
+        pc.t_reply_wall = t_reply
+        phase = pc.phase_of(reply)
+        if not (isinstance(base_result, dict)
+                and base_result.get("status") == "OK"
+                and isinstance(base_rid, str) and base_rid):
+            result = {"status": "UNKNOWN", "reason": "no_baseline"}
+        elif window < LANE_PC_CHECK_MIN_S:
+            result = {"status": "UNKNOWN", "reason": "deadline_budget"}
+        else:
+            request = {"rid": pc.new_rid("hc"), "task": "hold_check",
+                       "baseline_rid": base_rid, "phase": phase,
+                       "t_reply_wall": t_reply, "pose": pc.measured_pose(),
+                       "ttl_s": window}
+            result = _pc_dict(pc.request(
+                request, deadline_s=window + LANE_PC_DEADLINE_SLACK_S))
+    except Exception as exc:  # noqa: BLE001 - a point-cloud failure is UNKNOWN
+        result = {"status": "UNKNOWN", "reason": "exception"}
+        note = " [%s: %s]" % (type(exc).__name__, exc)
+    decisive = _pc_decisive(pc)
+    down = _pc_downgrade(result, decisive)
+    _pc_row(log, stamp, "pc_hold",
+            "pc hold_check status=%s verdict=%s reason=%s degraded=%s "
+            "decisive=%s downgrade=%s%s"
+            % (result.get("status"), result.get("verdict"),
+               result.get("reason"), result.get("degraded"), decisive,
+               "yes" if down else "no", note))
+    return result, down
