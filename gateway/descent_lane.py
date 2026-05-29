@@ -2446,3 +2446,5 @@ def pick_sequence(ctx: DescentContext, log: DescentPhaseLog, *, verb: str,
                    % (verb, z, z_engine, stand, ref,
                       _rise_phrase(ctx, "rose to"), stood, reply)),
             _honest_verdict(verdict))
+
+
