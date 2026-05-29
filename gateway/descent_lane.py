@@ -2044,3 +2044,11 @@ def _pc_downgrade(result: Dict[str, Any], decisive: bool) -> Optional[str]:
     return None
 
 
+def _pc_token(result: Dict[str, Any]) -> str:
+    """The ``pc_hold=`` token: the consumer's verdict when it is one of
+    :data:`PC_HOLD_TOKENS`, UNKNOWN for anything else (missing, garbage,
+    BASELINE_OK, RIM_FIT, ...)."""
+    verdict = result.get("verdict")
+    if isinstance(verdict, str) and verdict in PC_HOLD_TOKENS:
+        return verdict
+    return "UNKNOWN"
