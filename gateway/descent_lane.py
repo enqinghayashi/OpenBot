@@ -2054,3 +2054,20 @@ def _pc_token(result: Dict[str, Any]) -> str:
     return "UNKNOWN"
 
 
+def _pc_annotate(reply: Any, token: str, key: str = "pc_hold") -> str:
+    """``reply`` with ``; pc_hold=<TOKEN>`` added OUTSIDE the engine's own
+    ``engine_reply=...`` capture (the brain-side parse reads everything after
+    ``engine_reply=`` to the end of the line as the engine's words): the token
+    goes in front of the first ``; engine_reply=`` (right after the gateway's
+    ``lane_state=`` annotation).  A reply with no such annotation gets it
+    appended, in FRONT of an honesty boundary the text already ends with, so
+    the boundary stays the last thing in the text and is never stated twice."""
+    text = str(reply)
+    marker = "; engine_reply="
+    at = text.find(marker)
+    if at >= 0:
+        return "%s; %s=%s%s" % (text[:at], key, token, text[at:])
+    tail = " — " + HONESTY_SUFFIX
+    if text.endswith(tail):
+        return "%s; %s=%s%s" % (text[:-len(tail)], key, token, tail)
+    return "%s; %s=%s" % (text, key, token)
