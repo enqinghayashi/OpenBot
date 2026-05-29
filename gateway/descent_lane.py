@@ -2448,3 +2448,159 @@ def pick_sequence(ctx: DescentContext, log: DescentPhaseLog, *, verb: str,
             _honest_verdict(verdict))
 
 
+def place_sequence(ctx: DescentContext, log: DescentPhaseLog, *,
+                   z: float, args: List[Any], law: LaneLaw,
+                   writer_verb: Callable[[str], str],
+                   status_verb: Callable[[], str],
+                   do_place: Callable[[List[Any]], Tuple[str, Optional[str]]],
+                   wall: Optional[Callable[[], float]] = None,
+                   sleep: Optional[Callable[[float], None]] = None,
+                   monotonic: Optional[Callable[[], float]] = None,
+                   pre_descent_step: bool = False
+                   ) -> Tuple[str, Optional[str]]:
+    """descend-or-reuse -> place -> verify -> retreat.  ``(reply, verdict)``.
+
+    THE OPERATOR'S HOLD RULE IS THE FIRST THING THAT RUNS.  A low place that
+    needs the height the body is already holding is the case D2 exists for: it
+    runs at the CURRENT height and the single rise is this skill's own retreat.
+    A place needing a different height — or arriving after the hold window —
+    rises first and then descends, which is the operator's "otherwise retreat".
+    A context parked in ``RETREATING`` refuses: the body height is unknown.
+
+    A place ALWAYS ends standing: the rise is unconditional here, because the
+    low-to-low pair is over once the payload is down.
+
+    As in :func:`pick_sequence`, the writer is re-polled IMMEDIATELY before the
+    dispatch and a writer that is no longer ACTIVE at that height refuses it —
+    the arm is never commanded against a body nobody is holding — and the
+    fail-closed lifetime guard then refuses the dispatch unless the writer's own
+    reported remaining hold covers the operation
+    (``LaneLaw.operation_budget_s``), naming ``height_hold_s`` in the refusal
+    when it does not.  A :func:`_post_dispatch_body_check` then follows the
+    dispatch, on the release-succeeded and the release-FAILED path alike; an
+    anomaly it raises downgrades the verdict and never enters a hold.
+    """
+    stamp = wall or time.time
+    clock = monotonic or time.monotonic
+    sleeper = sleep or time.sleep
+    args = list(args or ())
+    if len(args) < 3:
+        return _refuse(log, honest("place needs x y z (got %d tokens)"
+                                   % len(args)), stamp)
+    action, reason = _precompute(z, ctx, law, "place", clock())
+    if action == "REFUSE":
+        return _refuse(log, honest(reason), stamp)
+    if descent_negligible(z, law):
+        # A needed descent inside the confirmable band is no descent: run at
+        # standing through the normal path.
+        return _standing_dispatch(
+            ctx, log, verb="place", z=z, action=action,
+            dispatch=lambda: do_place(args),
+            writer_verb=writer_verb, status_verb=status_verb, stamp=stamp,
+            clock=clock, sleep=sleeper)
+    stepped_here = False      # set only if this run's step landed
+    if action == NEXT_REDESCEND:
+        ok, _ref, detail = _retreat_step(ctx, log, writer_verb=writer_verb,
+                                         status_verb=status_verb, stamp=stamp,
+                                         clock=clock, sleep=sleeper)
+        if not ok:
+            return _refuse(log, detail, stamp)
+    if action == NEXT_HOLD:
+        # A continued hold is a continued window, and the row carries it: a place
+        # always ends standing, so a reply would be false by the time it is read.
+        log.add("hold", "ok", honest("reusing the held height %.3f (%s); %s"
+                                     % (ctx.height_cmd, reason,
+                                        lockout_notice(
+                                            _continued_lockout_s(ctx, clock()))),
+                                     ), stamp())
+        ref = ctx.height_cmd
+    else:
+        # Optional pre-descent stance step, off by default. Only on a fresh
+        # descent: a reused hold keeps the stance it has. A refused step refuses
+        # the whole descent.
+        if pre_descent_step:
+            ok_s, d_s = _pre_step(ctx, log, writer_verb=writer_verb,
+                                  stamp=stamp, clock=clock, sleep=sleeper)
+            if not ok_s:
+                return _refuse(log, d_s, stamp)
+            stepped_here = True
+        ok, ref, detail = _descend_step(ctx, log, law, z,
+                                        writer_verb=writer_verb,
+                                        status_verb=status_verb, stamp=stamp,
+                                        clock=clock, sleep=sleeper)
+        if not ok:
+            return _refuse_after_step(ctx, log, detail, stamp,
+                                      writer_verb=writer_verb,
+                                      stepped_here=stepped_here)
+    # The last line before the engine: one fresh synchronous poll gates the
+    # dispatch, and nothing latched does. The rise below is unconditional, so the
+    # window is read for the refusal and the lifetime guard alone.
+    w_ok, w_rem, w_detail = probe_active(status_verb, ref,
+                                         lock=ctx.writer_lock)
+    if not w_ok:
+        return _refuse_after_step(ctx, log, honest("refusing to dispatch "
+                                                   "place: %s" % w_detail),
+                                  stamp, writer_verb=writer_verb,
+                                  stepped_here=stepped_here)
+    guard = _lifetime_refusal(w_rem, _lane_budget(law), "place",
+                              slew_margin_s(law))
+    if guard is not None:
+        return _refuse_after_step(ctx, log, guard, stamp,
+                                  writer_verb=writer_verb,
+                                  stepped_here=stepped_here)
+    stand = ctx.stand_m(law.height_stand_m)
+    z_engine = descent_law.engine_z(z, stand, ref)
+    place_args = [args[0], args[1], z_engine] + args[3:]
+    # Operator cancel at the last gate, as for a pick.
+    if ctx.cancelled_this_run():
+        log.add("cancel", "refuse",
+                honest("operator cancel received before the engine was "
+                       "dispatched - the place was NOT sent; rising"), stamp())
+        _ok_c, _r_c, c_detail = _retreat_step(
+            ctx, log, writer_verb=writer_verb, status_verb=status_verb,
+            stamp=stamp, clock=clock, sleep=sleeper)
+        return _refuse(log, honest("cancelled_by_operator: %s" % c_detail),
+                       stamp)
+    # Measured engine time, from the same injected clock.
+    t_engine = clock()
+    try:
+        reply, verdict = do_place(place_args)
+    except Exception as exc:  # noqa: BLE001 - never leave the lane tableless
+        reply, verdict = (honest("ERROR:low-workspace place dispatch raised "
+                                 "%s: %s" % (type(exc).__name__, exc))), None
+    engine_elapsed_s = clock() - t_engine
+    e_status, _e_detail = _place_target.classify_dispatch(reply, verdict)
+    log.add("place", e_status, honest("place z=%.3f z_engine=%.3f"
+                                      % (z, z_engine)), stamp())
+    v_status, v_detail = _place_target.verdict_row(verdict)
+    log.add("verify", v_status, v_detail, stamp())
+    ctx.effective_z = z_engine
+    # ── the post-dispatch body check ────────────────────────────
+    # Taken before the unconditional rise below: a rise cannot be mistaken for a
+    # body held throughout. An anomaly downgrades the verdict.
+    _body_ok, _body_rem, body_rows, body_note = _post_dispatch_body_check(
+        status_verb, ref, elapsed_s=engine_elapsed_s,
+        budget_s=_lane_budget(law), lock=ctx.writer_lock)
+    for _phase, _a_detail in body_rows:
+        log.add(_phase, "refuse", _a_detail, stamp())
+        _loud(_a_detail)
+    anomaly = ("%s; " % body_note) if body_note else ""
+    verdict = (verdict if not body_rows
+               else _downgrade_verdict(body_note, verdict))
+    ok, ref_r, detail = _retreat_step(ctx, log, writer_verb=writer_verb,
+                                      status_verb=status_verb, stamp=stamp,
+                                      clock=clock, sleep=sleeper)
+    if not ok:
+        return _refuse(log, honest("%s%s" % (anomaly, detail)), stamp)
+    stood = ref_r if ref_r is not None else law.height_stand_m
+    if body_rows:
+        return (honest("ERROR:low-workspace place; z=%.3f z_engine=%.3f height="
+                       "%.3f->%.3f; %s%s %.3f; %s"
+                       % (z, z_engine, stand, ref, anomaly,
+                          _rise_phrase(ctx, "rose to"), stood, reply)),
+                _honest_verdict(verdict))
+    return (honest("DONE:low-workspace place; z=%.3f z_engine=%.3f height=%.3f"
+                   "->%.3f; %s %.3f; %s"
+                   % (z, z_engine, stand, ref, _rise_phrase(ctx, "rose to"),
+                      stood, reply)),
+            _honest_verdict(verdict))
