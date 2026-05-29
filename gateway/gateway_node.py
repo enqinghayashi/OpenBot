@@ -373,3 +373,21 @@ def _turn_bearing(x: float, y: float) -> float:
     return _turn_wrap_pi(math.atan2(x, y))
 
 
+def _turn_omega(yaw_err: float) -> float:
+    """Yaw rate (rad/s) that turns the body toward the bearing.
+
+    walk_node.py:1424 law, ``OMEGA_SIGN * K_THETA * max(-OMEGA_MAX,
+    min(OMEGA_MAX, yaw_err))``, with two additions made here: the final
+    magnitude is clamped to TURN_OMEGA_MAX (walk_node's clamp is on the
+    ERROR, so its output can reach 0.60; the TURN spec caps the rate at 0.40),
+    and a non-zero command is raised to TURN_OMEGA_MIN (gait floor).  Inside
+    the TURN_TOL_RAD dead-band the answer is exactly 0.0.
+    """
+    if abs(yaw_err) <= TURN_TOL_RAD:
+        return 0.0
+    omega = TURN_OMEGA_SIGN * TURN_K_THETA * max(
+        -TURN_OMEGA_MAX, min(TURN_OMEGA_MAX, yaw_err))
+    mag = min(abs(omega), TURN_OMEGA_MAX)
+    if mag < TURN_OMEGA_MIN:
+        mag = TURN_OMEGA_MIN
+    return math.copysign(mag, omega)
