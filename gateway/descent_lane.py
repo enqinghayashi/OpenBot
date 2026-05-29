@@ -2604,3 +2604,5 @@ def place_sequence(ctx: DescentContext, log: DescentPhaseLog, *,
                    % (z, z_engine, stand, ref, _rise_phrase(ctx, "rose to"),
                       stood, reply)),
             _honest_verdict(verdict))
+
+
