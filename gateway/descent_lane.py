@@ -2042,3 +2042,5 @@ def _pc_downgrade(result: Dict[str, Any], decisive: bool) -> Optional[str]:
         return ("point-cloud hold check: %s (the target did not leave its "
                 "footprint / was knocked)" % verdict)
     return None
+
+
