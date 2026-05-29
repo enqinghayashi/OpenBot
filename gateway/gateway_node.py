@@ -143,3 +143,17 @@ ENGINE_SOCK_DEFAULT = "/tmp/pick_engine.sock"
 BODY_ROWS_FILE = "/tmp/openbot_body_rows.json"
 
 
+def write_body_rows(rows, path=BODY_ROWS_FILE, now=None, environ=None):
+    """Write {"t": now, "rows": rows} atomically; never raises.  True = written."""
+    env = os.environ if environ is None else environ
+    if str(env.get("OPENBOT_BODY_ROWS", "1")).strip() == "0":
+        return False
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump({"t": time.time() if now is None else float(now), "rows": rows},
+                      fh, separators=(",", ":"))
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        return False
