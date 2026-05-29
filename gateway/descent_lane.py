@@ -2658,3 +2658,45 @@ GRASP_FAILED = "failed"
 GRASP_UNCONFIRMED = "unconfirmed"
 
 
+def _grasp_state(engine_verdict: Optional[str]) -> str:
+    """The GRASP's state from the folded ``_do_pick`` verdict — THREE ways.
+
+    MEASURED 2026-10-01 (run13, the lane's first hardware run).  A pick whose
+    engine reply was ``DONE pick executed; lane_state=up`` — with
+    ``blocked=True``, ``margin pre=1.012 post=1.012`` and ``pre-lift pin ok``,
+    i.e. a pick that really DID work — reached the operator as
+    ``VERDICT:failure``.  The chain starts here.
+
+    ``in_progress`` is the verifier saying it could NOT MEASURE the grasp
+    (``verify_pick``'s dead-detections branch: the channel was silent, so the
+    object-gone half of the post-condition was never sampled).  Folding that
+    into the same ``False`` as ``failure`` made the reply lead with ``ERROR:``
+    — and that WORD, not the verdict, is what ``GatewayNode._shape_reply``
+    turns into ``ok:false`` and what ``brain/verifier.py _classify_reply``
+    reads as definitive (``if "ERROR:" in text``).  So an UNMEASURABLE pick
+    was reported to the operator as a FAILED one, and the honest
+    ``verdict=VERDICT:in_progress`` the gateway also sent was discarded
+    unread by ``gateway/brain_client.py``.
+
+    Three states, and only a real failure is an error:
+
+      * ``VERDICT:success``  -> ``GRASP_CONFIRMED``
+      * ``VERDICT:failure``  -> ``GRASP_FAILED`` — the engine itself said the
+        grasp failed, so ``ERROR:`` is the honest word and stays exactly as
+        it was.
+      * anything else        -> ``GRASP_UNCONFIRMED`` — ``None``, an
+        ``in_progress`` verdict, or an unparseable prefix.  The verifier did
+        not measure, so the lane claims NEITHER a failure NOR a success.
+
+    Fail-closed is unchanged: ``GRASP_UNCONFIRMED`` is still not a success —
+    no hold is entered, the verdict is never ``VERDICT:success``, and the
+    reply says UNCONFIRMED in as many words.
+    """
+    if not engine_verdict:
+        return GRASP_UNCONFIRMED
+    text = str(engine_verdict)
+    if text.startswith("VERDICT:success"):
+        return GRASP_CONFIRMED
+    if text.startswith("VERDICT:failure"):
+        return GRASP_FAILED
+    return GRASP_UNCONFIRMED
