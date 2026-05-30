@@ -665,3 +665,17 @@ def resolve_skill_endpoints(cfg: Any) -> Tuple[str, str, str, int]:
     return writer_sock, grip_sock, engine_cmd, tools_port
 
 
+def resolve_engine_sock(cfg: Any) -> str:
+    """The pick/place engine's listener path from a loaded config (2026-09-13).
+
+    Reads ``skills.engine_sock`` (config.yaml ``skills:`` segment), defaulting
+    to :data:`ENGINE_SOCK_DEFAULT`.  Kept OUT of :func:`resolve_skill_endpoints`
+    so that resolver's 4-tuple contract is unchanged.
+
+    This value must MATCH the engine's own ``SOCK_PATH``
+    (skills/arm/tabletop_pick_place_engine.py) or connect-first silently
+    degrades to spawn-always — i.e. back to the arm-drop defect.  Stdlib only.
+    """
+    skills = getattr(cfg, "skills", None)
+    path = getattr(skills, "engine_sock", "") if skills is not None else ""
+    return path or ENGINE_SOCK_DEFAULT
