@@ -698,3 +698,21 @@ def resolve_tools_bind_host(cfg: Any) -> str:
     return (host or "0.0.0.0")
 
 
+def _descent_config_float(envelope: Any, attr: str, default: float) -> float:
+    """One low-workspace law input off a (possibly stub) envelope, in metres.
+
+    ``getattr``-defaulted for the same reason every read in
+    :func:`resolve_embodiment_config` is: a stub config without an
+    ``embodiment`` attribute (or an envelope that predates the lane) must still
+    construct the node.  A malformed value falls back to the default rather than
+    raising — the lane's own ``usable``/``effective_pick_floor`` guards fail
+    closed on a bad band, so nothing here has to refuse.
+    """
+    try:
+        value = getattr(envelope, attr, default)
+    except Exception:  # noqa: BLE001 - an unreadable attr is a missing value
+        return float(default)
+    try:
+        return float(default if value is None else value)
+    except (TypeError, ValueError):
+        return float(default)
