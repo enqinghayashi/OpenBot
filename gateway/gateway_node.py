@@ -550,3 +550,67 @@ def _is_engine_reply(text: str) -> bool:
     by a resident engine whose stream is already poisoned.
     """
     return (text or "").strip().startswith(_ENGINE_REPLY_PREFIXES)
+
+
+# ── camera lane (optional 'image' verb, only when vision.enabled) ───────────
+#: mirrors the vision config. the lane is off unless the config turns
+#: it on; the getattr defaults keep mock configs with no ``vision``
+#: attribute valid.
+VISION_TOPIC_DEFAULT = "/camera/color/image_raw"
+VISION_MAX_AGE_S_DEFAULT = 2.0
+VISION_JPEG_QUALITY_DEFAULT = 80
+#: minimum gap (s) between JPEG encodes on the worker; 30 fps would
+#: otherwise cost 30 encodes/s. the worker encodes the newest raw frame
+#: at most once per interval: a throttled cache, frames skipped, never
+#: queued.
+VISION_MIN_INTERVAL_S_DEFAULT = 1.0
+#: max age (s) of an unconfirmed navigate epoch before a
+#: re-invocation forces a fresh dispatch. a 90 s in-flight epoch is
+#: almost certainly wedged, since the FSM's own timeout sits well below
+#: this.
+NAV_EPOCH_MAX_AGE_S = 90.0
+#: a /walk_status REACHED newer than this (s) means the FSM stands at
+#: that label, so navigate answers already_reached.
+NAV_ALREADY_REACHED_FRESH_S = 3.0
+#: total budget (s) for _await_walk_reached, the navigate completion
+#: wait. a touch under the coordinator's WALK_REACHED_TIMEOUT_S, so a
+#: wedged walk yields the gateway's own honest token rather than the
+#: coordinator's walk timeout read as a navigate failure. a wait bound,
+#: not a gate: past it nothing is refused, it reports timeout_after_walk.
+#: ladder: NAV_WAIT_S 115 < GATEWAY_CALL_TIMEOUT_S 150 < Tool 180.
+NAV_WAIT_S = 115.0
+#: how long (s) _await_walk_reached waits for any in-epoch
+#: /walk_status before deciding the lane is not answering this
+#: dispatch. the coordinator relays the target, so the first frame
+#: lands well under a second and the topic then publishes at 1 Hz;
+#: 5.0 s is five periods.
+NAV_START_S = 5.0
+#: poll period (s) for the navigate wait. /walk_status is 1 Hz and
+#: REACHED is held for 5 s, so 0.1 s cannot miss the window and stays an
+#: order of magnitude inside it.
+NAV_POLL_S = 0.1
+#: budget (s) the query_user verb gets for one human answer line on
+#: stdin (select polling, 0.2 s grace per iteration). timeout or EOF
+#: gives the exact reply 'ERROR:no_user_reply:timeout'.
+QUERY_USER_REPLY_TIMEOUT_S = 20.0
+#: boot profile for the gateway process alone, when neither --profile
+#: nor OPENBOT_PROFILE is given: 'offline', one of the four the loader
+#: allows (laptop|cloud|voice|offline; any other raises). the node
+#: cold-starts on the offline config, whose gateway section matches the
+#: voice config's real transport on 127.0.0.1:3900.
+DEFAULT_BOOT_PROFILE = "offline"
+
+# skills.engine_cmd is dual-form on its first token: a verb token
+# (the loader default 'pick x y z nx ny nz orientation height_m') means
+# the engine is off. anything else is a live cold-start spawn, since
+# connect-first normally attaches to the resident engine; the shipped
+# config uses the env-fix spawn whose first token is 'env'. a verb form
+# yields '' and an honest error.
+_ENGINE_VERB_TOKENS = frozenset({
+    "pick", "pick_left", "place", "open", "close", "open_left",
+    "close_left",
+    "open_both", "close_both", "ready", "carry", "carry_left", "neutral",
+    "home", "drop", "release", "acquire", "hold", "list", "quit",
+})
+
+
