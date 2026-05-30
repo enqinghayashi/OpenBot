@@ -491,3 +491,14 @@ def _cancel_phase(reply: str) -> str:
     return m.group(0)[:40]
 
 
+def _cancelled_verdict(tool: str, where: str) -> str:
+    """The VERDICT for a cancelled ``tool`` — the verifier's own grammar.
+
+    Byte-equal to ``brain.verifier.Verdict.failure(evidence,
+    'cancelled_by_operator').to_string()`` (pinned in
+    tests/lane_cancel_and_verdict_pins.py).  ``status`` failure: a cancel is
+    NEVER a completed pick or place, and the gateway does not add a 4th status.
+    """
+    return ("VERDICT:failure|Evidence:%s cancelled by the operator at phase %s "
+            "- the arm was frozen mid-motion; this is NOT a completed %s"
+            "|Reason:%s" % (tool, where, tool, CANCEL_REASON))
