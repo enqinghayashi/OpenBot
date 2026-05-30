@@ -630,3 +630,5 @@ def _engine_spawn_cmd(engine_cmd: str) -> str:
     if cmd.split()[0].lower() in _ENGINE_VERB_TOKENS:
         return ""
     return cmd
+
+
