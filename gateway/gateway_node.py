@@ -508,3 +508,12 @@ def _pre_descent_step_flag(envelope: Any) -> bool:
     """``embodiment.envelope.pre_descent_step`` — armed ONLY by a real ``True``
     (the loader's strict-bool discipline; a stub or an omitted key is False)."""
     return getattr(envelope, "pre_descent_step", False) is True
+
+
+#: every shape the engine's command loop puts on the wire, from its
+#: own stdout writes: READY at boot, DONE / DONE:<names> /
+#: DONE; release_open=... for pick and place, ERROR:... (including the
+#: ERROR:transport: label) and CANCELLED:<where>.
+_ENGINE_REPLY_PREFIXES = ("DONE", "ERROR:", "CANCELLED:", "READY")
+
+
