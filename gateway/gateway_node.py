@@ -614,3 +614,19 @@ _ENGINE_VERB_TOKENS = frozenset({
 })
 
 
+def _engine_spawn_cmd(engine_cmd: str) -> str:
+    """The engine spawn command from the config value, or "".
+
+    First-token discriminator: a verb-token value (the loader-default verb
+    form — engine-off documentation) yields ""; config.yaml ships the REAL
+    #106 env-fix spawn (first token 'env', exec python3
+    .../tabletop_pick_place_engine.py) which passes through and is used as
+    the FALLBACK when no resident engine is listening; no profile overrides
+    the key.
+    """
+    cmd = (engine_cmd or "").strip()
+    if not cmd:
+        return ""
+    if cmd.split()[0].lower() in _ENGINE_VERB_TOKENS:
+        return ""
+    return cmd
