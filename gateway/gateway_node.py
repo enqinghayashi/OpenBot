@@ -681,3 +681,18 @@ def resolve_engine_sock(cfg: Any) -> str:
     return path or ENGINE_SOCK_DEFAULT
 
 
+def resolve_tools_bind_host(cfg: Any) -> str:
+    """The tools-server TCP BIND host from a loaded config (2026-09-02).
+
+    NEW server-side knob: ``gateway.bind_host`` (default ``0.0.0.0`` — the
+    historical hardcoded value).  NOTE this is NOT ``gateway.host``: that
+    key is client-DIAL-only (brain_client from_config); the TCP listener
+    hardcoded 0.0.0.0 and ignored it.  A loopback bind closes the
+    unauthenticated motion socket to the LAN (any peer on the robot's
+    network can currently drive motion verbs) — but it also breaks any
+    LAN dial, e.g. the laptop-brain profile config.cloud.yaml:146 — flip
+    that profile to an SSH tunnel in the same change.  Stdlib only.
+    """
+    gateway = getattr(cfg, "gateway", None)
+    host = getattr(gateway, "bind_host", "") if gateway is not None else ""
+    return (host or "0.0.0.0")
