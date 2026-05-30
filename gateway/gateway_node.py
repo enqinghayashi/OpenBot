@@ -663,3 +663,5 @@ def resolve_skill_endpoints(cfg: Any) -> Tuple[str, str, str, int]:
     except (TypeError, ValueError):
         tools_port = 0
     return writer_sock, grip_sock, engine_cmd, tools_port
+
+
