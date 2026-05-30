@@ -502,3 +502,5 @@ def _cancelled_verdict(tool: str, where: str) -> str:
     return ("VERDICT:failure|Evidence:%s cancelled by the operator at phase %s "
             "- the arm was frozen mid-motion; this is NOT a completed %s"
             "|Reason:%s" % (tool, where, tool, CANCEL_REASON))
+
+
