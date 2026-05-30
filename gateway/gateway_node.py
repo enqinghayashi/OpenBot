@@ -504,3 +504,7 @@ def _cancelled_verdict(tool: str, where: str) -> str:
             "|Reason:%s" % (tool, where, tool, CANCEL_REASON))
 
 
+def _pre_descent_step_flag(envelope: Any) -> bool:
+    """``embodiment.envelope.pre_descent_step`` — armed ONLY by a real ``True``
+    (the loader's strict-bool discipline; a stub or an omitted key is False)."""
+    return getattr(envelope, "pre_descent_step", False) is True
