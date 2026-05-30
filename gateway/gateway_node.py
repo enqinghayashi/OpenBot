@@ -716,3 +716,5 @@ def _descent_config_float(envelope: Any, attr: str, default: float) -> float:
         return float(default if value is None else value)
     except (TypeError, ValueError):
         return float(default)
+
+
