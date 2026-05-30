@@ -679,3 +679,5 @@ def resolve_engine_sock(cfg: Any) -> str:
     skills = getattr(cfg, "skills", None)
     path = getattr(skills, "engine_sock", "") if skills is not None else ""
     return path or ENGINE_SOCK_DEFAULT
+
+
