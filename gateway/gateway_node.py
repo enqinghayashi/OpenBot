@@ -632,3 +632,34 @@ def _engine_spawn_cmd(engine_cmd: str) -> str:
     return cmd
 
 
+def resolve_skill_endpoints(cfg: Any) -> Tuple[str, str, str, int]:
+    """Read the skill endpoints + tools TCP port from a loaded config.
+
+    Consumes ``skills.writer_sock`` / ``skills.grip_sock`` /
+    ``skills.engine_cmd`` (config.yaml ``skills:`` segment) and
+    ``gateway.port`` (``gateway:`` segment).  Stdlib only — importable
+    without rclpy, so laptop tests construct the wiring with a stub
+    transport.  engine_cmd is DUAL-FORM: the loader-default verb form
+    resolves to engine off; the REAL #106 spawn (config.yaml) passes through.
+    Returns ``(writer_sock, grip_sock, engine_cmd, tools_port)``.
+    """
+    skills = getattr(cfg, "skills", None)
+    writer_sock = (
+        getattr(skills, "writer_sock", WRITER_SOCK_DEFAULT)
+        if skills is not None
+        else WRITER_SOCK_DEFAULT
+    )
+    grip_sock = (
+        getattr(skills, "grip_sock", GRIP_SOCK_DEFAULT)
+        if skills is not None
+        else GRIP_SOCK_DEFAULT
+    )
+    engine_cmd = _engine_spawn_cmd(
+        getattr(skills, "engine_cmd", "") if skills is not None else ""
+    )
+    gateway = getattr(cfg, "gateway", None)
+    try:
+        tools_port = int(getattr(gateway, "port", 0) or 0)
+    except (TypeError, ValueError):
+        tools_port = 0
+    return writer_sock, grip_sock, engine_cmd, tools_port
