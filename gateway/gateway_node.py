@@ -696,3 +696,5 @@ def resolve_tools_bind_host(cfg: Any) -> str:
     gateway = getattr(cfg, "gateway", None)
     host = getattr(gateway, "bind_host", "") if gateway is not None else ""
     return (host or "0.0.0.0")
+
+
