@@ -1071,3 +1071,7 @@ class _LineReader:
     bytes between the READY handshake and the first command reply.
     """
 
+    def __init__(self, stream):
+        self._stream = stream
+        self._buf = b""
+
