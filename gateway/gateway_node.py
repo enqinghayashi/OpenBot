@@ -1075,3 +1075,19 @@ class _LineReader:
         self._stream = stream
         self._buf = b""
 
+    def readline(self, timeout_s: float) -> Optional[str]:
+        deadline = time.time() + timeout_s
+        while b"\n" not in self._buf:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return None
+            ready, _, _ = select.select([self._stream], [], [], remaining)
+            if not ready:
+                return None  # read deadline passed
+            chunk = os.read(self._stream.fileno(), 4096)
+            if not chunk:
+                return None  # EOF: the engine process exited
+            self._buf += chunk
+        line, self._buf = self._buf.split(b"\n", 1)
+        return line.decode("utf-8", "replace")
+
