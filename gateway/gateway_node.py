@@ -871,3 +871,24 @@ def resolve_embodiment_config(cfg: Any, with_descent: bool = False
     return pick_min_z_m, silence_means_empty, frame, min_arm_dur_s, descent
 
 
+def resolve_pc_switches(cfg: Any) -> Tuple[bool, bool, bool]:
+    """``(pc_shadow, pc_hold_check, pc_place_rim)`` off a (possibly stub) config.
+
+    The batch-3b point-cloud switches of ``embodiment.envelope``.  Each is True
+    ONLY for a real bool ``True`` — the loader's strict-bool discipline
+    (brain/config_loader.py ``_as_bool``), applied the way
+    ``_pre_descent_step_flag`` applies it — so a stub config, an omitted key, a
+    string "true" or a numeric 1 is False.  A function of its own, NOT a
+    further element of ``resolve_embodiment_config``'s descent tuple: that
+    tuple's arity is pinned and unpacked by shipped callers, and a caller that
+    never asks for the switches keeps today's behaviour byte for byte.
+    """
+    emb = getattr(cfg, "embodiment", None)
+    envelope = getattr(emb, "envelope", None) if emb is not None else None
+    flags = []
+    for name in ("pc_shadow", "pc_hold_check", "pc_place_rim"):
+        try:
+            flags.append(getattr(envelope, name, False) is True)
+        except Exception:  # noqa: BLE001 - an unreadable attr is a False switch
+            flags.append(False)
+    return flags[0], flags[1], flags[2]
