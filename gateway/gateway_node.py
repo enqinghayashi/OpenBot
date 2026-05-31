@@ -1003,3 +1003,49 @@ def gateway_from_config(cfg: Any, *, ros: bool = False) -> "GatewayNode":
     )
 
 
+def _send_unix_verb(sock_path: str, line: str, timeout_s: float = 15.0,
+                    skip_ready_banner: bool = False) -> str:
+    """One line in -> one reply line over a unix stream socket (stdlib).
+
+    The skill daemons (merged writer, grip server) speak a strict
+    line-protocol: send a verb line, read exactly one reply line. A fresh
+    connection per request is safe (both servers are multi-client).
+    Raises OSError / ConnectionError on any failure — never guesses a reply.
+
+    ``skip_ready_banner`` is REQUIRED by the pick/place engine and must
+    stay opt-in.  The engine sends ``READY_BANNER`` (b"READY\\n") on EVERY
+    connection BEFORE it answers anything
+    (skills/arm/tabletop_pick_place_engine.py:76,287 — "Serve ONE client:
+    READY banner, then one line in -> one line out"), so a plain one-line
+    read returns the BANNER, not the verdict.
+
+    MEASURED 2026-10-01, found by code reading and confirmed by the
+    engine's own test client, which also consumes the banner first.  The
+    cancel itself still WORKED — the verb line is sent either way and the
+    engine sets the flag — but ``cancel_engine`` read back "READY", so
+    ``_do_cancel`` reported ``engine=unavailable`` for a cancel that had
+    in fact been accepted.  A false negative on the one verb whose result
+    the operator most needs to trust.
+
+    THIS IS THE IPOPT BANNER AGAIN, one layer down: a daemon that writes a
+    greeting onto a stream another process reads one-line-at-a-time
+    desynchronises that reader.  Every future caller of a bannered socket
+    needs this flag; a caller of a bannerless one must NOT pass it, or it
+    would block for a second line that never comes.
+    """
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(timeout_s)
+        sock.connect(sock_path)
+        sock.sendall((line + "\n").encode("utf-8"))
+        fh = sock.makefile("r", encoding="utf-8")
+        reply = fh.readline()
+        if skip_ready_banner and reply.rstrip("\n") == "READY":
+            reply = fh.readline()
+    finally:
+        sock.close()
+    if not reply:
+        raise ConnectionError(
+            "empty reply from %s for %r (daemon closed the connection)"
+            % (sock_path, line))
+    return reply.rstrip("\n")
