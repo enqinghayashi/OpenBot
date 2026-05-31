@@ -1120,3 +1120,5 @@ class _LineReader:
             drained.append(line.decode("utf-8", "replace"))
         remaining = self._buf.count(b"\n")
         return drained, remaining
+
+
