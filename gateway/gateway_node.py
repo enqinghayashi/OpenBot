@@ -1091,3 +1091,32 @@ class _LineReader:
         line, self._buf = self._buf.split(b"\n", 1)
         return line.decode("utf-8", "replace")
 
+    def drain_complete_lines(self, limit: int):
+        """Remove and return up to ``limit`` COMPLETE lines from the buffer.
+
+        NEVER reads the stream and NEVER blocks: this is a pure look at bytes
+        a previous ``readline`` already pulled in.  Returns
+        ``(drained, remaining)`` where ``remaining`` counts the complete lines
+        still buffered AFTER the drain, so a runaway stream is surfaced
+        instead of silently swallowed.
+
+        WHY THIS EXISTS (run18, 2026-10-03).  ``readline`` returns ONE line
+        and keeps the rest — correct for a well-behaved engine,
+        catastrophic when the engine writes TWO lines for ONE command
+        (``pick_engine_v3.py`` ``ERROR:hand not verified open`` then
+        ``ERROR:grasp_failed``).  The leftover was returned as the NEXT
+        command's reply: ``run18/gateway.log:389`` shows
+        ``engine ['home'] -> reply=ERROR:grasp_failed`` while
+        ``run18/pick.log:448-450`` proves home really moved
+        (``max_delta=0.940 rad``).  Engine and gateway ran one command out of
+        phase, permanently.  Same defect class as the run10 Ipopt banner
+        (``_is_engine_reply``, :440-471): the engine's stdout is a REPLY
+        stream, and a line in it that is not the answer to the command in
+        flight must never be read as one.
+        """
+        drained = []
+        while len(drained) < limit and b"\n" in self._buf:
+            line, self._buf = self._buf.split(b"\n", 1)
+            drained.append(line.decode("utf-8", "replace"))
+        remaining = self._buf.count(b"\n")
+        return drained, remaining
