@@ -718,3 +718,25 @@ def _descent_config_float(envelope: Any, attr: str, default: float) -> float:
         return float(default)
 
 
+def _optional_float(value: Any) -> Optional[float]:
+    """One law input that may be legitimately ABSENT, as a float or ``None``.
+
+    The operation budget is the only lane input with no gateway-side default:
+    the number lives in exactly one place, ``descent_lane.LANE_OPERATION_BUDGET_S``
+    (REUSE LAW — a restated 30.0 here would be a second authority for it), and
+    ``None`` is the signal that says "keep the lane's own default".  So a
+    malformed value degrades to ``None``/lane-default rather than raising, and a
+    ``bool`` — an ``int`` in Python — is not a budget either: mirroring the
+    lane's own ``_finite_num``, a ``True`` that reached a writer-hold comparison
+    would be a wiring bug, and here it would arm the guard on a number nobody
+    wrote.  The lane itself is the FINAL authority: a non-finite or
+    non-positive value handed over is rejected by ``LaneLaw.__init__`` and
+    replaced by its default, so nothing this side does can shrink the guard to
+    nothing.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
