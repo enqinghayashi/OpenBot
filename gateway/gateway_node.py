@@ -742,3 +742,19 @@ def _optional_float(value: Any) -> Optional[float]:
         return None
 
 
+def _descent_operation_budget(envelope: Any) -> Optional[float]:
+    """The DECLARED lane operation budget off a (possibly stub) envelope.
+
+    Reads ``embodiment.envelope.lane_operation_budget_s`` and returns
+    ``None`` when the key is absent or unusable — which is every stub config and
+    every config whose loader does not yet carry the key, because the loader
+    half and this half land independently: an attribute access here would take
+    the whole node (every pick and place, not just the lane) down on a tree
+    where only the gateway half has landed.  ``None`` means the lane keeps
+    ``descent_lane.LANE_OPERATION_BUDGET_S``.
+    """
+    try:
+        value = getattr(envelope, "lane_operation_budget_s", None)
+    except Exception:  # noqa: BLE001 - an unreadable attr is a missing value
+        return None
+    return _optional_float(value)
