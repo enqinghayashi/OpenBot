@@ -1001,3 +1001,5 @@ def gateway_from_config(cfg: Any, *, ros: bool = False) -> "GatewayNode":
             getattr(getattr(cfg, "embodiment", None), "envelope", None)),
         **pc_kw
     )
+
+
