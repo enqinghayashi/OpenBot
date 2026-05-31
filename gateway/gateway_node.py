@@ -892,3 +892,5 @@ def resolve_pc_switches(cfg: Any) -> Tuple[bool, bool, bool]:
         except Exception:  # noqa: BLE001 - an unreadable attr is a False switch
             flags.append(False)
     return flags[0], flags[1], flags[2]
+
+
