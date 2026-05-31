@@ -1049,3 +1049,18 @@ def _send_unix_verb(sock_path: str, line: str, timeout_s: float = 15.0,
             "empty reply from %s for %r (daemon closed the connection)"
             % (sock_path, line))
     return reply.rstrip("\n")
+
+
+#: greppable tag on every orphan line the bridge throws away: a
+#: complete stdout line that would otherwise come back as the next
+#: command's answer. a literal on purpose, since a tag built from other
+#: constants cannot be grepped for.
+ENGINE_ORPHAN_TAG = "[engine-orphan]"
+
+#: cap on orphan lines discarded per send. a runaway stdout must not
+#: be silently swallowed: past this bound the drain stops and the full
+#: count sitting in the buffer is reported, so the runaway is visible. the
+#: rest stay buffered for the next send.
+ENGINE_ORPHAN_DRAIN_MAX = 8
+
+
