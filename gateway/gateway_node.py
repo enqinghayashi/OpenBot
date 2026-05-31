@@ -894,3 +894,13 @@ def resolve_pc_switches(cfg: Any) -> Tuple[bool, bool, bool]:
     return flags[0], flags[1], flags[2]
 
 
+def _pc_switch_kwargs(switches: Tuple[bool, bool, bool]) -> Dict[str, bool]:
+    """The ``GatewayNode`` keywords for the point-cloud switches.
+
+    ``{}`` when none is ON, so a gateway built with every switch off is built by
+    EXACTLY the call it always was (no new keyword reaches a stub or a subclass
+    that does not declare them).
+    """
+    if not any(switches):
+        return {}
+    return dict(zip(("pc_shadow", "pc_hold_check", "pc_place_rim"), switches))
