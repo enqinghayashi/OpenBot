@@ -1064,3 +1064,10 @@ ENGINE_ORPHAN_TAG = "[engine-orphan]"
 ENGINE_ORPHAN_DRAIN_MAX = 8
 
 
+class _LineReader:
+    """Non-blocking line reader for a binary stream (select + own buffer).
+
+    Reads the underlying fd directly so no buffered reader can swallow
+    bytes between the READY handshake and the first command reply.
+    """
+
