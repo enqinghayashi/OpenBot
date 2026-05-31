@@ -906,3 +906,43 @@ def _pc_switch_kwargs(switches: Tuple[bool, bool, bool]) -> Dict[str, bool]:
     return dict(zip(("pc_shadow", "pc_hold_check", "pc_place_rim"), switches))
 
 
+def resolve_vision_config(cfg: Any) -> Tuple[bool, str, float, int, float]:
+    """Vision-lane values from a loaded config (camera OFF by default).
+
+    Consumes ``vision.enabled`` / ``vision.topic`` / ``vision.max_age_s`` /
+    ``vision.jpeg_quality`` / ``vision.min_interval_s`` — the v4
+    ``vision:`` segment (the VisionConfig dataclass in
+    brain/config_loader.py).  ``enabled`` defaults to False, mirroring
+    VisionConfig's default (the shipped config now also ships
+    ``vision.enabled: false``): the camera lane is OFF by default unless
+    the config sets ``vision.enabled: true``.  getattr-defaults keep mock
+    configs WITHOUT a ``vision`` attribute valid: the lane stays OFF there
+    too (gateway_smoke's stub configs never subscribe a camera).  Returns
+    ``(enabled, topic, max_age_s, jpeg_quality, min_interval_s)``.  The
+    defaults mirror VisionConfig
+    (False / '/camera/color/image_raw' / 2.0 / 80 / 1.0).
+    """
+    vision = getattr(cfg, "vision", None)
+    enabled = bool(getattr(vision, "enabled", False)
+                   if vision is not None else False)
+    topic = (
+        getattr(vision, "topic", VISION_TOPIC_DEFAULT)
+        if vision is not None else VISION_TOPIC_DEFAULT)
+    try:
+        max_age_s = float(getattr(vision, "max_age_s", VISION_MAX_AGE_S_DEFAULT)
+                          or VISION_MAX_AGE_S_DEFAULT)
+    except (TypeError, ValueError):
+        max_age_s = VISION_MAX_AGE_S_DEFAULT
+    try:
+        jpeg_quality = int(
+            getattr(vision, "jpeg_quality", VISION_JPEG_QUALITY_DEFAULT)
+            or VISION_JPEG_QUALITY_DEFAULT)
+    except (TypeError, ValueError):
+        jpeg_quality = VISION_JPEG_QUALITY_DEFAULT
+    try:
+        min_interval_s = float(
+            getattr(vision, "min_interval_s", VISION_MIN_INTERVAL_S_DEFAULT)
+            or VISION_MIN_INTERVAL_S_DEFAULT)
+    except (TypeError, ValueError):
+        min_interval_s = VISION_MIN_INTERVAL_S_DEFAULT
+    return enabled, topic, max_age_s, jpeg_quality, min_interval_s
