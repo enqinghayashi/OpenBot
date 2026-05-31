@@ -946,3 +946,5 @@ def resolve_vision_config(cfg: Any) -> Tuple[bool, str, float, int, float]:
     except (TypeError, ValueError):
         min_interval_s = VISION_MIN_INTERVAL_S_DEFAULT
     return enabled, topic, max_age_s, jpeg_quality, min_interval_s
+
+
