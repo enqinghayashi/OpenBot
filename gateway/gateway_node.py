@@ -1136,3 +1136,55 @@ class EngineTransportError(ConnectionError):
     """
 
 
+class EngineBridge:
+    """Connect-first, spawn-fallback bridge to the pick/place engine.
+
+    TWO TRANSPORTS, in preference order (2026-09-13):
+
+    1. SOCKET — the engine (skills/arm/tabletop_pick_place_engine.py) listens
+       on ``ENGINE_SOCK_DEFAULT`` and every engine verb goes down that
+       connection. This is the structural fix for the double-engine defect:
+       the pick lane's resident engine is REUSED, so a place continues from
+       whatever pose the pick left behind. A connect never boots an engine,
+       so nothing drives the arms to NEUTRAL behind the operator's back.
+    2. PIPE — only when nothing is listening. The engine is spawned exactly as
+       before (stdin/stdout, READY handshake, pgrep double-spawn guard). This
+       is a genuine cold start: there is no resident state to preserve, so the
+       boot move to NEUTRAL is correct here.
+
+    Either way the engine prints READY then answers exactly one line
+    (DONE / ERROR:<msg>) per command; diagnostics go to stderr. That contract
+    is the ENGINE's to keep, and the engine-side ``_reply_sent`` guard is what
+    keeps it (skills/arm/pick_engine_v3.py): every failure and refusal branch
+    writes its one line under a command-scoped flag, so no path can fall
+    through and write a second.
+
+    The gateway's half is a PARTIAL catcher, NOT an enforcement — do not read
+    it as a guarantee. ``_drain_orphans_unlocked`` discards (and logs as
+    ``[engine-orphan]``) any complete line ALREADY BUFFERED when the next
+    command is written. That closes the case where the stray line had reached
+    this bridge's own buffer before the previous ``readline`` returned. It
+    does NOT close the case where the stray line is still in the KERNEL at
+    that moment: the buffer is empty, nothing is drained, and the next command
+    still receives the stale line as its answer — silently, with no
+    ``[engine-orphan]`` line. Only the engine-side guard covers that window.
+
+    One further residual, on the pipe transport only: after a read timeout the
+    pipe path keeps ``self._reader`` (with its buffer and the kernel intact),
+    so a very late reply can still be paired with the following command —
+    whereas the socket path drops its reader and so cannot. The asymmetry is
+    deliberate today and is the reason the engine-side single-reply invariant
+    is the load-bearing half of the fix.
+
+    The engine is NON-owning: it commands the writer over the writer socket,
+    so it cannot trip the motor-owner rule.
+    """
+
+    READY_TIMEOUT_S = 90.0
+    REPLY_TIMEOUT_S = 60.0
+    PICK_REPLY_TIMEOUT_S = 300.0  # pick = IK plus a multi-point slew, so slow
+    #: a live engine answers a connect straight away; a hanging connect
+    #: means a wedged listener, not a slow boot, since boot delays show
+    #: up on the READY read instead.
+    CONNECT_TIMEOUT_S = 2.0
+
