@@ -1122,3 +1122,15 @@ class _LineReader:
         return drained, remaining
 
 
+class EngineTransportError(ConnectionError):
+    """A POST-SEND engine transport failure — the command may have executed.
+
+    Raised ONLY after the command bytes reached the transport (or the transport
+    died in the act of sending them): the pipe/socket readline death-or-timeout
+    at :762 / :781, and the socket sendall failure at :773.  The engine's
+    execution state is UNKNOWN in all three, which is exactly why the place
+    path must not treat them like an engine-REPORTED error: see the RESTORE
+    GATE in _do_place.  A subclass of ConnectionError so existing callers that
+    catch ConnectionError keep working; engine_verb catches it FIRST and
+    re-labels the reply with ENGINE_TRANSPORT_ERROR_PREFIX.
+    """
