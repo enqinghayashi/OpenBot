@@ -760,3 +760,43 @@ def _descent_operation_budget(envelope: Any) -> Optional[float]:
     return _optional_float(value)
 
 
+def _lane_law(lane_law_cls: Any, tabletop_min_z: float, height_stand_m: float,
+              height_min_m: float, hold_tol_m: float,
+              descend_confirm_timeout_s: float,
+              operation_budget_s: Optional[float] = None) -> Any:
+    """Build the lane's ``LaneLaw``, threading the confirm-timeout knob (A4).
+
+    The lane's own slots for these two knobs are ``LaneLaw.timeout_s`` and
+    ``LaneLaw.operation_budget_s`` — the lane chooses those spellings; the
+    gateway populates them from the resolved envelope's
+    ``descend_confirm_timeout_s`` (repair A4 threads the value, task B owns the
+    slot) and ``lane_operation_budget_s`` (this round).  Each is handed over
+    only when the class DECLARES the parameter: the two halves of each repair
+    live in different files and land independently, and a tree where only the
+    gateway half has landed must still CONSTRUCT — a construction that raised
+    would take every pick/place, not just the lane, down with it.  When a slot
+    is absent the lane keeps its own module default
+    (``DESCENT_CONFIRM_TIMEOUT_S`` / ``LANE_OPERATION_BUDGET_S``), which is the
+    value it used before the knob existed, so nothing is silently different: the
+    knob is either threaded to the lane or left at the lane's own default.
+
+    ``operation_budget_s=None`` is a VALUE, not an omission: it says "the lane
+    keeps its own default", so it is passed through rather than dropped, and
+    ``LaneLaw.__init__`` restores ``LANE_OPERATION_BUDGET_S`` itself.  Dropping
+    it would be a different thing — it would rely on the lane's default merely
+    happening to be right instead of saying which is meant.
+    """
+    try:
+        params = inspect.signature(lane_law_cls).parameters
+    except (TypeError, ValueError):  # pragma: no cover - non-callable stubs
+        params = {}
+    kwargs: Dict[str, Any] = {}
+    if "timeout_s" in params:
+        kwargs["timeout_s"] = float(descend_confirm_timeout_s)
+    if "operation_budget_s" in params:
+        kwargs["operation_budget_s"] = operation_budget_s
+    if not kwargs:
+        return lane_law_cls(tabletop_min_z, height_stand_m, height_min_m,
+                            hold_tol_m)
+    return lane_law_cls(tabletop_min_z, height_stand_m, height_min_m, hold_tol_m,
+                        **kwargs)
