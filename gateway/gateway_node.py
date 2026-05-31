@@ -904,3 +904,5 @@ def _pc_switch_kwargs(switches: Tuple[bool, bool, bool]) -> Dict[str, bool]:
     if not any(switches):
         return {}
     return dict(zip(("pc_shadow", "pc_hold_check", "pc_place_rim"), switches))
+
+
