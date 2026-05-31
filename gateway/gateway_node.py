@@ -758,3 +758,5 @@ def _descent_operation_budget(envelope: Any) -> Optional[float]:
     except Exception:  # noqa: BLE001 - an unreadable attr is a missing value
         return None
     return _optional_float(value)
+
+
