@@ -948,3 +948,56 @@ def resolve_vision_config(cfg: Any) -> Tuple[bool, str, float, int, float]:
     return enabled, topic, max_age_s, jpeg_quality, min_interval_s
 
 
+def gateway_from_config(cfg: Any, *, ros: bool = False) -> "GatewayNode":
+    """Build the gateway from a loaded config — the CLI wiring.
+
+    Consumes ``skills.writer_sock`` / ``skills.grip_sock`` /
+    ``skills.engine_cmd`` and ``gateway.port`` via
+    :func:`resolve_skill_endpoints`, plus the runtime embodiment values
+    (pick_min_z_m / silence_means_empty / frame / min_arm_dur_s) and the
+    low-workspace descent lane's switch + law inputs (plan §8) via
+    :func:`resolve_embodiment_config`.  ``ros=False`` returns the
+    rclpy-free core (:class:`GatewayNode`) so laptop tests can construct
+    the wiring with a stub transport; ``ros=True`` is the rclpy-only
+    branch (Stuart CLI) that builds the :class:`_RosGateway` adapter with
+    the config values as its ROS-parameter defaults.
+    """
+    writer_sock, grip_sock, engine_cmd, _tools_port = resolve_skill_endpoints(cfg)
+    pick_min_z_m, silence_means_empty, frame, min_arm_dur_s, descent = \
+        resolve_embodiment_config(cfg, with_descent=True)
+    # low-workspace descent lane: the switch plus the law inputs the node
+    # hands to the descent law. these are the config's own values; the
+    # master switch is deliberately not a ROS parameter, so arming a motion
+    # lane always shows up in the config file. lane_operation_budget_s stays
+    # None when the key is absent, and None means the lane's own
+    # LANE_OPERATION_BUDGET_S rather than a gateway default.
+    (low_workspace_lane, height_stand_m, height_min_m, hold_tol_m,
+     descend_confirm_timeout_s, lane_operation_budget_s) = descent
+    if ros:
+        import rclpy  # noqa: F401 — lazy; the rclpy-only branch
+
+        return _RosGateway(config=cfg)
+    vision_enabled, vision_topic, vision_max_age_s, vision_jpeg_quality, \
+        vision_min_interval_s = resolve_vision_config(cfg)
+    # point-cloud switches: {} when all are off, so the call below is
+    # exactly the plain one.
+    pc_kw = _pc_switch_kwargs(resolve_pc_switches(cfg))
+    return GatewayNode(
+        writer_sock=writer_sock, grip_sock=grip_sock, engine_cmd=engine_cmd,
+        engine_sock=resolve_engine_sock(cfg),
+        pick_min_z_m=pick_min_z_m, silence_means_empty=silence_means_empty,
+        detections_frame=frame, min_arm_dur_s=min_arm_dur_s,
+        vision_enabled=vision_enabled, vision_topic=vision_topic,
+        vision_max_age_s=vision_max_age_s,
+        vision_jpeg_quality=vision_jpeg_quality,
+        vision_min_interval_s=vision_min_interval_s,
+        low_workspace_lane=low_workspace_lane,
+        height_stand_m=height_stand_m,
+        height_min_m=height_min_m,
+        hold_tol_m=hold_tol_m,
+        descend_confirm_timeout_s=descend_confirm_timeout_s,
+        operation_budget_s=lane_operation_budget_s,
+        pre_descent_step=_pre_descent_step_flag(
+            getattr(getattr(cfg, "embodiment", None), "envelope", None)),
+        **pc_kw
+    )
