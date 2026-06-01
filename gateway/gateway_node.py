@@ -1470,3 +1470,25 @@ class EngineBridge:
                 "(socket %s)" % (line, self._sock_path))
         return reply.strip()
 
+    def quit(self) -> None:
+        """Stop the engine — ONLY if this bridge spawned it.
+
+        A resident engine is shared: the pick lane (pick_node) is usually its
+        parent, and quitting it out from under that parent would be a
+        cross-lane kill. Attached-to-someone-else's-engine therefore just
+        drops our connection and leaves the process running.
+        """
+        with self._lock:
+            if self._sock is not None:
+                self._drop_socket_unlocked()
+                return
+            if self.alive():
+                try:
+                    self._proc.stdin.write(b"quit\n")
+                    self._proc.stdin.flush()
+                except OSError:
+                    pass
+                try:
+                    self._proc.wait(timeout=10.0)
+                except (subprocess.TimeoutExpired, OSError):
+                    self._kill()
