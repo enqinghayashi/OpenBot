@@ -1644,3 +1644,5 @@ def _seg_linf(arm: Any, a: Any, b: Any) -> float:
                 ts.add((e[i] + e[j]) / (d[i] + d[j]))
     return min(max(abs(ei - t * di) for ei, di in zip(e, d))
                for t in ts if 0.0 <= t <= 1.0)
+
+
