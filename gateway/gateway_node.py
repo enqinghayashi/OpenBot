@@ -1686,3 +1686,17 @@ def _arm_safe_pose(q14: Any, segment: bool = False) -> Optional[str]:
     return names[0] if names[0] == names[1] else "%s+%s" % (names[0], names[1])
 
 
+def _b5_tok_text(text: Any, limit: int = 60) -> str:
+    """Make arbitrary text safe inside a ``name=value(<text>)`` reply token.
+
+    Defangs ``ERROR:`` (an embedded literal would flip the whole envelope to
+    ok:false — see _defang_error_token) and replaces the reply's own
+    delimiters (``;``, ``|``, parentheses) and newlines, so a token can never
+    split the reply grammar the brain parses.
+    """
+    out = _defang_error_token(str(text))
+    for ch in "\r\n":
+        out = out.replace(ch, " ")
+    for ch in ";|()":
+        out = out.replace(ch, "_")
+    return out.strip()[:limit]
