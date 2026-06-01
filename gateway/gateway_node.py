@@ -1239,3 +1239,9 @@ class EngineBridge:
 
     # ── lifecycle ───────────────────────────────────────────────────────────────
 
+    def alive(self) -> bool:
+        if self._sock is not None:
+            return True
+        proc = self._proc
+        return proc is not None and proc.poll() is None
+
