@@ -1418,3 +1418,30 @@ class EngineBridge:
             sys.stderr.flush()
         return len(drained)
 
+    def send(self, line: str, timeout_s: Optional[float] = None) -> str:
+        """Send one engine command, return its one-line reply. Raises on death."""
+        if timeout_s is None:
+            if line.startswith(("pick ", "pick_left ", "place ",
+                                "place_left ")):
+                timeout_s = self.PICK_REPLY_TIMEOUT_S
+            else:
+                timeout_s = self.REPLY_TIMEOUT_S
+        with self._lock:
+            if not self.alive():
+                raise ConnectionError("pick engine not running")
+            if self._sock is not None:
+                return self._send_socket_unlocked(line, timeout_s)
+            self._drain_orphans_unlocked(line)
+            self._proc.stdin.write((line + "\n").encode("utf-8"))
+            self._proc.stdin.flush()
+            reply = self._reader.readline(timeout_s)
+            if reply is None:
+                # post-send: the command already went down the pipe, so the engine may
+                # well have run it. raise EngineTransportError, never a plain
+                # ConnectionError, so the place path does not restore a hold for a
+                # command whose execution state is unknown.
+                raise EngineTransportError(
+                    "pick engine timed out / died on %r (%s)"
+                    % (line, self._stderr_report()))
+            return reply.strip()
+
