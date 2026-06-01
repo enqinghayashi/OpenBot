@@ -1780,3 +1780,5 @@ def _b5_hint_class_keys(hint: Any) -> frozenset:
         keys.add(_b5_norm_label(_b5_resolve_alias(form.replace("_", " "))))
     keys.discard("")
     return frozenset(keys)
+
+
