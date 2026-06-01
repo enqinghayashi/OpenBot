@@ -1684,3 +1684,5 @@ def _arm_safe_pose(q14: Any, segment: bool = False) -> Optional[str]:
             return None
         names.append(hit)
     return names[0] if names[0] == names[1] else "%s+%s" % (names[0], names[1])
+
+
