@@ -1759,3 +1759,24 @@ _B7_COLOUR_WORDS = frozenset((
     "maroon", "crimson", "scarlet", "violet", "lilac", "magenta", "gold", "lime"))
 
 
+def _b5_hint_class_keys(hint: Any) -> frozenset:
+    """The class keys a pick hint names; empty == no hint (label inert).
+
+    B7: a brain scene name ('green_cup_2') also yields its class ('cup'):
+    perception rows never carry the colour prefix (MEASURED 2026-10-06: a
+    fresh cup 2 mm from the target was refused as stale_target)."""
+    text = str(hint or "").strip().lower()
+    if not text:
+        return frozenset()
+    keys = set()
+    forms = [text, _B5_REF_SUFFIX_RE.sub("", text)]
+    for form in list(forms):
+        words = form.replace("_", " ").split()
+        if len(words) > 1 and words[0] in _B7_COLOUR_WORDS:
+            forms.append(" ".join(words[1:]))
+    for form in forms:
+        keys.add(_b5_norm_label(form))
+        keys.add(_b5_norm_label(_b5_resolve_alias(form)))
+        keys.add(_b5_norm_label(_b5_resolve_alias(form.replace("_", " "))))
+    keys.discard("")
+    return frozenset(keys)
