@@ -1120,3 +1120,128 @@ class _LineReader:
             drained.append(line.decode("utf-8", "replace"))
         remaining = self._buf.count(b"\n")
         return drained, remaining
+
+
+class EngineTransportError(ConnectionError):
+    """A POST-SEND engine transport failure — the command may have executed.
+
+    Raised ONLY after the command bytes reached the transport (or the transport
+    died in the act of sending them): the pipe/socket readline death-or-timeout
+    at :762 / :781, and the socket sendall failure at :773.  The engine's
+    execution state is UNKNOWN in all three, which is exactly why the place
+    path must not treat them like an engine-REPORTED error: see the RESTORE
+    GATE in _do_place.  A subclass of ConnectionError so existing callers that
+    catch ConnectionError keep working; engine_verb catches it FIRST and
+    re-labels the reply with ENGINE_TRANSPORT_ERROR_PREFIX.
+    """
+
+
+class EngineBridge:
+    """Connect-first, spawn-fallback bridge to the pick/place engine.
+
+    TWO TRANSPORTS, in preference order (2026-09-13):
+
+    1. SOCKET — the engine (skills/arm/tabletop_pick_place_engine.py) listens
+       on ``ENGINE_SOCK_DEFAULT`` and every engine verb goes down that
+       connection. This is the structural fix for the double-engine defect:
+       the pick lane's resident engine is REUSED, so a place continues from
+       whatever pose the pick left behind. A connect never boots an engine,
+       so nothing drives the arms to NEUTRAL behind the operator's back.
+    2. PIPE — only when nothing is listening. The engine is spawned exactly as
+       before (stdin/stdout, READY handshake, pgrep double-spawn guard). This
+       is a genuine cold start: there is no resident state to preserve, so the
+       boot move to NEUTRAL is correct here.
+
+    Either way the engine prints READY then answers exactly one line
+    (DONE / ERROR:<msg>) per command; diagnostics go to stderr. That contract
+    is the ENGINE's to keep, and the engine-side ``_reply_sent`` guard is what
+    keeps it (skills/arm/pick_engine_v3.py): every failure and refusal branch
+    writes its one line under a command-scoped flag, so no path can fall
+    through and write a second.
+
+    The gateway's half is a PARTIAL catcher, NOT an enforcement — do not read
+    it as a guarantee. ``_drain_orphans_unlocked`` discards (and logs as
+    ``[engine-orphan]``) any complete line ALREADY BUFFERED when the next
+    command is written. That closes the case where the stray line had reached
+    this bridge's own buffer before the previous ``readline`` returned. It
+    does NOT close the case where the stray line is still in the KERNEL at
+    that moment: the buffer is empty, nothing is drained, and the next command
+    still receives the stale line as its answer — silently, with no
+    ``[engine-orphan]`` line. Only the engine-side guard covers that window.
+
+    One further residual, on the pipe transport only: after a read timeout the
+    pipe path keeps ``self._reader`` (with its buffer and the kernel intact),
+    so a very late reply can still be paired with the following command —
+    whereas the socket path drops its reader and so cannot. The asymmetry is
+    deliberate today and is the reason the engine-side single-reply invariant
+    is the load-bearing half of the fix.
+
+    The engine is NON-owning: it commands the writer over the writer socket,
+    so it cannot trip the motor-owner rule.
+    """
+
+    READY_TIMEOUT_S = 90.0
+    REPLY_TIMEOUT_S = 60.0
+    PICK_REPLY_TIMEOUT_S = 300.0  # pick = IK plus a multi-point slew, so slow
+    #: a live engine answers a connect straight away; a hanging connect
+    #: means a wedged listener, not a slow boot, since boot delays show
+    #: up on the READY read instead.
+    CONNECT_TIMEOUT_S = 2.0
+
+    def __init__(self, cmd: str, sock_path: str = ENGINE_SOCK_DEFAULT):
+        self._cmd = cmd
+        self._sock_path = sock_path
+        self._proc = None
+        self._reader = None
+        self._sock = None           # live socket to an already running engine
+        self._sock_reader = None
+        self._lock = threading.Lock()
+        self._stderr_tail: List[str] = []
+        #: the daemon thread draining the spawned engine's stderr. keep the
+        #: handle so a failure path can join it before reading the tail;
+        #: without the join the tail is read microseconds after the thread
+        #: starts and always comes back empty.
+        self._stderr_thread: Optional[threading.Thread] = None
+
+    def _stderr_report(self) -> str:
+        """Exit status + stderr tail of the spawned engine, collected SYNCHRONOUSLY.
+
+        WHY THIS EXISTS (2026-09-21, measured on Stuart).  ``_drain_stderr``
+        runs on a daemon thread and the handshake below raises the moment
+        ``readline`` returns None — which is the moment stdout hits EOF, i.e.
+        the moment a DYING engine exits.  The thread has then had
+        microseconds, so ``self._stderr_tail`` is still empty and the operator
+        is told ``pick engine did not print READY (stderr tail: )``.  The one
+        diagnostic that could name the cause was guaranteed not to have run
+        yet: the failure that prompted this fix reported an empty tail for a
+        spawn that had in fact died before READY, and a full multi-agent
+        forensic workflow could not recover the reason from it.
+
+        The drainer ends at EOF, so joining it returns as soon as the process
+        is gone.  The exit status is included because a rc the caller never
+        saw was the other half of the blind spot: a spawn that died with a
+        traceback and rc=1 and a spawn that never started at all (rc=127) read
+        identically before this.
+        """
+        proc, thread = self._proc, self._stderr_thread
+        rc = proc.poll() if proc is not None else None
+        # join only when the process is already gone: stdout and stderr have
+        # hit EOF by then and the join costs microseconds. on a reply timeout
+        # against a live process there is no EOF, so joining would burn the
+        # whole budget for nothing. report the tail as it stands.
+        if rc is not None and thread is not None:
+            try:
+                thread.join(timeout=2.0)
+            except RuntimeError:
+                pass  # the thread never started
+        tail = " | ".join(self._stderr_tail[-3:])
+        return "rc=%s stderr tail: %s" % (rc, tail or "<empty>")
+
+    # ── lifecycle ───────────────────────────────────────────────────────────────
+
+    def alive(self) -> bool:
+        if self._sock is not None:
+            return True
+        proc = self._proc
+        return proc is not None and proc.poll() is None
+
