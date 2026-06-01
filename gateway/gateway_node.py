@@ -1268,3 +1268,32 @@ class EngineBridge:
                 return
             self._spawn_unlocked()
 
+    def _try_connect_unlocked(self) -> bool:
+        """Attach to a resident engine's socket. False when none is listening.
+
+        Never raises: "nothing is listening" is the ordinary cold-start case
+        and must fall through to the spawn path.
+        """
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.settimeout(self.CONNECT_TIMEOUT_S)
+            sock.connect(self._sock_path)
+            # the engine sends READY once it reaches its command loop, so this
+            # read doubles as the readiness wait: a connect during boot blocks here
+            # instead of racing the init move. a pipe spawn waits on the same
+            # handshake.
+            reader = _LineReader(sock.makefile("rb"))
+            line = reader.readline(self.READY_TIMEOUT_S)
+            if line is None or line.strip() != "READY":
+                sock.close()
+                return False
+            self._sock = sock
+            self._sock_reader = reader
+            return True
+        except OSError:
+            try:
+                sock.close()
+            except OSError:
+                pass
+            return False
+
