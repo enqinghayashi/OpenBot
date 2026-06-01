@@ -869,3 +869,183 @@ def resolve_embodiment_config(cfg: Any, with_descent: bool = False
         _descent_operation_budget(envelope),
     )
     return pick_min_z_m, silence_means_empty, frame, min_arm_dur_s, descent
+
+
+def resolve_pc_switches(cfg: Any) -> Tuple[bool, bool, bool]:
+    """``(pc_shadow, pc_hold_check, pc_place_rim)`` off a (possibly stub) config.
+
+    The batch-3b point-cloud switches of ``embodiment.envelope``.  Each is True
+    ONLY for a real bool ``True`` — the loader's strict-bool discipline
+    (brain/config_loader.py ``_as_bool``), applied the way
+    ``_pre_descent_step_flag`` applies it — so a stub config, an omitted key, a
+    string "true" or a numeric 1 is False.  A function of its own, NOT a
+    further element of ``resolve_embodiment_config``'s descent tuple: that
+    tuple's arity is pinned and unpacked by shipped callers, and a caller that
+    never asks for the switches keeps today's behaviour byte for byte.
+    """
+    emb = getattr(cfg, "embodiment", None)
+    envelope = getattr(emb, "envelope", None) if emb is not None else None
+    flags = []
+    for name in ("pc_shadow", "pc_hold_check", "pc_place_rim"):
+        try:
+            flags.append(getattr(envelope, name, False) is True)
+        except Exception:  # noqa: BLE001 - an unreadable attr is a False switch
+            flags.append(False)
+    return flags[0], flags[1], flags[2]
+
+
+def _pc_switch_kwargs(switches: Tuple[bool, bool, bool]) -> Dict[str, bool]:
+    """The ``GatewayNode`` keywords for the point-cloud switches.
+
+    ``{}`` when none is ON, so a gateway built with every switch off is built by
+    EXACTLY the call it always was (no new keyword reaches a stub or a subclass
+    that does not declare them).
+    """
+    if not any(switches):
+        return {}
+    return dict(zip(("pc_shadow", "pc_hold_check", "pc_place_rim"), switches))
+
+
+def resolve_vision_config(cfg: Any) -> Tuple[bool, str, float, int, float]:
+    """Vision-lane values from a loaded config (camera OFF by default).
+
+    Consumes ``vision.enabled`` / ``vision.topic`` / ``vision.max_age_s`` /
+    ``vision.jpeg_quality`` / ``vision.min_interval_s`` — the v4
+    ``vision:`` segment (the VisionConfig dataclass in
+    brain/config_loader.py).  ``enabled`` defaults to False, mirroring
+    VisionConfig's default (the shipped config now also ships
+    ``vision.enabled: false``): the camera lane is OFF by default unless
+    the config sets ``vision.enabled: true``.  getattr-defaults keep mock
+    configs WITHOUT a ``vision`` attribute valid: the lane stays OFF there
+    too (gateway_smoke's stub configs never subscribe a camera).  Returns
+    ``(enabled, topic, max_age_s, jpeg_quality, min_interval_s)``.  The
+    defaults mirror VisionConfig
+    (False / '/camera/color/image_raw' / 2.0 / 80 / 1.0).
+    """
+    vision = getattr(cfg, "vision", None)
+    enabled = bool(getattr(vision, "enabled", False)
+                   if vision is not None else False)
+    topic = (
+        getattr(vision, "topic", VISION_TOPIC_DEFAULT)
+        if vision is not None else VISION_TOPIC_DEFAULT)
+    try:
+        max_age_s = float(getattr(vision, "max_age_s", VISION_MAX_AGE_S_DEFAULT)
+                          or VISION_MAX_AGE_S_DEFAULT)
+    except (TypeError, ValueError):
+        max_age_s = VISION_MAX_AGE_S_DEFAULT
+    try:
+        jpeg_quality = int(
+            getattr(vision, "jpeg_quality", VISION_JPEG_QUALITY_DEFAULT)
+            or VISION_JPEG_QUALITY_DEFAULT)
+    except (TypeError, ValueError):
+        jpeg_quality = VISION_JPEG_QUALITY_DEFAULT
+    try:
+        min_interval_s = float(
+            getattr(vision, "min_interval_s", VISION_MIN_INTERVAL_S_DEFAULT)
+            or VISION_MIN_INTERVAL_S_DEFAULT)
+    except (TypeError, ValueError):
+        min_interval_s = VISION_MIN_INTERVAL_S_DEFAULT
+    return enabled, topic, max_age_s, jpeg_quality, min_interval_s
+
+
+def gateway_from_config(cfg: Any, *, ros: bool = False) -> "GatewayNode":
+    """Build the gateway from a loaded config — the CLI wiring.
+
+    Consumes ``skills.writer_sock`` / ``skills.grip_sock`` /
+    ``skills.engine_cmd`` and ``gateway.port`` via
+    :func:`resolve_skill_endpoints`, plus the runtime embodiment values
+    (pick_min_z_m / silence_means_empty / frame / min_arm_dur_s) and the
+    low-workspace descent lane's switch + law inputs (plan §8) via
+    :func:`resolve_embodiment_config`.  ``ros=False`` returns the
+    rclpy-free core (:class:`GatewayNode`) so laptop tests can construct
+    the wiring with a stub transport; ``ros=True`` is the rclpy-only
+    branch (Stuart CLI) that builds the :class:`_RosGateway` adapter with
+    the config values as its ROS-parameter defaults.
+    """
+    writer_sock, grip_sock, engine_cmd, _tools_port = resolve_skill_endpoints(cfg)
+    pick_min_z_m, silence_means_empty, frame, min_arm_dur_s, descent = \
+        resolve_embodiment_config(cfg, with_descent=True)
+    # low-workspace descent lane: the switch plus the law inputs the node
+    # hands to the descent law. these are the config's own values; the
+    # master switch is deliberately not a ROS parameter, so arming a motion
+    # lane always shows up in the config file. lane_operation_budget_s stays
+    # None when the key is absent, and None means the lane's own
+    # LANE_OPERATION_BUDGET_S rather than a gateway default.
+    (low_workspace_lane, height_stand_m, height_min_m, hold_tol_m,
+     descend_confirm_timeout_s, lane_operation_budget_s) = descent
+    if ros:
+        import rclpy  # noqa: F401 — lazy; the rclpy-only branch
+
+        return _RosGateway(config=cfg)
+    vision_enabled, vision_topic, vision_max_age_s, vision_jpeg_quality, \
+        vision_min_interval_s = resolve_vision_config(cfg)
+    # point-cloud switches: {} when all are off, so the call below is
+    # exactly the plain one.
+    pc_kw = _pc_switch_kwargs(resolve_pc_switches(cfg))
+    return GatewayNode(
+        writer_sock=writer_sock, grip_sock=grip_sock, engine_cmd=engine_cmd,
+        engine_sock=resolve_engine_sock(cfg),
+        pick_min_z_m=pick_min_z_m, silence_means_empty=silence_means_empty,
+        detections_frame=frame, min_arm_dur_s=min_arm_dur_s,
+        vision_enabled=vision_enabled, vision_topic=vision_topic,
+        vision_max_age_s=vision_max_age_s,
+        vision_jpeg_quality=vision_jpeg_quality,
+        vision_min_interval_s=vision_min_interval_s,
+        low_workspace_lane=low_workspace_lane,
+        height_stand_m=height_stand_m,
+        height_min_m=height_min_m,
+        hold_tol_m=hold_tol_m,
+        descend_confirm_timeout_s=descend_confirm_timeout_s,
+        operation_budget_s=lane_operation_budget_s,
+        pre_descent_step=_pre_descent_step_flag(
+            getattr(getattr(cfg, "embodiment", None), "envelope", None)),
+        **pc_kw
+    )
+
+
+def _send_unix_verb(sock_path: str, line: str, timeout_s: float = 15.0,
+                    skip_ready_banner: bool = False) -> str:
+    """One line in -> one reply line over a unix stream socket (stdlib).
+
+    The skill daemons (merged writer, grip server) speak a strict
+    line-protocol: send a verb line, read exactly one reply line. A fresh
+    connection per request is safe (both servers are multi-client).
+    Raises OSError / ConnectionError on any failure — never guesses a reply.
+
+    ``skip_ready_banner`` is REQUIRED by the pick/place engine and must
+    stay opt-in.  The engine sends ``READY_BANNER`` (b"READY\\n") on EVERY
+    connection BEFORE it answers anything
+    (skills/arm/tabletop_pick_place_engine.py:76,287 — "Serve ONE client:
+    READY banner, then one line in -> one line out"), so a plain one-line
+    read returns the BANNER, not the verdict.
+
+    MEASURED 2026-10-01, found by code reading and confirmed by the
+    engine's own test client, which also consumes the banner first.  The
+    cancel itself still WORKED — the verb line is sent either way and the
+    engine sets the flag — but ``cancel_engine`` read back "READY", so
+    ``_do_cancel`` reported ``engine=unavailable`` for a cancel that had
+    in fact been accepted.  A false negative on the one verb whose result
+    the operator most needs to trust.
+
+    THIS IS THE IPOPT BANNER AGAIN, one layer down: a daemon that writes a
+    greeting onto a stream another process reads one-line-at-a-time
+    desynchronises that reader.  Every future caller of a bannered socket
+    needs this flag; a caller of a bannerless one must NOT pass it, or it
+    would block for a second line that never comes.
+    """
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(timeout_s)
+        sock.connect(sock_path)
+        sock.sendall((line + "\n").encode("utf-8"))
+        fh = sock.makefile("r", encoding="utf-8")
+        reply = fh.readline()
+        if skip_ready_banner and reply.rstrip("\n") == "READY":
+            reply = fh.readline()
+    finally:
+        sock.close()
+    if not reply:
+        raise ConnectionError(
+            "empty reply from %s for %r (daemon closed the connection)"
+            % (sock_path, line))
+    return reply.rstrip("\n")
