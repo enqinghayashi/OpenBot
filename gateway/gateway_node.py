@@ -1782,3 +1782,12 @@ def _b5_hint_class_keys(hint: Any) -> frozenset:
     return frozenset(keys)
 
 
+def _b5_row_matches_hint(det: Any, hint_keys: frozenset) -> bool:
+    """Does a detection row name the hinted class?  No hint -> True."""
+    if not hint_keys:
+        return True
+    for attr in ("label", "class_name"):
+        val = getattr(det, attr, None)
+        if isinstance(val, str) and _b5_norm_label(val) in hint_keys:
+            return True
+    return False
