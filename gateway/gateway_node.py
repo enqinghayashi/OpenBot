@@ -1702,3 +1702,14 @@ def _b5_tok_text(text: Any, limit: int = 60) -> str:
     return out.strip()[:limit]
 
 
+def _insert_before_engine_reply(reply: str, tok: str) -> str:
+    """Insert ``tok`` (``; name=value``) before ``; engine_reply=``, else append.
+
+    brain/verifier.py ``_ENGINE_REPLY_RE = engine_reply=([^\\r\\n]*)`` is
+    GREEDY to the end of the line, so every new token must precede it or it
+    would be read as part of the engine's own words.
+    """
+    idx = reply.find("; engine_reply=")
+    if idx < 0:
+        return reply + tok
+    return reply[:idx] + tok + reply[idx:]
