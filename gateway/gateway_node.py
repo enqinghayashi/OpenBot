@@ -1604,3 +1604,20 @@ ARM_TASK_VERBS = frozenset((
     "return_home"))                 # the hand that carries the fetched object
 
 
+def _arm_pose_deviation(q14: Any) -> Optional[float]:
+    """Worst arm's L-infinity distance to its NEAREST safe-pose half (rad).
+
+    None for malformed input (not 14 finite floats).
+    """
+    try:
+        vals = [float(v) for v in q14]
+    except (TypeError, ValueError):
+        return None
+    if len(vals) != 14 or not all(math.isfinite(v) for v in vals):
+        return None
+    worst = 0.0
+    for half, arm in ((0, vals[:7]), (1, vals[7:])):
+        nearest = min(max(abs(a - b) for a, b in zip(arm, poses[half]))
+                      for poses in SAFE_ARM_POSES.values())
+        worst = max(worst, nearest)
+    return worst
