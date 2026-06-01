@@ -1365,3 +1365,14 @@ class EngineBridge:
         except OSError:
             pass
 
+    def _kill(self) -> None:
+        try:
+            if self._proc is not None:
+                self._proc.kill()
+        except OSError:
+            pass
+        self._proc = None
+        self._reader = None
+
+    # ── protocol (send/receive) ────────────────────────────────────────────────
+
