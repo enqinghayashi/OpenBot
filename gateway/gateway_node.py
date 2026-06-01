@@ -1188,3 +1188,18 @@ class EngineBridge:
     #: up on the READY read instead.
     CONNECT_TIMEOUT_S = 2.0
 
+    def __init__(self, cmd: str, sock_path: str = ENGINE_SOCK_DEFAULT):
+        self._cmd = cmd
+        self._sock_path = sock_path
+        self._proc = None
+        self._reader = None
+        self._sock = None           # live socket to an already running engine
+        self._sock_reader = None
+        self._lock = threading.Lock()
+        self._stderr_tail: List[str] = []
+        #: the daemon thread draining the spawned engine's stderr. keep the
+        #: handle so a failure path can join it before reading the tail;
+        #: without the join the tail is read microseconds after the thread
+        #: starts and always comes back empty.
+        self._stderr_thread: Optional[threading.Thread] = None
+
