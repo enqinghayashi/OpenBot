@@ -1245,3 +1245,111 @@ class EngineBridge:
         proc = self._proc
         return proc is not None and proc.poll() is None
 
+    def via_socket(self) -> bool:
+        """True when the bridge is attached to a resident engine.
+
+        Diagnostics only — it lets an operator confirm the place is reusing the
+        pick's engine rather than having spawned a second one.
+        """
+        return self._sock is not None
+
+    def start(self) -> None:
+        """Attach to a resident engine, else spawn one. Raises on failure.
+
+        CONNECT-FIRST is the point of this method. Spawning a fresh engine
+        makes it boot to NEUTRAL, which is exactly the arm-drop the operator
+        sees between a pick and a place; attaching to the engine that did the
+        pick preserves the carry/tuck pose.
+        """
+        with self._lock:
+            if self.alive():
+                return
+            if self._try_connect_unlocked():
+                return
+            self._spawn_unlocked()
+
+    def _try_connect_unlocked(self) -> bool:
+        """Attach to a resident engine's socket. False when none is listening.
+
+        Never raises: "nothing is listening" is the ordinary cold-start case
+        and must fall through to the spawn path.
+        """
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.settimeout(self.CONNECT_TIMEOUT_S)
+            sock.connect(self._sock_path)
+            # the engine sends READY once it reaches its command loop, so this
+            # read doubles as the readiness wait: a connect during boot blocks here
+            # instead of racing the init move. a pipe spawn waits on the same
+            # handshake.
+            reader = _LineReader(sock.makefile("rb"))
+            line = reader.readline(self.READY_TIMEOUT_S)
+            if line is None or line.strip() != "READY":
+                sock.close()
+                return False
+            self._sock = sock
+            self._sock_reader = reader
+            return True
+        except OSError:
+            try:
+                sock.close()
+            except OSError:
+                pass
+            return False
+
+    def _drop_socket_unlocked(self) -> None:
+        """Forget a dead/failed socket so the next call can re-attach or spawn.
+
+        Also used on a reply TIMEOUT: the engine may still be executing, and a
+        late reply must never be mistaken for the next command's answer.
+        """
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+        self._sock = None
+        self._sock_reader = None
+
+    def _spawn_unlocked(self) -> None:
+        try:
+            probe = subprocess.run(
+                ["pgrep", "-f", "[t]abletop_pick_place_engine.py"
+                             "|[p]ick_engine_v[23].py"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if probe.returncode == 0:
+                raise RuntimeError(
+                    "pick engine already alive — refusing double spawn "
+                    "(no socket at %s, so it cannot be reused)"
+                    % self._sock_path)
+        except FileNotFoundError:
+            pass  # no pgrep available; the launcher guard covers this
+
+        args = self._cmd.split()
+        cwd = None
+        if len(args) >= 2 and os.path.isfile(args[-1]):
+            cwd = os.path.dirname(os.path.abspath(args[-1]))
+        self._proc = subprocess.Popen(
+            args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, cwd=cwd)
+        self._reader = _LineReader(self._proc.stdout)
+        self._stderr_tail = []
+        self._stderr_thread = threading.Thread(
+            target=self._drain_stderr, daemon=True)
+        self._stderr_thread.start()
+        line = self._reader.readline(self.READY_TIMEOUT_S)
+        if line is None:
+            # _stderr_report() joins the drainer first; reading the attribute
+            # directly here is always empty because this line runs the instant a
+            # dying engine's stdout hits EOF.
+            report = self._stderr_report()
+            self._kill()
+            raise RuntimeError(
+                "pick engine did not print READY (%s)" % report)
+        if line.strip() != "READY":
+            report = self._stderr_report()
+            self._kill()
+            raise RuntimeError(
+                "unexpected engine handshake line %r (%s)"
+                % (line.strip(), report))
+
