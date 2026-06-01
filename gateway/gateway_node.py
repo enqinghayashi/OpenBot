@@ -1492,3 +1492,115 @@ class EngineBridge:
                     self._proc.wait(timeout=10.0)
                 except (subprocess.TimeoutExpired, OSError):
                     self._kill()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# arm safety, stale target, detections liveness.
+#
+# `hold_rc off` does not release the arm: it is only the RC-stick
+# interlock, and past that the writer keeps PD-tracking its last `arm`
+# target whatever the flag says. a stalled arm heats up until it is
+# moved, and only slewing it to READY ends the stall. so every release
+# below is `hold_rc off` plus a park, and replies name both (`hold_rc=`
+# for the interlock, `arm=`/`arm_after=` for the arm). no token claims
+# hold_rc off moved the arm.
+#
+# the stop release, post-task sweep, stale-target gate and re-observe
+# all hang off the _b5_on master switch. it is false in the ROS-free
+# core, and _RosGateway sets it from the `arm_safety` ROS param
+# (default true). the idle watchdog has its own `arm_watchdog` param,
+# also default true. neither is a config key.
+# ══════════════════════════════════════════════════════════════════════════
+
+#: the engine's own safe arm poses, copied numerically and checked against
+#: the engine source by a test, so an engine edit turns that check red by
+#: design. each entry is (LEFT7, RIGHT7) in the writer's q order
+#: (st['q'][15:29], the same order READY_POSE uses).
+SAFE_ARM_POSES: Dict[str, Tuple[Tuple[float, ...], Tuple[float, ...]]] = {
+    "READY": ((0.40, 0.30, 0.50, -0.80, 0.00, 0.00, -0.01),
+              (0.40, -0.30, -0.50, -0.80, 0.00, 0.00, 0.01)),
+    "CARRY_TUCK": ((0.50, 0.05, 0.00, 0.00, -1.50, 0.00, -1.00),
+                   (0.50, -0.05, 0.00, 0.00, 1.50, 0.00, 1.00)),
+    "NEUTRAL": ((0.25522, 0.27104, -0.08654, 0.83254, -0.00101, 0.01032,
+                 -0.00063),
+                (0.26688, -0.28410, 0.09247, 0.80183, -0.00034, 0.00915,
+                 0.00730)),
+    "HOME": ((0.00, 0.30, 0.00, 1.50, -1.5708, 0.00, 0.00),
+             (0.00, -0.30, 0.00, 1.50, 1.5708, 0.00, 0.00)),
+}
+#: per-joint (L-inf) tolerance the safe-pose test uses, derived from a
+#: left-arm settle error of 0.264 rad plus margin. a stalled right arm
+#: sat 0.719 rad from its nearest pose half and once 0.987 rad, while
+#: the four poses are at least 1.499 rad apart.
+SAFE_POSE_TOL_RAD = 0.35
+#: if the per-arm z-floor clamp leaves an arm on the straight
+#: joint-space segment joining these poses (within SAFE_POSE_TOL_RAD,
+#: L-inf), it is safe for the post-task sweep only: along that segment
+#: the clamp stops an arm at the table plane.
+SAFE_SEGMENT_POSES = ("READY", "CARRY_TUCK")
+#: how long (s) to wait for the engine's `park` reply, which is
+#: one-shot with no banner.
+PARK_REPLY_TIMEOUT_S = 20.0
+#: reply bound (s) for the writer-direct fallback. the writer answers
+#: `arm` when the slew starts, so this only has to cover a wedged
+#: socket.
+PARK_WRITER_TIMEOUT_S = 5.0
+#: once a park route answers DONE, how long (s) `q` may take to read a
+#: safe pose before the park counts as failed. the fallback READY slew
+#: is 5.000 s plus 2 s of margin.
+PARK_SETTLE_S = 7.0
+PARK_SETTLE_POLL_S = 0.25
+#: how long (s) a synchronous park may hold its caller.
+PARK_JOIN_S = 12.0
+#: the writer-direct fallback uses the verbatim 30-token READY line
+#: the writer accepts: `arm <14 q> <dur> <14 tau>`. the hands are
+#: untouched.
+WRITER_READY_ARM_LINE = (
+    "arm 0.400000 0.300000 0.500000 -0.800000 0.000000 0.000000 -0.010000 "
+    "0.400000 -0.300000 -0.500000 -0.800000 0.000000 0.000000 0.010000 "
+    "5.000 -0.997557 2.236980 1.265035 -2.648575 -0.032041 -0.913687 "
+    "0.351945 -0.997557 -2.236980 -1.265035 -2.648575 0.032041 -0.913687 "
+    "-0.351945")
+#: how long (s) a post-cancel pick waits for a detection packet newer
+#: than the cancel and park and matching the commanded target.
+FRESH_DET_WAIT_S = 3.0
+#: per-axis tolerance (m) between the commanded point and a fresh
+#: detection. a bottle's static jitter over repeated observes stays
+#: within 0.012 m; a frozen re-pick sat off by dz=+0.103 m.
+STALE_TARGET_TOL_M = 0.04
+#: re-observe budget (s) before verifying a pick on a silent channel.
+PICK_DET_REOBSERVE_S = 4.0
+#: poll period (s) for the stale-target gate and the re-observe.
+B5_POLL_S = 0.1
+#: read bound (s) for the writer's `q`. the stale-target gate reads q
+#: once outside its PARK_JOIN_S park phase, so the timeout ladder has to
+#: count it.
+ARM_Q_READ_TIMEOUT_S = 1.0
+#: period (s) of the idle watchdog.
+WATCHDOG_PERIOD_S = 1.0
+WATCHDOG_IDLE_GRACE_S = 8.0
+WATCHDOG_TMAX_C = 90
+WATCHDOG_HOT_HOLD_S = 5.0
+WATCHDOG_RC_HOLD_S = 8.0
+WATCHDOG_COOLDOWN_S = 60.0
+WATCHDOG_MAX_ATTEMPTS = 3
+WATCHDOG_LOG_MAX_AGE_S = 3.0
+WATCHDOG_LOG_TAIL_BYTES = 8192
+#: ceiling (s) on one watchdog park: reply, settle and margin.
+WATCHDOG_PARK_JOIN_S = PARK_REPLY_TIMEOUT_S + PARK_SETTLE_S + 5.0
+#: default path of the writer log the watchdog tails.
+WRITER_LOG_PATH_DEFAULT = "/tmp/pick_walk_logs/writer.log"
+#: the writer prints a status line once a second, e.g.
+#: [t=1990.0] balance cmd=(+0.00,+0.00,+0.00) arm=RAW mode=6 Tmax=125C
+#: ... hold=1 auto=0 ..., plus a `walk` variant and a padded clock in the
+#: snapshot log. the writer's `status` reply carries no Tmax, so this log
+#: line is the only temperature source that needs no writer change.
+WRITER_STATUS_LINE_RE = re.compile(
+    r"\[t=\s*([\d.]+)\].*?arm=(\S+) mode=(\d+) Tmax=(\d+)C.*?hold=(\d)")
+#: verbs the arm-task in-flight counter counts.
+ARM_TASK_VERBS = frozenset((
+    "pick", "pick_left", "place", "engine", "writer", "open_hand",
+    "close_hand", "cmd_set", "navigate", "turn_around",
+    "return_home"))                 # the hand that carries the fetched object
+
+
