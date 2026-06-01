@@ -1445,3 +1445,28 @@ class EngineBridge:
                     % (line, self._stderr_report()))
             return reply.strip()
 
+    def _send_socket_unlocked(self, line: str, timeout_s: float) -> str:
+        """One command down the resident-engine socket. Caller holds the lock."""
+        self._drain_orphans_unlocked(line)
+        try:
+            self._sock.sendall((line + "\n").encode("utf-8"))
+        except OSError as exc:
+            self._drop_socket_unlocked()
+            # post-send, and the one a substring test misses: sendall can die
+            # after a partial write, so the engine may have received a truncated
+            # command and be executing it. its text never says 'timed out', so
+            # classify by type here and by prefix at engine_verb.
+            raise EngineTransportError(
+                "pick engine socket send failed on %r: %s" % (line, exc))
+        reply = self._sock_reader.readline(timeout_s)
+        if reply is None:
+            # either the engine died or it outran the deadline. drop the
+            # connection either way: a reply arriving after the wait ended must
+            # never be read as the next command's answer.
+            self._drop_socket_unlocked()
+            # post-send
+            raise EngineTransportError(
+                "pick engine timed out / dropped the connection on %r "
+                "(socket %s)" % (line, self._sock_path))
+        return reply.strip()
+
