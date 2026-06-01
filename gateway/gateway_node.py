@@ -1623,3 +1623,24 @@ def _arm_pose_deviation(q14: Any) -> Optional[float]:
     return worst
 
 
+def _seg_linf(arm: Any, a: Any, b: Any) -> float:
+    """B8g G4: L-infinity distance (rad) from a 7-joint arm to the straight
+    joint-space segment a -> b (t in [0, 1]).
+
+    Exact, not sampled: max_j |arm_j - a_j - t*(b_j - a_j)| is convex and
+    piecewise linear in t, so its minimum sits at t=0, t=1 or where two joints'
+    lines cross: t = e_i/d_i, (e_i - e_j)/(d_i - d_j) or (e_i + e_j)/(d_i + d_j).
+    """
+    e = [x - y for x, y in zip(arm, a)]
+    d = [y - x for x, y in zip(a, b)]
+    ts = {0.0, 1.0}
+    for i in range(len(e)):
+        if d[i]:
+            ts.add(e[i] / d[i])
+        for j in range(i + 1, len(e)):
+            if d[i] != d[j]:
+                ts.add((e[i] - e[j]) / (d[i] - d[j]))
+            if d[i] + d[j]:
+                ts.add((e[i] + e[j]) / (d[i] + d[j]))
+    return min(max(abs(ei - t * di) for ei, di in zip(e, d))
+               for t in ts if 0.0 <= t <= 1.0)
