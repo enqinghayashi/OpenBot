@@ -1311,3 +1311,45 @@ class EngineBridge:
         self._sock = None
         self._sock_reader = None
 
+    def _spawn_unlocked(self) -> None:
+        try:
+            probe = subprocess.run(
+                ["pgrep", "-f", "[t]abletop_pick_place_engine.py"
+                             "|[p]ick_engine_v[23].py"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if probe.returncode == 0:
+                raise RuntimeError(
+                    "pick engine already alive — refusing double spawn "
+                    "(no socket at %s, so it cannot be reused)"
+                    % self._sock_path)
+        except FileNotFoundError:
+            pass  # no pgrep available; the launcher guard covers this
+
+        args = self._cmd.split()
+        cwd = None
+        if len(args) >= 2 and os.path.isfile(args[-1]):
+            cwd = os.path.dirname(os.path.abspath(args[-1]))
+        self._proc = subprocess.Popen(
+            args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, cwd=cwd)
+        self._reader = _LineReader(self._proc.stdout)
+        self._stderr_tail = []
+        self._stderr_thread = threading.Thread(
+            target=self._drain_stderr, daemon=True)
+        self._stderr_thread.start()
+        line = self._reader.readline(self.READY_TIMEOUT_S)
+        if line is None:
+            # _stderr_report() joins the drainer first; reading the attribute
+            # directly here is always empty because this line runs the instant a
+            # dying engine's stdout hits EOF.
+            report = self._stderr_report()
+            self._kill()
+            raise RuntimeError(
+                "pick engine did not print READY (%s)" % report)
+        if line.strip() != "READY":
+            report = self._stderr_report()
+            self._kill()
+            raise RuntimeError(
+                "unexpected engine handshake line %r (%s)"
+                % (line.strip(), report))
+
