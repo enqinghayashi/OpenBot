@@ -1253,3 +1253,18 @@ class EngineBridge:
         """
         return self._sock is not None
 
+    def start(self) -> None:
+        """Attach to a resident engine, else spawn one. Raises on failure.
+
+        CONNECT-FIRST is the point of this method. Spawning a fresh engine
+        makes it boot to NEUTRAL, which is exactly the arm-drop the operator
+        sees between a pick and a place; attaching to the engine that did the
+        pick preserves the carry/tuck pose.
+        """
+        with self._lock:
+            if self.alive():
+                return
+            if self._try_connect_unlocked():
+                return
+            self._spawn_unlocked()
+
