@@ -1353,3 +1353,120 @@ class EngineBridge:
                 "unexpected engine handshake line %r (%s)"
                 % (line.strip(), report))
 
+    def _drain_stderr(self) -> None:
+        try:
+            while True:
+                chunk = os.read(self._proc.stderr.fileno(), 4096)
+                if not chunk:
+                    break
+                self._stderr_tail.append(chunk.decode("utf-8", "replace"))
+                if len(self._stderr_tail) > 50:
+                    del self._stderr_tail[:25]
+        except OSError:
+            pass
+
+    def _kill(self) -> None:
+        try:
+            if self._proc is not None:
+                self._proc.kill()
+        except OSError:
+            pass
+        self._proc = None
+        self._reader = None
+
+    # ── protocol (send/receive) ────────────────────────────────────────────────
+
+    def _drain_orphans_unlocked(self, pending_line: str) -> int:
+        """Discard complete lines already buffered from a PREVIOUS command.
+
+        Called immediately BEFORE a command is written (BOTH transports), so a
+        second line the engine wrote for the command that just finished can
+        never be returned as this command's reply.  Each orphan is logged to
+        stderr with the pending verb; drained lines are DISCARDED, never
+        returned.  At most ``ENGINE_ORPHAN_DRAIN_MAX`` lines go per send — the
+        rest stay buffered, and the FULL count present is reported, so a
+        runaway stream is loud rather than slowly swallowed.
+
+        Caller holds ``self._lock`` (same contract as the send paths).
+        """
+        reader = self._sock_reader if self._sock is not None else self._reader
+        if reader is None:
+            return 0
+        # draining is an optional capability of a reader, not part of its
+        # contract; a minimal double may implement only `readline`. it must not
+        # raise, since engine_verb wraps the send in a blanket except and an
+        # AttributeError here would become a generic engine error and destroy
+        # the post-send EngineTransportError classification. a reader with no
+        # buffer has nothing to drain, so skipping it is exact.
+        drain = getattr(reader, "drain_complete_lines", None)
+        if drain is None:
+            return 0
+        verb = (pending_line or "").split(" ", 1)[0]
+        drained, remaining = drain(ENGINE_ORPHAN_DRAIN_MAX)
+        for text in drained:
+            sys.stderr.write(
+                "%s pending=%s orphan=%r\n"
+                % (ENGINE_ORPHAN_TAG, verb, text))
+        if remaining:
+            sys.stderr.write(
+                "%s pending=%s OVERFLOW: %d complete line(s) present, "
+                "drained %d, %d still buffered — the engine is not writing "
+                "one reply per command\n"
+                % (ENGINE_ORPHAN_TAG, verb, len(drained) + remaining,
+                   len(drained), remaining))
+        if drained or remaining:
+            sys.stderr.flush()
+        return len(drained)
+
+    def send(self, line: str, timeout_s: Optional[float] = None) -> str:
+        """Send one engine command, return its one-line reply. Raises on death."""
+        if timeout_s is None:
+            if line.startswith(("pick ", "pick_left ", "place ",
+                                "place_left ")):
+                timeout_s = self.PICK_REPLY_TIMEOUT_S
+            else:
+                timeout_s = self.REPLY_TIMEOUT_S
+        with self._lock:
+            if not self.alive():
+                raise ConnectionError("pick engine not running")
+            if self._sock is not None:
+                return self._send_socket_unlocked(line, timeout_s)
+            self._drain_orphans_unlocked(line)
+            self._proc.stdin.write((line + "\n").encode("utf-8"))
+            self._proc.stdin.flush()
+            reply = self._reader.readline(timeout_s)
+            if reply is None:
+                # post-send: the command already went down the pipe, so the engine may
+                # well have run it. raise EngineTransportError, never a plain
+                # ConnectionError, so the place path does not restore a hold for a
+                # command whose execution state is unknown.
+                raise EngineTransportError(
+                    "pick engine timed out / died on %r (%s)"
+                    % (line, self._stderr_report()))
+            return reply.strip()
+
+    def _send_socket_unlocked(self, line: str, timeout_s: float) -> str:
+        """One command down the resident-engine socket. Caller holds the lock."""
+        self._drain_orphans_unlocked(line)
+        try:
+            self._sock.sendall((line + "\n").encode("utf-8"))
+        except OSError as exc:
+            self._drop_socket_unlocked()
+            # post-send, and the one a substring test misses: sendall can die
+            # after a partial write, so the engine may have received a truncated
+            # command and be executing it. its text never says 'timed out', so
+            # classify by type here and by prefix at engine_verb.
+            raise EngineTransportError(
+                "pick engine socket send failed on %r: %s" % (line, exc))
+        reply = self._sock_reader.readline(timeout_s)
+        if reply is None:
+            # either the engine died or it outran the deadline. drop the
+            # connection either way: a reply arriving after the wait ended must
+            # never be read as the next command's answer.
+            self._drop_socket_unlocked()
+            # post-send
+            raise EngineTransportError(
+                "pick engine timed out / dropped the connection on %r "
+                "(socket %s)" % (line, self._sock_path))
+        return reply.strip()
+
