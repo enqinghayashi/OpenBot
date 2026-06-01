@@ -1376,3 +1376,45 @@ class EngineBridge:
 
     # ── protocol (send/receive) ────────────────────────────────────────────────
 
+    def _drain_orphans_unlocked(self, pending_line: str) -> int:
+        """Discard complete lines already buffered from a PREVIOUS command.
+
+        Called immediately BEFORE a command is written (BOTH transports), so a
+        second line the engine wrote for the command that just finished can
+        never be returned as this command's reply.  Each orphan is logged to
+        stderr with the pending verb; drained lines are DISCARDED, never
+        returned.  At most ``ENGINE_ORPHAN_DRAIN_MAX`` lines go per send — the
+        rest stay buffered, and the FULL count present is reported, so a
+        runaway stream is loud rather than slowly swallowed.
+
+        Caller holds ``self._lock`` (same contract as the send paths).
+        """
+        reader = self._sock_reader if self._sock is not None else self._reader
+        if reader is None:
+            return 0
+        # draining is an optional capability of a reader, not part of its
+        # contract; a minimal double may implement only `readline`. it must not
+        # raise, since engine_verb wraps the send in a blanket except and an
+        # AttributeError here would become a generic engine error and destroy
+        # the post-send EngineTransportError classification. a reader with no
+        # buffer has nothing to drain, so skipping it is exact.
+        drain = getattr(reader, "drain_complete_lines", None)
+        if drain is None:
+            return 0
+        verb = (pending_line or "").split(" ", 1)[0]
+        drained, remaining = drain(ENGINE_ORPHAN_DRAIN_MAX)
+        for text in drained:
+            sys.stderr.write(
+                "%s pending=%s orphan=%r\n"
+                % (ENGINE_ORPHAN_TAG, verb, text))
+        if remaining:
+            sys.stderr.write(
+                "%s pending=%s OVERFLOW: %d complete line(s) present, "
+                "drained %d, %d still buffered — the engine is not writing "
+                "one reply per command\n"
+                % (ENGINE_ORPHAN_TAG, verb, len(drained) + remaining,
+                   len(drained), remaining))
+        if drained or remaining:
+            sys.stderr.flush()
+        return len(drained)
+
