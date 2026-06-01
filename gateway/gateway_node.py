@@ -1646,3 +1646,41 @@ def _seg_linf(arm: Any, a: Any, b: Any) -> float:
                for t in ts if 0.0 <= t <= 1.0)
 
 
+def _arm_safe_pose(q14: Any, segment: bool = False) -> Optional[str]:
+    """Name of the safe pose BOTH arms sit at, or None if either arm is out.
+
+    Per arm: the 7-vector must lie within SAFE_POSE_TOL_RAD (per joint) of
+    SOME pose's half for that arm.  ``segment=True`` (B8g G4, the post-task
+    arm sweep ONLY) also accepts an arm within SAFE_POSE_TOL_RAD (L-inf) of
+    the straight READY -> CARRY_TUCK segment for that arm (named
+    ``READY~CARRY_TUCK``).  The default is the box-only classifier: a park
+    verification, the cancel gate and the watchdog must not take a slew in
+    transit along that segment for a settled pose.  Both halves at the same
+    pose -> its name;
+    different poses -> ``<LEFT>+<RIGHT>``.  Malformed input -> None (callers
+    handle an unreadable ``q`` BEFORE classifying it, and never move on one).
+    """
+    try:
+        vals = [float(v) for v in q14]
+    except (TypeError, ValueError):
+        return None
+    if len(vals) != 14 or not all(math.isfinite(v) for v in vals):
+        return None
+    names = []
+    for half, arm in ((0, vals[:7]), (1, vals[7:])):
+        hit = None
+        for name, poses in SAFE_ARM_POSES.items():
+            ref = poses[half]
+            if max(abs(a - b) for a, b in zip(arm, ref)) <= SAFE_POSE_TOL_RAD:
+                hit = name
+                break
+        if hit is None and segment:
+            # an arm the z-floor clamp left on the READY -> CARRY_TUCK joint
+            # segment counts as safe for the post-task sweep, so it is not parked.
+            seg_a, seg_b = (SAFE_ARM_POSES[n][half] for n in SAFE_SEGMENT_POSES)
+            if _seg_linf(arm, seg_a, seg_b) <= SAFE_POSE_TOL_RAD:
+                hit = "~".join(SAFE_SEGMENT_POSES)
+        if hit is None:
+            return None
+        names.append(hit)
+    return names[0] if names[0] == names[1] else "%s+%s" % (names[0], names[1])
