@@ -1245,3 +1245,11 @@ class EngineBridge:
         proc = self._proc
         return proc is not None and proc.poll() is None
 
+    def via_socket(self) -> bool:
+        """True when the bridge is attached to a resident engine.
+
+        Diagnostics only — it lets an operator confirm the place is reusing the
+        pick's engine rather than having spawned a second one.
+        """
+        return self._sock is not None
+
