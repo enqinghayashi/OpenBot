@@ -1353,3 +1353,15 @@ class EngineBridge:
                 "unexpected engine handshake line %r (%s)"
                 % (line.strip(), report))
 
+    def _drain_stderr(self) -> None:
+        try:
+            while True:
+                chunk = os.read(self._proc.stderr.fileno(), 4096)
+                if not chunk:
+                    break
+                self._stderr_tail.append(chunk.decode("utf-8", "replace"))
+                if len(self._stderr_tail) > 50:
+                    del self._stderr_tail[:25]
+        except OSError:
+            pass
+
