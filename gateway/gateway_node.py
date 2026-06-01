@@ -696,3 +696,176 @@ def resolve_tools_bind_host(cfg: Any) -> str:
     gateway = getattr(cfg, "gateway", None)
     host = getattr(gateway, "bind_host", "") if gateway is not None else ""
     return (host or "0.0.0.0")
+
+
+def _descent_config_float(envelope: Any, attr: str, default: float) -> float:
+    """One low-workspace law input off a (possibly stub) envelope, in metres.
+
+    ``getattr``-defaulted for the same reason every read in
+    :func:`resolve_embodiment_config` is: a stub config without an
+    ``embodiment`` attribute (or an envelope that predates the lane) must still
+    construct the node.  A malformed value falls back to the default rather than
+    raising — the lane's own ``usable``/``effective_pick_floor`` guards fail
+    closed on a bad band, so nothing here has to refuse.
+    """
+    try:
+        value = getattr(envelope, attr, default)
+    except Exception:  # noqa: BLE001 - an unreadable attr is a missing value
+        return float(default)
+    try:
+        return float(default if value is None else value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _optional_float(value: Any) -> Optional[float]:
+    """One law input that may be legitimately ABSENT, as a float or ``None``.
+
+    The operation budget is the only lane input with no gateway-side default:
+    the number lives in exactly one place, ``descent_lane.LANE_OPERATION_BUDGET_S``
+    (REUSE LAW — a restated 30.0 here would be a second authority for it), and
+    ``None`` is the signal that says "keep the lane's own default".  So a
+    malformed value degrades to ``None``/lane-default rather than raising, and a
+    ``bool`` — an ``int`` in Python — is not a budget either: mirroring the
+    lane's own ``_finite_num``, a ``True`` that reached a writer-hold comparison
+    would be a wiring bug, and here it would arm the guard on a number nobody
+    wrote.  The lane itself is the FINAL authority: a non-finite or
+    non-positive value handed over is rejected by ``LaneLaw.__init__`` and
+    replaced by its default, so nothing this side does can shrink the guard to
+    nothing.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _descent_operation_budget(envelope: Any) -> Optional[float]:
+    """The DECLARED lane operation budget off a (possibly stub) envelope.
+
+    Reads ``embodiment.envelope.lane_operation_budget_s`` and returns
+    ``None`` when the key is absent or unusable — which is every stub config and
+    every config whose loader does not yet carry the key, because the loader
+    half and this half land independently: an attribute access here would take
+    the whole node (every pick and place, not just the lane) down on a tree
+    where only the gateway half has landed.  ``None`` means the lane keeps
+    ``descent_lane.LANE_OPERATION_BUDGET_S``.
+    """
+    try:
+        value = getattr(envelope, "lane_operation_budget_s", None)
+    except Exception:  # noqa: BLE001 - an unreadable attr is a missing value
+        return None
+    return _optional_float(value)
+
+
+def _lane_law(lane_law_cls: Any, tabletop_min_z: float, height_stand_m: float,
+              height_min_m: float, hold_tol_m: float,
+              descend_confirm_timeout_s: float,
+              operation_budget_s: Optional[float] = None) -> Any:
+    """Build the lane's ``LaneLaw``, threading the confirm-timeout knob (A4).
+
+    The lane's own slots for these two knobs are ``LaneLaw.timeout_s`` and
+    ``LaneLaw.operation_budget_s`` — the lane chooses those spellings; the
+    gateway populates them from the resolved envelope's
+    ``descend_confirm_timeout_s`` (repair A4 threads the value, task B owns the
+    slot) and ``lane_operation_budget_s`` (this round).  Each is handed over
+    only when the class DECLARES the parameter: the two halves of each repair
+    live in different files and land independently, and a tree where only the
+    gateway half has landed must still CONSTRUCT — a construction that raised
+    would take every pick/place, not just the lane, down with it.  When a slot
+    is absent the lane keeps its own module default
+    (``DESCENT_CONFIRM_TIMEOUT_S`` / ``LANE_OPERATION_BUDGET_S``), which is the
+    value it used before the knob existed, so nothing is silently different: the
+    knob is either threaded to the lane or left at the lane's own default.
+
+    ``operation_budget_s=None`` is a VALUE, not an omission: it says "the lane
+    keeps its own default", so it is passed through rather than dropped, and
+    ``LaneLaw.__init__`` restores ``LANE_OPERATION_BUDGET_S`` itself.  Dropping
+    it would be a different thing — it would rely on the lane's default merely
+    happening to be right instead of saying which is meant.
+    """
+    try:
+        params = inspect.signature(lane_law_cls).parameters
+    except (TypeError, ValueError):  # pragma: no cover - non-callable stubs
+        params = {}
+    kwargs: Dict[str, Any] = {}
+    if "timeout_s" in params:
+        kwargs["timeout_s"] = float(descend_confirm_timeout_s)
+    if "operation_budget_s" in params:
+        kwargs["operation_budget_s"] = operation_budget_s
+    if not kwargs:
+        return lane_law_cls(tabletop_min_z, height_stand_m, height_min_m,
+                            hold_tol_m)
+    return lane_law_cls(tabletop_min_z, height_stand_m, height_min_m, hold_tol_m,
+                        **kwargs)
+
+
+def resolve_embodiment_config(cfg: Any, with_descent: bool = False
+                              ) -> Tuple[Any, ...]:
+    """Runtime embodiment values from a loaded config (world-truth round 5).
+
+    Reads ``embodiment.envelope.pick_min_height_m`` (m),
+    ``embodiment.envelope.min_arm_dur_s`` (s),
+    ``embodiment.perception.silence_means_empty`` (bool) and
+    ``embodiment.perception.frame`` (str) via getattr-defaults so stub
+    configs without an ``embodiment`` attribute (laptop tests) still
+    construct.  Returns ``(pick_min_z_m, silence_means_empty, frame,
+    min_arm_dur_s)``.  The default values mirror the config dataclasses in
+    brain/config_loader.py (-0.35 / True / 'torso' / 1.5).
+
+    ``with_descent=True`` ALSO computes the low-workspace descent lane's own
+    inputs (plan §8 W4, plus the confirm-timeout knob added by repair A4 and the
+    operation budget added by this round) and appends them as a 5th element —
+    ``(low_workspace_lane, height_stand_m, height_min_m, hold_tol_m,
+    descend_confirm_timeout_s, lane_operation_budget_s)``, plain values, so the
+    caller needs no lane object and this function needs no import.  The
+    operation budget is the ONE input read WITHOUT a gateway-side default: it is
+    ``None`` whenever the envelope omits or malforms the key, and ``None`` means
+    "the lane keeps its own module default"
+    (``descent_lane.LANE_OPERATION_BUDGET_S``), so no second authority for that
+    number exists here.  The
+    DEFAULT arity is deliberately unchanged: the 4-tuple is what the shipped
+    callers (gateway_from_config's non-lane branch, _RosGateway, and the
+    laptop config/seam tests) unpack, so every pre-lane call site stays
+    byte-identical.  ``low_workspace_lane`` is armed only by a real bool
+    ``True`` — the strict discipline the config loader itself applies
+    (brain/config_loader.py:802-805) — so a string "false" or a numeric 0 can
+    never arm a motion lane.
+    """
+    emb = getattr(cfg, "embodiment", None)
+    envelope = getattr(emb, "envelope", None) if emb is not None else None
+    perception = getattr(emb, "perception", None) if emb is not None else None
+    try:
+        pick_min_z_m = float(
+            getattr(envelope, "pick_min_height_m", PICK_MIN_Z_M) or PICK_MIN_Z_M)
+    except (TypeError, ValueError):
+        pick_min_z_m = PICK_MIN_Z_M
+    try:
+        min_arm_dur_s = float(
+            getattr(envelope, "min_arm_dur_s", MIN_ARM_DUR_S_DEFAULT)
+            or MIN_ARM_DUR_S_DEFAULT)
+    except (TypeError, ValueError):
+        min_arm_dur_s = MIN_ARM_DUR_S_DEFAULT
+    silence_means_empty = bool(
+        getattr(perception, "silence_means_empty", True)
+        if perception is not None else True)
+    frame = (
+        getattr(perception, "frame", DETECTIONS_FRAME_DEFAULT)
+        if perception is not None else DETECTIONS_FRAME_DEFAULT)
+    if not with_descent:
+        return pick_min_z_m, silence_means_empty, frame, min_arm_dur_s
+    descent = (
+        bool(getattr(envelope, "low_workspace_lane", False) is True),
+        _descent_config_float(envelope, "height_stand_m",
+                              HEIGHT_STAND_M_DEFAULT),
+        _descent_config_float(envelope, "height_min_m", HEIGHT_MIN_M_DEFAULT),
+        _descent_config_float(envelope, "hold_tol_m", HOLD_TOL_M_DEFAULT),
+        _descent_config_float(envelope, "descend_confirm_timeout_s",
+                              DESCENT_CONFIRM_TIMEOUT_S_DEFAULT),
+        # no gateway-side default here, on purpose: None means the lane's own
+        # LANE_OPERATION_BUDGET_S.
+        _descent_operation_budget(envelope),
+    )
+    return pick_min_z_m, silence_means_empty, frame, min_arm_dur_s, descent
