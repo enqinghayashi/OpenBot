@@ -1203,3 +1203,39 @@ class EngineBridge:
         #: starts and always comes back empty.
         self._stderr_thread: Optional[threading.Thread] = None
 
+    def _stderr_report(self) -> str:
+        """Exit status + stderr tail of the spawned engine, collected SYNCHRONOUSLY.
+
+        WHY THIS EXISTS (2026-09-21, measured on Stuart).  ``_drain_stderr``
+        runs on a daemon thread and the handshake below raises the moment
+        ``readline`` returns None — which is the moment stdout hits EOF, i.e.
+        the moment a DYING engine exits.  The thread has then had
+        microseconds, so ``self._stderr_tail`` is still empty and the operator
+        is told ``pick engine did not print READY (stderr tail: )``.  The one
+        diagnostic that could name the cause was guaranteed not to have run
+        yet: the failure that prompted this fix reported an empty tail for a
+        spawn that had in fact died before READY, and a full multi-agent
+        forensic workflow could not recover the reason from it.
+
+        The drainer ends at EOF, so joining it returns as soon as the process
+        is gone.  The exit status is included because a rc the caller never
+        saw was the other half of the blind spot: a spawn that died with a
+        traceback and rc=1 and a spawn that never started at all (rc=127) read
+        identically before this.
+        """
+        proc, thread = self._proc, self._stderr_thread
+        rc = proc.poll() if proc is not None else None
+        # join only when the process is already gone: stdout and stderr have
+        # hit EOF by then and the join costs microseconds. on a reply timeout
+        # against a live process there is no EOF, so joining would burn the
+        # whole budget for nothing. report the tail as it stands.
+        if rc is not None and thread is not None:
+            try:
+                thread.join(timeout=2.0)
+            except RuntimeError:
+                pass  # the thread never started
+        tail = " | ".join(self._stderr_tail[-3:])
+        return "rc=%s stderr tail: %s" % (rc, tail or "<empty>")
+
+    # ── lifecycle ───────────────────────────────────────────────────────────────
+
