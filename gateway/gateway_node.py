@@ -1621,3 +1621,5 @@ def _arm_pose_deviation(q14: Any) -> Optional[float]:
                       for poses in SAFE_ARM_POSES.values())
         worst = max(worst, nearest)
     return worst
+
+
