@@ -1750,3 +1750,12 @@ def _b5_resolve_alias(text: str) -> str:
     except Exception:  # noqa: BLE001 — no alias map is no reason to refuse
         return text
     return out if isinstance(out, str) and out else text
+
+
+#: strip leading colour words off a scene name ('green_cup_2' -> 'cup').
+_B7_COLOUR_WORDS = frozenset((
+    "red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink",
+    "white", "black", "grey", "gray", "teal", "turquoise", "aqua", "navy",
+    "maroon", "crimson", "scarlet", "violet", "lilac", "magenta", "gold", "lime"))
+
+
