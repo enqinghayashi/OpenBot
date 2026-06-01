@@ -1297,3 +1297,17 @@ class EngineBridge:
                 pass
             return False
 
+    def _drop_socket_unlocked(self) -> None:
+        """Forget a dead/failed socket so the next call can re-attach or spawn.
+
+        Also used on a reply TIMEOUT: the engine may still be executing, and a
+        late reply must never be mistaken for the next command's answer.
+        """
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+        self._sock = None
+        self._sock_reader = None
+
