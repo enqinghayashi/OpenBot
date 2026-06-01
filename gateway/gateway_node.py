@@ -1713,3 +1713,27 @@ def _insert_before_engine_reply(reply: str, tok: str) -> str:
     if idx < 0:
         return reply + tok
     return reply[:idx] + tok + reply[idx:]
+
+
+#: the one post-send transport failure where the sweep goes
+#: writer-direct: a failed socket send, whose text is
+#: EngineBridge._send_socket_unlocked's own. the other post-send form,
+#: timed out or dropped the connection, cannot tell a dead engine from
+#: one still executing, so that sweep goes to the engine's queued `park`
+#: first: a live engine answers after its command, and a dead one
+#: refuses the connect so the park falls back to the writer.
+ENGINE_SEND_FAILED_PREFIX = (ENGINE_TRANSPORT_ERROR_PREFIX
+                             + "pick engine socket send failed")
+
+#: label match: the hint is the brain's raw pick `label`, and the
+#: taught workflow hands the model the scene-graph ref, so the brief
+#: prints 'bottle_1: bottle x=...' and the model calls
+#: pick(label='bottle_1'). perception rows carry the class label with
+#: ref None, so a raw equality test would refuse every ref-form re-pick.
+#: read the hint at class level instead: lowercased, a trailing _<n>
+#: suffix stripped, '_' read as a space (the scene graph keys
+#: 'cell phone' as 'cell_phone_1'), plus the brain's alias map
+#: ('me' -> 'person').
+_B5_REF_SUFFIX_RE = re.compile(r"_\d+$")
+
+
