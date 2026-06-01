@@ -1740,3 +1740,5 @@ _B5_REF_SUFFIX_RE = re.compile(r"_\d+$")
 def _b5_norm_label(text: Any) -> str:
     """Lowercase, '_' read as a space, whitespace collapsed."""
     return " ".join(str(text).strip().lower().replace("_", " ").split())
+
+
