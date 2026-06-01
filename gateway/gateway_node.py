@@ -1742,3 +1742,11 @@ def _b5_norm_label(text: Any) -> str:
     return " ".join(str(text).strip().lower().replace("_", " ").split())
 
 
+def _b5_resolve_alias(text: str) -> str:
+    """brain.known_labels.resolve_alias, or the identity without it."""
+    try:
+        from brain.known_labels import resolve_alias  # lazy import keeps the module stdlib-only
+        out = resolve_alias(text)
+    except Exception:  # noqa: BLE001 — no alias map is no reason to refuse
+        return text
+    return out if isinstance(out, str) and out else text
