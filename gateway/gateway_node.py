@@ -2519,3 +2519,15 @@ class GatewayNode:
         """
         return
 
+    def navigate(self, label: str) -> None:
+        """Hook: publish label + auto-'confirm' on /navigate_target (no-op).
+
+        The coordinator (pick_walk_coordinator.py) runs a TWO-STEP handshake:
+        a bare label only stages PENDING, and the search-then-go handshake
+        fires only on a separate 'confirm' message. ``_RosGateway`` overrides
+        this with the real topic publishes (label then 'confirm'); tests and
+        the laptop core replace it with a recorder. The default is a no-op so
+        the dispatch path is testable without ROS.
+        """
+        return
+
