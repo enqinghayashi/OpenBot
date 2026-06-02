@@ -2282,3 +2282,28 @@ class GatewayNode:
 
     # ── camera lane (vision.enabled only, fed by _RosGateway._on_camera) ────
 
+    def on_camera_frame(self, raw: bytes, width: int = 0, height: int = 0,
+                        encoding: str = "") -> None:
+        """Ingest one raw camera frame (bytes) — NEVER encodes here.
+
+        The DDS callback path copies the frame buffer to bytes and hands
+        it off; this stamps the arrival time and stores the LATEST frame
+        under the lock (CAMERA PLAN LAW: encode happens on the worker
+        thread, never on the DDS thread).  The JPEG worker starts lazily
+        on the first frame.
+
+        The optional ``width``/``height``/``encoding`` (the
+        sensor_msgs/Image metadata) are copied alongside the buffer so
+        the worker can RESHAPE the uncompressed payload instead of
+        imdecoding it.  The defaults preserve the historical
+        dimensionless callers (encoded JPEG/PNG bytes) byte-for-byte —
+        they keep the imdecode path.
+        """
+        with self._cam_lock:
+            self._latest_raw = raw
+            self._latest_raw_w = int(width or 0)
+            self._latest_raw_h = int(height or 0)
+            self._latest_raw_enc = str((encoding or "").strip())
+            self._latest_raw_ts = time.time()
+        self._ensure_camera_worker()
+
