@@ -2307,3 +2307,13 @@ class GatewayNode:
             self._latest_raw_ts = time.time()
         self._ensure_camera_worker()
 
+    def _ensure_camera_worker(self) -> None:
+        """Start the JPEG-encode daemon lazily on the first frame."""
+        with self._cam_lock:
+            if self._cam_thread is not None or self._cam_stop.is_set():
+                return
+            thread = threading.Thread(target=self._camera_encode_loop,
+                                      name="camera-jpeg", daemon=True)
+            self._cam_thread = thread
+        thread.start()  # start the thread outside the lock
+
