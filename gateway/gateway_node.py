@@ -1793,3 +1793,16 @@ def _b5_row_matches_hint(det: Any, hint_keys: frozenset) -> bool:
     return False
 
 
+def _parse_writer_status_lines(text: str) -> List[Tuple[float, str, int, int, int]]:
+    """Every writer status line in ``text`` as (t, arm, mode, Tmax, hold)."""
+    out = []
+    for line in text.splitlines():
+        m = WRITER_STATUS_LINE_RE.search(line)
+        if m is None:
+            continue
+        try:
+            out.append((float(m.group(1)), m.group(2), int(m.group(3)),
+                        int(m.group(4)), int(m.group(5))))
+        except ValueError:
+            continue
+    return out
