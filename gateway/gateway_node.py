@@ -2496,3 +2496,17 @@ class GatewayNode:
         if thread is not None:
             thread.join(timeout=1.0)
 
+    def _emit_verdict(self, verdict_str: str) -> None:
+        """Publish ``verdict_str`` on /skill_verdict unless a lane run on THIS
+        thread is deferring it (R4-DL-01).
+
+        The lane path publishes the verdict it RETURNS — after the post-
+        dispatch body check may have downgraded the engine's — from
+        ``_low_lane_sequence``, once.  Everything else publishes here, once,
+        exactly as ``_verify`` always did.
+        """
+        tls = getattr(self, "_verdict_tls", None)
+        if tls is not None and getattr(tls, "defer", False):
+            return                      # a lane run already owns the publish
+        self.publish_verdict(verdict_str)
+
