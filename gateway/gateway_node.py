@@ -1750,3 +1750,59 @@ def _b5_resolve_alias(text: str) -> str:
     except Exception:  # noqa: BLE001 — no alias map is no reason to refuse
         return text
     return out if isinstance(out, str) and out else text
+
+
+#: strip leading colour words off a scene name ('green_cup_2' -> 'cup').
+_B7_COLOUR_WORDS = frozenset((
+    "red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink",
+    "white", "black", "grey", "gray", "teal", "turquoise", "aqua", "navy",
+    "maroon", "crimson", "scarlet", "violet", "lilac", "magenta", "gold", "lime"))
+
+
+def _b5_hint_class_keys(hint: Any) -> frozenset:
+    """The class keys a pick hint names; empty == no hint (label inert).
+
+    B7: a brain scene name ('green_cup_2') also yields its class ('cup'):
+    perception rows never carry the colour prefix (MEASURED 2026-10-06: a
+    fresh cup 2 mm from the target was refused as stale_target)."""
+    text = str(hint or "").strip().lower()
+    if not text:
+        return frozenset()
+    keys = set()
+    forms = [text, _B5_REF_SUFFIX_RE.sub("", text)]
+    for form in list(forms):
+        words = form.replace("_", " ").split()
+        if len(words) > 1 and words[0] in _B7_COLOUR_WORDS:
+            forms.append(" ".join(words[1:]))
+    for form in forms:
+        keys.add(_b5_norm_label(form))
+        keys.add(_b5_norm_label(_b5_resolve_alias(form)))
+        keys.add(_b5_norm_label(_b5_resolve_alias(form.replace("_", " "))))
+    keys.discard("")
+    return frozenset(keys)
+
+
+def _b5_row_matches_hint(det: Any, hint_keys: frozenset) -> bool:
+    """Does a detection row name the hinted class?  No hint -> True."""
+    if not hint_keys:
+        return True
+    for attr in ("label", "class_name"):
+        val = getattr(det, attr, None)
+        if isinstance(val, str) and _b5_norm_label(val) in hint_keys:
+            return True
+    return False
+
+
+def _parse_writer_status_lines(text: str) -> List[Tuple[float, str, int, int, int]]:
+    """Every writer status line in ``text`` as (t, arm, mode, Tmax, hold)."""
+    out = []
+    for line in text.splitlines():
+        m = WRITER_STATUS_LINE_RE.search(line)
+        if m is None:
+            continue
+        try:
+            out.append((float(m.group(1)), m.group(2), int(m.group(3)),
+                        int(m.group(4)), int(m.group(5))))
+        except ValueError:
+            continue
+    return out
