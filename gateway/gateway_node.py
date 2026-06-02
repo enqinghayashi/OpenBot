@@ -2531,3 +2531,13 @@ class GatewayNode:
         """
         return
 
+    def set_walk_instance(self, target: str) -> None:
+        """Hook (B8): publish the navigate target on /walk_instance (no-op here).
+
+        ``target`` is '<label>#<iid>@<hue>' to make the walk FSM follow ONE
+        object of a class, or the bare label to clear that.  ``_RosGateway``
+        overrides this; the coordinator and /navigate_target only ever see
+        the bare label.
+        """
+        return
+
