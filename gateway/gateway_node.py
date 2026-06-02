@@ -2435,3 +2435,40 @@ class GatewayNode:
             self._encode_error_reason = "encode_exception"
             return None
 
+    def _reshape_raw_frame(self, raw: bytes, width: int, height: int,
+                           encoding: str):
+        """Uncompressed sensor_msgs/Image payload -> BGR ndarray; None honest.
+
+        Only the three encodings the camera actually emits are accepted —
+        bgr8 (encode directly), rgb8 (swap to BGR first; cv2.imencode
+        expects BGR), mono8 (single channel).  Anything else, or a buffer
+        whose length does not equal width*height*channels, returns None
+        (HONESTY LAW: never a guessed reshape).  Lazy numpy import; never
+        raises (the caller turns any exception into an honest None).
+        """
+        try:
+            import numpy as np  # lazy: numpy is an optional platform dep
+        except Exception:
+            self._encode_error_reason = "missing_numpy"
+            return None
+        try:
+            enc = (encoding or "").strip().lower()
+            if enc == "mono8":
+                channels = 1
+            elif enc in ("bgr8", "rgb8"):
+                channels = 3
+            else:
+                self._encode_error_reason = "unsupported_encoding:%s" % enc
+                return None
+            if len(raw) != width * height * channels:
+                self._encode_error_reason = "size_mismatch"
+                return None
+            img = np.frombuffer(raw, dtype=np.uint8).reshape(
+                (int(height), int(width), channels))
+            if enc == "rgb8":
+                img = img[:, :, ::-1]  # RGB -> BGR, cv2.imencode wants BGR
+            return img
+        except Exception:
+            self._encode_error_reason = "reshape_failed"
+            return None
+
