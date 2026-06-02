@@ -1808,3 +1808,20 @@ def _parse_writer_status_lines(text: str) -> List[Tuple[float, str, int, int, in
     return out
 
 
+def _trailing_span(samples: List[Tuple[float, str, int, int, int]],
+                   pred) -> float:
+    """Writer-clock span of the trailing run of samples satisfying ``pred``.
+
+    0.0 when the newest sample fails ``pred``.  The span is newest.t minus the
+    t of the EARLIEST sample of the unbroken trailing run, so "hot for 5 s"
+    needs hot samples covering 5 s of the writer's own clock (at 1 Hz: six
+    consecutive hot samples) — four hot seconds after a cool one is NOT 5 s.
+    """
+    if not samples or not pred(samples[-1]):
+        return 0.0
+    first = samples[-1][0]
+    for s in reversed(samples):
+        if not pred(s):
+            break
+        first = s[0]
+    return samples[-1][0] - first
