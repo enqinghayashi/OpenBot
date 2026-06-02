@@ -2541,3 +2541,17 @@ class GatewayNode:
         """
         return
 
+    def stop_walk(self) -> None:
+        """Hook: route 'stop' through the coordinator (no-op outside ROS).
+
+        The gateway publishes 'stop' to ``/navigate_target``; the coordinator
+        (pick_walk_coordinator.py) resets its own epoch/flow state AND relays
+        the walk FSM's REAL stop trigger — a ``/walk_target`` message whose
+        data is 'stop' (or 'abort'), which walk_node.py queues as a
+        ('stop', None) command for the FSM loop (skills/locomotion/walk_node.py
+        _on_walk_target). ``/walk_go`` is NOT a stop channel: it queues an
+        approach trigger and must never carry a stop label. ``_RosGateway``
+        overrides this.
+        """
+        return
+
