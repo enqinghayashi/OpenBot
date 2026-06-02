@@ -2555,3 +2555,25 @@ class GatewayNode:
         """
         return
 
+    def start_sweep(self, label: str) -> None:
+        """Hook: publish a bare label DIRECTLY on /walk_target (no-op here).
+
+        The turn-around sweep's one acting line (see ``_do_turn_around``).
+        Deliberately NOT ``navigate()``: that path goes through
+        /navigate_target, where pick_walk_coordinator.py's auto-approach
+        (/walk_go on the 3rd consecutive detection beat) would walk the robot
+        TO the person — the one thing the operator's ask excludes.  A direct
+        /walk_target publish reaches walk_node._on_walk_target itself, which
+        queues ('target', label) and starts the FSM when it is idle: the FSM
+        sweeps and its own ``_sweep_turn`` interrupts on first sight.
+
+        After the sweep sights the person the gateway ALSO calls ``stop_walk()``
+        (batch 2) and then centres them itself; see ``_do_turn_around``.
+
+        The laptop-testable core is quiet; ``_RosGateway`` overrides this to
+        publish on the topic.  Tests replace it with a recorder.
+        """
+        return
+
+    # ── skill bridges (arm / walk / grip) ───────────────────────────────────
+
