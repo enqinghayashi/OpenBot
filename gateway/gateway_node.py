@@ -2195,3 +2195,48 @@ class GatewayNode:
 
     # ── ROS-facing hooks (all implemented by _RosGateway) ────────────────────
 
+    def on_detections_packet(self, rows: List[dict]) -> None:
+        """Ingest one /object_detections_body packet (event-driven)."""
+        with self._obs_lock:
+            self._assembler.update(detections=rows)
+            # radius history for the radius_park feature. only samples with an
+            # instance_id, quality >= 0.6 and radius in [0.010, 0.080]; at most 15 per
+            # object, anything older than 4.0 s relative to the newest trimmed.
+            now = time.time()
+            self._note_normals(rows, now)        #: the pick-line normals
+            for row in rows:
+                iid = row.get('instance_id')
+                if iid is None:
+                    continue
+                try:
+                    r = float(row.get('object_radius', 0.0) or 0.0)
+                    q = float(row.get('quality', 0.0) or 0.0)
+                    # half the lateral width, for 'pca'/'sphere' fits
+                    if (getattr(self, '_radius_park_width_on', True)
+                            and str(row.get('primitive_type') or '')
+                            in RADIUS_PARK_WIDTH_TYPES):
+                        _w = float(row.get('width_m') or 0.0)
+                        if math.isfinite(_w) and _w > 0.0:
+                            r = 0.5 * _w
+                    if q >= 0.6 and 0.010 <= r <= 0.080:
+                        if iid not in self._obj_radius_history:
+                            self._obj_radius_history[iid] = []
+                        self._obj_radius_history[iid].append((now, r, q))
+                except (TypeError, ValueError):
+                    pass
+            # trim: at most 15 samples, nothing older than 4.0 s
+            for iid in list(self._obj_radius_history.keys()):
+                samples = self._obj_radius_history[iid]
+                if samples:
+                    newest_ts = max(s[0] for s in samples)
+                    # time filter first, then keep the 15 newest
+                    samples[:] = [s for s in samples
+                                  if s[0] >= newest_ts - 4.0]
+                    if len(samples) > 15:
+                        samples[:] = samples[-15:]
+                    if not samples:
+                        del self._obj_radius_history[iid]
+        if getattr(self, "_container_lock", None) is not None:
+            self._lock_ingest(rows)      # track the container
+        self._b8l_rows = (time.time(), list(rows))   # row snapshot for the requester
+
