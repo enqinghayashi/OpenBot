@@ -2240,3 +2240,45 @@ class GatewayNode:
             self._lock_ingest(rows)      # track the container
         self._b8l_rows = (time.time(), list(rows))   # row snapshot for the requester
 
+    def on_walk_status_packet(self, payload: dict) -> None:
+        """Ingest one /walk_status payload; feed the navigate epoch gate.
+
+        Timestamps each message on arrival (the payload has no ts field).
+        Phases observed at ts >= the current nav_epoch accumulate in
+        ``phases_seen`` as (state, label, ts) tuples — the verifier's
+        transition guard AND its label-vs-target check need them (fix 1).
+        """
+        now = time.time()
+        phase = None
+        phase_raw = None
+        label = None
+        if isinstance(payload, dict):
+            state = payload.get("state")
+            if isinstance(state, str) and state.strip():
+                phase = state.strip().upper()
+                phase_raw = phase  # un-folded: turn_around keeps DETECTED distinct
+                if phase == "DETECTED":  # vocab event that happens inside SEARCHING
+                    phase = "SEARCHING"
+            lbl = payload.get("label")
+            if isinstance(lbl, str) and lbl.strip():
+                label = lbl.strip().lower()
+        with self._obs_lock:
+            self._assembler.update(walk_payload=payload, now=now)
+            self._last_walk_ts = now
+            if phase is not None:          #: the live FSM state
+                self._last_walk_phase = phase
+                self._last_walk_label = label
+            if getattr(self, "_turn_active", False) and phase_raw:
+                self._turn_events.append((phase_raw, label, now))
+            if getattr(self, "_pose_active", False) and phase_raw:   # pose is active
+                self._pose_events.append((phase_raw, label, payload, now))
+            epoch_ts, _ = self._nav_epoch
+            if phase is not None and epoch_ts > 0.0 and now >= epoch_ts:
+                self._phases_seen.append((phase, label, now))
+        if getattr(self, "_container_lock", None) is not None:
+            self._lock_on_walk(phase_raw, label, payload)   # container lock
+        if getattr(self, "_nav_strict", None) is not None:
+            self._strict_on_walk(phase_raw, label, payload)  # strict
+
+    # ── camera lane (vision.enabled only, fed by _RosGateway._on_camera) ────
+
