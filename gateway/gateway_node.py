@@ -2577,3 +2577,6 @@ class GatewayNode:
 
     # ── skill bridges (arm / walk / grip) ───────────────────────────────────
 
+    def writer_verb(self, line: str, timeout_s: float = 15.0) -> str:
+        return _send_unix_verb(self._writer_sock, line, timeout_s)
+
