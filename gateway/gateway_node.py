@@ -2510,3 +2510,12 @@ class GatewayNode:
             return                      # a lane run already owns the publish
         self.publish_verdict(verdict_str)
 
+    def publish_verdict(self, verdict_str: str) -> None:
+        """Hook: publish a /skill_verdict String (no-op outside ROS).
+
+        The laptop-testable core is quiet; ``_RosGateway`` overrides this to
+        publish on the topic. A verifier crash must never be masked by this
+        hook — it must not raise into the verifier path.
+        """
+        return
+
