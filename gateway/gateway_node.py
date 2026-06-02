@@ -1684,3 +1684,69 @@ def _arm_safe_pose(q14: Any, segment: bool = False) -> Optional[str]:
             return None
         names.append(hit)
     return names[0] if names[0] == names[1] else "%s+%s" % (names[0], names[1])
+
+
+def _b5_tok_text(text: Any, limit: int = 60) -> str:
+    """Make arbitrary text safe inside a ``name=value(<text>)`` reply token.
+
+    Defangs ``ERROR:`` (an embedded literal would flip the whole envelope to
+    ok:false — see _defang_error_token) and replaces the reply's own
+    delimiters (``;``, ``|``, parentheses) and newlines, so a token can never
+    split the reply grammar the brain parses.
+    """
+    out = _defang_error_token(str(text))
+    for ch in "\r\n":
+        out = out.replace(ch, " ")
+    for ch in ";|()":
+        out = out.replace(ch, "_")
+    return out.strip()[:limit]
+
+
+def _insert_before_engine_reply(reply: str, tok: str) -> str:
+    """Insert ``tok`` (``; name=value``) before ``; engine_reply=``, else append.
+
+    brain/verifier.py ``_ENGINE_REPLY_RE = engine_reply=([^\\r\\n]*)`` is
+    GREEDY to the end of the line, so every new token must precede it or it
+    would be read as part of the engine's own words.
+    """
+    idx = reply.find("; engine_reply=")
+    if idx < 0:
+        return reply + tok
+    return reply[:idx] + tok + reply[idx:]
+
+
+#: the one post-send transport failure where the sweep goes
+#: writer-direct: a failed socket send, whose text is
+#: EngineBridge._send_socket_unlocked's own. the other post-send form,
+#: timed out or dropped the connection, cannot tell a dead engine from
+#: one still executing, so that sweep goes to the engine's queued `park`
+#: first: a live engine answers after its command, and a dead one
+#: refuses the connect so the park falls back to the writer.
+ENGINE_SEND_FAILED_PREFIX = (ENGINE_TRANSPORT_ERROR_PREFIX
+                             + "pick engine socket send failed")
+
+#: label match: the hint is the brain's raw pick `label`, and the
+#: taught workflow hands the model the scene-graph ref, so the brief
+#: prints 'bottle_1: bottle x=...' and the model calls
+#: pick(label='bottle_1'). perception rows carry the class label with
+#: ref None, so a raw equality test would refuse every ref-form re-pick.
+#: read the hint at class level instead: lowercased, a trailing _<n>
+#: suffix stripped, '_' read as a space (the scene graph keys
+#: 'cell phone' as 'cell_phone_1'), plus the brain's alias map
+#: ('me' -> 'person').
+_B5_REF_SUFFIX_RE = re.compile(r"_\d+$")
+
+
+def _b5_norm_label(text: Any) -> str:
+    """Lowercase, '_' read as a space, whitespace collapsed."""
+    return " ".join(str(text).strip().lower().replace("_", " ").split())
+
+
+def _b5_resolve_alias(text: str) -> str:
+    """brain.known_labels.resolve_alias, or the identity without it."""
+    try:
+        from brain.known_labels import resolve_alias  # lazy import keeps the module stdlib-only
+        out = resolve_alias(text)
+    except Exception:  # noqa: BLE001 — no alias map is no reason to refuse
+        return text
+    return out if isinstance(out, str) and out else text
