@@ -2435,3 +2435,99 @@ class GatewayNode:
             self._encode_error_reason = "encode_exception"
             return None
 
+    def _reshape_raw_frame(self, raw: bytes, width: int, height: int,
+                           encoding: str):
+        """Uncompressed sensor_msgs/Image payload -> BGR ndarray; None honest.
+
+        Only the three encodings the camera actually emits are accepted —
+        bgr8 (encode directly), rgb8 (swap to BGR first; cv2.imencode
+        expects BGR), mono8 (single channel).  Anything else, or a buffer
+        whose length does not equal width*height*channels, returns None
+        (HONESTY LAW: never a guessed reshape).  Lazy numpy import; never
+        raises (the caller turns any exception into an honest None).
+        """
+        try:
+            import numpy as np  # lazy: numpy is an optional platform dep
+        except Exception:
+            self._encode_error_reason = "missing_numpy"
+            return None
+        try:
+            enc = (encoding or "").strip().lower()
+            if enc == "mono8":
+                channels = 1
+            elif enc in ("bgr8", "rgb8"):
+                channels = 3
+            else:
+                self._encode_error_reason = "unsupported_encoding:%s" % enc
+                return None
+            if len(raw) != width * height * channels:
+                self._encode_error_reason = "size_mismatch"
+                return None
+            img = np.frombuffer(raw, dtype=np.uint8).reshape(
+                (int(height), int(width), channels))
+            if enc == "rgb8":
+                img = img[:, :, ::-1]  # RGB -> BGR, cv2.imencode wants BGR
+            return img
+        except Exception:
+            self._encode_error_reason = "reshape_failed"
+            return None
+
+    def close_camera(self) -> None:
+        """Stop the JPEG worker and drop the frame slots (shutdown hygiene).
+
+        The worker is a daemon (the process could exit without this), but a
+        clean stop mirrors the node-destroy pattern: signal, join briefly,
+        and clear the slots so nothing serves frames after close.  Safe to
+        call when the lane was never enabled.
+        """
+        thread = None
+        with self._cam_lock:
+            self._cam_stop.set()
+            thread = self._cam_thread
+            self._latest_raw = None
+            self._latest_raw_ts = None
+            self._latest_raw_w = 0
+            self._latest_raw_h = 0
+            self._latest_raw_enc = ""
+            self._jpeg_b64 = None
+            self._jpeg_w = 0
+            self._jpeg_h = 0
+            self._jpeg_ts = None
+        if thread is not None:
+            thread.join(timeout=1.0)
+
+    def _emit_verdict(self, verdict_str: str) -> None:
+        """Publish ``verdict_str`` on /skill_verdict unless a lane run on THIS
+        thread is deferring it (R4-DL-01).
+
+        The lane path publishes the verdict it RETURNS — after the post-
+        dispatch body check may have downgraded the engine's — from
+        ``_low_lane_sequence``, once.  Everything else publishes here, once,
+        exactly as ``_verify`` always did.
+        """
+        tls = getattr(self, "_verdict_tls", None)
+        if tls is not None and getattr(tls, "defer", False):
+            return                      # a lane run already owns the publish
+        self.publish_verdict(verdict_str)
+
+    def publish_verdict(self, verdict_str: str) -> None:
+        """Hook: publish a /skill_verdict String (no-op outside ROS).
+
+        The laptop-testable core is quiet; ``_RosGateway`` overrides this to
+        publish on the topic. A verifier crash must never be masked by this
+        hook — it must not raise into the verifier path.
+        """
+        return
+
+    def navigate(self, label: str) -> None:
+        """Hook: publish label + auto-'confirm' on /navigate_target (no-op).
+
+        The coordinator (pick_walk_coordinator.py) runs a TWO-STEP handshake:
+        a bare label only stages PENDING, and the search-then-go handshake
+        fires only on a separate 'confirm' message. ``_RosGateway`` overrides
+        this with the real topic publishes (label then 'confirm'); tests and
+        the laptop core replace it with a recorder. The default is a no-op so
+        the dispatch path is testable without ROS.
+        """
+        return
+
