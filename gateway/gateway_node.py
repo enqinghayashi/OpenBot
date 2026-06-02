@@ -2384,3 +2384,54 @@ class GatewayNode:
                 return
             self._cam_stop.wait(timeout=0.1)
 
+    def _encode_jpeg(self, raw: bytes, width: int = 0, height: int = 0,
+                     encoding: str = "") -> Optional[Tuple[str, int, int]]:
+        """raw frame bytes -> (base64 jpeg str, w, h); None on failure.
+
+        Two decode paths:
+          * DIMENSIONED (width & height & encoding all set): the buffer is
+            an UNCOMPRESSED sensor_msgs/Image payload — RESHAPE it via
+            ``_reshape_raw_frame`` (bgr8 direct / rgb8 BGR-swapped / mono8
+            single channel) instead of imdecoding.  A size mismatch or an
+            unsupported encoding is an honest None (never a guessed
+            reshape).
+          * DIMENSIONLESS (the defaults): the historical callers feed
+            ENCODED bytes (JPEG/PNG with a header); keep the imdecode
+            route byte-for-byte.
+        Lazy cv2/numpy imports (optional platform deps); any failure —
+        missing cv2, undecodable frame, encoder error — returns None and
+        never raises (the worker turns None into ``_encode_error``).
+        Every failure also records a short reason in
+        ``_encode_error_reason`` (worker-thread-owned diagnostic), so a
+        fresh:false answer can say WHICH link failed.
+        """
+        try:
+            import base64
+            import cv2  # lazy: OpenCV is an optional platform dep
+        except Exception:
+            self._encode_error_reason = "missing_cv2"
+            return None
+        try:
+            import numpy as np  # lazy: numpy is an optional platform dep
+            if width and height and encoding:
+                img = self._reshape_raw_frame(raw, width, height, encoding)
+                if img is None:
+                    return None
+            else:
+                img = cv2.imdecode(
+                    np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+                if img is None:
+                    self._encode_error_reason = "imdecode_failed"
+                    return None
+            ok_flag, buf = cv2.imencode(
+                ".jpg", img,
+                [cv2.IMWRITE_JPEG_QUALITY, int(self._vision_jpeg_quality)])
+            if not ok_flag:
+                self._encode_error_reason = "imencode_failed"
+                return None
+            return (base64.b64encode(buf.tobytes()).decode("ascii"),
+                    int(img.shape[1]), int(img.shape[0]))
+        except Exception:
+            self._encode_error_reason = "encode_exception"
+            return None
+
