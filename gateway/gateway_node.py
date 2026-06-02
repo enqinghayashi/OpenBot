@@ -1834,3 +1834,364 @@ class GatewayNode:
     ``_RosGateway`` (see below) so laptop tests exercise this class directly.
     """
 
+    def __init__(self, writer_sock: str = WRITER_SOCK_DEFAULT,
+                 grip_sock: str = GRIP_SOCK_DEFAULT,
+                 engine_cmd: str = "",
+                 engine_sock: str = ENGINE_SOCK_DEFAULT,
+                 max_stale_s: float = MAX_STALE_S_DEFAULT,
+                 pick_min_z_m: float = PICK_MIN_Z_M,
+                 min_arm_dur_s: float = MIN_ARM_DUR_S_DEFAULT,
+                 silence_means_empty: bool = True,
+                 detections_frame: str = DETECTIONS_FRAME_DEFAULT,
+                 vision_enabled: bool = False,
+                 vision_topic: str = VISION_TOPIC_DEFAULT,
+                 vision_max_age_s: float = VISION_MAX_AGE_S_DEFAULT,
+                 vision_jpeg_quality: int = VISION_JPEG_QUALITY_DEFAULT,
+                 vision_min_interval_s: float = VISION_MIN_INTERVAL_S_DEFAULT,
+                 low_workspace_lane: bool = False,
+                 height_stand_m: float = HEIGHT_STAND_M_DEFAULT,
+                 height_min_m: float = HEIGHT_MIN_M_DEFAULT,
+                 hold_tol_m: float = HOLD_TOL_M_DEFAULT,
+                 descend_confirm_timeout_s: float = (
+                     DESCENT_CONFIRM_TIMEOUT_S_DEFAULT),
+                 operation_budget_s: Optional[float] = None,
+                 pre_descent_step: bool = False,
+                 pc_shadow: bool = False,
+                 pc_hold_check: bool = False,
+                 pc_place_rim: bool = False):
+        from gateway.assemble import (Assembler, CLOSE_CONTACT_WINDOW_S,  # lazy import
+                                      GRIP_STATE_MAX_AGE_S)
+
+        self._writer_sock = writer_sock
+        self._grip_sock = grip_sock
+        self._pick_min_z_m = pick_min_z_m
+        #: runtime embodiment: arm-dispatch duration floor (config key
+        #: envelope.min_arm_dur_s; the writer clamps at 1.5 s and the larger
+        #: wins), the silence-means-empty switch
+        #: (perception.silence_means_empty, which feeds the assembler's silence
+        #: semantics), and the detections frame name (perception.frame, served
+        #: by status and documenting the cmd_set omega sign).
+        self._min_arm_dur_s = float(min_arm_dur_s)
+        self._silence_means_empty = bool(silence_means_empty)
+        self._detections_frame = detections_frame or DETECTIONS_FRAME_DEFAULT
+        self._assembler = Assembler(max_stale_s=max_stale_s,
+                                    silence_means_empty=self._silence_means_empty)
+        self._obs_lock = threading.Lock()
+        self._engine_sock = engine_sock or ENGINE_SOCK_DEFAULT
+        self._engine = (
+            EngineBridge(engine_cmd, self._engine_sock) if engine_cmd else None
+        )
+        # /place_target lane. the pure half is stdlib-only, rclpy-free and
+        # unit-testable. one non-blocking lock turns a concurrent /place_target
+        # into an honest refusal rather than a queue: a second place queuing
+        # would release into a scene the first changed.
+
+        from gateway import place_target as place_target_law  # lazy, needs package ctx
+        self._place_target_law = place_target_law
+        self._place_target_lock = threading.Lock()
+        # ── low-workspace descent lane ─────────────────────────────────────────
+        # the lane is a lazy import in try/except, like the sonic lane's
+        # degeneracy guard: a missing or broken module leaves self._low_lane
+        # None, so the dispatch guard never fires and every low pick or place
+        # degrades to an honest refusal, never a crash or a silent success.
+        # only a real bool true arms it.
+        try:
+            from gateway import descent_lane as descent_lane_law  # lazy import
+        except Exception as _exc:  # noqa: BLE001 — degrade, never raise
+            descent_lane_law = None
+            print("[descent] descent_lane import FAILED (%r) — low-workspace "
+                  "lane FORCED OFF" % (_exc,), flush=True)
+        # one non-blocking lock for the whole lane skill: a second lane skill
+        # queued behind the first would descend from, or retreat out of, a body
+        # height the first still uses, so it is refused (DESCENT_BUSY_MSG),
+        # never queued.
+        self._descent_lock = threading.Lock()
+        self._low_lane = None
+        self._low_law = None
+        # the confirm-timeout knob: the loader parses it into
+        # EnvelopeConfig.descend_confirm_timeout_s and it is read here, so the
+        # operator-visible key reaches the lane's status poll instead of lying
+        # there. threaded into the LaneLaw below.
+        self._descent_confirm_timeout_s = float(descend_confirm_timeout_s)
+        # the operation budget: the declared per-operation budget the lane's
+        # writer-hold guard refuses below, parsed into
+        # EnvelopeConfig.lane_operation_budget_s and read here. held as
+        # float-or-None and defaulting to None, not a number: None means the lane
+        # keeps its own LANE_OPERATION_BUDGET_S, so this node restates no budget.
+        # a config, a stub or a caller that never sets it all mean the same; a
+        # malformed value degrades to None.
+        self._descent_operation_budget_s = _optional_float(operation_budget_s)
+        # re-entrancy: the /place_target lane sends its inner `place` through
+        # dispatch, and the descent guard also sits in dispatch, so this flag
+        # marks that call nested and the guard declines it. restored in the same
+        # call's `finally`, never left set: a leaked true would quietly disable
+        # the lane for the rest of the process.
+        self._descent_nested = False
+        self._descent_ctx = (descent_lane_law.DescentContext()
+                             if descent_lane_law is not None else None)
+        # the optional pre-descent stance step (envelope.pre_descent_step).
+        # arms only on a real true and an armed lane, since there is nothing to
+        # precede otherwise.
+        self._pre_descent_step = (bool(pre_descent_step is True)
+                                  and low_workspace_lane is True)
+        if descent_lane_law is not None and low_workspace_lane is True:
+            self._low_lane = descent_lane_law
+            # the law inputs, threaded in; this node restates none of them.
+            self._low_law = _lane_law(
+                descent_lane_law.LaneLaw, float(pick_min_z_m),
+                float(height_stand_m), float(height_min_m),
+                float(hold_tol_m), self._descent_confirm_timeout_s,
+                self._descent_operation_budget_s)
+        # ── point-cloud consumer client ────────────────────────────────────────────
+        # absent by default. unless one of embodiment.envelope.pc_shadow /
+        # pc_hold_check / pc_place_rim is a real true, self._pc is None and
+        # nothing here runs: no import, no publisher, no subscription, and every
+        # call site below passes no extra keyword.
+        # flipping a switch on builds the client through the same lazy-import and
+        # degrade idiom, so a missing or broken client leaves the hooks forced
+        # off. any one switch builds it; pc_hold_check makes the lane's hold
+        # check decisive (otherwise it only logs); pc_place_rim lets a good rim
+        # fit replace the place height (otherwise it is logged only). the ROS
+        # publisher and subscription belong to _RosGateway.
+        self._pc = None
+        self._pc_place_rim = False
+        #: the newest measured body pose from the odometry process
+        #: (/openbot/body_pose): the client's pose source.
+        self._body_pose = None
+        self._body_pose_lock = threading.Lock()
+        if pc_shadow is True or pc_hold_check is True or pc_place_rim is True:
+            try:
+                from gateway import pointcloud_client as pc_client_mod  # lazy import
+                # the writer verb and every hook resolve per call, never
+                # captured at construction, so a stubbed `writer_verb` or
+                # `_publish_pc_arm` sees exactly what the client issues.
+                self._pc = pc_client_mod.PcClient(
+                    publish_arm=lambda text: self._publish_pc_arm(text),
+                    clock_wall=time.time, clock_mono=time.monotonic,
+                    writer_verb=lambda line: self.writer_verb(line),
+                    decisive=bool(pc_hold_check is True),
+                    log=lambda message: self._pc_log(message),
+                    pose_source=lambda: self._latest_body_pose())
+                self._pc_place_rim = bool(pc_place_rim is True)
+            except Exception as _exc:  # noqa: BLE001 — degrade, never raise
+                self._pc = None
+                self._pc_place_rim = False
+                print("[pc] pc_client import FAILED (%r) - point-cloud hooks "
+                      "FORCED OFF" % (_exc,), file=sys.stderr, flush=True)
+        # one persistent verifier instance: the navigate epoch gate has to
+        # remember the last confirmed epoch across calls.
+        self._verifier = None
+        # a per-request target hint for the pick verifier.
+        #
+        # why: the pick tool's static contract prose carries no target_label=,
+        # so the gateway's own verify_pick cannot tell what is being picked
+        # and takes the unconfirmable branch, which reads as a
+        # false 'I could not confirm the grasp'. the brain fixes this for its
+        # own verifier by prepending target_label=, but that hook never runs on
+        # this verdict, since _do_pick mints its own through _verify.
+        #
+        # threading: a thread-local, not an instance attribute, because the
+        # server handles connections concurrently and a shared field would leak
+        # one connection's target into another's verdict. correct because the
+        # pick path is synchronous end to end: handle() -> dispatch() ->
+        # _low_lane_pick() -> pick_sequence() -> _do_pick() -> _verify() all run
+        # on that connection's thread. if the lane ever hands a pick to a
+        # worker, this slot has to be passed explicitly.
+        self._req_target_hint = threading.local()
+        # /skill_verdict deferral: a lane run sets `defer` on its own thread so
+        # the engine verdict _verify mints during the run is not published; the
+        # lane then publishes the verdict it returns, after downgrade, once.
+        # thread-local for the same reason as the hint above: another
+        # connection's non-lane verdict must still publish while a lane run
+        # defers.
+        self._verdict_tls = threading.local()
+        # close_adaptive verdicts, tracked gateway-side (side -> (verdict, ts)).
+        # this map is evidence only for the close_hand tool, plus the
+        # informational prev_contact annotations on open_hand. a real engine pick
+        # closes over its own socket, invisible here, so no serialized verdict
+        # can certify a pick; pick grasp evidence is the fresh post-pick
+        # 'state [side]' probe.
+        self._close_verdicts: Dict[str, Tuple[str, float]] = {}
+        self._close_verdict_window_s = CLOSE_CONTACT_WINDOW_S
+        # per-side record of the last engine-verified pick's hold (side -> pick
+        # ts). recorded when a pick's lane poll comes back up, because the
+        # engine's DONE is engine-verified and the hold is real; cleared at the
+        # start of any new pick on that side, by an open command for that side,
+        # and by a successful drop (both hands open). the verifier's place path
+        # reads it as 'prev_pick_verified'.
+        self._last_verified_grasp: Dict[str, float] = {}
+        #: side -> time.time() of the last DONE place (refusal note only).
+        self._last_place_release: Dict[str, float] = {}
+        # daemon-lane hold evidence: the newest /pick_state payload as a dict
+        # {held, alive, ts, side, state}, or None before the first one. read
+        # only through _daemon_held_side(), which applies the freshness gate: a
+        # stale record must never authorise a place (PICK_STATE_MAX_AGE_S).
+        self._pick_state_hold: Optional[Dict[str, object]] = None
+        #: flips true once any /pick_state frame has been folded in. the motion
+        #: wait (_await_pick_daemon) must not burn its budget on a lane with no
+        #: daemon, and 'never heard from it' is the only honest way to know: a
+        #: currently-empty record looks like one between frames.
+        self._pick_state_seen = False
+        # consumed-once law. the daemon's `held` is its own flag and sticky: set
+        # true on a successful daemon-lane pick and cleared only by the daemon's
+        # own open or error, and the gateway never tells it about a place, since
+        # a release goes to the engine or grip socket rather than
+        # /arm_command. after a release it keeps republishing 'held: true' at
+        # 5 Hz, undoing a cleared record within one interval (<= 200 ms). this
+        # flag makes the clear stick: while set, a daemon 'held: true' is not
+        # evidence. released only at a hold epoch end, either the daemon's own
+        # held:false or the `busy` state starting its next cycle, because
+        # _execute_pick does not touch `held` and two successful picks have no
+        # held:false between them; keying off `held` alone would re-refuse every
+        # later place.
+        self._pick_state_consumed = False
+        self._pick_state_topic = PICK_STATE_TOPIC_DEFAULT
+        self._pick_state_max_age_s = PICK_STATE_MAX_AGE_S
+        # motion-completion wait budgets (_await_pick_daemon), re-read from ROS
+        # params during lane setup, like _pick_state_max_age_s.
+        self._pick_daemon_wait_s = PICK_DAEMON_WAIT_S
+        self._pick_daemon_start_s = PICK_DAEMON_START_S
+        # navigate motion-completion wait budgets (_await_walk_reached). instance
+        # attributes, like the pick pair, so a pin can shorten the wait without
+        # editing source and a ROS param can retune it at runtime.
+        self._nav_wait_s = NAV_WAIT_S
+        self._nav_start_s = NAV_START_S
+        # threshold for the measured held-side tier (_measured_held_side). an
+        # instance attribute, not a bare constant, so a test can move it, and an
+        # out-of-range value is a boot-time error rather than a quietly
+        # different robot.
+        self._closed_eff_min = CLOSED_EFF_MIN
+        if not (0.0 < self._closed_eff_min < 1.0):
+            raise ValueError(
+                "closed_eff_min must be in (0, 1), got %r"
+                % (self._closed_eff_min,))
+        # navigate epoch gate: every /walk_go dispatch makes an epoch
+        # (epoch_ts, target_label); phases pile up as (state, label, ts) for
+        # ts >= epoch_ts, and the label comes from the walk_status payload, so a
+        # REACHED for a different label can never verify. the epoch the verifier
+        # confirmed sits inside the one persistent SkillVerifier
+        # (_nav_confirmed_epoch).
+        self._nav_epoch: Tuple[float, Optional[str]] = (0.0, None)
+        self._phases_seen: List[Tuple[str, Optional[str], float]] = []
+        self._last_walk_ts = 0.0
+        # stop-kills-task: timestamp of the last cancel, stamped in _do_cancel and
+        # polled by _await_walk_reached. without it the motion wait cannot tell
+        # 'the operator ended this' from 'the walk is still going' and burns its
+        # full NAV_WAIT_S. read in-epoch (>= the dispatch's epoch_ts), so a cancel
+        # can never abort a navigate that went out after it. 0.0 means no cancel
+        # stamped, deliberately not a valid epoch.
+        self._cancel_ts = 0.0
+        # ── arm safety / stale target / liveness state ────────────────────────────
+        # master switch (see the module-level arm safety block): off in the core,
+        # armed by _RosGateway from the `arm_safety` ROS param.
+        self._b5_on = False
+        #: when a cancel or abort path last found or left an arm outside
+        #: SAFE_ARM_POSES, and when a park last ended verified at a safe pose. the
+        #: watchdog's `disturbed` conjunct and the stale-target gate read them.
+        self._arm_disturbed_ts = 0.0
+        self._arm_parked_ts = 0.0
+        #: when a post-cancel pick last passed the stale-target gate.
+        self._arm_gate_cleared_ts = 0.0
+        self._arm_safety: Dict[str, Any] = {}
+        #: only one park at a time (non-blocking acquire in _park_arm); each park
+        #: runs on its own thread, so `_park_thread` always names it.
+        self._park_lock = threading.Lock()
+        self._park_start_lock = threading.Lock()
+        self._park_thread: Optional[threading.Thread] = None
+        # unconditional arm-task in-flight counter (in dispatch), separate from
+        # the open-vocab `_motion_enter` counter, which only counts when
+        # `_open_vocab` is true.
+        self._inflight_lock = threading.Lock()
+        self._arm_task_inflight = 0
+        self._arm_idle_since = time.time()
+        self._wd_enabled = False
+        self._wd_thread: Optional[threading.Thread] = None
+        self._wd_stop = threading.Event()
+        self._wd_writer_log_path = WRITER_LOG_PATH_DEFAULT
+        self._wd_attempts = 0
+        self._wd_last_attempt_ts = 0.0
+        self._wd_gave_up = False
+        #: the last disturbance the watchdog saw resolved (arm read safe):
+        #: otherwise a stale _arm_disturbed_ts would park a later deliberate pose.
+        self._wd_disturbed_seen_safe_ts = 0.0
+        self._wd_log_state = "missing"
+        self._wd_last_sample: Optional[Dict[str, Any]] = None
+        # test seams (production uses the real clock and sleep), same as _turn_clock.
+        self._b5_clock = time.time
+        self._b5_sleep = time.sleep
+        # turn_around centring state plus test seams (production uses the real clock
+        # and sleep)
+        self._turn_active = False
+        self._turn_events = []          # raw un-folded (state, label, ts)
+        self._turn_pulsed = False
+        self._turn_clock = time.time
+        self._turn_sleep = time.sleep
+        # the container lock (identity survives label changes) and creep
+        self._lock_setup()
+        # the fetch start point (from odometry) and navigate-hold widening
+        self._b8l_setup()
+        # ── camera lane (optional, and off unless vision.enabled) ────────
+        # the DDS callback does nothing but copy the raw frame buffer into the
+        # lock-guarded slot below; JPEG encoding runs on its own daemon thread,
+        # started lazily on the first frame, never on the DDS thread. cv2 and numpy
+        # are imported lazily inside the encoder, so this core imports cleanly with
+        # no OpenCV around.
+        # throttled cache (vision.min_interval_s): the worker encodes at most one
+        # frame per interval, always the newest; in-between frames are skipped,
+        # never queued. one frame per decision turn stays the caller's job; this
+        # worker only caps encode cost.
+        self._vision_enabled = bool(vision_enabled)
+        self._vision_topic = vision_topic or VISION_TOPIC_DEFAULT
+        self._vision_max_age_s = float(vision_max_age_s or VISION_MAX_AGE_S_DEFAULT)
+        self._vision_jpeg_quality = int(vision_jpeg_quality or VISION_JPEG_QUALITY_DEFAULT)
+        self._vision_min_interval_s = float(
+            vision_min_interval_s or VISION_MIN_INTERVAL_S_DEFAULT)
+        self._cam_lock = threading.Lock()
+        self._latest_raw: Optional[bytes] = None  # raw frame, never encoded here
+        self._latest_raw_ts: Optional[float] = None
+        self._latest_raw_w = 0    # width from sensor_msgs/Image (0 = unknown)
+        self._latest_raw_h = 0    # height from sensor_msgs/Image (0 = unknown)
+        self._latest_raw_enc = ""  # encoding from sensor_msgs/Image ('' = unknown)
+        self._jpeg_b64: Optional[str] = None  # the encoded slot, worker-owned
+        self._jpeg_w = 0
+        self._jpeg_h = 0
+        self._jpeg_ts: Optional[float] = None
+        self._encode_error = False
+        self._encode_error_reason: Optional[str] = None  # worker-owned diagnostic
+        self._cam_stop = threading.Event()
+        self._cam_thread: Optional[threading.Thread] = None
+
+        # ── radius-based grasp park ──────────────────────────────────────────────
+        # park the hand farther out using the object's median radius, which dodges
+        # overshoots on small objects. the switch is OPENBOT_PICK_RADIUS_PARK and
+        # the margin comes from OPENBOT_PICK_RADIUS_MARGIN_M.
+        # the margin default is RADIUS_PARK_MARGIN_DEFAULT_M = 0.050 and the clamp
+        # is [0.005, 0.060], wide enough for a 5 cm request; a narrower clamp would
+        # silently cut it. OPENBOT_PICK_RADIUS_MARGIN_M=0.015 restores a tighter
+        # park. the requested value is kept beside the clamped one so the pick
+        # reply can name both when they differ.
+        self._radius_park_on = os.environ.get('OPENBOT_PICK_RADIUS_PARK', '').strip().lower() == '1'
+        self._radius_park_margin_req_m = RADIUS_PARK_MARGIN_DEFAULT_M
+        try:
+            _margin = float(os.environ.get('OPENBOT_PICK_RADIUS_MARGIN_M',
+                                           repr(RADIUS_PARK_MARGIN_DEFAULT_M)).strip())
+            if not math.isfinite(_margin):
+                raise ValueError('non-finite margin')
+            self._radius_park_margin_req_m = _margin
+            self._radius_park_margin_m = max(
+                RADIUS_PARK_MARGIN_MIN_M, min(RADIUS_PARK_MARGIN_MAX_M, _margin))
+        except (TypeError, ValueError):
+            self._radius_park_margin_req_m = RADIUS_PARK_MARGIN_DEFAULT_M
+            self._radius_park_margin_m = RADIUS_PARK_MARGIN_DEFAULT_M
+        # per-object radius history: instance_id -> [(ts, radius, quality), ...]
+        # only quality >= 0.6 and 0.010 <= radius <= 0.080; samples older than 4.0 s
+        # (relative to newest) and anything past 15 samples are trimmed.
+        self._obj_radius_history: Dict[Any, List[Tuple[float, float, float]]] = {}
+        #: instance id -> (wall time, nx, ny, nz) for its newest valid normal.
+        self._obj_normal: Dict[Any, Tuple[float, float, float, float]] = {}
+        #: width radius used for 'pca'/'sphere' fits (on by default).
+        self._radius_park_width_on = (
+            os.environ.get('OPENBOT_PICK_RADIUS_WIDTH', '1').strip() != '0')
+
+    # ── ROS-facing hooks (all implemented by _RosGateway) ────────────────────
+
