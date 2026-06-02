@@ -1825,3 +1825,5 @@ def _trailing_span(samples: List[Tuple[float, str, int, int, int]],
             break
         first = s[0]
     return samples[-1][0] - first
+
+
