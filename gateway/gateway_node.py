@@ -1827,3 +1827,10 @@ def _trailing_span(samples: List[Tuple[float, str, int, int, int]],
     return samples[-1][0] - first
 
 
+class GatewayNode:
+    """Standalone gateway: the rclpy node is a thin adapter over this class.
+
+    Splitting the rclpy-free core out keeps every ROS import inside
+    ``_RosGateway`` (see below) so laptop tests exercise this class directly.
+    """
+
