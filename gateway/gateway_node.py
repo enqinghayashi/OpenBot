@@ -2472,3 +2472,27 @@ class GatewayNode:
             self._encode_error_reason = "reshape_failed"
             return None
 
+    def close_camera(self) -> None:
+        """Stop the JPEG worker and drop the frame slots (shutdown hygiene).
+
+        The worker is a daemon (the process could exit without this), but a
+        clean stop mirrors the node-destroy pattern: signal, join briefly,
+        and clear the slots so nothing serves frames after close.  Safe to
+        call when the lane was never enabled.
+        """
+        thread = None
+        with self._cam_lock:
+            self._cam_stop.set()
+            thread = self._cam_thread
+            self._latest_raw = None
+            self._latest_raw_ts = None
+            self._latest_raw_w = 0
+            self._latest_raw_h = 0
+            self._latest_raw_enc = ""
+            self._jpeg_b64 = None
+            self._jpeg_w = 0
+            self._jpeg_h = 0
+            self._jpeg_ts = None
+        if thread is not None:
+            thread.join(timeout=1.0)
+
