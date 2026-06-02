@@ -2317,3 +2317,70 @@ class GatewayNode:
             self._cam_thread = thread
         thread.start()  # start the thread outside the lock
 
+    def _camera_encode_loop(self) -> None:
+        """Daemon: throttled JPEG encode of the LATEST raw frame.
+
+        THROTTLED-CACHE DESIGN: encodes at most one frame per
+        ``vision.min_interval_s`` (default 1.0), NOT one per camera frame —
+        the raw slot keeps updating on every callback, so the frame that
+        encodes when the throttle opens is always the NEWEST one available
+        (intermediate frames are skipped, never queued).  Client-side
+        'one frame per decision turn' semantics stay at the caller.  cv2
+        is imported lazily INSIDE this thread — the laptop/BOX core may
+        lack OpenCV; a missing/broken cv2 or a failed encode marks
+        ``_encode_error`` so the 'image' verb answers fresh:false honestly
+        (a frame is attempted once; the error latches until the next frame
+        succeeds).  The encoded slot lives under the same lock as the raw
+        slot.  Runs until ``_cam_stop`` is set.
+        """
+        last_encode_ts = -1.0  # wall-clock time of the last encode, for the throttle
+        last_encoded_raw_ts = -1.0  # raw-frame ts already encoded
+        announced_reason = None  # last reason written to stderr, for dedupe
+        while not self._cam_stop.is_set():
+            with self._cam_lock:
+                raw = self._latest_raw
+                raw_ts = self._latest_raw_ts
+                raw_w = self._latest_raw_w
+                raw_h = self._latest_raw_h
+                raw_enc = self._latest_raw_enc
+            if raw is None or raw_ts is None or raw_ts <= last_encoded_raw_ts:
+                self._cam_stop.wait(timeout=0.1)
+                continue
+            if time.time() - last_encode_ts < self._vision_min_interval_s:
+                # inside the throttle interval: skip without consuming the raw slot, so
+                # the newest frame still encodes once the interval opens (throttled cache,
+                # not a queue).
+                self._cam_stop.wait(timeout=0.1)
+                continue
+            encoded = self._encode_jpeg(raw, raw_w, raw_h, raw_enc)
+            announce = None
+            with self._cam_lock:
+                last_encode_ts = time.time()
+                last_encoded_raw_ts = raw_ts
+                if encoded is None:
+                    self._encode_error = True
+                    # surface the reason once per distinct failure mode. the camera runs at
+                    # ~12-30 Hz, so a per-frame line would be spam, but a reason nobody sees is
+                    # worse: an encode failure that logs nothing is invisible.
+                    reason = self._encode_error_reason or "unknown"
+                    if reason != announced_reason:
+                        announced_reason = reason
+                        announce = reason
+                else:
+                    self._jpeg_b64, self._jpeg_w, self._jpeg_h = encoded
+                    self._jpeg_ts = raw_ts
+                    if self._encode_error:
+                        announce = "recovered"
+                    self._encode_error = False
+                    self._encode_error_reason = None
+                    announced_reason = None
+            if announce is not None:
+                # outside the lock: no I/O while holding it
+                sys.stderr.write(
+                    "openbot_gateway: camera encode %s (frame %sx%s %r)\n"
+                    % (announce, raw_w, raw_h, raw_enc))
+                sys.stderr.flush()
+            if self._cam_stop.is_set():
+                return
+            self._cam_stop.wait(timeout=0.1)
+
