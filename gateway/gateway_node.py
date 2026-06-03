@@ -3151,3 +3151,13 @@ class GatewayNode:
         finally:
             self._descent_lock.release()
 
+    def _low_lane_status(self) -> str:
+        """One ``status`` poll of the writer socket — the lane's ONLY probe.
+
+        Resolved through ``self.writer_verb`` at call time (not captured at
+        construction) so a test stub sees the poll.  There is no body-height
+        sensor anywhere in this system: this line's height fragment is a
+        REFERENCE the policy is being told to track, never a measurement.
+        """
+        return self.writer_verb("status")
+
