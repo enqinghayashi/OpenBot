@@ -2751,3 +2751,19 @@ class GatewayNode:
             if self._arm_task_inflight == 0:
                 self._arm_idle_since = time.time()
 
+    def _dispatch_counted(self, verb: str, args: Optional[List] = None
+                          ) -> Tuple[str, Optional[str]]:
+        """The pre-batch-5 ``dispatch`` body, unchanged."""
+        if verb == "yolo_classes":
+            return self._do_yolo_classes(args or []), None
+        if verb == "yolo_strict":       # inside a strict detection hold
+            return self._do_yolo_strict(args or []), None
+        if (verb in self._YOLO_BUSY_VERBS
+                and getattr(self, "_open_vocab", False) is True):
+            token = self._motion_enter(verb)
+            try:
+                return self._dispatch_verbs(verb, args)
+            finally:
+                self._motion_exit(token)
+        return self._dispatch_verbs(verb, args)
+
