@@ -3040,3 +3040,45 @@ class GatewayNode:
             self._verdict_tls.defer = False
             self._descent_lock.release()
 
+    def _pc_pick_kwargs(self) -> Dict[str, Any]:
+        """The optional point-cloud keywords for ``pick_sequence`` (batch 3b).
+
+        ``{}`` when ``self._pc`` is None — every switch off — so the lane call
+        carries no new keyword.  Otherwise ``{"pc": <client>, "pc_label":
+        <label>}``, by keyword, each only if ``pick_sequence`` DECLARES it
+        (``pc_client.supported_kwargs``: ``descent_lane.py`` and this file are
+        copied to the robot one at a time, and a switch turned on against an
+        older lane must leave the pick as it was, with one ``[pc]`` line
+        saying so, never a TypeError mid-pick).
+
+        ``pc_label`` is ``getattr(self._req_target_hint, "label", None)``: the
+        label of the object THIS request named.  ``handle()`` clears the
+        thread-local on every request and, for a named-args pick, sets it from
+        the request's own ``label`` argument (``_pick_hint_label``); this runs
+        on that SAME connection thread (handle -> dispatch -> _low_lane_pick ->
+        _low_lane_sequence -> here is synchronous end to end).  It is None for
+        a legacy positional request, for a label outside ``[A-Za-z0-9_.-]``
+        (``_pick_hint_label`` refuses a space), and for a caller that is not a
+        connection thread; the consumer reads None as "no label" and answers
+        UNKNOWN.  The value is the brain's RAW label (often a scene-graph ref
+        such as ``bottle_1``); ``PcClient.request`` turns it into the class
+        noun the consumer matches rows by.  NEVER raises: any failure here is
+        "no point-cloud keywords for this call".
+        """
+        try:
+            pc = getattr(self, "_pc", None)
+            if pc is None:
+                return {}
+            from gateway import pointcloud_client as pc_client_mod  # lazy, then cached
+            wanted = {"pc": pc,
+                      "pc_label": getattr(self._req_target_hint, "label", None)}
+            given = pc_client_mod.supported_kwargs(
+                self._low_lane.pick_sequence, wanted)
+            if len(given) != len(wanted):
+                self._pc_skew_once("pick_sequence", sorted(set(wanted) - set(given)))
+            return given
+        except Exception as exc:  # noqa: BLE001 — the pick path must not break
+            self._pc_say("pick hooks off for this call: %s: %s"
+                         % (type(exc).__name__, exc))
+            return {}
+
