@@ -3174,3 +3174,22 @@ class GatewayNode:
             log.finish(status, detail, time.time())
         self.log_place_target(self._place_target_law.render_table(log))
 
+    def _low_lane_retreat(self, verb: str, blocking: bool) -> bool:
+        """Rise the body before a non-lane command runs (plan §6).
+
+        ``descent_lane._retreat_step`` is the SAME step the sequences use, so
+        the confirm/refuse/warn text and the ``height off`` + ``status`` pair
+        exist exactly once in the repo.  Returns True when the body is
+        confirmed standing; on failure it returns False for a BLOCKING command
+        (the caller must refuse and dispatch nothing) and True for a best-effort
+        one, which proceeds after the loud warn the step already printed.
+        """
+        log = self._low_lane.DescentPhaseLog(verb)
+        log.start(time.time())
+        ok, _ref, detail = self._low_lane._retreat_step(  # noqa: SLF001
+            self._descent_ctx, log, writer_verb=self.writer_verb,
+            status_verb=self._low_lane_status, stamp=time.time,
+            clock=time.monotonic, sleep=time.sleep)
+        self._low_lane_finish(log, "ok" if ok else "refuse", detail)
+        return bool(ok) or not blocking
+
