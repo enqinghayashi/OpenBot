@@ -2667,3 +2667,41 @@ class GatewayNode:
             out["vocab"] = vocab
         return out
 
+    def _do_image(self, args: Optional[List] = None) -> str:
+        """'image' verb: the latest camera frame as JSON text.
+
+        FRESHNESS LAW: a frame ships under the green light (fresh:true)
+        ONLY when a JPEG for it exists AND it is no older than
+        vision.max_age_s.  Stale / missing / encode-error frames answer
+        fresh:false with an honest ``reason`` — NEVER a stale frame with
+        the green light.  With vision disabled there is no camera at all
+        (reason 'no_camera').  ``ts`` is the frame time of the newest
+        artifact we hold (the JPEG's frame on success; the raw frame's
+        time when only a raw frame exists); 0 when no frame ever arrived.
+        """
+        now = time.time()
+        with self._cam_lock:
+            if not self._vision_enabled or self._latest_raw_ts is None:
+                return json.dumps({"jpeg_b64": "", "w": 0, "h": 0, "ts": 0,
+                                   "fresh": False, "reason": "no_camera"})
+            ts = self._jpeg_ts if self._jpeg_ts is not None else self._latest_raw_ts
+            if self._encode_error or self._jpeg_b64 is None:
+                # the encode failed, or the first encode has not landed yet: no jpeg to
+                # ship for any fresh frame.
+                return json.dumps({"jpeg_b64": "", "w": 0, "h": 0, "ts": ts,
+                                   "fresh": False, "reason": "encode_error"})
+            if now - ts > self._vision_max_age_s:
+                return json.dumps({"jpeg_b64": "", "w": 0, "h": 0, "ts": ts,
+                                   "fresh": False, "reason": "stale"})
+            # snapshot the artifact under the lock, because the worker can swap the
+            # live slots the instant it drops; the fresh:true payload is built from
+            # this copy, never from live fields read past the freshness gate.
+            jpeg_b64, jpeg_w, jpeg_h = self._jpeg_b64, self._jpeg_w, self._jpeg_h
+        if jpeg_b64 is None:  # defensive: never json.dumps a None b64
+            return json.dumps({"jpeg_b64": "", "w": 0, "h": 0, "ts": ts,
+                               "fresh": False, "reason": "encode_error"})
+        return json.dumps({"jpeg_b64": jpeg_b64, "w": jpeg_w, "h": jpeg_h,
+                           "ts": ts, "fresh": True})
+
+    # ── tool dispatch (the verbs the agent calls) ────────────────────────────
+
