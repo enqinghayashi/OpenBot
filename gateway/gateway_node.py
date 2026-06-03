@@ -2604,3 +2604,23 @@ class GatewayNode:
     def grip_verb(self, line: str, timeout_s: float = 15.0) -> str:
         return _send_unix_verb(self._grip_sock, line, timeout_s)
 
+    def engine_verb(self, line: str, timeout_s: Optional[float] = None) -> str:
+        if self._engine is None:
+            return "ERROR:pick engine not configured (engine_cmd empty)"
+        try:
+            if not self._engine.alive():
+                self._engine.start()
+            return self._engine.send(line, timeout_s)
+        except EngineTransportError as exc:
+            # post-send failure: the engine may already have run the command, so the
+            # reply says which kind. the prefix is the whole classification the restore
+            # gate may use: a substring cannot tell a failed send from an engine
+            # 'ERROR:OUT OF REACH', and the failed-send text never says 'timed out'.
+            # caught before the generic clause, and the reply keeps the bare 'ERROR:'
+            # shape so the brain and _classify_reply still read it.
+            return ENGINE_TRANSPORT_ERROR_PREFIX + str(exc)
+        except Exception as exc:
+            return "ERROR:%s" % exc
+
+    # ── observation (what the brain sees) ───────────────────────────────────
+
