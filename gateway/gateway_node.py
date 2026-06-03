@@ -2705,3 +2705,39 @@ class GatewayNode:
 
     # ── tool dispatch (the verbs the agent calls) ────────────────────────────
 
+    def dispatch(self, verb: str, args: Optional[List] = None) -> Tuple[str, Optional[str]]:
+        """Tool verb -> (reply text, verdict string | None).
+
+        Motion verbs (pick/place/navigate/open_hand/close_hand) run the
+        SkillVerifier post-hook and return the verdict for the caller to
+        publish on /skill_verdict. Unknown verbs / bad args -> ERROR reply.
+
+        OPEN-VOCABULARY LANE (batch 4, P3).  Two additions, both inert unless
+        the ROS param ``open_vocab`` is exactly True:
+
+          * ``yolo_classes`` is answered FIRST — ahead of the descent lane's
+            next-command rule.  It is a non-motion verb; reaching that rule
+            with a hold outstanding would RISE the body for a vocabulary
+            change.  With the param False it only returns the honest
+            ``disabled`` refusal, and no other verb reaches this arm, so every
+            existing verb's path is unchanged.
+          * the actuator verbs in ``_YOLO_BUSY_VERBS`` are counted in flight
+            (``_motion_enter``/``_motion_exit``) so ``yolo_classes`` can refuse
+            while a pick/place/navigate is running on ANOTHER tools-socket
+            thread.  With the param False the count is never touched and the
+            call goes straight to ``_dispatch_verbs`` — today's body, verbatim.
+
+        BATCH 5 (G3): every verb in ARM_TASK_VERBS is ALSO counted by the
+        unconditional ``_arm_task_inflight`` counter, which the idle-arm
+        watchdog reads.  It is independent of ``_open_vocab``, changes no
+        reply, and is skipped on a stand-in built without ``__init__``.
+        """
+        if verb in ARM_TASK_VERBS and getattr(self, "_inflight_lock", None) \
+                is not None:
+            self._arm_task_enter()
+            try:
+                return self._dispatch_counted(verb, args)
+            finally:
+                self._arm_task_exit()
+        return self._dispatch_counted(verb, args)
+
