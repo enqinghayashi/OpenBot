@@ -2601,3 +2601,6 @@ class GatewayNode:
         # %.3f either way (clamped or untouched)
         return " ".join(str(a) for a in args[:15]) + (" %.3f" % dur)
 
+    def grip_verb(self, line: str, timeout_s: float = 15.0) -> str:
+        return _send_unix_verb(self._grip_sock, line, timeout_s)
+
