@@ -2741,3 +2741,7 @@ class GatewayNode:
                 self._arm_task_exit()
         return self._dispatch_counted(verb, args)
 
+    def _arm_task_enter(self) -> None:
+        with self._inflight_lock:
+            self._arm_task_inflight += 1
+
