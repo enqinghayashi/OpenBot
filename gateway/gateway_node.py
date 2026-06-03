@@ -2907,3 +2907,17 @@ class GatewayNode:
     # never re-dispatched) and the lease. every method below no-ops while
     # _low_lane is None.
 
+    def _low_lane_args_z(self, args: List) -> Optional[float]:
+        """The torso-frame ``z`` token of a pick/place argument list.
+
+        ``None`` when there is no third token or it is not numeric — the same
+        values ``_do_pick``/``_do_place`` themselves refuse, so the lane must
+        not claim them: an absent z falls through to today's own error.
+        """
+        if len(args) < 3:
+            return None
+        try:
+            return float(args[2])
+        except (TypeError, ValueError):
+            return None
+
