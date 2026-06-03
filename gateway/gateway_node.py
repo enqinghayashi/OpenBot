@@ -2966,3 +2966,77 @@ class GatewayNode:
             return None
         return self._low_lane_sequence(verb, args, z, pick=pick)
 
+    def _low_lane_sequence(self, verb: str, args: List, z: float, *,
+                           pick: bool) -> Tuple[str, Optional[str]]:
+        """Run one lane skill under the lease and render its phase table.
+
+        CONCURRENCY IS REFUSED, NEVER QUEUED (plan §6): the lock is taken
+        non-blocking for the WHOLE skill, exactly as ``place_target`` does, so a
+        second lane skill cannot descend from — or retreat out of — a body
+        height the first one is still using.  The writer callables are resolved
+        per call (never captured at construction), so a stubbed ``writer_verb``
+        sees exactly the writes the lane issues.
+        """
+        if not self._descent_lock.acquire(blocking=False):
+            return self._low_lane.DESCENT_BUSY_MSG, None
+        try:
+            # this run owns the /skill_verdict publish, so _verify (called inside
+            # _do_pick/_do_place) defers on this thread and the verdict the lane returns
+            # gets published once below.
+            self._verdict_tls.defer = True
+            # stamp the run so a cancel arriving while this lock is held
+            # (_low_lane_cancel flags it) is seen by this run only.
+            ctx = self._descent_ctx
+            ctx.begin_run(time.monotonic())
+            law = self._place_target_law
+            log = self._low_lane.DescentPhaseLog(verb)
+            log.start(time.time())
+            if pick:
+                log.side = "left" if verb == "pick_left" else "right"
+                # point-cloud hooks: {} whenever self._pc is None (all switches off), so
+                # the call below is exactly the plain one.
+                pc_kw = self._pc_pick_kwargs()
+                reply, verdict = self._low_lane.pick_sequence(
+                    ctx, log, verb=verb, z=z, args=args,
+                    law=self._low_law, writer_verb=self.writer_verb,
+                    status_verb=self._low_lane_status, do_pick=self._do_pick,
+                    pre_descent_step=self._pre_descent_step, **pc_kw)
+            else:
+                reply, verdict = self._low_lane.place_sequence(
+                    ctx, log, z=z, args=args, law=self._low_law,
+                    writer_verb=self.writer_verb,
+                    status_verb=self._low_lane_status, do_place=self._do_place,
+                    pre_descent_step=self._pre_descent_step)
+                # which side got released is stated only in _do_place's own reply
+                # annotation, so read it rather than re-deriving the held-side law here.
+                log.side = law.side_from_reply(reply)
+            # post-run cancel sweep: a cancel landing after the sequence's last check
+            # but before this lock releases must never leave a hold behind.
+            if (ctx.state == self._low_lane.HOLDING
+                    and ctx.cancelled_this_run()):
+                c_ok, _c_ref, _c_detail = self._low_lane._retreat_step(  # noqa: SLF001
+                    ctx, log, writer_verb=self.writer_verb,
+                    status_verb=self._low_lane_status, stamp=time.time,
+                    clock=time.monotonic, sleep=time.sleep)
+                if c_ok:
+                    suffix = self._low_lane.HONESTY_SUFFIX
+                    body = reply
+                    if body.endswith(" — " + suffix):
+                        body = body[:-len(" — " + suffix)]
+                    reply = self._low_lane.honest(
+                        "%s; operator cancel: the hold was released and the "
+                        "body rose" % body)
+            status, detail = law.verdict_row(verdict)
+            self._low_lane_finish(log, status, detail)
+            # the only publish for this lane run: exactly the verdict returned
+            # (post-downgrade, honesty-suffixed). a refusal returns None and then
+            # publishes nothing, including an unconfirmed post-engine retreat (fail
+            # closed). a direct publish_verdict, because the deferral flag is still set
+            # here.
+            if verdict is not None:
+                self.publish_verdict(verdict)
+            return reply, verdict
+        finally:
+            self._verdict_tls.defer = False
+            self._descent_lock.release()
+
