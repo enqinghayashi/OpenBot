@@ -2921,3 +2921,9 @@ class GatewayNode:
         except (TypeError, ValueError):
             return None
 
+    def _low_lane_pick(self, verb: str, args: List
+                       ) -> Optional[Tuple[str, Optional[str]]]:
+        """The lane's answer to a pick, or None to fall through to _do_pick."""
+        return self._low_lane_claim(verb, args, self._low_lane_args_z(args),
+                                    pick=True)
+
