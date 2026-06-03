@@ -2580,3 +2580,24 @@ class GatewayNode:
     def writer_verb(self, line: str, timeout_s: float = 15.0) -> str:
         return _send_unix_verb(self._writer_sock, line, timeout_s)
 
+    def _clamp_arm_dur(self, args: List) -> str:
+        """Apply the runtime arm-duration floor to a writer passthrough line.
+
+        Merged-writer grammar: ``arm <14 floats> [dur]`` — the writer's own
+        clamp is dur >= 1.5 s; the EFFECTIVE floor is
+        ``max(min_arm_dur_s, 1.5)`` (runtime embodiment, world-truth
+        round 5).  Only ``arm`` lines with a dur token are touched; any
+        other line passes through verbatim.  Returns the line to send.
+        """
+        if not args or str(args[0]).lower() != "arm" or len(args) < 16:
+            return " ".join(str(a) for a in args)
+        try:
+            dur = float(args[15])
+        except (TypeError, ValueError):
+            dur = 0.0
+        floor = max(float(self._min_arm_dur_s), 1.5)
+        if dur < floor:
+            dur = floor
+        # %.3f either way (clamped or untouched)
+        return " ".join(str(a) for a in args[:15]) + (" %.3f" % dur)
+
