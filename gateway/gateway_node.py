@@ -3082,3 +3082,22 @@ class GatewayNode:
                          % (type(exc).__name__, exc))
             return {}
 
+    def _pc_place_kwargs(self, law: Any) -> Dict[str, Any]:
+        """The optional ``pc_rim`` keyword for ``place_target_from_row``.
+
+        Same rule as :meth:`_pc_pick_kwargs`: passed only if the function
+        DECLARES it, so a ``place_target.py`` older than this file still
+        places (without the rim hook, with one ``[pc]`` line).  Never raises.
+        """
+        try:
+            from gateway import pointcloud_client as pc_client_mod  # lazy, then cached
+            wanted = {"pc_rim": self._pc_rim_for}
+            given = pc_client_mod.supported_kwargs(law.place_target_from_row, wanted)
+            if len(given) != len(wanted):
+                self._pc_skew_once("place_target_from_row", sorted(wanted))
+            return given
+        except Exception as exc:  # noqa: BLE001 — the place path must not break
+            self._pc_say("place hooks off for this call: %s: %s"
+                         % (type(exc).__name__, exc))
+            return {}
+
