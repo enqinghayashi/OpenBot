@@ -3111,3 +3111,43 @@ class GatewayNode:
                      "gateway_node.py - this hook is OFF until it is copied "
                      "over" % (callee, "/".join(missing)))
 
+    def _low_lane_cancel(self) -> str:
+        """Route an operator ``cancel``/``stop`` to the descent lane (R4 L2).
+
+        Returns the ``; lane=<tok>`` segment for the cancel reply, or ``""``
+        when the lane has nothing outstanding (no token, no motion — the cancel
+        reply is then byte-identical to the lane-less one).
+
+          * a lane skill is RUNNING (the lease is held) -> the cancel is
+            FLAGGED on the context and this returns at once
+            (``lane=cancel_flagged``); the running sequence acts on it at its
+            last gate before the engine, after the engine (no hold), or in the
+            post-run sweep.
+          * a HOLD / descent is outstanding and nobody is running -> the body
+            is risen now with the lane's one ``_retreat_step``
+            (``lane=rose`` / ``lane=retreat_unconfirmed``; an unconfirmed rise
+            has already emitted its loud warn-and-hold line).
+
+        No token contains ``ERROR:``: the cancel itself worked, so its envelope
+        stays ok:true.
+        """
+        ctx = self._descent_ctx
+        if ctx is None:
+            return ""
+        if not self._descent_lock.acquire(blocking=False):
+            ctx.request_cancel(time.monotonic())
+            return "; lane=cancel_flagged"
+        try:
+            if not ctx.in_flight():
+                return ""
+            log = self._low_lane.DescentPhaseLog("cancel")
+            log.start(time.time())
+            ok, _ref, detail = self._low_lane._retreat_step(  # noqa: SLF001
+                ctx, log, writer_verb=self.writer_verb,
+                status_verb=self._low_lane_status, stamp=time.time,
+                clock=time.monotonic, sleep=time.sleep)
+            self._low_lane_finish(log, "ok" if ok else "refuse", detail)
+            return "; lane=rose" if ok else "; lane=retreat_unconfirmed"
+        finally:
+            self._descent_lock.release()
+
