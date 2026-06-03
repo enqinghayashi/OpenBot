@@ -2604,3 +2604,140 @@ class GatewayNode:
     def grip_verb(self, line: str, timeout_s: float = 15.0) -> str:
         return _send_unix_verb(self._grip_sock, line, timeout_s)
 
+    def engine_verb(self, line: str, timeout_s: Optional[float] = None) -> str:
+        if self._engine is None:
+            return "ERROR:pick engine not configured (engine_cmd empty)"
+        try:
+            if not self._engine.alive():
+                self._engine.start()
+            return self._engine.send(line, timeout_s)
+        except EngineTransportError as exc:
+            # post-send failure: the engine may already have run the command, so the
+            # reply says which kind. the prefix is the whole classification the restore
+            # gate may use: a substring cannot tell a failed send from an engine
+            # 'ERROR:OUT OF REACH', and the failed-send text never says 'timed out'.
+            # caught before the generic clause, and the reply keeps the bare 'ERROR:'
+            # shape so the brain and _classify_reply still read it.
+            return ENGINE_TRANSPORT_ERROR_PREFIX + str(exc)
+        except Exception as exc:
+            return "ERROR:%s" % exc
+
+    # ── observation (what the brain sees) ───────────────────────────────────
+
+    def _refresh_grip_state(self) -> None:
+        """Poll the grip server 'state' and feed it into the assembler.
+
+        The grip server does NOT auto-verify and never pushes state — the
+        observation's GripState (joints + available, contact folded from the
+        last close verdict) exists only because something queries 'state'.
+        A failed query is recorded as a READ ERROR (note_grip_read_error) so
+        the last good state AGES OUT (available=False) instead of confirming
+        forever (fix 2); an ERROR:/malformed state reply line is equally a
+        read failure inside update().  The next successful read supersedes
+        the error.
+        """
+        try:
+            line = self.grip_verb("state")
+            with self._obs_lock:
+                self._assembler.update(grip_line=line)
+        except Exception:
+            with self._obs_lock:
+                self._assembler.note_grip_read_error()
+
+    def observe_dict(self) -> dict:
+        """WorldObservation as a JSON-able dict (for the agent's 'observe')."""
+        from dataclasses import asdict  # stdlib import
+
+        self._refresh_grip_state()
+        with self._obs_lock:
+            obs = self._assembler.observation()
+        out = {
+            "detections": [_observe_row(asdict(d)) for d in obs.detections],
+            "grip": asdict(obs.grip) if obs.grip is not None else None,
+            "walk": asdict(obs.walk) if obs.walk is not None else None,
+            "detections_ts": obs.detections_ts,
+            "fresh": obs.fresh,
+            "detections_alive": self._assembler.detections_alive(),
+        }
+        # the top-level ``vocab`` block appears only once a /yolo/classes_state is
+        # cached (`open_vocab` param true and at least one state received).
+        # otherwise it is absent and the reply is byte-identical to the plain one.
+        vocab = _observe_vocab_block(self.yolo_vocab_state())
+        if vocab is not None:
+            out["vocab"] = vocab
+        return out
+
+    def _do_image(self, args: Optional[List] = None) -> str:
+        """'image' verb: the latest camera frame as JSON text.
+
+        FRESHNESS LAW: a frame ships under the green light (fresh:true)
+        ONLY when a JPEG for it exists AND it is no older than
+        vision.max_age_s.  Stale / missing / encode-error frames answer
+        fresh:false with an honest ``reason`` — NEVER a stale frame with
+        the green light.  With vision disabled there is no camera at all
+        (reason 'no_camera').  ``ts`` is the frame time of the newest
+        artifact we hold (the JPEG's frame on success; the raw frame's
+        time when only a raw frame exists); 0 when no frame ever arrived.
+        """
+        now = time.time()
+        with self._cam_lock:
+            if not self._vision_enabled or self._latest_raw_ts is None:
+                return json.dumps({"jpeg_b64": "", "w": 0, "h": 0, "ts": 0,
+                                   "fresh": False, "reason": "no_camera"})
+            ts = self._jpeg_ts if self._jpeg_ts is not None else self._latest_raw_ts
+            if self._encode_error or self._jpeg_b64 is None:
+                # the encode failed, or the first encode has not landed yet: no jpeg to
+                # ship for any fresh frame.
+                return json.dumps({"jpeg_b64": "", "w": 0, "h": 0, "ts": ts,
+                                   "fresh": False, "reason": "encode_error"})
+            if now - ts > self._vision_max_age_s:
+                return json.dumps({"jpeg_b64": "", "w": 0, "h": 0, "ts": ts,
+                                   "fresh": False, "reason": "stale"})
+            # snapshot the artifact under the lock, because the worker can swap the
+            # live slots the instant it drops; the fresh:true payload is built from
+            # this copy, never from live fields read past the freshness gate.
+            jpeg_b64, jpeg_w, jpeg_h = self._jpeg_b64, self._jpeg_w, self._jpeg_h
+        if jpeg_b64 is None:  # defensive: never json.dumps a None b64
+            return json.dumps({"jpeg_b64": "", "w": 0, "h": 0, "ts": ts,
+                               "fresh": False, "reason": "encode_error"})
+        return json.dumps({"jpeg_b64": jpeg_b64, "w": jpeg_w, "h": jpeg_h,
+                           "ts": ts, "fresh": True})
+
+    # ── tool dispatch (the verbs the agent calls) ────────────────────────────
+
+    def dispatch(self, verb: str, args: Optional[List] = None) -> Tuple[str, Optional[str]]:
+        """Tool verb -> (reply text, verdict string | None).
+
+        Motion verbs (pick/place/navigate/open_hand/close_hand) run the
+        SkillVerifier post-hook and return the verdict for the caller to
+        publish on /skill_verdict. Unknown verbs / bad args -> ERROR reply.
+
+        OPEN-VOCABULARY LANE (batch 4, P3).  Two additions, both inert unless
+        the ROS param ``open_vocab`` is exactly True:
+
+          * ``yolo_classes`` is answered FIRST — ahead of the descent lane's
+            next-command rule.  It is a non-motion verb; reaching that rule
+            with a hold outstanding would RISE the body for a vocabulary
+            change.  With the param False it only returns the honest
+            ``disabled`` refusal, and no other verb reaches this arm, so every
+            existing verb's path is unchanged.
+          * the actuator verbs in ``_YOLO_BUSY_VERBS`` are counted in flight
+            (``_motion_enter``/``_motion_exit``) so ``yolo_classes`` can refuse
+            while a pick/place/navigate is running on ANOTHER tools-socket
+            thread.  With the param False the count is never touched and the
+            call goes straight to ``_dispatch_verbs`` — today's body, verbatim.
+
+        BATCH 5 (G3): every verb in ARM_TASK_VERBS is ALSO counted by the
+        unconditional ``_arm_task_inflight`` counter, which the idle-arm
+        watchdog reads.  It is independent of ``_open_vocab``, changes no
+        reply, and is skipped on a stand-in built without ``__init__``.
+        """
+        if verb in ARM_TASK_VERBS and getattr(self, "_inflight_lock", None) \
+                is not None:
+            self._arm_task_enter()
+            try:
+                return self._dispatch_counted(verb, args)
+            finally:
+                self._arm_task_exit()
+        return self._dispatch_counted(verb, args)
+
