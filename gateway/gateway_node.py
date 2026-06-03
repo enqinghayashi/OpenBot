@@ -2624,3 +2624,23 @@ class GatewayNode:
 
     # ── observation (what the brain sees) ───────────────────────────────────
 
+    def _refresh_grip_state(self) -> None:
+        """Poll the grip server 'state' and feed it into the assembler.
+
+        The grip server does NOT auto-verify and never pushes state — the
+        observation's GripState (joints + available, contact folded from the
+        last close verdict) exists only because something queries 'state'.
+        A failed query is recorded as a READ ERROR (note_grip_read_error) so
+        the last good state AGES OUT (available=False) instead of confirming
+        forever (fix 2); an ERROR:/malformed state reply line is equally a
+        read failure inside update().  The next successful read supersedes
+        the error.
+        """
+        try:
+            line = self.grip_verb("state")
+            with self._obs_lock:
+                self._assembler.update(grip_line=line)
+        except Exception:
+            with self._obs_lock:
+                self._assembler.note_grip_read_error()
+
