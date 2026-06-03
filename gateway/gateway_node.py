@@ -2767,3 +2767,143 @@ class GatewayNode:
                 self._motion_exit(token)
         return self._dispatch_verbs(verb, args)
 
+    def _dispatch_verbs(self, verb: str, args: Optional[List] = None
+                        ) -> Tuple[str, Optional[str]]:
+        """Today's verb table (the pre-batch-4 ``dispatch`` body, unchanged)."""
+        args = args or []
+        # ── low-workspace descent lane ───────────────────────────────────────────
+        # one choke point between args and the pick arm: the brain socket, the ROS
+        # adapter and every direct caller flow through dispatch, and _do_pick /
+        # _do_place are not modified (the lane calls them directly, so no
+        # recursion). _low_lane is None when the lane is off, the config switch is
+        # off, or descent_lane failed to import, and then every arm below falls
+        # through to the plain path, byte for byte.
+        #
+        # re-entrancy: the /place_target lane sends its inner `place` back through
+        # this method, so _descent_nested is true for that one call and every arm
+        # below declines, keeping the one-shot lane out of the descent lane.
+        #
+        # the post-cancel stale-target gate comes before the lane choke point, so
+        # it compares the brain's raw (x, y, z) torso frame before any lane
+        # z_engine shift; a refusal never has to descend the body.
+        if (verb in ("pick", "pick_left")
+                and getattr(self, "_b5_on", False) is True):
+            gated = self._post_cancel_target_gate(verb, args)
+            if gated is not None:
+                return gated
+        if (verb in ("pick", "pick_left") and not self._descent_nested
+                and self._low_lane):
+            lane_pick = self._low_lane_pick(verb, args)
+            if lane_pick is not None:
+                return lane_pick
+        if verb == "place" and not self._descent_nested and self._low_lane:
+            lane_place = self._low_lane_place(args)
+            if lane_place is not None:
+                return lane_place
+        if self._low_lane is not None and not self._descent_nested:
+            lane_held = self._low_lane_hold_rule(verb, args)
+            if lane_held is not None:
+                return lane_held
+        if verb == "pick" or verb == "pick_left":
+            return self._do_pick(verb, args)
+        if verb == "place":
+            return self._do_place(args)
+        if verb == "navigate":
+            return self._do_navigate_strict(args)   # inside a strict detection hold
+        # turn-around sweep: additive, since the arm only fires for this verb
+        # and every other dispatch path stays byte-identical as long as
+        # nobody invokes it.
+        if verb == "turn_around":
+            self._lock_clear("turn_around")      # the body is turning
+            return self._do_turn_around(args)
+        # mid-task cancel: one verb covering all three lanes, pick/place (engine),
+        # sweep and search (walk FSM). different from `navigate stop`, which stops
+        # only the walk lane and remains the agent's precise "stop walking".
+        if verb in ("cancel", "stop"):
+            # get the full vocabulary back first: a strict failure is logged and never
+            # holds the cancel up
+            try:
+                self._strict_close_all("cancel")
+            except Exception as exc:  # noqa: BLE001 -- the cancel always runs
+                self._strict_log("close_all (cancel) failed: %r; cancelling "
+                                 "anyway" % (exc,))
+            self._lock_clear("cancel")           # this one never raises
+            self._home_stop("cancel")            # abandon before the pick, pause after it
+            return self._do_cancel(args)
+        if verb == "open_hand":
+            return self._do_open_hand(args)
+        if verb == "close_hand":
+            return self._do_close_hand(args)
+        if verb == "observe":
+            return json.dumps(self.observe_dict()), None
+        if verb == "status":
+            return self._do_status(args), None
+        if verb == "image":
+            return self._do_image(args), None
+        if verb == "cmd_set":
+            self._lock_clear("cmd_set")          # an outside leg command arrived
+            return self._do_cmd_set(args), None
+        if verb == "container":                 # the container the node is locked on
+            return self._do_container(args), None
+        if verb == "creep":                     # the last centimetres
+            return self._do_creep(args), None
+        if verb == "pc_rim":                    # the point-cloud bowl rim
+            return self._do_pc_rim(args), None
+        if verb == "home":                      # head for the fetch start point
+            return self._do_home(args), None
+        if verb == "return_home":               # walk it back home
+            self._lock_clear("return_home")      # the body walks off
+            return self._do_return_home(args), None
+        if verb == "approach_person":           # centre up then creep in
+            self._lock_clear("approach_person")  # the body moves in
+            return self._do_approach_person(args), None
+        if verb == "step_back":                 # runs before a navigate sweep
+            self._lock_clear("step_back")        # the body moves back
+            return self._do_step_back(args), None
+        if verb == "aim_turn":                  # object sits right of centre
+            self._lock_clear("aim_turn")         # the body turns to aim
+            return self._do_aim_turn(args), None
+        if verb == "writer":
+            if not args:
+                return "ERROR:writer needs a verb line", None
+            return self.writer_verb(self._clamp_arm_dur(args)), None
+        if verb == "grip":
+            if not args:
+                return "ERROR:grip needs a verb line", None
+            return self.grip_verb(" ".join(str(a) for a in args)), None
+        if verb == "engine":
+            if not args:
+                return "ERROR:engine needs a verb line", None
+            return self.engine_verb(" ".join(str(a) for a in args)), None
+        # query_user and notify_user are human I/O verbs. both non-motion: the
+        # verdict is always None (never from the SkillVerifier post-hook, since they
+        # make no motion claim), so their envelopes come through
+        # _shape_reply(reply, None) and nowhere else.
+        #
+        # exact reply grammar (the scenario-layer worker mirrors these strings
+        # verbatim, so do not reword them):
+        #   query_user  -> DONE:<answer>            (one line of human answer)
+        #              or ERROR:no_user_reply:timeout (nothing within
+        #                 QUERY_USER_REPLY_TIMEOUT_S, or stdin hit EOF)
+        #   notify_user -> DONE:notified (a plain ack)
+        # when an operator answer contains the literal 'ERROR:' (e.g.
+        # 'ERROR:try again'), _shape_reply calls it ok:false. that is the
+        # failure-budget direction and safety-conservative: the envelope can never
+        # claim ok:true for a reply the verifier judges a failure. the scenario
+        # mirror shares the same _shape_reply.
+        if verb == "query_user":
+            return self._do_query_user(args), None
+        if verb == "notify_user":
+            return self._do_notify_user(args), None
+        if verb == "ping":
+            return "PONG", None
+        return "ERROR:unknown verb %r" % verb, None
+
+    # ── low-workspace descent lane glue ──────────────────────────────────────
+    # the thin gateway wiring around the descent lane. the pure half (ladder,
+    # floor, confirm/refuse/warn text, phase log, pick/place sequences) is
+    # stdlib-only and rclpy-free; this side supplies the sockets (writer_verb),
+    # the single status probe, the shipped _do_pick/_do_place (called directly,
+    # never re-dispatched) and the lease. every method below no-ops while
+    # _low_lane is None.
+
