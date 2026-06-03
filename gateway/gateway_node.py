@@ -3101,3 +3101,13 @@ class GatewayNode:
                          % (type(exc).__name__, exc))
             return {}
 
+    def _pc_skew_once(self, callee: str, missing: List[str]) -> None:
+        """Say ONCE per callee that the point-cloud keywords were not passed."""
+        seen = self.__dict__.setdefault("_pc_skew_seen", set())
+        if callee in seen:
+            return
+        seen.add(callee)
+        self._pc_say("%s declares no %s keyword(s): that module is older than "
+                     "gateway_node.py - this hook is OFF until it is copied "
+                     "over" % (callee, "/".join(missing)))
+
