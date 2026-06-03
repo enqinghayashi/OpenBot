@@ -2745,3 +2745,9 @@ class GatewayNode:
         with self._inflight_lock:
             self._arm_task_inflight += 1
 
+    def _arm_task_exit(self) -> None:
+        with self._inflight_lock:
+            self._arm_task_inflight = max(0, self._arm_task_inflight - 1)
+            if self._arm_task_inflight == 0:
+                self._arm_idle_since = time.time()
+
