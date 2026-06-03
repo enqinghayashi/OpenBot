@@ -2644,3 +2644,26 @@ class GatewayNode:
             with self._obs_lock:
                 self._assembler.note_grip_read_error()
 
+    def observe_dict(self) -> dict:
+        """WorldObservation as a JSON-able dict (for the agent's 'observe')."""
+        from dataclasses import asdict  # stdlib import
+
+        self._refresh_grip_state()
+        with self._obs_lock:
+            obs = self._assembler.observation()
+        out = {
+            "detections": [_observe_row(asdict(d)) for d in obs.detections],
+            "grip": asdict(obs.grip) if obs.grip is not None else None,
+            "walk": asdict(obs.walk) if obs.walk is not None else None,
+            "detections_ts": obs.detections_ts,
+            "fresh": obs.fresh,
+            "detections_alive": self._assembler.detections_alive(),
+        }
+        # the top-level ``vocab`` block appears only once a /yolo/classes_state is
+        # cached (`open_vocab` param true and at least one state received).
+        # otherwise it is absent and the reply is byte-identical to the plain one.
+        vocab = _observe_vocab_block(self.yolo_vocab_state())
+        if vocab is not None:
+            out["vocab"] = vocab
+        return out
+
