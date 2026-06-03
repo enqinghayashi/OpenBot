@@ -2927,3 +2927,9 @@ class GatewayNode:
         return self._low_lane_claim(verb, args, self._low_lane_args_z(args),
                                     pick=True)
 
+    def _low_lane_place(self, args: List
+                        ) -> Optional[Tuple[str, Optional[str]]]:
+        """The lane's answer to a coordinate place, or None to fall through."""
+        return self._low_lane_claim("place", args, self._low_lane_args_z(args),
+                                    pick=False)
+
