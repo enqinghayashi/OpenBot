@@ -3161,3 +3161,16 @@ class GatewayNode:
         """
         return self.writer_verb("status")
 
+    def _low_lane_finish(self, log: Any, status: str, detail: str) -> None:
+        """Close the phase table and PRINT it — the operator's only view.
+
+        The sequences close the table themselves on a refusal; a run that got
+        as far as the engine returns with the VERDICT row still open, so it is
+        closed here.  Rendering and printing reuse ``place_target``'s one table
+        renderer and the gateway's own table hook (a second renderer would be a
+        divergent copy of the repo's measured-elapsed format).
+        """
+        if not log.rows or log.rows[-1].get("phase") != "VERDICT":
+            log.finish(status, detail, time.time())
+        self.log_place_target(self._place_target_law.render_table(log))
+
