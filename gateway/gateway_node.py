@@ -2531,3 +2531,76 @@ class GatewayNode:
         """
         return
 
+    def set_walk_instance(self, target: str) -> None:
+        """Hook (B8): publish the navigate target on /walk_instance (no-op here).
+
+        ``target`` is '<label>#<iid>@<hue>' to make the walk FSM follow ONE
+        object of a class, or the bare label to clear that.  ``_RosGateway``
+        overrides this; the coordinator and /navigate_target only ever see
+        the bare label.
+        """
+        return
+
+    def stop_walk(self) -> None:
+        """Hook: route 'stop' through the coordinator (no-op outside ROS).
+
+        The gateway publishes 'stop' to ``/navigate_target``; the coordinator
+        (pick_walk_coordinator.py) resets its own epoch/flow state AND relays
+        the walk FSM's REAL stop trigger — a ``/walk_target`` message whose
+        data is 'stop' (or 'abort'), which walk_node.py queues as a
+        ('stop', None) command for the FSM loop (skills/locomotion/walk_node.py
+        _on_walk_target). ``/walk_go`` is NOT a stop channel: it queues an
+        approach trigger and must never carry a stop label. ``_RosGateway``
+        overrides this.
+        """
+        return
+
+    def start_sweep(self, label: str) -> None:
+        """Hook: publish a bare label DIRECTLY on /walk_target (no-op here).
+
+        The turn-around sweep's one acting line (see ``_do_turn_around``).
+        Deliberately NOT ``navigate()``: that path goes through
+        /navigate_target, where pick_walk_coordinator.py's auto-approach
+        (/walk_go on the 3rd consecutive detection beat) would walk the robot
+        TO the person — the one thing the operator's ask excludes.  A direct
+        /walk_target publish reaches walk_node._on_walk_target itself, which
+        queues ('target', label) and starts the FSM when it is idle: the FSM
+        sweeps and its own ``_sweep_turn`` interrupts on first sight.
+
+        After the sweep sights the person the gateway ALSO calls ``stop_walk()``
+        (batch 2) and then centres them itself; see ``_do_turn_around``.
+
+        The laptop-testable core is quiet; ``_RosGateway`` overrides this to
+        publish on the topic.  Tests replace it with a recorder.
+        """
+        return
+
+    # ── skill bridges (arm / walk / grip) ───────────────────────────────────
+
+    def writer_verb(self, line: str, timeout_s: float = 15.0) -> str:
+        return _send_unix_verb(self._writer_sock, line, timeout_s)
+
+    def _clamp_arm_dur(self, args: List) -> str:
+        """Apply the runtime arm-duration floor to a writer passthrough line.
+
+        Merged-writer grammar: ``arm <14 floats> [dur]`` — the writer's own
+        clamp is dur >= 1.5 s; the EFFECTIVE floor is
+        ``max(min_arm_dur_s, 1.5)`` (runtime embodiment, world-truth
+        round 5).  Only ``arm`` lines with a dur token are touched; any
+        other line passes through verbatim.  Returns the line to send.
+        """
+        if not args or str(args[0]).lower() != "arm" or len(args) < 16:
+            return " ".join(str(a) for a in args)
+        try:
+            dur = float(args[15])
+        except (TypeError, ValueError):
+            dur = 0.0
+        floor = max(float(self._min_arm_dur_s), 1.5)
+        if dur < floor:
+            dur = floor
+        # %.3f either way (clamped or untouched)
+        return " ".join(str(a) for a in args[:15]) + (" %.3f" % dur)
+
+    def grip_verb(self, line: str, timeout_s: float = 15.0) -> str:
+        return _send_unix_verb(self._grip_sock, line, timeout_s)
+
