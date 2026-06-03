@@ -2933,3 +2933,36 @@ class GatewayNode:
         return self._low_lane_claim("place", args, self._low_lane_args_z(args),
                                     pick=False)
 
+    def _low_lane_claim(self, verb: str, args: List, z: Optional[float], *,
+                        pick: bool) -> Optional[Tuple[str, Optional[str]]]:
+        """Does the descent lane OWN this pick/place?  ``None`` = today's path.
+
+        Three decisions, and the first two both leave the engine and the writer
+        completely untouched:
+
+          * a DEGENERATE band (``usable`` False — the writer's band is SHUT by
+            default, D5, or the envelope is misconfigured) can rescue nothing,
+            so the lane stays inert and today's honest refusal answers;
+          * a target BELOW the rescue floor is genuinely unreachable, and the
+            lane OWNS that refusal so the operator is told where the floor is
+            and how much band a wider writer clamp would buy (plan §4 A3);
+          * a target in the DESCEND band is the lane's — the sequence decides
+            HOLD vs re-descend from the shared context (plan §6 D2).
+
+        Anything else — at or above ``COMFORT_Z``, or no usable ``z`` — falls
+        through: with nothing held that is today's path byte for byte, and with
+        a body height held the next-command rule
+        (:meth:`_low_lane_hold_rule`) owns the retreat.
+        """
+        from brain import descent_law  # lazy: only reachable with the lane armed
+        law = self._low_law
+        if not self._low_lane.usable(law):
+            return None
+        kind = descent_law.classify_pick_z(z, law.tabletop_min_z,
+                                           law.max_descent_m)
+        if kind == "DEEP_FLOOR":
+            return self._low_lane.deep_floor_refusal(z, law), None
+        if kind != "DESCEND":
+            return None
+        return self._low_lane_sequence(verb, args, z, pick=pick)
+
