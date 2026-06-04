@@ -4218,3 +4218,17 @@ class GatewayNode:
         with self._obs_lock:
             return self._daemon_hold_record_unlocked()
 
+    def _daemon_held_side(self) -> Optional[str]:
+        """The side the daemon DECLARED, or None when it declared none.
+
+        Last resort only (see _measured_held_side, which outranks it).  The
+        shipped daemon's payload has no ``side`` key at all, so on this robot
+        this returns None at every instant and the measured tier is what
+        actually resolves a daemon-lane place.  It is kept because a daemon
+        that DOES name a hand is better evidence than one the gateway infers.
+        """
+        rec = self._daemon_hold_record()
+        if rec is None:
+            return None
+        return rec["side"]
+
