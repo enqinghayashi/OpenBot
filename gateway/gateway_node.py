@@ -3291,3 +3291,27 @@ class GatewayNode:
     _HINT_LABEL_CHARS = frozenset(
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
 
+    @classmethod
+    def _pick_hint_label(cls, verb: str, args: dict) -> Optional[str]:
+        """The object LABEL to hint `verify_pick` with, or None.
+
+        Mirrors the brain's `_runtime_target_hint` (brain/hooks.py:587-616) —
+        same pick-only restriction, because `verify_pick` is the one verifier
+        that resolves its target out of the contract text, and handing the
+        token to a place/navigate contract would be untested meaning.
+
+        LABEL ONLY, deliberately, where the brain falls back to `ref`.  The
+        hint is emitted as `target_label=<v>`, and `_target_present` compares
+        it against `d.label`; a `ref` value placed in that slot matches no
+        label and would read as "object gone" — a FALSE SUCCESS, the one
+        direction the house error bias forbids.  `make_pick.prepare` always
+        sets `label` (brain/agent/tools.py:618-620 refuses without it), so
+        nothing is lost by declining to guess.
+        """
+        if verb not in ("pick", "pick_left"):
+            return None
+        raw = str(args.get("label") or "").strip()
+        if not raw or not set(raw) <= cls._HINT_LABEL_CHARS:
+            return None
+        return raw
+
