@@ -4103,3 +4103,20 @@ class GatewayNode:
             return "unknown", ts
         return ("up" if data["available"] else "down"), ts
 
+    def _holding_state(self, side: str) -> str:
+        """'True' | 'False' — was `side` holding just now?
+
+        The pre-command evidence chain for open (fix 7, round 2): 'True' when
+        a live unconsumed close_adaptive 'contact' verdict is on file within
+        the window; 'False' otherwise.  Round 3 (fix 3): the PLACE pre-drop
+        holding evidence is no longer verdict-based at all — it comes from a
+        fresh 'state [side]' poll (see _do_place); this verdict fold survives
+        only as the open_hand 'prev_contact' annotation.  Call BEFORE the
+        command executes (the command clears the verdicts).
+        """
+        verdict, v_ts = self._close_verdicts.get(side, (None, 0.0))
+        if verdict == "contact" and \
+                (time.time() - v_ts) <= self._close_verdict_window_s:
+            return "True"
+        return "False"
+
