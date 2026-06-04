@@ -3174,3 +3174,321 @@ class GatewayNode:
             log.finish(status, detail, time.time())
         self.log_place_target(self._place_target_law.render_table(log))
 
+    def _low_lane_retreat(self, verb: str, blocking: bool) -> bool:
+        """Rise the body before a non-lane command runs (plan §6).
+
+        ``descent_lane._retreat_step`` is the SAME step the sequences use, so
+        the confirm/refuse/warn text and the ``height off`` + ``status`` pair
+        exist exactly once in the repo.  Returns True when the body is
+        confirmed standing; on failure it returns False for a BLOCKING command
+        (the caller must refuse and dispatch nothing) and True for a best-effort
+        one, which proceeds after the loud warn the step already printed.
+        """
+        log = self._low_lane.DescentPhaseLog(verb)
+        log.start(time.time())
+        ok, _ref, detail = self._low_lane._retreat_step(  # noqa: SLF001
+            self._descent_ctx, log, writer_verb=self.writer_verb,
+            status_verb=self._low_lane_status, stamp=time.time,
+            clock=time.monotonic, sleep=time.sleep)
+        self._low_lane_finish(log, "ok" if ok else "refuse", detail)
+        return bool(ok) or not blocking
+
+    def _low_lane_hold_rule(self, verb: str, args: List
+                            ) -> Optional[Tuple[str, Optional[str]]]:
+        """The operator's next-command rule, applied at command arrival (§6).
+
+        The PREVIOUS skill cannot see the future, so the hold is decided here,
+        at the next command: a lane skill needing the same height is already
+        claimed by the pick/place arms and HOLDs there; everything else either
+        rises first or forgets the hold.  Returns a REFUSAL only when a command
+        must not run at a body height that may still be low; otherwise it
+        performs the rise (if any) and returns None so today's path runs.
+
+        A command arriving with no descent outstanding — which is every command
+        on the lane-off path, and the common case on the lane-on path — does
+        nothing here at all.
+        """
+        ctx = self._descent_ctx
+        if ctx is None or not ctx.in_flight():
+            return None
+        action, reason = self._low_lane.next_command_action(
+            ctx, verb, self._low_lane_args_z(args), self._low_law,
+            time.monotonic(), args=args)
+        if action in (self._low_lane.NEXT_NONE, self._low_lane.NEXT_HOLD):
+            # NEXT_HOLD arrives here only for the release-only place clause in
+            # descent_lane.next_command_action (a place or place_left with an empty
+            # argument list inside a live hold). no lane arm above claims it, since its
+            # target height is absent, and the body is already held at the confirmed
+            # height, so there is nothing to rise for: the drop aims at no target
+            # height. return None the way NEXT_NONE does and let the release run at the
+            # held height. falling through to the retreat below would rise the body for
+            # exactly the case the lane exists to hold down.
+            #
+            # NEXT_REDESCEND cannot reach this point: a lane skill whose target is in
+            # the descend band is already claimed by the arms above, and one whose
+            # target is not just answers RETREAT_* here.
+            return None
+        if self._low_lane_retreat(verb,
+                                  action == self._low_lane.NEXT_RETREAT_BLOCKING):
+            return None
+        detail = self._low_lane.honest(
+            "%s — body height may still be low; the %s was NOT dispatched (%s)"
+            % (self._low_lane.RETREAT_UNCONFIRMED, verb, reason))
+        return ("ERROR:low-workspace %s" % detail), None
+
+    def _low_lane_retreat_first_if_held(self) -> Optional[str]:
+        """Rise the body before a lane whose ENTRY bypasses ``dispatch`` (§6).
+
+        ``/place_target``'s ROS callback calls :meth:`place_target` directly, so
+        the next-command rule in ``dispatch`` never sees the request: with a
+        descent held that lane would place at RAW coordinates, with no frame
+        shift, and leave the body low (refuter MEDIUM-1).  This applies the same
+        operator rule at the one-shot lane's own entry.
+
+        Returns ``None`` when there is nothing to rise from — no lane, no
+        context, or a context that is ``IDLE``, which is every call on the
+        lane-off path and the common case on the lane-on path — and after a
+        CONFIRMED rise.  Any other outcome returns the refusal REASON and the
+        caller must dispatch nothing (fail-closed, plan §7).
+
+        The step is the SAME ``_retreat_step`` the sequences and the
+        next-command rule use, so the ``height off`` + ``status`` pair and the
+        ``RETREAT UNCONFIRMED`` warn-and-hold text exist exactly once in the
+        repo.  ``descent_lane.retreat_first_if_held`` is the pure half of this
+        seam (repair task B); when it is present it drives the step, and when it
+        has not landed this method drives the identical step itself.
+        """
+        ctx = self._descent_ctx
+        if self._low_lane is None or ctx is None or not ctx.in_flight():
+            return None
+        log = self._low_lane.DescentPhaseLog("place_target")
+        log.start(time.time())
+        step = getattr(self._low_lane, "retreat_first_if_held", None)
+        if step is None:
+            ok, _ref, detail = self._low_lane._retreat_step(  # noqa: SLF001
+                ctx, log, writer_verb=self.writer_verb,
+                status_verb=self._low_lane_status, stamp=time.time,
+                clock=time.monotonic, sleep=time.sleep)
+            reason = None if ok else detail
+        else:
+            # the lane half takes its clocks by the names the sequences use (wall =
+            # wall stamp, monotonic = hold clock), so no clock gets crossed.
+            reason = step(ctx, log, writer_verb=self.writer_verb,
+                          status_verb=self._low_lane_status, wall=time.time,
+                          monotonic=time.monotonic, sleep=time.sleep)
+        self._low_lane_finish(
+            log, "refuse" if reason else "ok",
+            reason or "body standing — the /place_target lane may run")
+        return self._low_lane.honest(reason) if reason else None
+
+    #: the characters verify_pick's hint regex accepts
+    #: (target_label\s*=\s*([A-Za-z0-9_.\-]+)). anything else is silently
+    #: truncated by that regex, and a truncated token followed by `=` could
+    #: slip a second field into the contract text. so a label outside the
+    #: charset is refused and no hint is sent: no hint gives the honest
+    #: in_progress reply, the safe failure direction, while a mangled hint is
+    #: not.
+    _HINT_LABEL_CHARS = frozenset(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
+
+    @classmethod
+    def _pick_hint_label(cls, verb: str, args: dict) -> Optional[str]:
+        """The object LABEL to hint `verify_pick` with, or None.
+
+        Mirrors the brain's `_runtime_target_hint` (brain/hooks.py:587-616) —
+        same pick-only restriction, because `verify_pick` is the one verifier
+        that resolves its target out of the contract text, and handing the
+        token to a place/navigate contract would be untested meaning.
+
+        LABEL ONLY, deliberately, where the brain falls back to `ref`.  The
+        hint is emitted as `target_label=<v>`, and `_target_present` compares
+        it against `d.label`; a `ref` value placed in that slot matches no
+        label and would read as "object gone" — a FALSE SUCCESS, the one
+        direction the house error bias forbids.  `make_pick.prepare` always
+        sets `label` (brain/agent/tools.py:618-620 refuses without it), so
+        nothing is lost by declining to guess.
+        """
+        if verb not in ("pick", "pick_left"):
+            return None
+        raw = str(args.get("label") or "").strip()
+        if not raw or not set(raw) <= cls._HINT_LABEL_CHARS:
+            return None
+        return raw
+
+    def _shape_named_args(self, verb: str, args: dict) -> List:
+        """Named-args request -> the legacy positional args list.
+
+        The brain_client protocol (gateway/brain_client.py) sends
+        ``{"tool": <verb>, "args": {<named json values>}}``; dispatch()
+        consumes the positional form.  Keys follow the tools grammar
+        documented at the top of this module; absent keys are omitted
+        (dispatch enforces what is required).  Unknown verbs -> [] so
+        dispatch answers the honest unknown-verb ERROR itself.
+
+        PICK ORIENTATION (round 2026-09-07): the pick positional grammar ends
+        ``... [orientation] [height_m]``, and the orientation token is ALWAYS
+        emitted with a concrete value ('upright'|'horizontal') — never
+        stripped.  An explicit concrete orientation passes through; 'auto' or
+        an absent orientation resolves via ``_resolve_pick_orientation`` to
+        the freshest nearby detection's orientation (defaulting to 'upright'
+        — the safe/legacy behaviour).  This keeps a lying (horizontal)
+        object from silently being picked with the upright approach.
+
+        Defensive pick shaping (round-4 finding 3): the pick positional
+        grammar is ``x y z [nx ny nz] [orientation] [height_m]`` — a
+        PARTIAL normal vector (some of nx/ny/nz given) must never produce
+        a truncated, misaligned list, so missing nx/ny/nz components are
+        filled with 0.0 whenever any is present.  An out-of-range or
+        negative ``height_m`` (the engine's own plausibility-gated
+        tolerance: not in (0, PICK_HEIGHT_M_MAX]) is refused SILENTLY —
+        never emitted, never raised — mirroring the engine's own gate
+        exactly (pick_engine_v2.py / pick_engine_v3.py: <= 0 or > max ->
+        legacy path).
+        """
+        if not isinstance(args, dict):
+            raise ValueError("named-args request requires a JSON object")
+        if verb in ("pick", "pick_left"):
+            ordered: List[Any] = []
+            for key in ("x", "y", "z"):
+                if args.get(key) is not None:
+                    ordered.append(args[key])
+            normals = [args.get(k) for k in ("nx", "ny", "nz")]
+            if any(v is not None for v in normals):
+                # partial normal: fill the missing components with 0.0 so the three-slot
+                # [nx ny nz] grammar position can never shift (the engine wants exactly 3).
+                ordered.extend(0.0 if v is None else v for v in normals)
+            # the orientation token is always concrete here, never 'auto' and never
+            # stripped: 'auto' or absent resolves against the freshest nearby
+            # detection, so a horizontal object is picked horizontal, else 'upright'.
+            ordered.append(self._resolve_pick_orientation(args, ordered))
+            height_m = args.get("height_m")
+            if height_m is not None:
+                try:
+                    hf = float(height_m)
+                except (TypeError, ValueError):
+                    hf = float("nan")
+                # same plausibility gate as the engine: refuse silently, never emit a junk
+                # tolerance, and never let a non-finite value reach the engine.
+                if math.isfinite(hf) and 0.0 < hf <= PICK_HEIGHT_M_MAX:
+                    ordered.append(height_m)
+                else:
+                    # never silent in the log: a dropped height would otherwise vanish
+                    # with no trace and leave the place lift at 0.
+                    sys.stderr.write(
+                        "openbot_gateway: pick height_m=%r DROPPED (outside "
+                        "(0, %.1f]); the engine picks with no height\n"
+                        % (height_m, PICK_HEIGHT_M_MAX))
+                    sys.stderr.flush()
+            return ordered
+        if verb == "place":
+            # a place can name an explicit target x y z (the engine's coordinate
+            # place) or be release-only: [] comes back only when no coordinate is
+            # present. z is taken exactly as given; type and finite guarding live in
+            # _do_place, so a malformed coordinate is refused there, never stripped
+            # down to a release drop.
+            ordered = []
+            for key in ("x", "y", "z"):
+                if args.get(key) is not None:
+                    ordered.append(args[key])
+            # an optional 4th slot: object height for the engine's place-time extra
+            # lift. only meaningful with coordinates: 'place' alone is release-only and
+            # a lone token is a parse error. same gate as the pick slot, refusing
+            # silently: an out-of-range height becomes 'unknown' (no extra lift), never
+            # a block.
+            if len(ordered) == 3:
+                h_place = args.get("height_m")
+                if h_place is not None:
+                    try:
+                        hpf = float(h_place)
+                    except (TypeError, ValueError):
+                        hpf = float("nan")
+                    if math.isfinite(hpf) and 0.0 < hpf <= PICK_HEIGHT_M_MAX:
+                        ordered.append(h_place)
+            return ordered
+        if verb == "navigate":
+            return [str(args.get("target") or "")]
+        if verb == "turn_around":
+            # an optional label; the operator's ask is the bare sweep, so absent
+            # means 'person' (COCO index 0, in the perception TRACKED_CLASSES
+            # allowlist, since the walk FSM matches labels as exact strings).
+            return [str(args.get("target") or "person")]
+        if verb == "open_hand":
+            return [str(args.get("side") or "right")]
+        if verb == "close_hand":
+            line = [str(args.get("side") or "right")]
+            params = args.get("params")
+            if isinstance(params, list):
+                line.extend(str(p) for p in params)
+            return line
+        if verb == "cmd_set":
+            off = args.get("off")
+            if off is not None:
+                return [str(off)]
+            line = [str(args.get(k)) for k in ("vx", "vy", "omega")]
+            if args.get("dur") is not None:
+                line.append(str(args["dur"]))
+            return line
+        if verb in ("writer", "grip", "engine"):
+            line = args.get("line")
+            return [str(line)] if line is not None else []
+        # query_user / notify_user named -> positional: brain_client sends
+        # {'question': ...} / {'message': ...}, and dispatch consumes [arg0].
+        if verb == "query_user":
+            return [str(args.get("question") or "")]
+        if verb == "notify_user":
+            return [str(args.get("message") or "")]
+        if verb in ("observe", "status", "ping"):
+            return []
+        if verb == "yolo_classes":
+            # the vocabulary request goes as one JSON token, validated by
+            # _do_yolo_classes rather than here, so the shaper stays thin. keys pass
+            # straight through: an absent `op` is not defaulted, so a malformed request
+            # is refused, not guessed at.
+            req: Dict[str, Any] = {"op": args.get("op"),
+                                   "classes": args.get("classes", [])}
+            if args.get("min_conf") is not None:
+                req["min_conf"] = args.get("min_conf")
+            return [json.dumps(req)]
+        if verb == "container":
+            return []                     # a query, so no arguments
+        if verb == "home":
+            # one JSON token here, validated by _do_home
+            hreq = dict((k, args.get(k)) for k in ("op", "why")
+                        if args.get(k) is not None)
+            return [json.dumps(hreq)]
+        if verb == "return_home":
+            return []                     # takes no arguments
+        if verb == "approach_person":
+            # one optional JSON token, validated by _do_approach_person
+            areq = dict((k, args.get(k)) for k in ("x", "y")
+                        if args.get(k) is not None)
+            return [json.dumps(areq)] if areq else []
+        if verb == "aim_turn":
+            # one JSON token, validated by _do_aim_turn
+            return [json.dumps(dict((k, args.get(k)) for k in
+                                    ("label", "x", "y", "shift_m")
+                                    if args.get(k) is not None))]
+        if verb == "step_back":
+            # one optional JSON token, validated by _do_step_back
+            sreq = dict((k, args.get(k)) for k in ("m",)
+                        if args.get(k) is not None)
+            return [json.dumps(sreq)] if sreq else []
+        if verb == "creep":
+            # one JSON token, validated by _creep_parse
+            creq = dict((k, args.get(k)) for k in ("label", "iid", "x", "y",
+                                                "z", "w", "dd", "h", "dry")
+                        if args.get(k) is not None)
+            return [json.dumps(creq)]
+        if verb == "pc_rim":
+            # one JSON token, validated by _do_pc_rim
+            preq = dict((k, args.get(k)) for k in ("label", "x", "y", "ts")
+                        if args.get(k) is not None)
+            return [json.dumps(preq)]
+        if verb == "yolo_strict":
+            # one JSON token, validated by _do_yolo_strict
+            sreq = dict((k, args.get(k)) for k in ("op", "labels", "owner", "hold",
+                                                   "wait_s")
+                        if args.get(k) is not None)
+            return [json.dumps(sreq)]
+        return []
+
