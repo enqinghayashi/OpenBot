@@ -2921,3 +2921,164 @@ class GatewayNode:
         except (TypeError, ValueError):
             return None
 
+    def _low_lane_pick(self, verb: str, args: List
+                       ) -> Optional[Tuple[str, Optional[str]]]:
+        """The lane's answer to a pick, or None to fall through to _do_pick."""
+        return self._low_lane_claim(verb, args, self._low_lane_args_z(args),
+                                    pick=True)
+
+    def _low_lane_place(self, args: List
+                        ) -> Optional[Tuple[str, Optional[str]]]:
+        """The lane's answer to a coordinate place, or None to fall through."""
+        return self._low_lane_claim("place", args, self._low_lane_args_z(args),
+                                    pick=False)
+
+    def _low_lane_claim(self, verb: str, args: List, z: Optional[float], *,
+                        pick: bool) -> Optional[Tuple[str, Optional[str]]]:
+        """Does the descent lane OWN this pick/place?  ``None`` = today's path.
+
+        Three decisions, and the first two both leave the engine and the writer
+        completely untouched:
+
+          * a DEGENERATE band (``usable`` False — the writer's band is SHUT by
+            default, D5, or the envelope is misconfigured) can rescue nothing,
+            so the lane stays inert and today's honest refusal answers;
+          * a target BELOW the rescue floor is genuinely unreachable, and the
+            lane OWNS that refusal so the operator is told where the floor is
+            and how much band a wider writer clamp would buy (plan §4 A3);
+          * a target in the DESCEND band is the lane's — the sequence decides
+            HOLD vs re-descend from the shared context (plan §6 D2).
+
+        Anything else — at or above ``COMFORT_Z``, or no usable ``z`` — falls
+        through: with nothing held that is today's path byte for byte, and with
+        a body height held the next-command rule
+        (:meth:`_low_lane_hold_rule`) owns the retreat.
+        """
+        from brain import descent_law  # lazy: only reachable with the lane armed
+        law = self._low_law
+        if not self._low_lane.usable(law):
+            return None
+        kind = descent_law.classify_pick_z(z, law.tabletop_min_z,
+                                           law.max_descent_m)
+        if kind == "DEEP_FLOOR":
+            return self._low_lane.deep_floor_refusal(z, law), None
+        if kind != "DESCEND":
+            return None
+        return self._low_lane_sequence(verb, args, z, pick=pick)
+
+    def _low_lane_sequence(self, verb: str, args: List, z: float, *,
+                           pick: bool) -> Tuple[str, Optional[str]]:
+        """Run one lane skill under the lease and render its phase table.
+
+        CONCURRENCY IS REFUSED, NEVER QUEUED (plan §6): the lock is taken
+        non-blocking for the WHOLE skill, exactly as ``place_target`` does, so a
+        second lane skill cannot descend from — or retreat out of — a body
+        height the first one is still using.  The writer callables are resolved
+        per call (never captured at construction), so a stubbed ``writer_verb``
+        sees exactly the writes the lane issues.
+        """
+        if not self._descent_lock.acquire(blocking=False):
+            return self._low_lane.DESCENT_BUSY_MSG, None
+        try:
+            # this run owns the /skill_verdict publish, so _verify (called inside
+            # _do_pick/_do_place) defers on this thread and the verdict the lane returns
+            # gets published once below.
+            self._verdict_tls.defer = True
+            # stamp the run so a cancel arriving while this lock is held
+            # (_low_lane_cancel flags it) is seen by this run only.
+            ctx = self._descent_ctx
+            ctx.begin_run(time.monotonic())
+            law = self._place_target_law
+            log = self._low_lane.DescentPhaseLog(verb)
+            log.start(time.time())
+            if pick:
+                log.side = "left" if verb == "pick_left" else "right"
+                # point-cloud hooks: {} whenever self._pc is None (all switches off), so
+                # the call below is exactly the plain one.
+                pc_kw = self._pc_pick_kwargs()
+                reply, verdict = self._low_lane.pick_sequence(
+                    ctx, log, verb=verb, z=z, args=args,
+                    law=self._low_law, writer_verb=self.writer_verb,
+                    status_verb=self._low_lane_status, do_pick=self._do_pick,
+                    pre_descent_step=self._pre_descent_step, **pc_kw)
+            else:
+                reply, verdict = self._low_lane.place_sequence(
+                    ctx, log, z=z, args=args, law=self._low_law,
+                    writer_verb=self.writer_verb,
+                    status_verb=self._low_lane_status, do_place=self._do_place,
+                    pre_descent_step=self._pre_descent_step)
+                # which side got released is stated only in _do_place's own reply
+                # annotation, so read it rather than re-deriving the held-side law here.
+                log.side = law.side_from_reply(reply)
+            # post-run cancel sweep: a cancel landing after the sequence's last check
+            # but before this lock releases must never leave a hold behind.
+            if (ctx.state == self._low_lane.HOLDING
+                    and ctx.cancelled_this_run()):
+                c_ok, _c_ref, _c_detail = self._low_lane._retreat_step(  # noqa: SLF001
+                    ctx, log, writer_verb=self.writer_verb,
+                    status_verb=self._low_lane_status, stamp=time.time,
+                    clock=time.monotonic, sleep=time.sleep)
+                if c_ok:
+                    suffix = self._low_lane.HONESTY_SUFFIX
+                    body = reply
+                    if body.endswith(" — " + suffix):
+                        body = body[:-len(" — " + suffix)]
+                    reply = self._low_lane.honest(
+                        "%s; operator cancel: the hold was released and the "
+                        "body rose" % body)
+            status, detail = law.verdict_row(verdict)
+            self._low_lane_finish(log, status, detail)
+            # the only publish for this lane run: exactly the verdict returned
+            # (post-downgrade, honesty-suffixed). a refusal returns None and then
+            # publishes nothing, including an unconfirmed post-engine retreat (fail
+            # closed). a direct publish_verdict, because the deferral flag is still set
+            # here.
+            if verdict is not None:
+                self.publish_verdict(verdict)
+            return reply, verdict
+        finally:
+            self._verdict_tls.defer = False
+            self._descent_lock.release()
+
+    def _pc_pick_kwargs(self) -> Dict[str, Any]:
+        """The optional point-cloud keywords for ``pick_sequence`` (batch 3b).
+
+        ``{}`` when ``self._pc`` is None — every switch off — so the lane call
+        carries no new keyword.  Otherwise ``{"pc": <client>, "pc_label":
+        <label>}``, by keyword, each only if ``pick_sequence`` DECLARES it
+        (``pc_client.supported_kwargs``: ``descent_lane.py`` and this file are
+        copied to the robot one at a time, and a switch turned on against an
+        older lane must leave the pick as it was, with one ``[pc]`` line
+        saying so, never a TypeError mid-pick).
+
+        ``pc_label`` is ``getattr(self._req_target_hint, "label", None)``: the
+        label of the object THIS request named.  ``handle()`` clears the
+        thread-local on every request and, for a named-args pick, sets it from
+        the request's own ``label`` argument (``_pick_hint_label``); this runs
+        on that SAME connection thread (handle -> dispatch -> _low_lane_pick ->
+        _low_lane_sequence -> here is synchronous end to end).  It is None for
+        a legacy positional request, for a label outside ``[A-Za-z0-9_.-]``
+        (``_pick_hint_label`` refuses a space), and for a caller that is not a
+        connection thread; the consumer reads None as "no label" and answers
+        UNKNOWN.  The value is the brain's RAW label (often a scene-graph ref
+        such as ``bottle_1``); ``PcClient.request`` turns it into the class
+        noun the consumer matches rows by.  NEVER raises: any failure here is
+        "no point-cloud keywords for this call".
+        """
+        try:
+            pc = getattr(self, "_pc", None)
+            if pc is None:
+                return {}
+            from gateway import pointcloud_client as pc_client_mod  # lazy, then cached
+            wanted = {"pc": pc,
+                      "pc_label": getattr(self._req_target_hint, "label", None)}
+            given = pc_client_mod.supported_kwargs(
+                self._low_lane.pick_sequence, wanted)
+            if len(given) != len(wanted):
+                self._pc_skew_once("pick_sequence", sorted(set(wanted) - set(given)))
+            return given
+        except Exception as exc:  # noqa: BLE001 — the pick path must not break
+            self._pc_say("pick hooks off for this call: %s: %s"
+                         % (type(exc).__name__, exc))
+            return {}
+
