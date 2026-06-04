@@ -3963,3 +3963,99 @@ class GatewayNode:
                 return "timeout_after_busy@%.1fs" % (now - t0)
             time.sleep(PICK_DAEMON_POLL_S)
 
+    def _await_walk_reached(self, label: str, epoch_ts: float) -> str:
+        """Block until the walk FSM ARRIVES at ``label`` (or gives up).  Bounded.
+
+        WHY THIS EXISTS (run8, 2026-09-28).  ``_do_navigate`` published
+        /navigate_target and returned IMMEDIATELY — unlike ``_do_pick``, which
+        waits for its daemon.  The reply snapshot was taken microseconds after
+        the publish, so ``PHASES_SEEN`` was always EMPTY and
+        ``verifier.verify_navigate`` could only answer ``in_progress``
+        (:1533-1536).  The walk itself was fine — every physical walk in run8
+        landed SEARCHING -> DETECTED -> APPROACHING -> REACHED — but the brain
+        was told nothing, so it re-called navigate again and again: SIX tool
+        calls for THREE arrivals (voice_run.log:39,168,478,495,548,561).
+        "The walk did not report back reach status" is exactly this.
+
+        NOT the reply timeout: the navigate Tool bound is already 180 s
+        (tools.py) and ``GATEWAY_CALL_TIMEOUT_S`` is 150 s.  The gateway does
+        not wait for the FSM to ANSWER — the FSM answers every dispatch — it
+        never waited for the FSM to ARRIVE.  So the missing wait is for the
+        MOTION, not for the reply.
+
+        THE PREDICATE MIRRORS THE VERIFIER, DELIBERATELY.  A ``reached@`` token
+        is a claim that ``verify_navigate`` will agree with, so the conjuncts
+        are copied from it rather than invented: an IN-EPOCH REACHED whose
+        payload label matches the request (fix 1 / check (f)) AND at least one
+        IN-EPOCH SEARCHING/APPROACHING (the transition guard / check (d)).
+        A hold-REACHED carried over from a PREVIOUS arrival satisfies neither
+        and therefore cannot end this wait — the stale-evidence trap, one
+        level down.
+
+        THE LOAD-BEARING TIMING CONSTRAINT.  ``verify_navigate`` reads the
+        LIVE ``obs.walk.phase`` (:1537-1541), and the FSM holds REACHED for
+        only REACHED_HOLD_S = 5 s.  So this must RETURN ON SIGHT: poll fast,
+        return the instant the predicate holds, and never sleep after it does.
+        The REACHED is read from the in-epoch phase RECORD; a sleep after the
+        predicate would let the hold expire and hand the verifier an IDLE.
+
+        DEGRADES SAFELY, LIKE THE PICK WAIT.  No walk lane, no in-epoch frame,
+        or an FSM that stops without arriving all return a token and stop
+        waiting — none of which is a refusal.  Every token is reported, none
+        is hidden, and (like ``_await_pick_daemon``) NO token may contain the
+        substring ``ERROR:``: ``_shape_reply`` flips the envelope to ok:false
+        on it anywhere in the reply, and the verifier's ``_classify_reply``
+        reads an embedded ``ERROR:`` as a failure.
+        """
+        t0 = time.time()
+        start_deadline = t0 + self._nav_start_s
+        deadline = t0 + self._nav_wait_s
+        want = (label or "").strip().lower()
+        while True:
+            now = time.time()
+            with self._obs_lock:
+                cancel_ts = self._cancel_ts
+                phases = list(self._phases_seen)
+            # the operator stopped the motion. checked first, ahead of every arrival
+            # because a stop is not a timeout and must never be reported as one:
+            # reporting it as a timeout made the model issue navigate again, restarting
+            # the search while the brain's tool call stayed pending and every utterance
+            # got dropped.
+            # in-epoch scope: only a cancel at or after this dispatch's epoch can end
+            # this wait, so an earlier task's cancel can never abort a later navigate.
+            # the > 0.0 guard stops the never-cancelled default (0.0) from matching an
+            # epoch_ts that is still 0.0.
+            if cancel_ts > 0.0 and cancel_ts >= epoch_ts:
+                return "cancelled_by_operator@%.1fs" % (now - t0)
+            # in-epoch scope. _phases_seen is cleared at dispatch and the callback only
+            # appends ts >= epoch_ts, so this filter is belt-and-braces, but it keeps a
+            # stale REACHED from ending this wait.
+            epoch_phases = [p for p in phases if p[2] >= epoch_ts]
+            seen = set(p for p, _l, _t in epoch_phases)
+
+            def _label_hit(phase):
+                return any(
+                    p == phase and (l or "").strip().lower() == want
+                    for p, l, _t in epoch_phases
+                )
+
+            motion = bool({"SEARCHING", "APPROACHING"} & seen)
+            if _label_hit("REACHED") and motion:
+                return "reached@%.1fs" % (now - t0)
+            if _label_hit("NOT_FOUND"):
+                return "not_found@%.1fs" % (now - t0)
+            if motion and "IDLE" in seen:
+                # the FSM moved and then stopped without arriving: it is done with this
+                # target and no arrival is coming. consistent with the in-flight rule, where
+                # an in-epoch IDLE means 'not working on this'; without it a dead walk would
+                # stall the brain for the whole budget.
+                return "walk_idle_after_motion@%.1fs" % (now - t0)
+            if not epoch_phases and now >= start_deadline:
+                # not one in-epoch frame: this dispatch has no walk lane behind it, or the
+                # FSM never heard it. pay the start window, not the motion budget, the same
+                # early exit shape as the pick wait's no_busy_signal.
+                return "no_walk_signal"
+            if now >= deadline:
+                return "timeout_after_walk@%.1fs" % (now - t0)
+            time.sleep(NAV_POLL_S)
+
