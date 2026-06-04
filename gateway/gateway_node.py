@@ -4059,3 +4059,47 @@ class GatewayNode:
                 return "timeout_after_walk@%.1fs" % (now - t0)
             time.sleep(NAV_POLL_S)
 
+    def _poll_lane_state(self, side: str) -> Tuple[str, float]:
+        """Fresh ``state <side>`` poll right after a pick motion completes.
+
+        Returns ``(lane_state, ts)`` with lane_state one of
+        'up' | 'down' | 'unknown':
+          up      — the reply carried ``side`` with available True on a read
+                     no older than GRIP_STATE_MAX_AGE_S: the palm DDS lane
+                     was UP, so THIS engine DONE was ENGINE-VERIFIED
+                     (platform law — available True <=> lane up <=> the
+                     engine verified its own grasp);
+          down    — the read failed/errored, the reply was malformed or
+                     omitted ``side``, or available False: BLIND MODE — the
+                     engine DONE carries no grasp evidence;
+          unknown — the reply carried ``side`` with joints but NO available
+                     flag: availability cannot be determined (the deployed
+                     grip_server always emits available; defensive).
+        The poll is immediate, so the read is fresh by construction; the
+        verifier re-checks ``grip_state_ts`` against its freshness window.
+        """
+        ts = time.time()
+        try:
+            line = self.grip_verb("state %s" % side)
+            with self._obs_lock:
+                # stamp the poll's own ts so the freshness check stays exact: read_ts must
+                # equal ts, and this reply carried the side.
+                self._assembler.update(grip_line=line, now=ts)
+                read_ts = self._assembler.grip_state_read_ts(side)
+        except Exception:
+            return "down", ts
+        if read_ts is None or read_ts != ts:
+            # the reply did not carry this side, so the poll got no fresh lane probe
+            # for it at all.
+            return "down", ts
+        try:
+            payload = json.loads(line[len("DONE:"):]) if line.startswith("DONE:") else None
+            data = payload.get(side) if isinstance(payload, dict) else None
+        except (ValueError, TypeError):
+            data = None
+        if not isinstance(data, dict):
+            return "down", ts
+        if "available" not in data:
+            return "unknown", ts
+        return ("up" if data["available"] else "down"), ts
+
