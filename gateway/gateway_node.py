@@ -4059,3 +4059,157 @@ class GatewayNode:
                 return "timeout_after_walk@%.1fs" % (now - t0)
             time.sleep(NAV_POLL_S)
 
+    def _poll_lane_state(self, side: str) -> Tuple[str, float]:
+        """Fresh ``state <side>`` poll right after a pick motion completes.
+
+        Returns ``(lane_state, ts)`` with lane_state one of
+        'up' | 'down' | 'unknown':
+          up      — the reply carried ``side`` with available True on a read
+                     no older than GRIP_STATE_MAX_AGE_S: the palm DDS lane
+                     was UP, so THIS engine DONE was ENGINE-VERIFIED
+                     (platform law — available True <=> lane up <=> the
+                     engine verified its own grasp);
+          down    — the read failed/errored, the reply was malformed or
+                     omitted ``side``, or available False: BLIND MODE — the
+                     engine DONE carries no grasp evidence;
+          unknown — the reply carried ``side`` with joints but NO available
+                     flag: availability cannot be determined (the deployed
+                     grip_server always emits available; defensive).
+        The poll is immediate, so the read is fresh by construction; the
+        verifier re-checks ``grip_state_ts`` against its freshness window.
+        """
+        ts = time.time()
+        try:
+            line = self.grip_verb("state %s" % side)
+            with self._obs_lock:
+                # stamp the poll's own ts so the freshness check stays exact: read_ts must
+                # equal ts, and this reply carried the side.
+                self._assembler.update(grip_line=line, now=ts)
+                read_ts = self._assembler.grip_state_read_ts(side)
+        except Exception:
+            return "down", ts
+        if read_ts is None or read_ts != ts:
+            # the reply did not carry this side, so the poll got no fresh lane probe
+            # for it at all.
+            return "down", ts
+        try:
+            payload = json.loads(line[len("DONE:"):]) if line.startswith("DONE:") else None
+            data = payload.get(side) if isinstance(payload, dict) else None
+        except (ValueError, TypeError):
+            data = None
+        if not isinstance(data, dict):
+            return "down", ts
+        if "available" not in data:
+            return "unknown", ts
+        return ("up" if data["available"] else "down"), ts
+
+    def _holding_state(self, side: str) -> str:
+        """'True' | 'False' — was `side` holding just now?
+
+        The pre-command evidence chain for open (fix 7, round 2): 'True' when
+        a live unconsumed close_adaptive 'contact' verdict is on file within
+        the window; 'False' otherwise.  Round 3 (fix 3): the PLACE pre-drop
+        holding evidence is no longer verdict-based at all — it comes from a
+        fresh 'state [side]' poll (see _do_place); this verdict fold survives
+        only as the open_hand 'prev_contact' annotation.  Call BEFORE the
+        command executes (the command clears the verdicts).
+        """
+        verdict, v_ts = self._close_verdicts.get(side, (None, 0.0))
+        if verdict == "contact" and \
+                (time.time() - v_ts) <= self._close_verdict_window_s:
+            return "True"
+        return "False"
+
+    def _on_pick_state(self, msg) -> None:
+        """Fold the pick_node daemon's /pick_state into the hold evidence.
+
+        Never raises: an exception escaping a subscription callback would take
+        the lane silently deaf, which is precisely the failure this fold
+        exists to remove.  A payload that does not parse CLEARS the record
+        instead of retaining the last good one — an unreadable daemon is not
+        evidence of a hold.
+        """
+        try:
+            data = json.loads(msg.data)
+            if not isinstance(data, dict):
+                raise ValueError("pick_state payload is not an object")
+            held = data.get("held") is True
+            alive = data.get("daemon_alive") is True
+            side = data.get("side")
+            state = str(data.get("state") or "")
+            parsed = True
+        except Exception:
+            held, alive, side, state, parsed = False, False, None, "", False
+        with self._obs_lock:
+            # latched before the parse outcome is consulted: the flag means 'this topic
+            # is alive on this robot', and one unreadable frame does not disprove it.
+            # _await_pick_daemon reads it to decide whether a wait is worth it.
+            self._pick_state_seen = True
+            self._pick_state_hold = {
+                "held": held, "alive": alive, "ts": time.time(),
+                "side": side if side in ("right", "left") else None,
+                "state": state,
+            }
+            if parsed and (not held or state == PICK_STATE_BUSY):
+                # a hold epoch has ended, so any claim already consumed is not the current
+                # one: a later held:true is a new hold and can be trusted again. two
+                # endings:
+                #   * held parsed false, the daemon's own open or error;
+                #   * state == 'busy', _execute_pick's first act, a new cycle starting. it
+                #     does not touch `held`, so two successful picks emit busy(held=True)
+                #     then holding(held=True) and never a held:false. keying the release
+                #     off `held` alone would fire the tier once per daemon lifetime and
+                #     re-refuse every later place.
+                # `parsed` gates both: the except path synthesises held=False, and taking
+                # that for an epoch end would let one garbage message re-arm a hold already
+                # released, giving a spurious second release.
+                self._pick_state_consumed = False
+
+    def _daemon_hold_record_unlocked(self) -> Optional[Dict[str, object]]:
+        """The evidence predicate.  THE CALLER HOLDS ``_obs_lock``.
+
+        The whole predicate lives here so the TAKE in _do_place can re-run it
+        and then null the slot INSIDE ONE LOCK HOLD: read-then-take as two
+        separate critical sections is a race a concurrent caller (or the
+        daemon's own 5 Hz publish) walks straight through.
+
+        Evidence requires ALL FIVE of: a /pick_state received within
+        _pick_state_max_age_s, ``held`` true, ``daemon_alive`` true, the state
+        NOT ``busy``, and the hold NOT already consumed by a release this
+        gateway performed.  Any one missing returns None, so the tiers built on
+        this can only ever ADD a hold the daemon is asserting RIGHT NOW: they
+        never keep a dead daemon's claim alive, and — because `held` is sticky
+        on the daemon's side and the gateway never reports its releases back —
+        never re-arm a hold this gateway has already placed or opened.  That
+        last conjunct is the whole reason `_pick_state_consumed` exists;
+        without it the clear sites below are undone by the daemon's next 5 Hz
+        publish within 200 ms and a second place ships a release to the engine
+        on an already-released hand.
+
+        The ``busy`` conjunct is the 2026-09-21 round-6 fix.  ``busy`` is
+        _execute_pick's FIRST act and it does NOT touch ``held``, so the daemon
+        emits busy(held=True) -> holding(held=True) between two successful
+        picks.  A record in that state describes a PICK IN PROGRESS: the hand
+        is being driven onto a NEW payload, and a place riding it would release
+        a hold that is being re-made.  It still ENDS the previous epoch in
+        _on_pick_state (consumed -> False) — that is unchanged, and it is what
+        makes the NEXT hold placeable — but a busy record is itself never
+        evidence.
+
+        Split out of _daemon_held_side so the MEASURED tier can share the gate
+        without also inheriting the declaration: the shipped daemon publishes
+        no ``side``, so a gate welded to ``rec["side"]`` would be permanently
+        None and the measurement below would never run.
+        """
+        rec = self._pick_state_hold
+        consumed = self._pick_state_consumed
+        if rec is None or consumed:
+            return None
+        if not (rec["held"] and rec["alive"]):
+            return None
+        if rec["state"] == PICK_STATE_BUSY:
+            return None
+        if (time.time() - rec["ts"]) > self._pick_state_max_age_s:
+            return None
+        return rec
+
