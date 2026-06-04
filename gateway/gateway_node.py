@@ -4120,3 +4120,48 @@ class GatewayNode:
             return "True"
         return "False"
 
+    def _on_pick_state(self, msg) -> None:
+        """Fold the pick_node daemon's /pick_state into the hold evidence.
+
+        Never raises: an exception escaping a subscription callback would take
+        the lane silently deaf, which is precisely the failure this fold
+        exists to remove.  A payload that does not parse CLEARS the record
+        instead of retaining the last good one — an unreadable daemon is not
+        evidence of a hold.
+        """
+        try:
+            data = json.loads(msg.data)
+            if not isinstance(data, dict):
+                raise ValueError("pick_state payload is not an object")
+            held = data.get("held") is True
+            alive = data.get("daemon_alive") is True
+            side = data.get("side")
+            state = str(data.get("state") or "")
+            parsed = True
+        except Exception:
+            held, alive, side, state, parsed = False, False, None, "", False
+        with self._obs_lock:
+            # latched before the parse outcome is consulted: the flag means 'this topic
+            # is alive on this robot', and one unreadable frame does not disprove it.
+            # _await_pick_daemon reads it to decide whether a wait is worth it.
+            self._pick_state_seen = True
+            self._pick_state_hold = {
+                "held": held, "alive": alive, "ts": time.time(),
+                "side": side if side in ("right", "left") else None,
+                "state": state,
+            }
+            if parsed and (not held or state == PICK_STATE_BUSY):
+                # a hold epoch has ended, so any claim already consumed is not the current
+                # one: a later held:true is a new hold and can be trusted again. two
+                # endings:
+                #   * held parsed false, the daemon's own open or error;
+                #   * state == 'busy', _execute_pick's first act, a new cycle starting. it
+                #     does not touch `held`, so two successful picks emit busy(held=True)
+                #     then holding(held=True) and never a held:false. keying the release
+                #     off `held` alone would fire the tier once per daemon lifetime and
+                #     re-refuse every later place.
+                # `parsed` gates both: the except path synthesises held=False, and taking
+                # that for an epoch end would let one garbage message re-arm a hold already
+                # released, giving a spurious second release.
+                self._pick_state_consumed = False
+
