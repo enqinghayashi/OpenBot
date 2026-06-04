@@ -3583,3 +3583,37 @@ class GatewayNode:
                     if now - v[0] > RADIUS_PARK_WINDOW_S]:
             del store[iid]
 
+    def _with_pick_normals(self, args: List, x: float, y: float,
+                           z: float) -> List:
+        """B8k: ``args`` with the target's normal inserted after x y z, or
+        ``args`` unchanged (switch off, a caller-supplied normal, no matching
+        row / instance id, a stale or missing normal).  Never raises."""
+        try:
+            if os.environ.get("OPENBOT_PICK_NORMALS", "1").strip() == "0":
+                return args
+            if len(args) >= 6 and all(
+                    isinstance(a, (int, float)) and not isinstance(a, bool)
+                    for a in args[3:6]):
+                return args                      # the caller's own normal, untouched
+            store = getattr(self, "_obj_normal", None)
+            if not store:
+                return args
+            with self._obs_lock:
+                obs = self._assembler.observation()
+            best, best_d2 = None, None
+            for det in (obs.detections or []):
+                d2 = (det.x - x) ** 2 + (det.y - y) ** 2 + (det.z - z) ** 2
+                if best_d2 is None or d2 < best_d2:
+                    best, best_d2 = det, d2
+            if best is None or best_d2 > RADIUS_PARK_MATCH_M ** 2:
+                return args
+            iid = getattr(best, "instance_id", None)
+            with self._obs_lock:
+                rec = store.get(iid) if iid is not None else None
+            if rec is None or time.time() - rec[0] > PICK_NORMAL_MAX_AGE_S:
+                return args
+            return (list(args[:3]) + [round(rec[1], 4), round(rec[2], 4),
+                                      round(rec[3], 4)] + list(args[3:]))
+        except Exception:  # noqa: BLE001 — a normal is optional, never a refusal
+            return args
+
