@@ -3492,3 +3492,48 @@ class GatewayNode:
             return [json.dumps(sreq)]
         return []
 
+    def _resolve_pick_orientation(self, args: dict, ordered: List) -> str:
+        """Concrete 'upright'|'horizontal' orientation token for a shaped pick.
+
+        Gateway-side fallback (the brain lane binds the detection's
+        orientation in tools.prepare and forwards it concretely through
+        GatewayCallerBackend.pick).  An explicit upright/horizontal value
+        passes through untouched; 'auto' or an absent/unknown value resolves
+        to the freshest detection whose stored point sits within
+        PICK_ORIENTATION_MATCH_M of the commanded x/y/z — so a lying bottle
+        commanded with 'auto' is picked horizontal, never silently upright.
+        No fresh observation, no nearby detection, or non-numeric
+        coordinates keep the safe 'upright' default (the engine's own
+        default — never a guess at a horizontal approach).
+        """
+        raw = args.get("orientation")
+        if isinstance(raw, str) and raw.strip().lower() in ("upright", "horizontal"):
+            return raw.strip().lower()
+        # 'auto', absent, or unknown resolves against the scene, if that scene is
+        # fresh. a stale or empty detection list never picks an approach.
+        if len(ordered) < 3:
+            return "upright"
+        try:
+            px, py, pz = float(ordered[0]), float(ordered[1]), float(ordered[2])
+        except (TypeError, ValueError):
+            return "upright"
+        if not all(map(math.isfinite, (px, py, pz))):
+            return "upright"
+        with self._obs_lock:
+            obs = self._assembler.observation()
+        if not obs.fresh or not obs.detections:
+            return "upright"
+        best = "upright"
+        best_d2: Optional[float] = None
+        for det in obs.detections:
+            d2 = (det.x - px) ** 2 + (det.y - py) ** 2 + (det.z - pz) ** 2
+            if best_d2 is None or d2 < best_d2:
+                best_d2 = d2
+                ori = getattr(det, "orientation", "upright")
+                best = ori if ori in ("upright", "horizontal") else "upright"
+        if best_d2 is not None and best_d2 <= PICK_ORIENTATION_MATCH_M ** 2:
+            return best
+        return "upright"
+
+    # ── per-verb implementations (one block each) ────────────────────────────
+
