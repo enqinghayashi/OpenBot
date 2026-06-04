@@ -3617,3 +3617,76 @@ class GatewayNode:
         except Exception:  # noqa: BLE001 — a normal is optional, never a refusal
             return args
 
+    def _calc_pick_x_off(self, x: float, y: float, z: float,
+                         orientation: str) -> Tuple[Optional[str], str]:
+        """Calculate x_off for radius_park, or return fallback reason.
+
+        Returns (x_off_str, radius_park_token):
+        - x_off_str: the trailing x_off token (rounded to 4 decimals) to append
+          after height_m, or None if conditions are not met
+        - radius_park_token: text to append to the reply ('fallback(...)',
+          or the full 'r_mean=...' token if x_off was calculated); empty string
+          if switch OFF or orientation not upright (no token added for
+          byte-identity when OFF or for horizontal/left picks)
+        """
+        if not self._radius_park_on:
+            return None, ""
+        if orientation != "upright":
+            return None, ""  # no token when horizontal or not upright
+        # caller reads side; this assumes the right hand
+        # find the matching detection, same fresh-match logic
+        with self._obs_lock:
+            obs = self._assembler.observation()
+        if not obs.fresh or not obs.detections:
+            return None, "; radius_park=fallback(no_detection)"
+        best_det = None
+        best_d2: Optional[float] = None
+        for det in obs.detections:
+            d2 = (det.x - x) ** 2 + (det.y - y) ** 2 + (det.z - z) ** 2
+            if best_d2 is None or d2 < best_d2:
+                best_d2 = d2
+                best_det = det
+        # the brain sends the target row's own coordinates, so the row that
+        # measured it sits within a few cm; a looser gate (0.30 m) could grab a
+        # neighbour's radius.
+        if best_det is None or best_d2 is None or \
+                best_d2 > RADIUS_PARK_MATCH_M ** 2:
+            return None, "; radius_park=fallback(not_found)"
+        iid = getattr(best_det, 'instance_id', None)
+        if iid is None:
+            return None, "; radius_park=fallback(no_instance_id)"
+        with self._obs_lock:
+            history = self._obj_radius_history.get(iid, [])
+        if len(history) < 3:
+            return None, "; radius_park=fallback(few)"
+        # only samples from the last RADIUS_PARK_WINDOW_S count, since an object
+        # last measured ages ago is not good evidence for this pick.
+        now = time.time()
+        samples = [r for (t, r, q) in history
+                   if q >= 0.6 and now - t <= RADIUS_PARK_WINDOW_S]
+        if len(samples) < 3:
+            return None, "; radius_park=fallback(few)"
+        r_min = min(samples)
+        r_max = max(samples)
+        if r_max - r_min > 0.020:
+            return None, "; radius_park=fallback(spread)"
+        # use the mean of the gated samples for radius estimation.
+        r_mean = sum(samples) / len(samples)
+        r_eff = r_mean + self._radius_park_margin_m
+        x_off = -(r_eff + 0.065)
+        x_off_rounded = round(x_off, 4)
+        n = len(samples)
+        spread = r_max - r_min
+        # if the clamp cut the requested margin, the token names the request
+        # (margin_req=) ahead of the margin used; unclamped, the token stays
+        # byte-identical to the plain one.
+        _req = getattr(self, '_radius_park_margin_req_m',
+                       self._radius_park_margin_m)
+        _req_tok = ("margin_req=%.3f," % _req
+                    if abs(_req - self._radius_park_margin_m) > 5e-7 else "")
+        token = ("; radius_park=r_mean=%.3f,n=%d,spread=%.3f,%smargin=%.3f,"
+                 "x_off=%.4f" %
+                 (r_mean, n, spread, _req_tok, self._radius_park_margin_m,
+                  x_off_rounded))
+        return "%.4f" % x_off_rounded, token
+
