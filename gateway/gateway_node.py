@@ -4371,3 +4371,15 @@ class GatewayNode:
             return next(iter(closed))
         return min(closed, key=closed.get)
 
+    def _clear_close_verdicts(self, sides: Tuple[str, ...]) -> None:
+        """Drop close_adaptive verdicts (gateway tracking + assembler fold).
+
+        Called when a commanded open/close invalidates prior grasp evidence
+        for the affected sides, so GripState.contact must not linger.
+        """
+        with self._obs_lock:
+            for s in sides:
+                if s in ("right", "left"):
+                    self._close_verdicts.pop(s, None)
+                    self._assembler.clear_close_result(s)
+
