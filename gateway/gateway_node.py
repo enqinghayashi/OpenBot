@@ -3236,3 +3236,58 @@ class GatewayNode:
             % (self._low_lane.RETREAT_UNCONFIRMED, verb, reason))
         return ("ERROR:low-workspace %s" % detail), None
 
+    def _low_lane_retreat_first_if_held(self) -> Optional[str]:
+        """Rise the body before a lane whose ENTRY bypasses ``dispatch`` (§6).
+
+        ``/place_target``'s ROS callback calls :meth:`place_target` directly, so
+        the next-command rule in ``dispatch`` never sees the request: with a
+        descent held that lane would place at RAW coordinates, with no frame
+        shift, and leave the body low (refuter MEDIUM-1).  This applies the same
+        operator rule at the one-shot lane's own entry.
+
+        Returns ``None`` when there is nothing to rise from — no lane, no
+        context, or a context that is ``IDLE``, which is every call on the
+        lane-off path and the common case on the lane-on path — and after a
+        CONFIRMED rise.  Any other outcome returns the refusal REASON and the
+        caller must dispatch nothing (fail-closed, plan §7).
+
+        The step is the SAME ``_retreat_step`` the sequences and the
+        next-command rule use, so the ``height off`` + ``status`` pair and the
+        ``RETREAT UNCONFIRMED`` warn-and-hold text exist exactly once in the
+        repo.  ``descent_lane.retreat_first_if_held`` is the pure half of this
+        seam (repair task B); when it is present it drives the step, and when it
+        has not landed this method drives the identical step itself.
+        """
+        ctx = self._descent_ctx
+        if self._low_lane is None or ctx is None or not ctx.in_flight():
+            return None
+        log = self._low_lane.DescentPhaseLog("place_target")
+        log.start(time.time())
+        step = getattr(self._low_lane, "retreat_first_if_held", None)
+        if step is None:
+            ok, _ref, detail = self._low_lane._retreat_step(  # noqa: SLF001
+                ctx, log, writer_verb=self.writer_verb,
+                status_verb=self._low_lane_status, stamp=time.time,
+                clock=time.monotonic, sleep=time.sleep)
+            reason = None if ok else detail
+        else:
+            # the lane half takes its clocks by the names the sequences use (wall =
+            # wall stamp, monotonic = hold clock), so no clock gets crossed.
+            reason = step(ctx, log, writer_verb=self.writer_verb,
+                          status_verb=self._low_lane_status, wall=time.time,
+                          monotonic=time.monotonic, sleep=time.sleep)
+        self._low_lane_finish(
+            log, "refuse" if reason else "ok",
+            reason or "body standing — the /place_target lane may run")
+        return self._low_lane.honest(reason) if reason else None
+
+    #: the characters verify_pick's hint regex accepts
+    #: (target_label\s*=\s*([A-Za-z0-9_.\-]+)). anything else is silently
+    #: truncated by that regex, and a truncated token followed by `=` could
+    #: slip a second field into the contract text. so a label outside the
+    #: charset is refused and no hint is sent: no hint gives the honest
+    #: in_progress reply, the safe failure direction, while a mangled hint is
+    #: not.
+    _HINT_LABEL_CHARS = frozenset(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
+
