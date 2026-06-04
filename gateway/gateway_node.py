@@ -3537,3 +3537,25 @@ class GatewayNode:
 
     # ── per-verb implementations (one block each) ────────────────────────────
 
+    @staticmethod
+    def _parse_pick_args(args: List) -> Tuple[Optional[str], Optional[str]]:
+        """Parse pick args to extract orientation and height_m.
+
+        Returns (orientation, height_m) where both may be None if not found.
+        """
+        orientation = None
+        height_m = None
+        for i, arg in enumerate(args):
+            arg_str = str(arg).strip().lower()
+            if arg_str in ("upright", "horizontal"):
+                orientation = arg_str
+                # height_m is expected to be the next non-orientation arg after orientation
+                if i + 1 < len(args):
+                    try:
+                        height_m = str(args[i + 1])
+                        float(height_m)  # make sure it is actually a number
+                        break
+                    except (ValueError, TypeError):
+                        pass
+        return orientation or "upright", height_m
+
