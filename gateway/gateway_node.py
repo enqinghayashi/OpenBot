@@ -3690,3 +3690,21 @@ class GatewayNode:
                   x_off_rounded))
         return "%.4f" % x_off_rounded, token
 
+    def _place_release_note(self) -> str:
+        """B8i (10-09 wire 46): '' or the newest DONE place release within
+        PLACE_RELEASE_NOTE_S, appended to the unheld refusal (the pinned
+        prefix 'ERROR:nothing verified held - cannot place' is unchanged)."""
+        rel = dict(getattr(self, '_last_place_release', {}) or {})
+        now = time.time()
+        best = None
+        for s, ts in rel.items():
+            age = now - ts
+            if 0.0 <= age <= PLACE_RELEASE_NOTE_S and (
+                    best is None or age < best[1]):
+                best = (s, age)
+        if best is None:
+            return ""
+        return ("; the %s hand already released its object %ds ago (the "
+                "previous place completed) - do not place again; tell the "
+                "operator it was released" % (best[0], int(round(best[1]))))
+
