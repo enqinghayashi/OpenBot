@@ -4316,3 +4316,58 @@ class GatewayNode:
             # grip server is "unmeasured", and the caller handles that.
             return None
 
+    def _measured_held_side(self) -> Optional[str]:
+        """Which hand is HOLDING, measured — or None when that cannot be said.
+
+        THE REAL LAW, in order:
+
+        1. The daemon's evidence gate must hold (a FRESH /pick_state with
+           `held` AND `daemon_alive` AND not consumed AND not `busy`), or this
+           tier is inert.  A measurement is not a hold.
+        2. Both hands are scored over the grip socket.  A hand that cannot be
+           measured is UNSEEN.  If ANY UNSEEN hand is IN SERVICE — i.e. not in
+           DEX3_OUT_OF_SERVICE_SIDES — return None: an in-service hand that
+           cannot be measured could be the holder, and this tier does not
+           guess.  This is the fix for the round-6 defect, where dropping an
+           unmeasurable hand out of `eff` and answering from the remainder made
+           "one hand closed, the other UNMEASURABLE" indistinguishable from
+           "one closed, the other measured NOT-CLOSED", and — on this robot,
+           whose left Dex3 never measures — reduced the tier to a de-facto
+           declared constant 'right' whenever the right read closed.
+        3. If every unseen hand is out of service (its absence is EXCUSED —
+           see DEX3_OUT_OF_SERVICE_SIDES; its PRESENCE is still evidence and it
+           is scored like any hand), decide from the measured hands:
+           * BOTH meaningfully closed -> the hand that closed LESS is the one
+             holding something.  A hand wrapped around an object is stopped by
+             it and reads a smaller fraction than an empty hand that closed all
+             the way onto its own stop;
+           * exactly ONE closed -> that hand;
+           * NEITHER closed, or NOTHING measurable -> None, i.e. no evidence,
+             which leaves the caller's refusal standing.
+
+        Note the asymmetry with _daemon_held_side: a declared side is taken on
+        trust, whereas this is a measurement the gateway makes itself.  The
+        measurement outranks the declaration because a declaration reflects
+        the DAEMON's belief about its own pick, while this reflects the hand's
+        actual pose at the instant of the place.
+        """
+        if self._daemon_hold_record() is None:
+            return None
+        eff = {}
+        for side in ("right", "left"):
+            e = self._measured_closure(side)
+            if e is not None:
+                eff[side] = e
+        # an unseen in-service hand forbids an answer. read the tuple by name (a
+        # runtime lookup, not a captured default), so an operator can empty it and
+        # restore the sound rule that every hand must measure.
+        if any(s not in DEX3_OUT_OF_SERVICE_SIDES
+               for s in ("right", "left") if s not in eff):
+            return None
+        closed = {s: e for s, e in eff.items() if e >= self._closed_eff_min}
+        if not closed:
+            return None
+        if len(closed) == 1:
+            return next(iter(closed))
+        return min(closed, key=closed.get)
+
