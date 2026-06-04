@@ -4165,3 +4165,51 @@ class GatewayNode:
                 # released, giving a spurious second release.
                 self._pick_state_consumed = False
 
+    def _daemon_hold_record_unlocked(self) -> Optional[Dict[str, object]]:
+        """The evidence predicate.  THE CALLER HOLDS ``_obs_lock``.
+
+        The whole predicate lives here so the TAKE in _do_place can re-run it
+        and then null the slot INSIDE ONE LOCK HOLD: read-then-take as two
+        separate critical sections is a race a concurrent caller (or the
+        daemon's own 5 Hz publish) walks straight through.
+
+        Evidence requires ALL FIVE of: a /pick_state received within
+        _pick_state_max_age_s, ``held`` true, ``daemon_alive`` true, the state
+        NOT ``busy``, and the hold NOT already consumed by a release this
+        gateway performed.  Any one missing returns None, so the tiers built on
+        this can only ever ADD a hold the daemon is asserting RIGHT NOW: they
+        never keep a dead daemon's claim alive, and — because `held` is sticky
+        on the daemon's side and the gateway never reports its releases back —
+        never re-arm a hold this gateway has already placed or opened.  That
+        last conjunct is the whole reason `_pick_state_consumed` exists;
+        without it the clear sites below are undone by the daemon's next 5 Hz
+        publish within 200 ms and a second place ships a release to the engine
+        on an already-released hand.
+
+        The ``busy`` conjunct is the 2026-09-21 round-6 fix.  ``busy`` is
+        _execute_pick's FIRST act and it does NOT touch ``held``, so the daemon
+        emits busy(held=True) -> holding(held=True) between two successful
+        picks.  A record in that state describes a PICK IN PROGRESS: the hand
+        is being driven onto a NEW payload, and a place riding it would release
+        a hold that is being re-made.  It still ENDS the previous epoch in
+        _on_pick_state (consumed -> False) — that is unchanged, and it is what
+        makes the NEXT hold placeable — but a busy record is itself never
+        evidence.
+
+        Split out of _daemon_held_side so the MEASURED tier can share the gate
+        without also inheriting the declaration: the shipped daemon publishes
+        no ``side``, so a gate welded to ``rec["side"]`` would be permanently
+        None and the measurement below would never run.
+        """
+        rec = self._pick_state_hold
+        consumed = self._pick_state_consumed
+        if rec is None or consumed:
+            return None
+        if not (rec["held"] and rec["alive"]):
+            return None
+        if rec["state"] == PICK_STATE_BUSY:
+            return None
+        if (time.time() - rec["ts"]) > self._pick_state_max_age_s:
+            return None
+        return rec
+
