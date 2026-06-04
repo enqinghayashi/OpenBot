@@ -4232,3 +4232,87 @@ class GatewayNode:
             return None
         return rec["side"]
 
+    def _measured_closure(self, side: str) -> Optional[float]:
+        """Mean Dex3 closure fraction of ``side``, or None if unscoreable.
+
+        ``eff = (q - OPEN) / (CLOSE - OPEN)`` per joint, averaged over the
+        joints that carry a usable span AND are in servo mode.  This is the
+        SAME fraction the engine's bounded-lead close and grip_server's
+        ``clamped_close_target`` speak in — the presets are duplicated at the
+        top of this file because grip_server exposes no scoring verb (see the
+        HAZARD note there).
+
+        Returns None — never 0.0 — whenever the hand cannot honestly be
+        scored: no reply, a non-DONE reply, a malformed envelope, the side
+        reported ``available`` False (the lane saying its ``actual`` is stale),
+        no ``actual`` vector (the LEFT hand on this robot returns none — it has
+        no DDS reader), too few live joints, or no joint with a usable span.
+        The distinction matters: 0.0 means "measured, and it is OPEN", which
+        is a fact that licences a refusal; None means "not measured", which
+        must fall through to the next tier instead.
+        """
+        try:
+            line = self.grip_verb("state %s" % side, CLOSURE_PROBE_TIMEOUT_S)
+            if not isinstance(line, str) or not line.startswith("DONE:"):
+                return None
+            payload = json.loads(line[len("DONE:"):])
+            if not isinstance(payload, dict):
+                return None
+            st = payload.get(side)
+            if not isinstance(st, dict):
+                return None
+            actual = st.get("actual")
+            if not isinstance(actual, dict):
+                return None
+            # the lane's health flag for this side. available=False means the grip
+            # server is saying the vector below is stale (its last good read, not a live
+            # measurement), so scoring it reads a number the hand is not making. a grip server
+            # answering available False can still have its last 'actual' score 0.668,
+            # enough to name a holder. the guard sits outside the `mode` branch
+            # deliberately: a robot emitting no `mode` would skip a check in there.
+            if not st.get("available", True):
+                return None
+            live = None
+            modes = st.get("mode")
+            if isinstance(modes, dict):
+                live = set()
+                for k, v in modes.items():
+                    try:
+                        if int(v) == 1:
+                            live.add(str(k))
+                    except (TypeError, ValueError):
+                        continue
+            o, c = DEX3_OPEN[side], DEX3_CLOSE[side]
+            vals = []
+            for jid in DEX3_JOINT_IDS:
+                key = str(jid)
+                q = actual.get(key)
+                if q is None:
+                    continue
+                if live is not None and key not in live:
+                    # limp (mode == 0): a disabled motor, so this q is wherever gravity parked
+                    # the joint, not where the grasp put it. j3 on a live cup hold reads -0.04
+                    # and would pull the mean down.
+                    continue
+                span = c[jid] - o[jid]
+                if abs(span) < MIN_SPAN_RAD:
+                    continue
+                vals.append((float(q) - o[jid]) / span)
+            # one floor, applied to the joints actually scored and applied
+            # unconditionally, deliberately not inside the mode branch: a grip server
+            # that emits `actual` but no `mode` would skip a floor in there, and a hand
+            # scored off two joints could read ~1.0 and license a place into an empty
+            # hand.
+            # it cannot bind in that regime: with `mode` absent nothing is excluded by
+            # the mode gate and every right-hand span exceeds MIN_SPAN_RAD, so len(vals)
+            # is always 7 against a floor of 4. it binds only with `mode` reported,
+            # where the latch triad leaves just 4. kept because it is load-bearing there
+            # and is the only guard against a short `actual` vector.
+            if len(vals) < MIN_SCORED_JOINTS:
+                return None
+            return sum(vals) / len(vals)
+        except Exception:
+            # a probe must never bring the place path down: an unreachable or wedged
+            # grip server is "unmeasured", and the caller handles that.
+            return None
+
