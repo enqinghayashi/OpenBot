@@ -3879,3 +3879,87 @@ class GatewayNode:
     #: around its own `_verify` call, and None everywhere else.
     _PICK_POINT_TLS = threading.local()
 
+    def _await_pick_daemon(self) -> str:
+        """Block until the pick daemon's MOTION ENDS.  Bounded; never raises.
+
+        WHY THIS EXISTS (MEASURED 2026-09-27, `--log-level DEBUG` wire trace
+        against `pick.log`, same run)::
+
+            21:36:53,613  model calls pick
+            21:36:56,647  function_call_output SENT -- the verdict is taken HERE
+            21:37:21,029  engine STILL closing the hand
+            21:37:22,341  engine grasp verdict (hit_obstacle -> light_object)
+            21:37:29,389  T5 step 5: right arm -> CARRY_TUCK
+
+        The verdict precedes the engine's OWN grasp verdict by 25.7 s.  At
+        t+3 s the bottle is untouched on the table, so `_target_present`
+        returns True and `verify_pick` takes its `present is True` branch
+        ("re-observe; target still visible") => `in_progress`, every time.
+        The brain's own re-observe budget cannot bridge the gap either: it is
+        `_MAX_RE_OBSERVES` 2 x `_RE_OBSERVE_SETTLE_S` 1.4 = 2.8 s, an order of
+        magnitude short of a ~30 s motion.
+
+        NOT the reply timeout: `PICK_REPLY_TIMEOUT_S` is ALREADY 300 s
+        (gateway_node.py:861).  The gateway waits 300 s for the engine to
+        ANSWER -- the engine simply answers early and runs the motion in its
+        own daemon.  So the missing wait is for the MOTION, not the reply.
+
+        THE PREDICATE IS THE BUSY EDGE, NOT "not busy".  Between two
+        consecutive SUCCESSFUL picks the daemon emits
+        busy(held=True) -> holding(held=True) and NEVER a held:false (see
+        _on_pick_state).  A bare "state != busy" read would therefore be
+        satisfied by the PREVIOUS cycle's carry-over frame and return
+        instantly -- the stale-evidence trap this fix exists to close, one
+        level down.  So we require an observed ``busy`` frame FIRST (cycle
+        START) and only then a later non-``busy`` frame (cycle END).
+
+        DEGRADES SAFELY.  A daemon that never publishes leaves the record None
+        or never ``busy``; the wait then runs to its deadline and returns
+        ``no_busy_signal`` -- the pre-fix behaviour.  It can therefore never
+        HANG a pick, and never MANUFACTURES a completion the daemon did not
+        report.  A ``timeout`` token means the verdict may still be stale; it
+        is reported, not hidden.
+
+        The returned token goes into the tool result, so it must NEVER contain
+        the substring ``ERROR:`` -- `_shape_reply` flips the envelope to
+        ok:false on that substring anywhere in the reply, and the verifier's
+        _classify_reply reads an embedded ``ERROR:`` as a failure.
+        """
+        with self._obs_lock:
+            lane_live = self._pick_state_seen
+        if not lane_live:
+            # never a single /pick_state frame since start: there is no daemon lane on
+            # this robot, so there is nothing to wait for. check that before the clock
+            # starts, so a lane without a daemon pays nothing for this, not even the
+            # start window.
+            return "no_daemon_lane"
+        t0 = time.time()
+        start_deadline = t0 + self._pick_daemon_start_s
+        deadline = t0 + self._pick_daemon_wait_s
+        saw_busy = False
+        last_state = None
+        while True:
+            now = time.time()
+            with self._obs_lock:
+                rec = self._pick_state_hold
+                rec = dict(rec) if rec is not None else None
+            if rec is not None:
+                last_state = rec.get("state")
+                # freshness and daemon_alive are the same conjuncts the hold predicate uses
+                # (_daemon_hold_record_unlocked): a stale frame or one from a dead daemon is
+                # evidence of nothing, whichever way it points.
+                if (now - rec["ts"]) <= self._pick_state_max_age_s \
+                        and rec.get("alive"):
+                    if last_state == PICK_STATE_BUSY:
+                        saw_busy = True
+                    elif saw_busy:
+                        return "cycle_ended@%.1fs" % (now - t0)
+            if not saw_busy and now >= start_deadline:
+                # the topic is live but no cycle began, so this pick is not daemon-driven
+                # (or the daemon is wedged). return early instead of burning the motion
+                # budget on an event that is not coming.
+                return "no_busy_signal (last_state=%r)" % (last_state,)
+            if now >= deadline:
+                return "timeout_after_busy@%.1fs" % (now - t0)
+            time.sleep(PICK_DAEMON_POLL_S)
+
