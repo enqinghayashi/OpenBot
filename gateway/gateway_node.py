@@ -3492,3 +3492,201 @@ class GatewayNode:
             return [json.dumps(sreq)]
         return []
 
+    def _resolve_pick_orientation(self, args: dict, ordered: List) -> str:
+        """Concrete 'upright'|'horizontal' orientation token for a shaped pick.
+
+        Gateway-side fallback (the brain lane binds the detection's
+        orientation in tools.prepare and forwards it concretely through
+        GatewayCallerBackend.pick).  An explicit upright/horizontal value
+        passes through untouched; 'auto' or an absent/unknown value resolves
+        to the freshest detection whose stored point sits within
+        PICK_ORIENTATION_MATCH_M of the commanded x/y/z — so a lying bottle
+        commanded with 'auto' is picked horizontal, never silently upright.
+        No fresh observation, no nearby detection, or non-numeric
+        coordinates keep the safe 'upright' default (the engine's own
+        default — never a guess at a horizontal approach).
+        """
+        raw = args.get("orientation")
+        if isinstance(raw, str) and raw.strip().lower() in ("upright", "horizontal"):
+            return raw.strip().lower()
+        # 'auto', absent, or unknown resolves against the scene, if that scene is
+        # fresh. a stale or empty detection list never picks an approach.
+        if len(ordered) < 3:
+            return "upright"
+        try:
+            px, py, pz = float(ordered[0]), float(ordered[1]), float(ordered[2])
+        except (TypeError, ValueError):
+            return "upright"
+        if not all(map(math.isfinite, (px, py, pz))):
+            return "upright"
+        with self._obs_lock:
+            obs = self._assembler.observation()
+        if not obs.fresh or not obs.detections:
+            return "upright"
+        best = "upright"
+        best_d2: Optional[float] = None
+        for det in obs.detections:
+            d2 = (det.x - px) ** 2 + (det.y - py) ** 2 + (det.z - pz) ** 2
+            if best_d2 is None or d2 < best_d2:
+                best_d2 = d2
+                ori = getattr(det, "orientation", "upright")
+                best = ori if ori in ("upright", "horizontal") else "upright"
+        if best_d2 is not None and best_d2 <= PICK_ORIENTATION_MATCH_M ** 2:
+            return best
+        return "upright"
+
+    # ── per-verb implementations (one block each) ────────────────────────────
+
+    @staticmethod
+    def _parse_pick_args(args: List) -> Tuple[Optional[str], Optional[str]]:
+        """Parse pick args to extract orientation and height_m.
+
+        Returns (orientation, height_m) where both may be None if not found.
+        """
+        orientation = None
+        height_m = None
+        for i, arg in enumerate(args):
+            arg_str = str(arg).strip().lower()
+            if arg_str in ("upright", "horizontal"):
+                orientation = arg_str
+                # height_m is expected to be the next non-orientation arg after orientation
+                if i + 1 < len(args):
+                    try:
+                        height_m = str(args[i + 1])
+                        float(height_m)  # make sure it is actually a number
+                        break
+                    except (ValueError, TypeError):
+                        pass
+        return orientation or "upright", height_m
+
+    def _note_normals(self, rows: List[dict], now: float) -> None:
+        """B8k: keep each instance's newest VALID normal (finite, |n| within
+        PICK_NORMAL_NORM_TOL of 1).  Caller holds ``_obs_lock``."""
+        store = getattr(self, "_obj_normal", None)
+        if store is None:
+            return
+        for row in rows:
+            iid = row.get("instance_id")
+            if iid is None:
+                continue
+            try:
+                n = [float(row.get(k)) for k in ("nx", "ny", "nz")]
+            except (TypeError, ValueError):
+                continue
+            if not all(math.isfinite(v) for v in n):
+                continue
+            norm = math.sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2])
+            if abs(norm - 1.0) > PICK_NORMAL_NORM_TOL:
+                continue
+            store[iid] = (now, n[0] / norm, n[1] / norm, n[2] / norm)
+        for iid in [k for k, v in store.items()
+                    if now - v[0] > RADIUS_PARK_WINDOW_S]:
+            del store[iid]
+
+    def _with_pick_normals(self, args: List, x: float, y: float,
+                           z: float) -> List:
+        """B8k: ``args`` with the target's normal inserted after x y z, or
+        ``args`` unchanged (switch off, a caller-supplied normal, no matching
+        row / instance id, a stale or missing normal).  Never raises."""
+        try:
+            if os.environ.get("OPENBOT_PICK_NORMALS", "1").strip() == "0":
+                return args
+            if len(args) >= 6 and all(
+                    isinstance(a, (int, float)) and not isinstance(a, bool)
+                    for a in args[3:6]):
+                return args                      # the caller's own normal, untouched
+            store = getattr(self, "_obj_normal", None)
+            if not store:
+                return args
+            with self._obs_lock:
+                obs = self._assembler.observation()
+            best, best_d2 = None, None
+            for det in (obs.detections or []):
+                d2 = (det.x - x) ** 2 + (det.y - y) ** 2 + (det.z - z) ** 2
+                if best_d2 is None or d2 < best_d2:
+                    best, best_d2 = det, d2
+            if best is None or best_d2 > RADIUS_PARK_MATCH_M ** 2:
+                return args
+            iid = getattr(best, "instance_id", None)
+            with self._obs_lock:
+                rec = store.get(iid) if iid is not None else None
+            if rec is None or time.time() - rec[0] > PICK_NORMAL_MAX_AGE_S:
+                return args
+            return (list(args[:3]) + [round(rec[1], 4), round(rec[2], 4),
+                                      round(rec[3], 4)] + list(args[3:]))
+        except Exception:  # noqa: BLE001 — a normal is optional, never a refusal
+            return args
+
+    def _calc_pick_x_off(self, x: float, y: float, z: float,
+                         orientation: str) -> Tuple[Optional[str], str]:
+        """Calculate x_off for radius_park, or return fallback reason.
+
+        Returns (x_off_str, radius_park_token):
+        - x_off_str: the trailing x_off token (rounded to 4 decimals) to append
+          after height_m, or None if conditions are not met
+        - radius_park_token: text to append to the reply ('fallback(...)',
+          or the full 'r_mean=...' token if x_off was calculated); empty string
+          if switch OFF or orientation not upright (no token added for
+          byte-identity when OFF or for horizontal/left picks)
+        """
+        if not self._radius_park_on:
+            return None, ""
+        if orientation != "upright":
+            return None, ""  # no token when horizontal or not upright
+        # caller reads side; this assumes the right hand
+        # find the matching detection, same fresh-match logic
+        with self._obs_lock:
+            obs = self._assembler.observation()
+        if not obs.fresh or not obs.detections:
+            return None, "; radius_park=fallback(no_detection)"
+        best_det = None
+        best_d2: Optional[float] = None
+        for det in obs.detections:
+            d2 = (det.x - x) ** 2 + (det.y - y) ** 2 + (det.z - z) ** 2
+            if best_d2 is None or d2 < best_d2:
+                best_d2 = d2
+                best_det = det
+        # the brain sends the target row's own coordinates, so the row that
+        # measured it sits within a few cm; a looser gate (0.30 m) could grab a
+        # neighbour's radius.
+        if best_det is None or best_d2 is None or \
+                best_d2 > RADIUS_PARK_MATCH_M ** 2:
+            return None, "; radius_park=fallback(not_found)"
+        iid = getattr(best_det, 'instance_id', None)
+        if iid is None:
+            return None, "; radius_park=fallback(no_instance_id)"
+        with self._obs_lock:
+            history = self._obj_radius_history.get(iid, [])
+        if len(history) < 3:
+            return None, "; radius_park=fallback(few)"
+        # only samples from the last RADIUS_PARK_WINDOW_S count, since an object
+        # last measured ages ago is not good evidence for this pick.
+        now = time.time()
+        samples = [r for (t, r, q) in history
+                   if q >= 0.6 and now - t <= RADIUS_PARK_WINDOW_S]
+        if len(samples) < 3:
+            return None, "; radius_park=fallback(few)"
+        r_min = min(samples)
+        r_max = max(samples)
+        if r_max - r_min > 0.020:
+            return None, "; radius_park=fallback(spread)"
+        # use the mean of the gated samples for radius estimation.
+        r_mean = sum(samples) / len(samples)
+        r_eff = r_mean + self._radius_park_margin_m
+        x_off = -(r_eff + 0.065)
+        x_off_rounded = round(x_off, 4)
+        n = len(samples)
+        spread = r_max - r_min
+        # if the clamp cut the requested margin, the token names the request
+        # (margin_req=) ahead of the margin used; unclamped, the token stays
+        # byte-identical to the plain one.
+        _req = getattr(self, '_radius_park_margin_req_m',
+                       self._radius_park_margin_m)
+        _req_tok = ("margin_req=%.3f," % _req
+                    if abs(_req - self._radius_park_margin_m) > 5e-7 else "")
+        token = ("; radius_park=r_mean=%.3f,n=%d,spread=%.3f,%smargin=%.3f,"
+                 "x_off=%.4f" %
+                 (r_mean, n, spread, _req_tok, self._radius_park_margin_m,
+                  x_off_rounded))
+        return "%.4f" % x_off_rounded, token
+
