@@ -3559,3 +3559,27 @@ class GatewayNode:
                         pass
         return orientation or "upright", height_m
 
+    def _note_normals(self, rows: List[dict], now: float) -> None:
+        """B8k: keep each instance's newest VALID normal (finite, |n| within
+        PICK_NORMAL_NORM_TOL of 1).  Caller holds ``_obs_lock``."""
+        store = getattr(self, "_obj_normal", None)
+        if store is None:
+            return
+        for row in rows:
+            iid = row.get("instance_id")
+            if iid is None:
+                continue
+            try:
+                n = [float(row.get(k)) for k in ("nx", "ny", "nz")]
+            except (TypeError, ValueError):
+                continue
+            if not all(math.isfinite(v) for v in n):
+                continue
+            norm = math.sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2])
+            if abs(norm - 1.0) > PICK_NORMAL_NORM_TOL:
+                continue
+            store[iid] = (now, n[0] / norm, n[1] / norm, n[2] / norm)
+        for iid in [k for k, v in store.items()
+                    if now - v[0] > RADIUS_PARK_WINDOW_S]:
+            del store[iid]
+
