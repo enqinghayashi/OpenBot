@@ -3690,3 +3690,372 @@ class GatewayNode:
                   x_off_rounded))
         return "%.4f" % x_off_rounded, token
 
+    def _place_release_note(self) -> str:
+        """B8i (10-09 wire 46): '' or the newest DONE place release within
+        PLACE_RELEASE_NOTE_S, appended to the unheld refusal (the pinned
+        prefix 'ERROR:nothing verified held - cannot place' is unchanged)."""
+        rel = dict(getattr(self, '_last_place_release', {}) or {})
+        now = time.time()
+        best = None
+        for s, ts in rel.items():
+            age = now - ts
+            if 0.0 <= age <= PLACE_RELEASE_NOTE_S and (
+                    best is None or age < best[1]):
+                best = (s, age)
+        if best is None:
+            return ""
+        return ("; the %s hand already released its object %ds ago (the "
+                "previous place completed) - do not place again; tell the "
+                "operator it was released" % (best[0], int(round(best[1]))))
+
+    def _do_pick(self, verb: str, args: List) -> Tuple[str, Optional[str]]:
+        side = "left" if verb == "pick_left" else "right"
+        if len(args) < 3:
+            return ("ERROR:%s needs x y z [nx ny nz] [orientation] [height_m]"
+                    % verb), None
+        try:
+            x, y, z = float(args[0]), float(args[1]), float(args[2])
+        except (TypeError, ValueError):
+            return "ERROR:pick x y z must be numbers", None
+        # NaN and Inf must never reach the floor refusal: NaN < -0.35 is false,
+        # so a NaN z would bypass the tabletop block and a phantom pick would run.
+        if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
+            return "ERROR:pick x y z must be finite numbers", None
+        # capability block: pick is tabletop-only, so a floor pick is refused
+        # honestly. the bound is a torso-frame height (z=0 at the torso link, the
+        # frame perception and the engine use).
+        if z < self._pick_min_z_m:
+            return ("ERROR:pick capability is TABLETOP-ONLY (z >= %.2f m "
+                    "torso frame, got z=%.3f) — floor/ground pick refused, "
+                    "no ground-pick skill exists"
+                    % (self._pick_min_z_m, z)), None
+        # a pick touches the hand, so it ends the side's open trust for the causal
+        # open reference: the hand may be closed, and reads do not qualify
+        # again until the next open command the gateway dispatches. a new pick also
+        # kills any prior verified-hold record, which belongs to this pick.
+        with self._obs_lock:
+            self._assembler.note_hand_command(side)
+            self._assembler.set_active_side(side)  # obs.grip = the hand the pick used
+            self._last_verified_grasp.pop(side, None)
+            getattr(self, '_last_place_release', {}).pop(side, None)  # drop the place record
+        args = self._with_pick_normals(args, x, y, z)      # splice in the normals
+        tail = " ".join(str(a) for a in args[3:])
+        cmd = verb + " " + " ".join(str(a) for a in args[:3]) + \
+            (" " + tail if tail else "")
+        # work out radius_park x_off when it applies (upright right hand only)
+        x_off_token_str = None
+        radius_park_token = ""
+        if side == "right":
+            # parse the args to pull out orientation and height_m
+            orientation, height_m = self._parse_pick_args(args)
+            x_off_token, radius_park_token = self._calc_pick_x_off(
+                x, y, z, orientation)
+            # a radius_park token with no height_m cannot send x_off, so swap in the
+            # fallback token; the reply then reflects reality.
+            if radius_park_token and height_m is None:
+                radius_park_token = "; radius_park=fallback(no_height_m)"
+                x_off_token = None
+            # append x_off only when: switch on, x_off calculated, height_m present
+            if x_off_token is not None and height_m is not None:
+                cmd += " " + x_off_token
+                x_off_token_str = x_off_token
+        # inert unless `_b5_on`. dispatch_ts is stamped right before the engine
+        # call, where the detections re-observe window starts.
+        b5 = getattr(self, "_b5_on", False) is True
+        dispatch_ts = self._b5_clock() if b5 else 0.0
+        reply = self.engine_verb(cmd)
+        if not _is_engine_reply(reply):
+            # not a verdict: the engine wrote something that is not a reply (the
+            # Ipopt banner) or the stream is desynced. saying 'the pick didn't start'
+            # would guess pessimistically, while silence would be the optimistic lie
+            # this guard exists to stop. report UNKNOWN and let the operator re-observe.
+            return ("ERROR:pick engine reply was not a command reply (%r) — "
+                    "the pick's outcome is UNKNOWN; re-observe before retrying"
+                    % reply.strip()[:120]), None
+        if reply.strip().startswith("CANCELLED:"):
+            # a cancelled pick is never a completed one (`CANCELLED:arm_move`). it
+            # would slip through the negative test below and come back 'DONE pick
+            # executed', and with the lane up _last_verified_grasp got stamped for a
+            # hand the engine had frozen. so: no motion wait, no lane probe, no hold
+            # record (the pop above cleared any earlier one). the reply leads with
+            # ERROR so _shape_reply renders ok:false, and the echoed engine text is
+            # defanged so it cannot add a second ERROR: token.
+            where = _cancel_phase(reply)
+            verdict = _cancelled_verdict("pick", where)
+            self._emit_verdict(verdict)
+            cancelled_reply = (
+                "ERROR:cancelled_by_operator pick cancelled at phase %s "
+                "by the operator; the arm was frozen in place; NOT a "
+                "completed pick; engine_reply=%s"
+                % (where, _defang_error_token(reply.strip())[:120]))
+            if b5:
+                # the engine froze the arm right where the cancel found it, and frozen in
+                # contact that is a thermal stall. park before replying. the token precedes
+                # `engine_reply=`; the verdict above is unchanged.
+                cancelled_reply = _insert_before_engine_reply(
+                    cancelled_reply,
+                    self._post_task_arm_sweep("pick", "cancelled"))
+            return cancelled_reply, verdict
+        # _verify judges the pick, so give it the reply without the arm_after=
+        # token; the verdict and its Reason stay what they were. None means use the
+        # reply itself.
+        verify_reply: Optional[str] = None
+        if b5 and reply.startswith("ERROR") \
+                and not reply.startswith("ERROR:pick engine not configured"):
+            # the engine ran and did not end DONE. a lift-pin abort answered
+            # ERROR:grasp_failed with no hold_rc off and no READY move, so the writer
+            # PD-held the blocked arm hot. the sweep reads q and parks any arm left
+            # outside SAFE_ARM_POSES. a failed send parks through the writer only; a
+            # reply timeout or dropped connection first tries the engine's queued
+            # `park` (ENGINE_SEND_FAILED_PREFIX). the pre-engine refusals above and
+            # 'engine not configured' both mean no engine ever ran.
+            verify_reply = reply
+            reply = _insert_before_engine_reply(
+                reply, self._post_task_arm_sweep(
+                    "pick", "error",
+                    prefer_writer=reply.startswith(
+                        ENGINE_SEND_FAILED_PREFIX)))
+        if not reply.startswith("ERROR"):
+            # motion-completion wait: engine_verb hands back DONE about 3 s in, while
+            # the daemon keeps moving the arm for ~30 s more. returning then hands the
+            # brain's verifier a pre-motion scene where the target is still on the
+            # table, so verify_pick can only answer in_progress and the model never
+            # reaches `place`.
+            motion = self._await_pick_daemon()
+            # pick grasp law: on a real pick the engine closes over its own socket, so
+            # the gateway never sees the close_adaptive verdict. with the palm DDS lane
+            # up the engine verifies its own grasp and would fail ERROR:grasp_failed on
+            # an air-grab; in blind mode it skips that and returns DONE anyway. so the
+            # only lane probe the gateway can see is a fresh 'state [side]' poll of the
+            # available flag: poll right away and stamp it.
+            lane_state, state_ts = self._poll_lane_state(side)
+            if lane_state == "up":
+                # engine DONE on an up lane means an engine-verified grasp, so record the
+                # verified hold for the place verifier.
+                with self._obs_lock:
+                    self._last_verified_grasp[side] = time.time()
+            # when the detections channel goes silent, re-observe (bounded) before the
+            # verdict, carrying honest liveness evidence. the alive path sends ''.
+            det_toks = self._pick_det_reobserve(dispatch_ts) if b5 else ""
+            if det_toks and lane_state == "up":
+                # the lane poll above ran before the <= 4 s detections wait, so the stamp
+                # the verifier re-checks against GRIP_STATE_MAX_AGE_S (5.0 s) is ~4 s old,
+                # leaving only 0.9 s of slack. poll once more and stamp that read. an 'up'
+                # reading never gets downgraded, and a lane that is not up never gets
+                # upgraded after the wait.
+                lane2, ts2 = self._poll_lane_state(side)
+                if lane2 == "up":
+                    state_ts = ts2
+            reply = ("DONE pick executed; lane_state=%s; grip_state_ts=%.6f; "
+                     "motion=%s%s; engine_reply=%s"
+                     % (lane_state, state_ts, motion, det_toks, reply))
+        # give _verify the point the arm is sent to (on the descent lane that is
+        # z_engine, the torso frame at the descended body height where post-pick
+        # detections are taken), so verify_pick's in-hand displacement check
+        # (_parse_pick_point) can tell the bottle in hand from the one still on the
+        # table. lane armed only, a thread-local slot never in the reply text and
+        # never in _verify's signature, cleared in `finally` so it cannot taint a
+        # later verdict on this thread.
+        slot = GatewayNode._PICK_POINT_TLS
+        slot.point = ((x, y, z) if getattr(self, "_low_lane", None) is not None
+                      else None)
+        try:
+            # append the radius_park token when it applies
+            if radius_park_token and not reply.startswith("ERROR"):
+                # only for DONE replies
+                reply += radius_park_token
+            elif radius_park_token and reply.startswith("ERROR"):
+                # ERROR replies still get the token before engine_reply
+                # (minimal or empty for errors)
+                reply += radius_park_token
+            if verify_reply is not None:
+                # the verdict judges the pick here, not the park token
+                return reply, self._verify("pick", verify_reply)
+            return reply, self._verify("pick", reply)
+        finally:
+            slot.point = None
+
+    #: a per-thread pick point for `_verify`. written only by `_do_pick`
+    #: around its own `_verify` call, and None everywhere else.
+    _PICK_POINT_TLS = threading.local()
+
+    def _await_pick_daemon(self) -> str:
+        """Block until the pick daemon's MOTION ENDS.  Bounded; never raises.
+
+        WHY THIS EXISTS (MEASURED 2026-09-27, `--log-level DEBUG` wire trace
+        against `pick.log`, same run)::
+
+            21:36:53,613  model calls pick
+            21:36:56,647  function_call_output SENT -- the verdict is taken HERE
+            21:37:21,029  engine STILL closing the hand
+            21:37:22,341  engine grasp verdict (hit_obstacle -> light_object)
+            21:37:29,389  T5 step 5: right arm -> CARRY_TUCK
+
+        The verdict precedes the engine's OWN grasp verdict by 25.7 s.  At
+        t+3 s the bottle is untouched on the table, so `_target_present`
+        returns True and `verify_pick` takes its `present is True` branch
+        ("re-observe; target still visible") => `in_progress`, every time.
+        The brain's own re-observe budget cannot bridge the gap either: it is
+        `_MAX_RE_OBSERVES` 2 x `_RE_OBSERVE_SETTLE_S` 1.4 = 2.8 s, an order of
+        magnitude short of a ~30 s motion.
+
+        NOT the reply timeout: `PICK_REPLY_TIMEOUT_S` is ALREADY 300 s
+        (gateway_node.py:861).  The gateway waits 300 s for the engine to
+        ANSWER -- the engine simply answers early and runs the motion in its
+        own daemon.  So the missing wait is for the MOTION, not the reply.
+
+        THE PREDICATE IS THE BUSY EDGE, NOT "not busy".  Between two
+        consecutive SUCCESSFUL picks the daemon emits
+        busy(held=True) -> holding(held=True) and NEVER a held:false (see
+        _on_pick_state).  A bare "state != busy" read would therefore be
+        satisfied by the PREVIOUS cycle's carry-over frame and return
+        instantly -- the stale-evidence trap this fix exists to close, one
+        level down.  So we require an observed ``busy`` frame FIRST (cycle
+        START) and only then a later non-``busy`` frame (cycle END).
+
+        DEGRADES SAFELY.  A daemon that never publishes leaves the record None
+        or never ``busy``; the wait then runs to its deadline and returns
+        ``no_busy_signal`` -- the pre-fix behaviour.  It can therefore never
+        HANG a pick, and never MANUFACTURES a completion the daemon did not
+        report.  A ``timeout`` token means the verdict may still be stale; it
+        is reported, not hidden.
+
+        The returned token goes into the tool result, so it must NEVER contain
+        the substring ``ERROR:`` -- `_shape_reply` flips the envelope to
+        ok:false on that substring anywhere in the reply, and the verifier's
+        _classify_reply reads an embedded ``ERROR:`` as a failure.
+        """
+        with self._obs_lock:
+            lane_live = self._pick_state_seen
+        if not lane_live:
+            # never a single /pick_state frame since start: there is no daemon lane on
+            # this robot, so there is nothing to wait for. check that before the clock
+            # starts, so a lane without a daemon pays nothing for this, not even the
+            # start window.
+            return "no_daemon_lane"
+        t0 = time.time()
+        start_deadline = t0 + self._pick_daemon_start_s
+        deadline = t0 + self._pick_daemon_wait_s
+        saw_busy = False
+        last_state = None
+        while True:
+            now = time.time()
+            with self._obs_lock:
+                rec = self._pick_state_hold
+                rec = dict(rec) if rec is not None else None
+            if rec is not None:
+                last_state = rec.get("state")
+                # freshness and daemon_alive are the same conjuncts the hold predicate uses
+                # (_daemon_hold_record_unlocked): a stale frame or one from a dead daemon is
+                # evidence of nothing, whichever way it points.
+                if (now - rec["ts"]) <= self._pick_state_max_age_s \
+                        and rec.get("alive"):
+                    if last_state == PICK_STATE_BUSY:
+                        saw_busy = True
+                    elif saw_busy:
+                        return "cycle_ended@%.1fs" % (now - t0)
+            if not saw_busy and now >= start_deadline:
+                # the topic is live but no cycle began, so this pick is not daemon-driven
+                # (or the daemon is wedged). return early instead of burning the motion
+                # budget on an event that is not coming.
+                return "no_busy_signal (last_state=%r)" % (last_state,)
+            if now >= deadline:
+                return "timeout_after_busy@%.1fs" % (now - t0)
+            time.sleep(PICK_DAEMON_POLL_S)
+
+    def _await_walk_reached(self, label: str, epoch_ts: float) -> str:
+        """Block until the walk FSM ARRIVES at ``label`` (or gives up).  Bounded.
+
+        WHY THIS EXISTS (run8, 2026-09-28).  ``_do_navigate`` published
+        /navigate_target and returned IMMEDIATELY — unlike ``_do_pick``, which
+        waits for its daemon.  The reply snapshot was taken microseconds after
+        the publish, so ``PHASES_SEEN`` was always EMPTY and
+        ``verifier.verify_navigate`` could only answer ``in_progress``
+        (:1533-1536).  The walk itself was fine — every physical walk in run8
+        landed SEARCHING -> DETECTED -> APPROACHING -> REACHED — but the brain
+        was told nothing, so it re-called navigate again and again: SIX tool
+        calls for THREE arrivals (voice_run.log:39,168,478,495,548,561).
+        "The walk did not report back reach status" is exactly this.
+
+        NOT the reply timeout: the navigate Tool bound is already 180 s
+        (tools.py) and ``GATEWAY_CALL_TIMEOUT_S`` is 150 s.  The gateway does
+        not wait for the FSM to ANSWER — the FSM answers every dispatch — it
+        never waited for the FSM to ARRIVE.  So the missing wait is for the
+        MOTION, not for the reply.
+
+        THE PREDICATE MIRRORS THE VERIFIER, DELIBERATELY.  A ``reached@`` token
+        is a claim that ``verify_navigate`` will agree with, so the conjuncts
+        are copied from it rather than invented: an IN-EPOCH REACHED whose
+        payload label matches the request (fix 1 / check (f)) AND at least one
+        IN-EPOCH SEARCHING/APPROACHING (the transition guard / check (d)).
+        A hold-REACHED carried over from a PREVIOUS arrival satisfies neither
+        and therefore cannot end this wait — the stale-evidence trap, one
+        level down.
+
+        THE LOAD-BEARING TIMING CONSTRAINT.  ``verify_navigate`` reads the
+        LIVE ``obs.walk.phase`` (:1537-1541), and the FSM holds REACHED for
+        only REACHED_HOLD_S = 5 s.  So this must RETURN ON SIGHT: poll fast,
+        return the instant the predicate holds, and never sleep after it does.
+        The REACHED is read from the in-epoch phase RECORD; a sleep after the
+        predicate would let the hold expire and hand the verifier an IDLE.
+
+        DEGRADES SAFELY, LIKE THE PICK WAIT.  No walk lane, no in-epoch frame,
+        or an FSM that stops without arriving all return a token and stop
+        waiting — none of which is a refusal.  Every token is reported, none
+        is hidden, and (like ``_await_pick_daemon``) NO token may contain the
+        substring ``ERROR:``: ``_shape_reply`` flips the envelope to ok:false
+        on it anywhere in the reply, and the verifier's ``_classify_reply``
+        reads an embedded ``ERROR:`` as a failure.
+        """
+        t0 = time.time()
+        start_deadline = t0 + self._nav_start_s
+        deadline = t0 + self._nav_wait_s
+        want = (label or "").strip().lower()
+        while True:
+            now = time.time()
+            with self._obs_lock:
+                cancel_ts = self._cancel_ts
+                phases = list(self._phases_seen)
+            # the operator stopped the motion. checked first, ahead of every arrival
+            # because a stop is not a timeout and must never be reported as one:
+            # reporting it as a timeout made the model issue navigate again, restarting
+            # the search while the brain's tool call stayed pending and every utterance
+            # got dropped.
+            # in-epoch scope: only a cancel at or after this dispatch's epoch can end
+            # this wait, so an earlier task's cancel can never abort a later navigate.
+            # the > 0.0 guard stops the never-cancelled default (0.0) from matching an
+            # epoch_ts that is still 0.0.
+            if cancel_ts > 0.0 and cancel_ts >= epoch_ts:
+                return "cancelled_by_operator@%.1fs" % (now - t0)
+            # in-epoch scope. _phases_seen is cleared at dispatch and the callback only
+            # appends ts >= epoch_ts, so this filter is belt-and-braces, but it keeps a
+            # stale REACHED from ending this wait.
+            epoch_phases = [p for p in phases if p[2] >= epoch_ts]
+            seen = set(p for p, _l, _t in epoch_phases)
+
+            def _label_hit(phase):
+                return any(
+                    p == phase and (l or "").strip().lower() == want
+                    for p, l, _t in epoch_phases
+                )
+
+            motion = bool({"SEARCHING", "APPROACHING"} & seen)
+            if _label_hit("REACHED") and motion:
+                return "reached@%.1fs" % (now - t0)
+            if _label_hit("NOT_FOUND"):
+                return "not_found@%.1fs" % (now - t0)
+            if motion and "IDLE" in seen:
+                # the FSM moved and then stopped without arriving: it is done with this
+                # target and no arrival is coming. consistent with the in-flight rule, where
+                # an in-epoch IDLE means 'not working on this'; without it a dead walk would
+                # stall the brain for the whole budget.
+                return "walk_idle_after_motion@%.1fs" % (now - t0)
+            if not epoch_phases and now >= start_deadline:
+                # not one in-epoch frame: this dispatch has no walk lane behind it, or the
+                # FSM never heard it. pay the start window, not the motion budget, the same
+                # early exit shape as the pick wait's no_busy_signal.
+                return "no_walk_signal"
+            if now >= deadline:
+                return "timeout_after_walk@%.1fs" % (now - t0)
+            time.sleep(NAV_POLL_S)
+
