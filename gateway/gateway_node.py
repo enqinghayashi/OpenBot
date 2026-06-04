@@ -4213,3 +4213,8 @@ class GatewayNode:
             return None
         return rec
 
+    def _daemon_hold_record(self) -> Optional[Dict[str, object]]:
+        """The evidence predicate under the lock — see _unlocked for the law."""
+        with self._obs_lock:
+            return self._daemon_hold_record_unlocked()
+
