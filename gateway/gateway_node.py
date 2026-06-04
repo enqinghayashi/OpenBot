@@ -3082,3 +3082,95 @@ class GatewayNode:
                          % (type(exc).__name__, exc))
             return {}
 
+    def _pc_place_kwargs(self, law: Any) -> Dict[str, Any]:
+        """The optional ``pc_rim`` keyword for ``place_target_from_row``.
+
+        Same rule as :meth:`_pc_pick_kwargs`: passed only if the function
+        DECLARES it, so a ``place_target.py`` older than this file still
+        places (without the rim hook, with one ``[pc]`` line).  Never raises.
+        """
+        try:
+            from gateway import pointcloud_client as pc_client_mod  # lazy, then cached
+            wanted = {"pc_rim": self._pc_rim_for}
+            given = pc_client_mod.supported_kwargs(law.place_target_from_row, wanted)
+            if len(given) != len(wanted):
+                self._pc_skew_once("place_target_from_row", sorted(wanted))
+            return given
+        except Exception as exc:  # noqa: BLE001 — the place path must not break
+            self._pc_say("place hooks off for this call: %s: %s"
+                         % (type(exc).__name__, exc))
+            return {}
+
+    def _pc_skew_once(self, callee: str, missing: List[str]) -> None:
+        """Say ONCE per callee that the point-cloud keywords were not passed."""
+        seen = self.__dict__.setdefault("_pc_skew_seen", set())
+        if callee in seen:
+            return
+        seen.add(callee)
+        self._pc_say("%s declares no %s keyword(s): that module is older than "
+                     "gateway_node.py - this hook is OFF until it is copied "
+                     "over" % (callee, "/".join(missing)))
+
+    def _low_lane_cancel(self) -> str:
+        """Route an operator ``cancel``/``stop`` to the descent lane (R4 L2).
+
+        Returns the ``; lane=<tok>`` segment for the cancel reply, or ``""``
+        when the lane has nothing outstanding (no token, no motion — the cancel
+        reply is then byte-identical to the lane-less one).
+
+          * a lane skill is RUNNING (the lease is held) -> the cancel is
+            FLAGGED on the context and this returns at once
+            (``lane=cancel_flagged``); the running sequence acts on it at its
+            last gate before the engine, after the engine (no hold), or in the
+            post-run sweep.
+          * a HOLD / descent is outstanding and nobody is running -> the body
+            is risen now with the lane's one ``_retreat_step``
+            (``lane=rose`` / ``lane=retreat_unconfirmed``; an unconfirmed rise
+            has already emitted its loud warn-and-hold line).
+
+        No token contains ``ERROR:``: the cancel itself worked, so its envelope
+        stays ok:true.
+        """
+        ctx = self._descent_ctx
+        if ctx is None:
+            return ""
+        if not self._descent_lock.acquire(blocking=False):
+            ctx.request_cancel(time.monotonic())
+            return "; lane=cancel_flagged"
+        try:
+            if not ctx.in_flight():
+                return ""
+            log = self._low_lane.DescentPhaseLog("cancel")
+            log.start(time.time())
+            ok, _ref, detail = self._low_lane._retreat_step(  # noqa: SLF001
+                ctx, log, writer_verb=self.writer_verb,
+                status_verb=self._low_lane_status, stamp=time.time,
+                clock=time.monotonic, sleep=time.sleep)
+            self._low_lane_finish(log, "ok" if ok else "refuse", detail)
+            return "; lane=rose" if ok else "; lane=retreat_unconfirmed"
+        finally:
+            self._descent_lock.release()
+
+    def _low_lane_status(self) -> str:
+        """One ``status`` poll of the writer socket — the lane's ONLY probe.
+
+        Resolved through ``self.writer_verb`` at call time (not captured at
+        construction) so a test stub sees the poll.  There is no body-height
+        sensor anywhere in this system: this line's height fragment is a
+        REFERENCE the policy is being told to track, never a measurement.
+        """
+        return self.writer_verb("status")
+
+    def _low_lane_finish(self, log: Any, status: str, detail: str) -> None:
+        """Close the phase table and PRINT it — the operator's only view.
+
+        The sequences close the table themselves on a refusal; a run that got
+        as far as the engine returns with the VERDICT row still open, so it is
+        closed here.  Rendering and printing reuse ``place_target``'s one table
+        renderer and the gateway's own table hook (a second renderer would be a
+        divergent copy of the repo's measured-elapsed format).
+        """
+        if not log.rows or log.rows[-1].get("phase") != "VERDICT":
+            log.finish(status, detail, time.time())
+        self.log_place_target(self._place_target_law.render_table(log))
+
