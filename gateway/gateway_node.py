@@ -3193,3 +3193,46 @@ class GatewayNode:
         self._low_lane_finish(log, "ok" if ok else "refuse", detail)
         return bool(ok) or not blocking
 
+    def _low_lane_hold_rule(self, verb: str, args: List
+                            ) -> Optional[Tuple[str, Optional[str]]]:
+        """The operator's next-command rule, applied at command arrival (§6).
+
+        The PREVIOUS skill cannot see the future, so the hold is decided here,
+        at the next command: a lane skill needing the same height is already
+        claimed by the pick/place arms and HOLDs there; everything else either
+        rises first or forgets the hold.  Returns a REFUSAL only when a command
+        must not run at a body height that may still be low; otherwise it
+        performs the rise (if any) and returns None so today's path runs.
+
+        A command arriving with no descent outstanding — which is every command
+        on the lane-off path, and the common case on the lane-on path — does
+        nothing here at all.
+        """
+        ctx = self._descent_ctx
+        if ctx is None or not ctx.in_flight():
+            return None
+        action, reason = self._low_lane.next_command_action(
+            ctx, verb, self._low_lane_args_z(args), self._low_law,
+            time.monotonic(), args=args)
+        if action in (self._low_lane.NEXT_NONE, self._low_lane.NEXT_HOLD):
+            # NEXT_HOLD arrives here only for the release-only place clause in
+            # descent_lane.next_command_action (a place or place_left with an empty
+            # argument list inside a live hold). no lane arm above claims it, since its
+            # target height is absent, and the body is already held at the confirmed
+            # height, so there is nothing to rise for: the drop aims at no target
+            # height. return None the way NEXT_NONE does and let the release run at the
+            # held height. falling through to the retreat below would rise the body for
+            # exactly the case the lane exists to hold down.
+            #
+            # NEXT_REDESCEND cannot reach this point: a lane skill whose target is in
+            # the descend band is already claimed by the arms above, and one whose
+            # target is not just answers RETREAT_* here.
+            return None
+        if self._low_lane_retreat(verb,
+                                  action == self._low_lane.NEXT_RETREAT_BLOCKING):
+            return None
+        detail = self._low_lane.honest(
+            "%s — body height may still be low; the %s was NOT dispatched (%s)"
+            % (self._low_lane.RETREAT_UNCONFIRMED, verb, reason))
+        return ("ERROR:low-workspace %s" % detail), None
+
