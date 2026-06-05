@@ -4879,3 +4879,16 @@ class GatewayNode:
         self.publish_place_status(law.status_message(
             log, phase, status, detail, row["elapsed_s"]))
 
+    def _place_target_finish(self, log, status: str, detail: str,
+                             verdict: Optional[str] = None) -> Dict[str, object]:
+        """Close a run: VERDICT row, render, log, publish the final status."""
+        law = self._place_target_law
+        total = log.finish(status, detail, time.time())
+        table = law.render_table(log)
+        self.log_place_target(table)
+        self.publish_place_status(law.status_message(
+            log, "VERDICT", status, detail, total, verdict=verdict,
+            table=table))
+        return {"status": status, "detail": detail, "verdict": verdict,
+                "table": table, "rows": list(log.rows), "total_s": total}
+
