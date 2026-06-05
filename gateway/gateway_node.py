@@ -4925,3 +4925,12 @@ class GatewayNode:
             with self._body_pose_lock:
                 self._body_pose = pose
 
+    def _latest_body_pose(self) -> Optional[Dict[str, Any]]:
+        """B8k: a copy of the latest body pose, or None."""
+        lock = getattr(self, "_body_pose_lock", None)
+        if lock is None:
+            return None
+        with lock:
+            pose = self._body_pose
+        return dict(pose) if isinstance(pose, dict) else None
+
