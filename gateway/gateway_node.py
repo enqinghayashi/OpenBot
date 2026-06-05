@@ -4892,3 +4892,45 @@ class GatewayNode:
         return {"status": status, "detail": detail, "verdict": verdict,
                 "table": table, "rows": list(log.rows), "total_s": total}
 
+    def publish_place_status(self, message: str) -> None:
+        """Hook: publish one /place_status payload (no-op outside ROS)."""
+        return
+
+    def log_place_target(self, table: str) -> None:
+        """Hook: record the rendered /place_target table.
+
+        The laptop-testable core prints — its stdout IS the log; ``_RosGateway``
+        overrides this with the node logger so the table lands in the gateway
+        log next to everything else.
+        """
+        print(table, flush=True)
+
+    # ── point-cloud consumer hooks ───────────────────────────────────────────
+    # thin shims over the pc client. nothing below is reachable with
+    # `self._pc` None, which is every gateway with all three switches off.
+
+    def _publish_pc_arm(self, text: str) -> None:
+        """Hook: publish one /pc_arm String (no-op outside ROS)."""
+        return
+
+    def on_body_pose(self, text: Any) -> None:
+        """B8k: one /openbot/body_pose message (JSON object) from the odometry
+        process.  Anything that is not a JSON object is ignored; the client
+        judges the pose (measured, complete, fresh) when it is used."""
+        try:
+            pose = json.loads(text) if isinstance(text, str) else None
+        except ValueError:
+            return
+        if isinstance(pose, dict):
+            with self._body_pose_lock:
+                self._body_pose = pose
+
+    def _latest_body_pose(self) -> Optional[Dict[str, Any]]:
+        """B8k: a copy of the latest body pose, or None."""
+        lock = getattr(self, "_body_pose_lock", None)
+        if lock is None:
+            return None
+        with lock:
+            pose = self._body_pose
+        return dict(pose) if isinstance(pose, dict) else None
+
