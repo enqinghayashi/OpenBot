@@ -4790,3 +4790,81 @@ class GatewayNode:
         finally:
             self._place_target_lock.release()
 
+    def _place_target_run(self, log, text: str) -> Dict[str, object]:
+        law = self._place_target_law
+        # point-cloud consumer: only with a switch on (`_pc` set). pre-subscribe for
+        # 20 s so its DDS match is up when the rim request goes out. fire-and-
+        # forget; the client never raises, and this is guarded again so no stub can
+        # take the place lane down.
+        pc = getattr(self, "_pc", None)
+        if pc is not None:
+            try:
+                pc.warm(20.0)
+            except Exception:  # noqa: BLE001
+                pass
+        with self._obs_lock:
+            dets = list(self._assembler.observation().detections)
+        rows = law.resolver_rows(dets)
+        now = time.time()
+        # check stale against absent before the resolver: both reach it as 'none',
+        # and a frozen scene would then be reported 'not detected', sending the
+        # operator to the camera instead of the detection lane.
+        stale = law.stale_only(text, rows, now)
+        result = law.resolve(text, rows, now)
+        if result.get("status") != "single":
+            status, detail = law.classify_refusal(text, result, stale)
+            self._place_target_phase(log, "resolve", status, detail, now)
+            return self._place_target_finish(log, status, detail)
+        win = result["det"]
+        self._place_target_phase(
+            log, "resolve", "ok",
+            "%s  conf=%s  scan=%d" % (win.get("label"),
+                                      law.fmt_num(win.get("conf")), len(rows)),
+            now)
+        if pc is None:
+            t_status, t_detail, coords = law.place_target_from_row(win)
+        else:
+            # `pc_rim` is the optional kwarg of place_target_from_row, passed only when
+            # the client is built and only if the function declares it, so the off path
+            # is exactly the plain call.
+            t_status, t_detail, coords = law.place_target_from_row(
+                win, **self._pc_place_kwargs(law))
+        self._place_target_phase(log, "target", t_status, t_detail)
+        if coords is None:
+            return self._place_target_finish(log, t_status, t_detail)
+        try:
+            # through dispatch, the shipped seam: a test patches gw.dispatch to watch a
+            # second place queue up behind this one, which a direct _do_place call
+            # hides. the descent lane's guard sits in dispatch too, so the call is
+            # marked nested for exactly its duration and the guard declines it, the
+            # same exclusion a direct call gave without going round the seam. the flag
+            # is restored in `finally`, so a raise cannot disable the lane.
+            prev_nested = self._descent_nested
+            self._descent_nested = True
+            try:
+                reply, verdict = self.dispatch("place", list(coords))
+            finally:
+                self._descent_nested = prev_nested
+        except Exception as exc:  # a table must come out of this, always
+            detail = "ERROR:place_target dispatch raised: %s" % exc
+            self._place_target_phase(log, "execute", "error", detail)
+            return self._place_target_finish(log, "error", detail)
+        # which side got released is stated only in _do_place's own reply
+        # annotation, so read it rather than re-deriving the held-side law here.
+        log.side = law.side_from_reply(reply)
+        e_status, e_detail = law.classify_dispatch(reply, verdict)
+        line = "%s %s" % ("place_left" if log.side == "left" else "place",
+                          " ".join(law.fmt_num(c, "%.3f") for c in coords))
+        self._place_target_phase(
+            log, "execute", e_status,
+            line if e_status == "ok" else "%s -> %s" % (line, e_detail))
+        v_status, v_detail = law.verdict_row(verdict)
+        if e_status == "refuse":
+            # the engine never ran here, because the gateway declined on evidence, so
+            # there is nothing to verify. a 'verify' row would read as a verification
+            # failure and bury the real reason behind 'no verdict'; the verdict row
+            # headlines the refusal instead.
+            return self._place_target_finish(log, e_status, e_detail, verdict)
+        self._place_target_phase(log, "verify", v_status, v_detail)
+        return self._place_target_finish(log, v_status, v_detail, verdict)
+
