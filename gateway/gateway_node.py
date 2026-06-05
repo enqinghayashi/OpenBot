@@ -4974,3 +4974,14 @@ class GatewayNode:
                          % (type(exc).__name__, exc))
             return None
 
+    def _nav_confirmed_epoch(self) -> float:
+        """The dispatch epoch the persistent SkillVerifier confirmed (0.0).
+
+        The gateway holds ONE SkillVerifier instance across calls; the
+        confirmed-epoch memory lives in it (fix spec A-e).  None before the
+        first verify.
+        """
+        if self._verifier is None:
+            return 0.0
+        return self._verifier.last_confirmed_epoch()
+
