@@ -4913,3 +4913,15 @@ class GatewayNode:
         """Hook: publish one /pc_arm String (no-op outside ROS)."""
         return
 
+    def on_body_pose(self, text: Any) -> None:
+        """B8k: one /openbot/body_pose message (JSON object) from the odometry
+        process.  Anything that is not a JSON object is ignored; the client
+        judges the pose (measured, complete, fresh) when it is used."""
+        try:
+            pose = json.loads(text) if isinstance(text, str) else None
+        except ValueError:
+            return
+        if isinstance(pose, dict):
+            with self._body_pose_lock:
+                self._body_pose = pose
+
