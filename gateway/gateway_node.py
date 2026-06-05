@@ -5145,3 +5145,17 @@ class GatewayNode:
             return None
         return vals
 
+    def _release_rc(self) -> str:
+        """Writer ``hold_rc off`` -> ``released`` | ``failed(<x>)``.
+
+        The RC-STICK INTERLOCK ONLY (G0): this never moves, stops or relaxes
+        the arm, and the token it feeds is ``hold_rc=``, never ``arm=``.
+        """
+        try:
+            r = str(self.writer_verb("hold_rc off", timeout_s=1.0) or "")
+        except Exception as exc:  # noqa: BLE001 — report, never raise
+            return "failed(%s)" % _b5_tok_text(exc)
+        if r.startswith("DONE"):
+            return "released"
+        return "failed(%s)" % _b5_tok_text(r)
+
