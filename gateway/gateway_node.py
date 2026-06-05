@@ -4383,3 +4383,512 @@ class GatewayNode:
                     self._close_verdicts.pop(s, None)
                     self._assembler.clear_close_result(s)
 
+    def _do_place(self, args: List) -> Tuple[str, Optional[str]]:
+        # a place can carry an explicit target x y z (the engine's coordinate
+        # 'place x y z') or be release-only (no coords, bare 'place'). z is taken as
+        # given, and an optional 4th token carries the object height for the
+        # place-time extra lift. there is no orientation token for place.
+        # type and finite handling mirror _do_pick, so a malformed coordinate is
+        # refused, never stripped (a stripped coordinate must not collapse into a
+        # release drop at the wrong place). tokens beyond x y z are dropped.
+        coords: Optional[List[float]] = None
+        place_height: Optional[float] = None
+        if args:
+            if len(args) < 3:
+                return ("ERROR:place needs x y z when a coordinate is given, "
+                        "else release-only (no args)"), None
+            try:
+                x, y, z = (float(args[0]), float(args[1]), float(args[2]))
+            except (TypeError, ValueError):
+                return "ERROR:place x y z must be numbers", None
+            if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
+                return "ERROR:place x y z must be finite numbers", None
+            coords = [x, y, z]
+            # the optional 4th token: object height for the engine's place-time extra
+            # lift. unlike a malformed coordinate, which is refused because a stripped
+            # coordinate becomes a release drop at the wrong place, a malformed height
+            # is not a misplacement: it becomes 'unknown', is dropped, and the place
+            # goes ahead with no extra lift. the engine applies the same bound and does
+            # the same warn-and-degrade.
+            if len(args) >= 4:
+                try:
+                    hp = float(args[3])
+                except (TypeError, ValueError):
+                    hp = float("nan")
+                if math.isfinite(hp) and 0.0 < hp <= PICK_HEIGHT_M_MAX:
+                    place_height = hp
+        # held-side determination: which hand will the place release? decided from
+        # actual hold evidence, never the active_side hint alone, because
+        # active_side is only the last hand the gateway observed and the place
+        # schema has no arm argument. order:
+        #   (1) exactly one side has an engine-verified grasp on record
+        #       (_last_verified_grasp) -> that side;
+        #   (2) else, if exactly one side measures holding at this instant
+        #       (_holding_state right XOR left) -> that side. measurement outranks
+        #       the declaration below, because the daemon's payload carries no
+        #       side, so its tier can only assert a declared hand and letting a
+        #       declaration override a measured hold releases the wrong hand;
+        #   (3) else the daemon lane's measured hold (_measured_held_side: gated on
+        #       a fresh /pick_state that has held and daemon_alive and not consumed
+        #       and not `busy`; silent when an in-service hand could not be
+        #       measured; else the less-closed hand). the daemon's pick never
+        #       touches this object's own pick path, so without this tier (1) stays
+        #       empty, both hands read false and an unheld refusal fires on a
+        #       payload the robot holds. this is the tier that fires here;
+        #   (4) else the side the daemon declared (_daemon_held_side), only for a
+        #       daemon that names a hand. both daemon tiers sit inside the
+        #       refusal's own condition, so they can only change the outcome in the
+        #       case that would otherwise be refused;
+        #   (5) else the active_side hint, unverified, for back-compat when no hold
+        #       evidence can be read;
+        #   (6) else right.
+        # an unheld place is refused here, before any engine command: no
+        # verified-holding side and neither hand measuring holding means the place,
+        # especially a release-only bare 'place', would command motion on empty
+        # hands for nothing.
+        with self._obs_lock:
+            verified_sides = [s for s in ("right", "left")
+                              if s in self._last_verified_grasp]
+            active_hint = self._assembler.active_side
+        right_holding = self._holding_state("right")
+        left_holding = self._holding_state("left")
+        # try measured first, then declared. a daemon that publishes no `side`
+        # leaves _daemon_held_side() None at every instant, so without the
+        # measurement the tier stays inert and refuses on a payload the robot is
+        # plainly holding. the measurement asks the grip socket what the hands are,
+        # which works for a pick the engine ran and the gateway's own verdict tiers never see.
+        # both tiers are evaluated exactly once into named locals and the log
+        # reports both: measured= for what is measured (or None) and declared= for
+        # what the daemon claimed (or None). a single daemon_side collapsed the two,
+        # so the acceptance line could not tell a measured resolution from a
+        # declared one. the choice keeps measured outranking declared.
+        measured_side = self._measured_held_side()
+        declared_side = self._daemon_held_side()
+        daemon_side = measured_side if measured_side is not None else declared_side
+        # whether this caller's `side` came from the daemon record. not the same as
+        # daemon_side is not None: daemon_side resolves for every caller, so one
+        # that took its side from tier (1), the XOR tier or the ambiguous hint also
+        # has a non-None daemon_side. keying the take or the gate on daemon_side
+        # would refuse such a caller once the record is gone and consume a record
+        # it never used, stranding a genuine hold for the other hand.
+        rode_daemon = False
+        if len(verified_sides) == 1:
+            side = verified_sides[0]
+        elif right_holding != left_holding:
+            # the XOR: exactly one side measured holding, so that side
+            side = "right" if right_holding == "True" else "left"
+        elif not verified_sides and right_holding == "False" \
+                and left_holding == "False":
+            # the unheld refusal, and the only place the daemon tier is consulted.
+            # reading it here, nested inside the refusal's own condition rather than as
+            # a peer branch above it, bounds the tier to the refused state by
+            # construction: the tier-less gateway returns from this branch, so the
+            # daemon can change the outcome but never a side that gateway would have
+            # chosen. as a peer branch it also pre-empted the ambiguous-hint `else`
+            # below, so on a both-hands-holding state it released the daemon's hand
+            # where that path releases active_side.
+            if daemon_side is None:
+                # log it: a refusal with no trace is undiagnosable from the log alone.
+                # stderr, not the ROS logger, because this is the ROS-free core. the
+                # format is relied on: verified=, measured= and declared= are the three
+                # separate evidence reads, so a reader can tell a measured resolution
+                # from a declared one.
+                sys.stderr.write(
+                    "openbot_gateway: place REFUSED nothing-verified-held: "
+                    "verified=%s measured=%s declared=%s right=%s left=%s\n"
+                    % (verified_sides, measured_side, declared_side,
+                       right_holding, left_holding))
+                sys.stderr.flush()
+                _rel = self._place_release_note()  # the release note
+                if _rel:
+                    return ("ERROR:nothing verified held - cannot place"
+                            + _rel), None
+                return "ERROR:nothing verified held - cannot place", None
+            side = daemon_side
+            rode_daemon = True
+        else:
+            # ambiguous (both verified, or both measuring holding): degrade to the
+            # unverified active_side hint, since no evidence tells the hands apart and
+            # no arm claim goes beyond the observed side.
+            side = str(active_hint or "right")
+            if side not in ("right", "left"):
+                side = "right"
+        # one line per place so a refusal is diagnosable from the log alone: which
+        # tier fired and what every tier read. stderr, not the ROS logger, because
+        # this is the ROS-free core. the format is relied on: measured= and
+        # declared= are the two tier results (side or None), so it shows whether
+        # the released hand is measured or declared, a distinction a single
+        # collapsed `daemon=` field could not express.
+        sys.stderr.write(
+            "openbot_gateway: place held-side: verified=%s measured=%s "
+            "declared=%s right=%s left=%s -> %s\n"
+            % (verified_sides, measured_side, declared_side, right_holding,
+               left_holding, side))
+        sys.stderr.flush()
+        # held-then-open law: verify_place succeeds only on the place DONE and the
+        # hand measured open after the release, and either the hand measured closed
+        # before the release (the release produced the open) or the hold is
+        # engine-verified by this gateway's own pick. so record both pre-release
+        # facts before the engine command executes: the engine place opens only the
+        # holding hand and clears that side's close verdict, so a post-release
+        # observation alone proves nothing.
+        prev_is_open = "None"
+        try:
+            line = self.grip_verb("state %s" % side)
+            with self._obs_lock:
+                self._assembler.update(grip_line=line)
+                st = self._assembler.grip_state(side)
+            if st is not None:
+                prev_is_open = ("True" if st.is_open is True else
+                                ("False" if st.is_open is False else "None"))
+        except Exception:
+            prev_is_open = "None"  # unconfirmable, so stay conservative
+        with self._obs_lock:
+            pick_verified = self._last_verified_grasp.get(side) is not None
+        place_verb = "place_left" if side == "left" else "place"
+        engine_line = place_verb if coords is None else \
+            place_verb + " " + " ".join(str(c) for c in coords)
+        # the height token rides last and only with coordinates (release-only is a
+        # bare verb). the engine raises the holding arm by
+        # min(2.5*H, PLACE_EXTRA_LIFT_MAX_M) before its own ascend, object in hand,
+        # release point unchanged.
+        if place_height is not None and coords is not None:
+            engine_line += " %.6f" % place_height
+        # take the daemon hold before the blocking engine call, and hand it back if
+        # the engine refuses. _do_place runs on a thread per client connection and
+        # is not serialised (only place_target is, via _place_target_lock), so a
+        # bare `place` from one client and a `place_target` from another can both
+        # get in.
+        #
+        # the take alone does not stop the second caller shipping a second release:
+        # it happens after the tier read, so both callers resolve `daemon_side` from
+        # the same live record, and `daemon_taken is None` is only tested on the
+        # engine-error path. both can then reach engine_verb, and the
+        # single-threaded engine runs the second place on an already-empty hand and
+        # returns DONE.
+        #
+        # so the gate is explicit below: the take re-runs the evidence predicate
+        # under the same lock that nulls the slot, and a caller whose record no
+        # longer qualifies lost the race and must refuse.
+        #
+        # the take cannot key off `_pick_state_hold is not None`, because
+        # _on_pick_state writes a record on every 5 Hz frame and never writes None,
+        # so the slot is non-None even in the states that mean 'do not release
+        # yet': the daemon retracted the hold (held:false), or a new pick cycle
+        # began (state 'busy', `held` still true). both mean 'do not release',
+        # so refusing is right either way, and the predicate treats `busy` as not
+        # evidence too, caught in the same lock hold. a caller whose side came from
+        # a verified grasp does not depend on the record and stays unaffected.
+        #
+        # the take is undone on an engine error so a failed place can be retried.
+        # that holds for an engine-reported error, raised before or during its own
+        # move, but not for the post-send transport failures: the place may have
+        # run to completion with the payload gone (300 s reply timeout; the coords
+        # branch opens the hand before its post-release steps), and restoring the
+        # hold there would re-license a release whose object is already out of
+        # hand.
+        #
+        # both the take and the gate key on `rode_daemon`. doing it before the
+        # branch chain is wrong in both directions: a verified-grasp caller got
+        # refused, and the unconditional take ate a daemon hold that a `place_left`
+        # resolved from tier (1) never used, stranding the right hand's hold for the
+        # rest of the epoch.
+        daemon_taken = None
+        if rode_daemon:
+            # one lock hold: re-run the predicate, then null the slot. two critical
+            # sections would open a window a concurrent caller or a 5 Hz publish can walk
+            # through.
+            with self._obs_lock:
+                rec = self._daemon_hold_record_unlocked()
+                if rec is not None:
+                    daemon_taken = rec
+                    self._pick_state_hold = None
+                    self._pick_state_consumed = True
+            if daemon_taken is None:
+                sys.stderr.write(
+                    "openbot_gateway: place REFUSED hold-retracted-or-taken: "
+                    "side=%s verified=%s right=%s left=%s\n"
+                    % (side, verified_sides, right_holding, left_holding))
+                sys.stderr.flush()
+                return "ERROR:nothing verified held - cannot place", None
+        reply = self.engine_verb(engine_line)
+        cancelled = False
+        where = "unknown"
+        # `not_a_reply` flags the relabelled UNKNOWN below (the engine may still be
+        # executing, so the arm is not swept out from under it; the idle watchdog
+        # covers a stall once it ends). `verify_reply` is the reply `_verify`
+        # actually judges (None means `reply`).
+        not_a_reply = False
+        verify_reply: Optional[str] = None
+        if not _is_engine_reply(reply):
+            not_a_reply = True
+            # an unreadable reply is unknown, not a success. this reply drives the
+            # entire control flow of this method, and its `else` branch marks the hand
+            # released (clears the close verdicts, marks the side open-commanded); a
+            # banner line took that branch and dumped a release into the world model
+            # that possibly never happened.
+            #
+            # relabel with ENGINE_TRANSPORT_ERROR_PREFIX rather than adding a case: that
+            # is the prefix the restore gate below already reads, and it means exactly
+            # what is true here, that it is unknown whether the engine ran it. so the
+            # hold is not falsely restored and the release is not falsely recorded.
+            reply = ENGINE_TRANSPORT_ERROR_PREFIX + (
+                "place engine reply was not a command reply (%r) — outcome "
+                "UNKNOWN" % reply.strip()[:120])
+        if reply.strip().startswith("CANCELLED:"):
+            # a cancelled place leaves the hand state unknown. the engine's coords
+            # branch opens the hand ahead of its post-release steps, so the release may
+            # well have happened: the verified-hold record is dropped, the daemon hold
+            # is never restored (_unconfirmed), and the release bookkeeping `else` is
+            # skipped because the reply leads with ERROR. a false refusal on the
+            # next place is the deliberate direction.
+            cancelled = True
+            where = _cancel_phase(reply)
+            with self._obs_lock:
+                self._last_verified_grasp.pop(side, None)
+            reply = ("ERROR:cancelled_by_operator place cancelled at phase %s "
+                     "by the operator; hand/payload state UNKNOWN - re-observe "
+                     "before retrying; engine_reply=%s"
+                     % (where, _defang_error_token(reply.strip())[:120]))
+        if reply.startswith("ERROR"):
+            # restore gate. an engine-reported error means the place did not complete,
+            # so the hold is still real and the caller can retry. a post-send transport
+            # failure means none of that is known: the engine can have finished the
+            # whole place and died, or still be running it, so those are not restored.
+            #
+            # classification is by prefix. it cannot be the substring 'timed out' over
+            # the whole reply: there are three post-send sites (pipe, socket send,
+            # socket read) and the send failure's text carries no 'timed out', so a
+            # failed send, whose execution state is equally unknown, would be
+            # classified as an engine error and restored, re-licensing a second
+            # release. engine_verb labels all three with ENGINE_TRANSPORT_ERROR_PREFIX
+            # and this gate reads that prefix only.
+            _unconfirmed = reply.startswith(ENGINE_TRANSPORT_ERROR_PREFIX)
+            # a cancelled place is just as unknown as a post-send transport failure
+            # (the release may already be out), so the taken daemon hold is not restored
+            # either.
+            _unconfirmed = _unconfirmed or cancelled
+            with self._obs_lock:
+                if daemon_taken is not None and not _unconfirmed:
+                    if self._pick_state_hold is None:
+                        # restore only into an empty slot: a /pick_state that lands while the
+                        # engine runs describes a newer world and must not be clobbered.
+                        self._pick_state_hold = daemon_taken
+                    # nothing got released, so release the latch too; otherwise the retry
+                    # refuses on a hold that is still genuinely held.
+                    self._pick_state_consumed = False
+            # mirrors _do_pick: the engine ran and the place did not end DONE (an
+            # engine error, a cancelled place or a post-send transport failure; a failed
+            # send parks via the writer only, a reply timeout first tries the engine's
+            # queued `park`). every pre-engine refusal returned before engine_verb. the
+            # verdict is judged without the arm_after= token.
+            if (getattr(self, "_b5_on", False) is True and not not_a_reply
+                    and not reply.startswith(
+                        "ERROR:pick engine not configured")):
+                verify_reply = reply
+                reply = _insert_before_engine_reply(
+                    reply, self._post_task_arm_sweep(
+                        "place", "cancelled" if cancelled else "error",
+                        prefer_writer=reply.startswith(
+                            ENGINE_SEND_FAILED_PREFIX)))
+        else:
+            # a successful place goes hold_rc on -> LOW_CARRY -> open -> payload off ->
+            # NEUTRAL -> hold_rc off. the engine opens only the holding hand, so the
+            # place counts as a gateway-dispatched open for `side` only: only its close
+            # verdict is cleared and only it is marked open-commanded, so only its
+            # post-place reads qualify as the trusted open reference. the verified-hold
+            # record is cleared, and the consumed latch carries the clear past the next
+            # 5 Hz sticky 'held: true'.
+            self._clear_close_verdicts((side,))
+            # skip the open-commanded mark when the reply carries the park-closed
+            # marker `release_open=<side>:True` (the lift closeout parked this hand
+            # closed after a measured-open release): the reads that follow are of a
+            # closed hand and must never become the trusted open reference. an absent or
+            # false token (park skipped, release unmeasured) keeps the mark.
+            _pc = PLACE_PARK_CLOSED_RE.search(reply)
+            _parked_closed = _pc is not None and _pc.group(1) == side
+            with self._obs_lock:
+                if not _parked_closed:
+                    self._assembler.note_open_commanded(side)
+                self._last_verified_grasp.clear()
+                self.__dict__.setdefault('_last_place_release', {})[side] = \
+                    time.time()  # stamp the time
+            reply = ("%s; prev_is_open=%s:%s; prev_pick_verified=%s:%s"
+                     % (reply, side, prev_is_open, side,
+                        "True" if pick_verified else "False"))
+        if cancelled:
+            v = _cancelled_verdict("place", where)
+            self._emit_verdict(v)
+            return reply, v
+        if verify_reply is not None:
+            # here the verdict judges the place, not the park token
+            return reply, self._verify("place", verify_reply)
+        return reply, self._verify("place", reply)
+
+    # ── /place_target lane (one-shot: place onto the named target) ───────────
+
+    def place_target(self, label: str) -> Dict[str, object]:
+        """One-shot: release the held object ON the named target detection.
+
+        The answer IS the rendered phase table — every exit (refusal or
+        success) ends with the VERDICT row, is logged, and is published on
+        /place_status, so a refused command is exactly as diagnosable as a
+        good one.
+
+        NEVER degrades to a bare current-pose release.  A target that cannot
+        be resolved (empty, absent, stale, ambiguous, or positionless) refuses
+        with NO engine command at all: a bare release would drop the payload
+        wherever the arm happens to be holding it, which is the one outcome
+        the operator did not ask for.
+
+        The place itself is the shipped coordinate lane —
+        ``dispatch("place", [x, y, z])`` — so the held-side law, the unheld
+        refusal, the engine line and the post-place verifier are all inherited
+        rather than re-derived.  (That call goes through ``dispatch`` because
+        the shipped observation seam patches it — see
+        tests/test_place_target_lane.py:445 — and the descent lane's own guard
+        sits there too; the call is marked NESTED for its duration so the guard
+        declines it and this one-shot lane stays out of the descent lane.)
+
+        The lane RETREATS FIRST: with a descent held, a release here would
+        happen at RAW coordinates, with no frame shift, and leave the body low
+        (plan §6, refuter MEDIUM-1).  A rise that cannot be confirmed refuses
+        the whole request.
+        """
+        law = self._place_target_law
+        log = law.PhaseLog(label)
+        log.start(time.time())
+        text = str(label or "").strip()
+        if not text:
+            return self._place_target_finish(
+                log, "refuse", "ERROR:place_target empty label")
+        if not self._place_target_lock.acquire(blocking=False):
+            # concurrent, never queued: a second place would release into a scene the
+            # first place already changed.
+            return self._place_target_finish(log, "refuse", law.PLACE_BUSY_MSG)
+        try:
+            # retreat-first: the ROS callback invokes place_target directly, skipping
+            # dispatch, so the lane's next-command rule never sees this request. with a
+            # descent held, this lane would place at raw coordinates with no frame
+            # shift, leaving the body low. a reason means the rise is not confirmed:
+            # refuse the request and dispatch nothing.
+            held_detail = self._low_lane_retreat_first_if_held()
+            if held_detail is not None:
+                self._place_target_phase(log, "retreat", "refuse", held_detail)
+                return self._place_target_finish(log, "refuse", held_detail)
+            return self._place_target_run(log, text)
+        except Exception as exc:  # noqa: BLE001 - a table beats a dead thread
+            # a missing dependency still has to answer with a table. a deployment
+            # can keep its instance labels outside the packaged tree, and its brain
+            # can predate _drop_point, so any layout resolving nothing raises here.
+            # an exception escaping the worker would leave the operator with no
+            # output on either channel, undiagnosable from outside. every other
+            # failure in this lane ends in a row; so must this one.
+            detail = ("ERROR:place_target unavailable (%s): %s"
+                      % (type(exc).__name__, exc))
+            return self._place_target_finish(log, "error", detail)
+        finally:
+            self._place_target_lock.release()
+
+    def _place_target_run(self, log, text: str) -> Dict[str, object]:
+        law = self._place_target_law
+        # point-cloud consumer: only with a switch on (`_pc` set). pre-subscribe for
+        # 20 s so its DDS match is up when the rim request goes out. fire-and-
+        # forget; the client never raises, and this is guarded again so no stub can
+        # take the place lane down.
+        pc = getattr(self, "_pc", None)
+        if pc is not None:
+            try:
+                pc.warm(20.0)
+            except Exception:  # noqa: BLE001
+                pass
+        with self._obs_lock:
+            dets = list(self._assembler.observation().detections)
+        rows = law.resolver_rows(dets)
+        now = time.time()
+        # check stale against absent before the resolver: both reach it as 'none',
+        # and a frozen scene would then be reported 'not detected', sending the
+        # operator to the camera instead of the detection lane.
+        stale = law.stale_only(text, rows, now)
+        result = law.resolve(text, rows, now)
+        if result.get("status") != "single":
+            status, detail = law.classify_refusal(text, result, stale)
+            self._place_target_phase(log, "resolve", status, detail, now)
+            return self._place_target_finish(log, status, detail)
+        win = result["det"]
+        self._place_target_phase(
+            log, "resolve", "ok",
+            "%s  conf=%s  scan=%d" % (win.get("label"),
+                                      law.fmt_num(win.get("conf")), len(rows)),
+            now)
+        if pc is None:
+            t_status, t_detail, coords = law.place_target_from_row(win)
+        else:
+            # `pc_rim` is the optional kwarg of place_target_from_row, passed only when
+            # the client is built and only if the function declares it, so the off path
+            # is exactly the plain call.
+            t_status, t_detail, coords = law.place_target_from_row(
+                win, **self._pc_place_kwargs(law))
+        self._place_target_phase(log, "target", t_status, t_detail)
+        if coords is None:
+            return self._place_target_finish(log, t_status, t_detail)
+        try:
+            # through dispatch, the shipped seam: a test patches gw.dispatch to watch a
+            # second place queue up behind this one, which a direct _do_place call
+            # hides. the descent lane's guard sits in dispatch too, so the call is
+            # marked nested for exactly its duration and the guard declines it, the
+            # same exclusion a direct call gave without going round the seam. the flag
+            # is restored in `finally`, so a raise cannot disable the lane.
+            prev_nested = self._descent_nested
+            self._descent_nested = True
+            try:
+                reply, verdict = self.dispatch("place", list(coords))
+            finally:
+                self._descent_nested = prev_nested
+        except Exception as exc:  # a table must come out of this, always
+            detail = "ERROR:place_target dispatch raised: %s" % exc
+            self._place_target_phase(log, "execute", "error", detail)
+            return self._place_target_finish(log, "error", detail)
+        # which side got released is stated only in _do_place's own reply
+        # annotation, so read it rather than re-deriving the held-side law here.
+        log.side = law.side_from_reply(reply)
+        e_status, e_detail = law.classify_dispatch(reply, verdict)
+        line = "%s %s" % ("place_left" if log.side == "left" else "place",
+                          " ".join(law.fmt_num(c, "%.3f") for c in coords))
+        self._place_target_phase(
+            log, "execute", e_status,
+            line if e_status == "ok" else "%s -> %s" % (line, e_detail))
+        v_status, v_detail = law.verdict_row(verdict)
+        if e_status == "refuse":
+            # the engine never ran here, because the gateway declined on evidence, so
+            # there is nothing to verify. a 'verify' row would read as a verification
+            # failure and bury the real reason behind 'no verdict'; the verdict row
+            # headlines the refusal instead.
+            return self._place_target_finish(log, e_status, e_detail, verdict)
+        self._place_target_phase(log, "verify", v_status, v_detail)
+        return self._place_target_finish(log, v_status, v_detail, verdict)
+
+    def _place_target_phase(self, log, phase: str, status: str, detail: str,
+                            now: Optional[float] = None) -> None:
+        """Record + publish ONE phase row (elapsed measured, never invented)."""
+        law = self._place_target_law
+        if now is None:
+            now = time.time()
+        log.add(phase, status, detail, now)
+        row = log.rows[-1]
+        self.publish_place_status(law.status_message(
+            log, phase, status, detail, row["elapsed_s"]))
+
+    def _place_target_finish(self, log, status: str, detail: str,
+                             verdict: Optional[str] = None) -> Dict[str, object]:
+        """Close a run: VERDICT row, render, log, publish the final status."""
+        law = self._place_target_law
+        total = log.finish(status, detail, time.time())
+        table = law.render_table(log)
+        self.log_place_target(table)
+        self.publish_place_status(law.status_message(
+            log, "VERDICT", status, detail, total, verdict=verdict,
+            table=table))
+        return {"status": status, "detail": detail, "verdict": verdict,
+                "table": table, "rows": list(log.rows), "total_s": total}
+
