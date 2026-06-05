@@ -5179,3 +5179,132 @@ class GatewayNode:
                 return None, q
             time.sleep(min(PARK_SETTLE_POLL_S, remaining))
 
+    def _park_arm(self, reason: str = "", rc: str = "first",
+                  prefer_writer: bool = False) -> Dict[str, Any]:
+        """Move the arm(s) to a safe pose and VERIFY it.  Blocking; serialised
+        (a second concurrent call returns ``park_in_progress`` and sends
+        nothing); never raises.  Call it through ``_start_park_thread``.
+
+        Route ``engine``: the engine's queued ``park`` verb over a DIRECT
+        one-shot socket (banner skipped) — NEVER ``engine_verb``, which
+        connects-or-SPAWNS, and a cold engine's first act is a boot move (see
+        cancel_engine).  The engine queues it behind whatever it is still
+        executing, so its answer also marks the end of the engine's own
+        post-reply exit.  An engine ``ERROR:park ...`` is its own verdict and
+        is NOT overridden.
+
+        Route ``writer_ready``: when the engine is unreachable (nothing
+        listening, or the connection closed unanswered), answers
+        ``ERROR:unknown command`` (pick_engine_v3.py:7699 grammar) or
+        ``prefer_writer`` is set.  An engine that is THERE but does not answer
+        within PARK_REPLY_TIMEOUT_S (still executing, booting or wedged) is
+        NEVER bypassed: the park fails unmoved rather than letting a second
+        actor command the arm.  ``q`` is RE-READ first (the engine may have
+        parked the arm itself meanwhile, and a redundant slew could push a
+        relaxed, blocked arm again); an arm already safe is not moved, an
+        unreadable ``q`` never moves; otherwise the verbatim 30-token READY
+        line goes straight to the writer (hands untouched; NO retract along
+        the approach and NO z-floor clamp — see the batch-5 risks).
+
+        Either route's DONE is followed by a bounded ``q`` settle check
+        (PARK_SETTLE_S): ``ok`` only when the arm READS a safe pose, and only
+        then is ``_arm_parked_ts`` stamped.
+
+        ``rc``: ``"first"`` sends ``hold_rc off`` before the route (stop-free
+        callers: watchdog, G4 pre-pick); ``"last"`` after it (the G2 sweep —
+        never release the interlock under the engine's own unfinished exit,
+        which keeps it on until its arm motion ends); ``"skip"`` when the
+        caller already sent it (G1).
+
+        Returns the record also stored in ``_arm_safety['last_park']``:
+        ``{reason, route, result, ok, pose, reply, why, rc, ts}`` with
+        ``result`` parked | already_safe | park_failed.
+        """
+        if not self._park_lock.acquire(blocking=False):
+            return {"reason": reason, "route": None, "ok": False,
+                    "result": "park_in_progress", "pose": None,
+                    "reply": "park_in_progress", "why": "", "rc": None,
+                    "ts": time.time()}
+        try:
+            rc_tok = self._release_rc() if rc == "first" else None
+            route = "writer_ready" if prefer_writer else "engine"
+            why = "prefer_writer" if prefer_writer else ""
+            reply = ""
+            pose = None
+            result = "park_failed"
+            if not prefer_writer:
+                try:
+                    reply = _send_unix_verb(self._engine_sock, "park",
+                                            PARK_REPLY_TIMEOUT_S,
+                                            skip_ready_banner=True)
+                except socket.timeout:
+                    # the engine is there but did not answer in time: it queues `park` behind
+                    # whatever it is still executing, or it is booting or wedged. a writer slew
+                    # at that point would mean two actors commanding the arm, so nothing moves;
+                    # watchdog retries on its cooldown and hands a persistent stall to the
+                    # operator. caught first, because on py3.8 socket.timeout is an OSError.
+                    reply = ("engine busy - no park reply in %.0fs; not "
+                             "moved by a second actor" % PARK_REPLY_TIMEOUT_S)
+                    why = "engine busy"
+                except (OSError, ConnectionError) as exc:
+                    # nothing listening (no socket file, or refused), or the engine closed the
+                    # connection without answering, which it only does while shutting down. no
+                    # engine can be commanding the arm, so the writer may.
+                    why = "engine unreachable: %s" % (exc,)
+                    route = "writer_ready"
+                else:
+                    if reply.startswith("ERROR:unknown command"):
+                        why = reply
+                        route = "writer_ready"
+            if route == "engine":
+                if reply.startswith("DONE"):
+                    pose, _q = self._await_safe_pose(PARK_SETTLE_S)
+                    if pose is None:
+                        reply = "%s; not at a safe pose %.1fs later" % (
+                            reply, PARK_SETTLE_S)
+                    elif "already_safe" in reply:
+                        result = "already_safe"
+                    else:
+                        result = "parked"
+            else:
+                q = self._read_arm_q()
+                pose = _arm_safe_pose(q) if q is not None else None
+                if q is None:
+                    reply = "q_read_failed - no blind move"
+                elif pose is not None:
+                    result = "already_safe"
+                    reply = "already_safe(%s)" % pose
+                else:
+                    try:
+                        reply = str(self.writer_verb(
+                            WRITER_READY_ARM_LINE,
+                            timeout_s=PARK_WRITER_TIMEOUT_S) or "")
+                    except Exception as exc:  # noqa: BLE001
+                        reply = "writer failed: %s" % (exc,)
+                    if reply.startswith("DONE"):
+                        pose, _q = self._await_safe_pose(PARK_SETTLE_S)
+                        if pose is not None:
+                            result = "parked"
+                        else:
+                            reply = "%s; not at a safe pose %.1fs later" % (
+                                reply, PARK_SETTLE_S)
+            ok = result in ("parked", "already_safe")
+            if ok:
+                self._arm_parked_ts = time.time()
+            if rc == "last":
+                rc_tok = self._release_rc()
+            rec = {"reason": reason, "route": route, "result": result,
+                   "ok": ok, "pose": pose, "reply": _b5_tok_text(reply, 160),
+                   "why": _b5_tok_text(why, 120), "rc": rc_tok,
+                   "ts": time.time()}
+            self._arm_safety["last_park"] = dict(rec)
+            sys.stderr.write(
+                "[arm-safety] park reason=%s route=%s result=%s pose=%s "
+                "hold_rc=%s reply=%s\n"
+                % (reason, route, result, pose, rc_tok or "unchanged",
+                   rec["reply"]))
+            sys.stderr.flush()
+            return rec
+        finally:
+            self._park_lock.release()
+
