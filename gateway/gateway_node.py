@@ -5014,3 +5014,168 @@ class GatewayNode:
         except (ConnectionError, OSError, socket.timeout) as exc:
             return "NOENGINE:%s" % exc
 
+    def _do_cancel(self, args: List) -> Tuple[str, Optional[str]]:
+        """Cancel whatever is running: the pick/place engine, and the sweep.
+
+        THE OPERATOR ASK (verbatim 2026-09-30): "i want new feature such that i
+        can ask the robot to cancel search, task midway, such as stop picking
+        up while its picking, or stop placing while its placing, stop sweeping
+        while its sweeping."
+
+        THREE LANES, TWO MECHANISMS, and this verb is the single entry point:
+
+          * PICK / PLACE — the engine.  A flag is set over its socket
+            (out-of-band, answered by the connection thread) and the engine's
+            motion choke points raise; the unwind freezes the arm IN PLACE and
+            releases the writer's RC interlock (``pick_engine_v3``
+            ``except engine_cancel.Cancelled``).  This is the lane that had no
+            stop at all before today.
+          * SWEEP / WALK — the FSM.  Already had a stop; reused verbatim
+            through ``stop_walk`` (which routes via the coordinator so the
+            coordinator's own epoch/flow state is cleared too, rather than
+            being left latched).
+          * SEARCH — the same walk FSM, reached by the same ``stop_walk``.
+
+        WHY THE ENGINE FREEZE IS *NOT* DUPLICATED HERE.  The gateway holds the
+        writer socket and could send ``freeze`` itself a few ms earlier.  It
+        deliberately does not: the engine's unwind is the only actor that
+        knows whether a task was actually in flight, and a second actor
+        freezing the writer on its own initiative would stop motion that
+        nobody asked to stop — the engine boot move and the descent lane both
+        drive that socket.  20 ms of latency is the price of having exactly one
+        actor with authority over an in-flight arm move.
+
+        NO VERDICT: a cancel claims no post-condition.  Nothing here asserts
+        the arm reached a goal — ``_shape_reply(reply, None)``.
+        """
+        # stamp the cancel before stopping the walk. _await_walk_reached polls this
+        # stamp, so it has to exist no later than the stopped FSM it explains;
+        # otherwise a wait could see the stopped walk without the cancel that caused
+        # it and fall through to 'walk_idle_after_motion', which reads as a normal
+        # finish instead of an operator stop.
+        with self._obs_lock:
+            self._cancel_ts = time.time()
+            # clear the epoch too. without it in_flight only needs a SEARCHING with no
+            # IDLE, so a later navigate to the same label could be reused as still in
+            # flight and answer 'reused_in_flight' for a walk that has already ended, the
+            # same stale-liveness class as the walk frame latch problem.
+            self._nav_epoch = (0.0, None)
+            self._phases_seen = []
+        engine_reply = self.cancel_engine()
+        if engine_reply.startswith("CANCEL:accepted"):
+            engine_tok = "engine=cancelling"
+        elif engine_reply.startswith("CANCEL:refused"):
+            # the engine is alive and idle, and its own words say why
+            engine_tok = "engine=idle(%s)" % _defang_error_token(
+                engine_reply.split(" ", 1)[-1])
+        else:
+            engine_tok = "engine=unavailable"
+        try:
+            self.stop_walk()
+            walk_tok = "walk=stopped"
+        except Exception as exc:  # noqa: BLE001 — report, never raise
+            walk_tok = "walk=stop_failed(%s)" % _defang_error_token(str(exc))
+        # turn_around drives the writer's cmd_set directly rather than through the
+        # FSM, so the FSM stop above does not zero it: send an explicit
+        # 'cmd_set off'. gated so a turn not in flight sends nothing and the reply
+        # stays byte-identical. no token either way.
+        if getattr(self, "_turn_active", False):
+            try:
+                self.writer_verb("cmd_set off")
+            except Exception:  # noqa: BLE001 — best effort; pulse auto-expires
+                pass
+        # the descent lane. a cancel must be able to stop a lane pick before its
+        # engine dispatch and release a hold. reached via getattr, so a stand-in
+        # without lane attributes, and a lane-off node whose _low_lane is None, adds
+        # no token and keeps the reply identical.
+        lane_tok = ""
+        lane = getattr(self, "_low_lane", None)
+        if lane is not None:
+            lane_tok = self._low_lane_cancel()
+        # the engine reply is echoed for the wire trace, but its NOENGINE: prefix
+        # must never leak into a reply the brain reads as a failure, since the
+        # cancel did its job on the other lane. echoes of the engine's text are
+        # defanged for the same reason: a cancel that succeeded must never be
+        # shaped ok:false just because the engine phrased its answer with the
+        # ERROR: token.
+        #
+        # release the RC interlock and park any orphaned arm, even with the engine
+        # idle: a stop can answer 'engine=idle(no task running)' while the writer
+        # PD-holds a blocked arm at Tmax 102-131 C. reached via getattr and only
+        # with the master switch on, which keeps a stand-in and a core node on the
+        # plain byte stream. the tokens go after lane_tok and before
+        # `; engine_reply=`, which stays last since the verifier's match is
+        # greedy.
+        arm_tok = ""
+        if getattr(self, "_b5_on", False) is True:
+            rel = getattr(self, "_cancel_arm_release", None)
+            if rel is not None:
+                try:
+                    arm_tok = rel(engine_reply)
+                except Exception as exc:  # noqa: BLE001 — a stop never raises
+                    arm_tok = "; arm=unknown(%s)" % _b5_tok_text(exc, 40)
+        return ("DONE cancel: %s; %s%s%s; engine_reply=%s"
+                % (engine_tok, walk_tok, lane_tok, arm_tok,
+                   _defang_error_token(engine_reply)),
+                None)
+
+    # ── arm safety, stale target, liveness ───────────────────────────────────
+
+    def _read_arm_q(self) -> Optional[List[float]]:
+        """Writer ``q`` -> 14 floats [LEFT7, RIGHT7], or None.  Never raises.
+
+        The reply grammar is the writer's own (``Q:`` + 14 floats,
+        main_merged_writer.py:544 / writer_arm_client.py:187-190).
+        """
+        try:
+            reply = self.writer_verb("q", timeout_s=ARM_Q_READ_TIMEOUT_S)
+        except Exception:  # noqa: BLE001 — unreadable == unknown, never motion
+            return None
+        reply = str(reply or "")
+        if not reply.startswith("Q:"):
+            return None
+        parts = reply[2:].split()
+        if len(parts) != 14:
+            return None
+        try:
+            vals = [float(p) for p in parts]
+        except ValueError:
+            return None
+        if not all(math.isfinite(v) for v in vals):
+            return None
+        return vals
+
+    def _release_rc(self) -> str:
+        """Writer ``hold_rc off`` -> ``released`` | ``failed(<x>)``.
+
+        The RC-STICK INTERLOCK ONLY (G0): this never moves, stops or relaxes
+        the arm, and the token it feeds is ``hold_rc=``, never ``arm=``.
+        """
+        try:
+            r = str(self.writer_verb("hold_rc off", timeout_s=1.0) or "")
+        except Exception as exc:  # noqa: BLE001 — report, never raise
+            return "failed(%s)" % _b5_tok_text(exc)
+        if r.startswith("DONE"):
+            return "released"
+        return "failed(%s)" % _b5_tok_text(r)
+
+    def _await_safe_pose(self, budget_s: float
+                         ) -> Tuple[Optional[str], Optional[List[float]]]:
+        """Poll ``q`` until both arms read a safe pose, or ``budget_s`` ends.
+
+        Returns (pose name | None, last q | None).  A route's DONE is never
+        taken as the arrival: the writer answers ``arm`` when the slew STARTS
+        (writer_arm_client.py "DONE = slew STARTED"), and only a measured
+        ``q`` at a safe pose makes a park real.
+        """
+        deadline = time.time() + budget_s
+        while True:
+            q = self._read_arm_q()
+            pose = _arm_safe_pose(q) if q is not None else None
+            if pose is not None:
+                return pose, q
+            remaining = deadline - time.time()
+            if remaining <= 0.0:
+                return None, q
+            time.sleep(min(PARK_SETTLE_POLL_S, remaining))
+
