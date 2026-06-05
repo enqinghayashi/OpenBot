@@ -4950,3 +4950,27 @@ class GatewayNode:
         except Exception:  # noqa: BLE001
             pass
 
+    def _pc_rim_for(self, row: Any) -> Optional[Dict[str, Any]]:
+        """``place_target_from_row``'s ``pc_rim`` hook (H-PT-1).
+
+        The rim drop ``{"drop": {...}, "delta_z", "band", "band_formula"}`` for
+        a resolved place-target row, or ``None`` — the caller then keeps the
+        formula it always used.  The policy (the request, the one log line,
+        and the gates: OK + RIM_FIT + the SAME measured pose + a fresh row,
+        and ``pc_place_rim`` ON, else shadow = log only) is
+        ``pc_client.rim_for``; this is only the wiring.  NEVER raises: a
+        failure here must not take the place lane down.
+        """
+        try:
+            pc = getattr(self, "_pc", None)
+            if pc is None:
+                return None
+            from gateway import pointcloud_client as pc_client_mod  # lazy, then cached
+            return pc_client_mod.rim_for(
+                pc, row, getattr(self, "_pc_place_rim", False) is True,
+                time.time, log=self._pc_log)
+        except Exception as exc:  # noqa: BLE001 — wrap, log, return None
+            self._pc_say("place_rim hook failed: %s: %s"
+                         % (type(exc).__name__, exc))
+            return None
+
