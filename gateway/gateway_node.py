@@ -4985,3 +4985,32 @@ class GatewayNode:
             return 0.0
         return self._verifier.last_confirmed_epoch()
 
+    def cancel_engine(self, timeout_s: float = CANCEL_REPLY_TIMEOUT_S) -> str:
+        """Tell the pick/place engine to cancel, WITHOUT ever spawning one.
+
+        WHY THIS DOES NOT GO THROUGH ``engine_verb`` (2026-10-01).  That path
+        is connect-first → SPAWN-FALLBACK (``EngineBridge`` :959, connect at
+        ``_try_connect_unlocked`` :1070): calling it
+        with nothing listening boots a cold engine, and a cold engine's first
+        act is to drive BOTH ARMS TO NEUTRAL — the very defect the resident
+        engine was built to remove.  So "cancel the pick" would have started a
+        pick.  Here a direct one-shot connect is used instead: the engine's
+        socket server is thread-per-connection and answers cancel out-of-band
+        (``tabletop_pick_place_engine.CANCEL_VERBS``), so this returns in
+        milliseconds while the engine is still blocked inside the pick.
+
+        Returns the engine's own reply line, or a token describing why there
+        is nothing to cancel.  NEVER raises — a cancel must not be the thing
+        that fails the way a pick did.
+        """
+        try:
+            # skip_ready_banner: the engine greets every new connection with READY
+            # before it answers, so without it this would return "READY" for a cancel
+            # that has been accepted.
+            return _send_unix_verb(self._engine_sock, "cancel", timeout_s,
+                                   skip_ready_banner=True)
+        except FileNotFoundError:
+            return "NOENGINE:no engine socket"
+        except (ConnectionError, OSError, socket.timeout) as exc:
+            return "NOENGINE:%s" % exc
+
