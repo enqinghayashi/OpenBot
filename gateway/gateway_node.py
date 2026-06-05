@@ -5334,3 +5334,7 @@ class GatewayNode:
             t.start()
         return t
 
+    def _park_busy(self) -> bool:
+        t = self._park_thread
+        return (t is not None and t.is_alive()) or self._park_lock.locked()
+
