@@ -4896,3 +4896,16 @@ class GatewayNode:
         """Hook: publish one /place_status payload (no-op outside ROS)."""
         return
 
+    def log_place_target(self, table: str) -> None:
+        """Hook: record the rendered /place_target table.
+
+        The laptop-testable core prints — its stdout IS the log; ``_RosGateway``
+        overrides this with the node logger so the table lands in the gateway
+        log next to everything else.
+        """
+        print(table, flush=True)
+
+    # ── point-cloud consumer hooks ───────────────────────────────────────────
+    # thin shims over the pc client. nothing below is reachable with
+    # `self._pc` None, which is every gateway with all three switches off.
+
