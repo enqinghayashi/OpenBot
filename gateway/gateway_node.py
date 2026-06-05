@@ -4934,3 +4934,11 @@ class GatewayNode:
             pose = self._body_pose
         return dict(pose) if isinstance(pose, dict) else None
 
+    def _pc_log(self, message: str) -> None:
+        """One ``[pc] ...`` line on stderr (the gateway log).  Never raises."""
+        try:
+            sys.stderr.write("[pc] %s\n" % (message,))
+            sys.stderr.flush()
+        except Exception:  # noqa: BLE001 — a log line must never break a lane
+            pass
+
