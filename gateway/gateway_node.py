@@ -4213,3 +4213,173 @@ class GatewayNode:
             return None
         return rec
 
+    def _daemon_hold_record(self) -> Optional[Dict[str, object]]:
+        """The evidence predicate under the lock — see _unlocked for the law."""
+        with self._obs_lock:
+            return self._daemon_hold_record_unlocked()
+
+    def _daemon_held_side(self) -> Optional[str]:
+        """The side the daemon DECLARED, or None when it declared none.
+
+        Last resort only (see _measured_held_side, which outranks it).  The
+        shipped daemon's payload has no ``side`` key at all, so on this robot
+        this returns None at every instant and the measured tier is what
+        actually resolves a daemon-lane place.  It is kept because a daemon
+        that DOES name a hand is better evidence than one the gateway infers.
+        """
+        rec = self._daemon_hold_record()
+        if rec is None:
+            return None
+        return rec["side"]
+
+    def _measured_closure(self, side: str) -> Optional[float]:
+        """Mean Dex3 closure fraction of ``side``, or None if unscoreable.
+
+        ``eff = (q - OPEN) / (CLOSE - OPEN)`` per joint, averaged over the
+        joints that carry a usable span AND are in servo mode.  This is the
+        SAME fraction the engine's bounded-lead close and grip_server's
+        ``clamped_close_target`` speak in — the presets are duplicated at the
+        top of this file because grip_server exposes no scoring verb (see the
+        HAZARD note there).
+
+        Returns None — never 0.0 — whenever the hand cannot honestly be
+        scored: no reply, a non-DONE reply, a malformed envelope, the side
+        reported ``available`` False (the lane saying its ``actual`` is stale),
+        no ``actual`` vector (the LEFT hand on this robot returns none — it has
+        no DDS reader), too few live joints, or no joint with a usable span.
+        The distinction matters: 0.0 means "measured, and it is OPEN", which
+        is a fact that licences a refusal; None means "not measured", which
+        must fall through to the next tier instead.
+        """
+        try:
+            line = self.grip_verb("state %s" % side, CLOSURE_PROBE_TIMEOUT_S)
+            if not isinstance(line, str) or not line.startswith("DONE:"):
+                return None
+            payload = json.loads(line[len("DONE:"):])
+            if not isinstance(payload, dict):
+                return None
+            st = payload.get(side)
+            if not isinstance(st, dict):
+                return None
+            actual = st.get("actual")
+            if not isinstance(actual, dict):
+                return None
+            # the lane's health flag for this side. available=False means the grip
+            # server is saying the vector below is stale (its last good read, not a live
+            # measurement), so scoring it reads a number the hand is not making. a grip server
+            # answering available False can still have its last 'actual' score 0.668,
+            # enough to name a holder. the guard sits outside the `mode` branch
+            # deliberately: a robot emitting no `mode` would skip a check in there.
+            if not st.get("available", True):
+                return None
+            live = None
+            modes = st.get("mode")
+            if isinstance(modes, dict):
+                live = set()
+                for k, v in modes.items():
+                    try:
+                        if int(v) == 1:
+                            live.add(str(k))
+                    except (TypeError, ValueError):
+                        continue
+            o, c = DEX3_OPEN[side], DEX3_CLOSE[side]
+            vals = []
+            for jid in DEX3_JOINT_IDS:
+                key = str(jid)
+                q = actual.get(key)
+                if q is None:
+                    continue
+                if live is not None and key not in live:
+                    # limp (mode == 0): a disabled motor, so this q is wherever gravity parked
+                    # the joint, not where the grasp put it. j3 on a live cup hold reads -0.04
+                    # and would pull the mean down.
+                    continue
+                span = c[jid] - o[jid]
+                if abs(span) < MIN_SPAN_RAD:
+                    continue
+                vals.append((float(q) - o[jid]) / span)
+            # one floor, applied to the joints actually scored and applied
+            # unconditionally, deliberately not inside the mode branch: a grip server
+            # that emits `actual` but no `mode` would skip a floor in there, and a hand
+            # scored off two joints could read ~1.0 and license a place into an empty
+            # hand.
+            # it cannot bind in that regime: with `mode` absent nothing is excluded by
+            # the mode gate and every right-hand span exceeds MIN_SPAN_RAD, so len(vals)
+            # is always 7 against a floor of 4. it binds only with `mode` reported,
+            # where the latch triad leaves just 4. kept because it is load-bearing there
+            # and is the only guard against a short `actual` vector.
+            if len(vals) < MIN_SCORED_JOINTS:
+                return None
+            return sum(vals) / len(vals)
+        except Exception:
+            # a probe must never bring the place path down: an unreachable or wedged
+            # grip server is "unmeasured", and the caller handles that.
+            return None
+
+    def _measured_held_side(self) -> Optional[str]:
+        """Which hand is HOLDING, measured — or None when that cannot be said.
+
+        THE REAL LAW, in order:
+
+        1. The daemon's evidence gate must hold (a FRESH /pick_state with
+           `held` AND `daemon_alive` AND not consumed AND not `busy`), or this
+           tier is inert.  A measurement is not a hold.
+        2. Both hands are scored over the grip socket.  A hand that cannot be
+           measured is UNSEEN.  If ANY UNSEEN hand is IN SERVICE — i.e. not in
+           DEX3_OUT_OF_SERVICE_SIDES — return None: an in-service hand that
+           cannot be measured could be the holder, and this tier does not
+           guess.  This is the fix for the round-6 defect, where dropping an
+           unmeasurable hand out of `eff` and answering from the remainder made
+           "one hand closed, the other UNMEASURABLE" indistinguishable from
+           "one closed, the other measured NOT-CLOSED", and — on this robot,
+           whose left Dex3 never measures — reduced the tier to a de-facto
+           declared constant 'right' whenever the right read closed.
+        3. If every unseen hand is out of service (its absence is EXCUSED —
+           see DEX3_OUT_OF_SERVICE_SIDES; its PRESENCE is still evidence and it
+           is scored like any hand), decide from the measured hands:
+           * BOTH meaningfully closed -> the hand that closed LESS is the one
+             holding something.  A hand wrapped around an object is stopped by
+             it and reads a smaller fraction than an empty hand that closed all
+             the way onto its own stop;
+           * exactly ONE closed -> that hand;
+           * NEITHER closed, or NOTHING measurable -> None, i.e. no evidence,
+             which leaves the caller's refusal standing.
+
+        Note the asymmetry with _daemon_held_side: a declared side is taken on
+        trust, whereas this is a measurement the gateway makes itself.  The
+        measurement outranks the declaration because a declaration reflects
+        the DAEMON's belief about its own pick, while this reflects the hand's
+        actual pose at the instant of the place.
+        """
+        if self._daemon_hold_record() is None:
+            return None
+        eff = {}
+        for side in ("right", "left"):
+            e = self._measured_closure(side)
+            if e is not None:
+                eff[side] = e
+        # an unseen in-service hand forbids an answer. read the tuple by name (a
+        # runtime lookup, not a captured default), so an operator can empty it and
+        # restore the sound rule that every hand must measure.
+        if any(s not in DEX3_OUT_OF_SERVICE_SIDES
+               for s in ("right", "left") if s not in eff):
+            return None
+        closed = {s: e for s, e in eff.items() if e >= self._closed_eff_min}
+        if not closed:
+            return None
+        if len(closed) == 1:
+            return next(iter(closed))
+        return min(closed, key=closed.get)
+
+    def _clear_close_verdicts(self, sides: Tuple[str, ...]) -> None:
+        """Drop close_adaptive verdicts (gateway tracking + assembler fold).
+
+        Called when a commanded open/close invalidates prior grasp evidence
+        for the affected sides, so GripState.contact must not linger.
+        """
+        with self._obs_lock:
+            for s in sides:
+                if s in ("right", "left"):
+                    self._close_verdicts.pop(s, None)
+                    self._assembler.clear_close_result(s)
+
