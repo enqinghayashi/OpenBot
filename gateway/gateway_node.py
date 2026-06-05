@@ -5159,3 +5159,23 @@ class GatewayNode:
             return "released"
         return "failed(%s)" % _b5_tok_text(r)
 
+    def _await_safe_pose(self, budget_s: float
+                         ) -> Tuple[Optional[str], Optional[List[float]]]:
+        """Poll ``q`` until both arms read a safe pose, or ``budget_s`` ends.
+
+        Returns (pose name | None, last q | None).  A route's DONE is never
+        taken as the arrival: the writer answers ``arm`` when the slew STARTS
+        (writer_arm_client.py "DONE = slew STARTED"), and only a measured
+        ``q`` at a safe pose makes a park real.
+        """
+        deadline = time.time() + budget_s
+        while True:
+            q = self._read_arm_q()
+            pose = _arm_safe_pose(q) if q is not None else None
+            if pose is not None:
+                return pose, q
+            remaining = deadline - time.time()
+            if remaining <= 0.0:
+                return None, q
+            time.sleep(min(PARK_SETTLE_POLL_S, remaining))
+
