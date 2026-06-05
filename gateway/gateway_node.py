@@ -4727,3 +4727,66 @@ class GatewayNode:
 
     # ── /place_target lane (one-shot: place onto the named target) ───────────
 
+    def place_target(self, label: str) -> Dict[str, object]:
+        """One-shot: release the held object ON the named target detection.
+
+        The answer IS the rendered phase table — every exit (refusal or
+        success) ends with the VERDICT row, is logged, and is published on
+        /place_status, so a refused command is exactly as diagnosable as a
+        good one.
+
+        NEVER degrades to a bare current-pose release.  A target that cannot
+        be resolved (empty, absent, stale, ambiguous, or positionless) refuses
+        with NO engine command at all: a bare release would drop the payload
+        wherever the arm happens to be holding it, which is the one outcome
+        the operator did not ask for.
+
+        The place itself is the shipped coordinate lane —
+        ``dispatch("place", [x, y, z])`` — so the held-side law, the unheld
+        refusal, the engine line and the post-place verifier are all inherited
+        rather than re-derived.  (That call goes through ``dispatch`` because
+        the shipped observation seam patches it — see
+        tests/test_place_target_lane.py:445 — and the descent lane's own guard
+        sits there too; the call is marked NESTED for its duration so the guard
+        declines it and this one-shot lane stays out of the descent lane.)
+
+        The lane RETREATS FIRST: with a descent held, a release here would
+        happen at RAW coordinates, with no frame shift, and leave the body low
+        (plan §6, refuter MEDIUM-1).  A rise that cannot be confirmed refuses
+        the whole request.
+        """
+        law = self._place_target_law
+        log = law.PhaseLog(label)
+        log.start(time.time())
+        text = str(label or "").strip()
+        if not text:
+            return self._place_target_finish(
+                log, "refuse", "ERROR:place_target empty label")
+        if not self._place_target_lock.acquire(blocking=False):
+            # concurrent, never queued: a second place would release into a scene the
+            # first place already changed.
+            return self._place_target_finish(log, "refuse", law.PLACE_BUSY_MSG)
+        try:
+            # retreat-first: the ROS callback invokes place_target directly, skipping
+            # dispatch, so the lane's next-command rule never sees this request. with a
+            # descent held, this lane would place at raw coordinates with no frame
+            # shift, leaving the body low. a reason means the rise is not confirmed:
+            # refuse the request and dispatch nothing.
+            held_detail = self._low_lane_retreat_first_if_held()
+            if held_detail is not None:
+                self._place_target_phase(log, "retreat", "refuse", held_detail)
+                return self._place_target_finish(log, "refuse", held_detail)
+            return self._place_target_run(log, text)
+        except Exception as exc:  # noqa: BLE001 - a table beats a dead thread
+            # a missing dependency still has to answer with a table. a deployment
+            # can keep its instance labels outside the packaged tree, and its brain
+            # can predate _drop_point, so any layout resolving nothing raises here.
+            # an exception escaping the worker would leave the operator with no
+            # output on either channel, undiagnosable from outside. every other
+            # failure in this lane ends in a row; so must this one.
+            detail = ("ERROR:place_target unavailable (%s): %s"
+                      % (type(exc).__name__, exc))
+            return self._place_target_finish(log, "error", detail)
+        finally:
+            self._place_target_lock.release()
+
