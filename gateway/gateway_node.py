@@ -5308,3 +5308,29 @@ class GatewayNode:
         finally:
             self._park_lock.release()
 
+    def _start_park_thread(self, reason: str, rc: str,
+                           prefer_writer: bool) -> threading.Thread:
+        """Run ONE ``_park_arm`` on a daemon thread; its record lands in the
+        thread's ``b5_result`` dict.  ``_park_thread`` always names the
+        latest park, so every caller can see (and join) it."""
+        holder: Dict[str, Any] = {}
+
+        def run() -> None:
+            try:
+                holder.update(self._park_arm(reason=reason, rc=rc,
+                                             prefer_writer=prefer_writer))
+            except Exception as exc:  # noqa: BLE001 — never die silently
+                holder.update({"reason": reason, "route": None, "ok": False,
+                               "result": "park_failed", "pose": None,
+                               "reply": "park raised %r" % (exc,), "why": "",
+                               "rc": None, "ts": time.time()})
+                sys.stderr.write("[arm-safety] park raised: %r\n" % (exc,))
+                sys.stderr.flush()
+
+        t = threading.Thread(target=run, name="arm-park", daemon=True)
+        t.b5_result = holder  # type: ignore[attr-defined]
+        with self._park_start_lock:
+            self._park_thread = t
+            t.start()
+        return t
+
