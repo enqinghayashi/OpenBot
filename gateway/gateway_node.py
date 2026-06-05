@@ -4892,3 +4892,7 @@ class GatewayNode:
         return {"status": status, "detail": detail, "verdict": verdict,
                 "table": table, "rows": list(log.rows), "total_s": total}
 
+    def publish_place_status(self, message: str) -> None:
+        """Hook: publish one /place_status payload (no-op outside ROS)."""
+        return
+
