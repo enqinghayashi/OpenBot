@@ -5121,3 +5121,27 @@ class GatewayNode:
 
     # ── arm safety, stale target, liveness ───────────────────────────────────
 
+    def _read_arm_q(self) -> Optional[List[float]]:
+        """Writer ``q`` -> 14 floats [LEFT7, RIGHT7], or None.  Never raises.
+
+        The reply grammar is the writer's own (``Q:`` + 14 floats,
+        main_merged_writer.py:544 / writer_arm_client.py:187-190).
+        """
+        try:
+            reply = self.writer_verb("q", timeout_s=ARM_Q_READ_TIMEOUT_S)
+        except Exception:  # noqa: BLE001 — unreadable == unknown, never motion
+            return None
+        reply = str(reply or "")
+        if not reply.startswith("Q:"):
+            return None
+        parts = reply[2:].split()
+        if len(parts) != 14:
+            return None
+        try:
+            vals = [float(p) for p in parts]
+        except ValueError:
+            return None
+        if not all(math.isfinite(v) for v in vals):
+            return None
+        return vals
+
