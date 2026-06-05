@@ -4868,3 +4868,14 @@ class GatewayNode:
         self._place_target_phase(log, "verify", v_status, v_detail)
         return self._place_target_finish(log, v_status, v_detail, verdict)
 
+    def _place_target_phase(self, log, phase: str, status: str, detail: str,
+                            now: Optional[float] = None) -> None:
+        """Record + publish ONE phase row (elapsed measured, never invented)."""
+        law = self._place_target_law
+        if now is None:
+            now = time.time()
+        log.add(phase, status, detail, now)
+        row = log.rows[-1]
+        self.publish_place_status(law.status_message(
+            log, phase, status, detail, row["elapsed_s"]))
+
