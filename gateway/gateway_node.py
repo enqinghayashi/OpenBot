@@ -4942,3 +4942,11 @@ class GatewayNode:
         except Exception:  # noqa: BLE001 — a log line must never break a lane
             pass
 
+    def _pc_say(self, message: str) -> None:
+        """``_pc_log`` for the shims' except paths: even a replaced / broken log
+        hook cannot turn a degraded hook into a raise."""
+        try:
+            self._pc_log(message)
+        except Exception:  # noqa: BLE001
+            pass
+
