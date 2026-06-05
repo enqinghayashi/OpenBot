@@ -4909,3 +4909,7 @@ class GatewayNode:
     # thin shims over the pc client. nothing below is reachable with
     # `self._pc` None, which is every gateway with all three switches off.
 
+    def _publish_pc_arm(self, text: str) -> None:
+        """Hook: publish one /pc_arm String (no-op outside ROS)."""
+        return
+
