@@ -4934,3 +4934,83 @@ class GatewayNode:
             pose = self._body_pose
         return dict(pose) if isinstance(pose, dict) else None
 
+    def _pc_log(self, message: str) -> None:
+        """One ``[pc] ...`` line on stderr (the gateway log).  Never raises."""
+        try:
+            sys.stderr.write("[pc] %s\n" % (message,))
+            sys.stderr.flush()
+        except Exception:  # noqa: BLE001 — a log line must never break a lane
+            pass
+
+    def _pc_say(self, message: str) -> None:
+        """``_pc_log`` for the shims' except paths: even a replaced / broken log
+        hook cannot turn a degraded hook into a raise."""
+        try:
+            self._pc_log(message)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _pc_rim_for(self, row: Any) -> Optional[Dict[str, Any]]:
+        """``place_target_from_row``'s ``pc_rim`` hook (H-PT-1).
+
+        The rim drop ``{"drop": {...}, "delta_z", "band", "band_formula"}`` for
+        a resolved place-target row, or ``None`` — the caller then keeps the
+        formula it always used.  The policy (the request, the one log line,
+        and the gates: OK + RIM_FIT + the SAME measured pose + a fresh row,
+        and ``pc_place_rim`` ON, else shadow = log only) is
+        ``pc_client.rim_for``; this is only the wiring.  NEVER raises: a
+        failure here must not take the place lane down.
+        """
+        try:
+            pc = getattr(self, "_pc", None)
+            if pc is None:
+                return None
+            from gateway import pointcloud_client as pc_client_mod  # lazy, then cached
+            return pc_client_mod.rim_for(
+                pc, row, getattr(self, "_pc_place_rim", False) is True,
+                time.time, log=self._pc_log)
+        except Exception as exc:  # noqa: BLE001 — wrap, log, return None
+            self._pc_say("place_rim hook failed: %s: %s"
+                         % (type(exc).__name__, exc))
+            return None
+
+    def _nav_confirmed_epoch(self) -> float:
+        """The dispatch epoch the persistent SkillVerifier confirmed (0.0).
+
+        The gateway holds ONE SkillVerifier instance across calls; the
+        confirmed-epoch memory lives in it (fix spec A-e).  None before the
+        first verify.
+        """
+        if self._verifier is None:
+            return 0.0
+        return self._verifier.last_confirmed_epoch()
+
+    def cancel_engine(self, timeout_s: float = CANCEL_REPLY_TIMEOUT_S) -> str:
+        """Tell the pick/place engine to cancel, WITHOUT ever spawning one.
+
+        WHY THIS DOES NOT GO THROUGH ``engine_verb`` (2026-10-01).  That path
+        is connect-first → SPAWN-FALLBACK (``EngineBridge`` :959, connect at
+        ``_try_connect_unlocked`` :1070): calling it
+        with nothing listening boots a cold engine, and a cold engine's first
+        act is to drive BOTH ARMS TO NEUTRAL — the very defect the resident
+        engine was built to remove.  So "cancel the pick" would have started a
+        pick.  Here a direct one-shot connect is used instead: the engine's
+        socket server is thread-per-connection and answers cancel out-of-band
+        (``tabletop_pick_place_engine.CANCEL_VERBS``), so this returns in
+        milliseconds while the engine is still blocked inside the pick.
+
+        Returns the engine's own reply line, or a token describing why there
+        is nothing to cancel.  NEVER raises — a cancel must not be the thing
+        that fails the way a pick did.
+        """
+        try:
+            # skip_ready_banner: the engine greets every new connection with READY
+            # before it answers, so without it this would return "READY" for a cancel
+            # that has been accepted.
+            return _send_unix_verb(self._engine_sock, "cancel", timeout_s,
+                                   skip_ready_banner=True)
+        except FileNotFoundError:
+            return "NOENGINE:no engine socket"
+        except (ConnectionError, OSError, socket.timeout) as exc:
+            return "NOENGINE:%s" % exc
+
