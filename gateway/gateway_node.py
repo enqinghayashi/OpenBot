@@ -5689,3 +5689,30 @@ class GatewayNode:
         t.join(WATCHDOG_PARK_JOIN_S)
         return reason
 
+    def _arm_busy_elsewhere(self, now: float) -> bool:
+        """Arm activity the dispatch counter cannot see: a FRESH /pick_state
+        ``busy`` frame (the pick_node daemon keeps moving the arm after the
+        engine's DONE, and can be driven without the gateway), a descent-lane
+        body height outstanding (never swing an arm next to a table while the
+        body is lowered), the /place_target lane (enters via its ROS
+        callback), or a turn-around.  Unknown -> busy (the watchdog never
+        moves an arm it cannot prove idle)."""
+        with self._obs_lock:
+            rec = self._pick_state_hold
+            rec = dict(rec) if rec is not None else None
+        if (rec is not None and rec.get("state") == PICK_STATE_BUSY
+                and now - float(rec.get("ts", 0.0))
+                <= self._pick_state_max_age_s):
+            return True
+        ctx = getattr(self, "_descent_ctx", None)
+        if ctx is not None:
+            try:
+                if ctx.in_flight():
+                    return True
+            except Exception:  # noqa: BLE001
+                return True
+        pt_lock = getattr(self, "_place_target_lock", None)
+        if pt_lock is not None and pt_lock.locked():
+            return True
+        return bool(getattr(self, "_turn_active", False))
+
