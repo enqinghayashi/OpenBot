@@ -5369,3 +5369,212 @@ class GatewayNode:
             "result": "park_failed", "pose": None,
             "reply": "no park record", "ts": time.time()})
 
+    def _cancel_arm_release(self, engine_reply: str) -> str:
+        """G1: the stop's ``; hold_rc=...; arm=...`` tokens.  Never blocks long.
+
+        (a) always ``hold_rc off`` (the stick interlock, G0);
+        (b) ``CANCEL:accepted`` -> the engine owns the in-flight unwind:
+            ``arm=engine_unwinding``, the disturbed stamp is set and nothing is
+            parked here (the pick's own G2 sweep parks the frozen arm when the
+            engine's CANCELLED reply lands; the G3 watchdog is the backstop);
+        (c) otherwise (refused / NOENGINE / anything else) read ``q``: both
+            arms safe -> ``arm=already_safe(<P>)``; unreadable ->
+            ``arm=unknown(q_read_failed)`` and NO motion; out -> ONE daemon
+            park thread and ``arm=park_started(<route>)`` at once, so the stop
+            reply stays inside CANCEL_REPLY_TIMEOUT_S and the brain's
+            CANCEL_TIMEOUT_S; a park already running -> ``arm=park_in_progress``.
+        """
+        out = "; hold_rc=%s" % self._release_rc()
+        if engine_reply.startswith("CANCEL:accepted"):
+            self._arm_disturbed_ts = time.time()
+            return out + "; arm=engine_unwinding"
+        q = self._read_arm_q()
+        if q is None:
+            return out + "; arm=unknown(q_read_failed)"
+        pose = _arm_safe_pose(q)
+        if pose is not None:
+            return out + "; arm=already_safe(%s)" % pose
+        self._arm_disturbed_ts = time.time()
+        if self._park_busy():
+            return out + "; arm=park_in_progress"
+        # writer-direct only when no engine socket exists at all (the
+        # FileNotFoundError form from cancel_engine). any other NOENGINE (timeout,
+        # refused, reset) does not prove the engine idle: the park tries the
+        # engine's queued `park` first and falls back to the writer by itself when
+        # nothing is listening.
+        prefer_writer = engine_reply.startswith("NOENGINE:no engine socket")
+        self._start_park_thread("stop", "skip", prefer_writer)
+        return out + "; arm=park_started(%s)" % (
+            "writer_ready" if prefer_writer else "engine")
+
+    def _post_task_arm_sweep(self, task: str, outcome: str,
+                             prefer_writer: bool = False) -> str:
+        """G2: ``; arm_after=...`` after a pick/place that did not end DONE.
+
+        Reads q; an arm outside SAFE_ARM_POSES is parked SYNCHRONOUSLY,
+        bounded by PARK_JOIN_S, with the RC interlock released LAST.  Never
+        raises; no token contains ``ERROR:``.
+        """
+        q = self._read_arm_q()
+        if q is None:
+            return "; arm_after=unknown(q_read_failed)"
+        pose = _arm_safe_pose(q, segment=True)
+        if pose is not None:
+            return "; arm_after=already_safe(%s)" % pose
+        self._arm_disturbed_ts = time.time()
+        rec = self._park_sync("%s_%s" % (task, outcome),
+                              prefer_writer=prefer_writer, rc="last")
+        if rec.get("ok"):
+            if rec.get("result") == "already_safe":
+                return "; arm_after=already_safe(%s)" % (
+                    rec.get("pose") or "unknown")
+            return "; arm_after=parked(%s)" % rec.get("route")
+        return "; arm_after=park_failed(%s)" % _b5_tok_text(
+            rec.get("reply") or rec.get("result"))
+
+    # -- the post-cancel stale-target gate --------------------------------
+
+    def _post_cancel_target_gate(self, verb: str, args: List
+                                 ) -> Optional[Tuple[str, None]]:
+        """Refuse a post-cancel/abort pick whose target no FRESH detection
+        confirms, or None to fall through to today's path.
+
+        Active only after a cancel or an arm disturbance that no passing pick
+        has cleared since.  (1) Join a park in flight, then park an arm still
+        outside SAFE_ARM_POSES (the whole park phase bounded by PARK_JOIN_S).
+        (2) Within FRESH_DET_WAIT_S, look for a detection packet newer than
+        max(cancel, park) — and newer than the gate itself when the arm could
+        not be verified safe.  (3) Pass on the first such packet with a row
+        within STALE_TARGET_TOL_M per axis of args[0:3] (and of the hinted
+        label's CLASS, when one exists: 'bottle_1' matches a 'bottle' row);
+        the pass clears the gate.
+
+        MEASURED F5 (run21 snapshot gateway.log): after a cancel at
+        hand_close the engine froze the arm AT the bottle; every later
+        detection read z~0.108 against the original 0.005, and the re-pick
+        :316 [0.106, 0.403, 0.108] was taken from such a packet — 'fresh'
+        (ts 781 > cancel 710), so a cancel-timestamp gate alone would have
+        passed it.  Park first, then a fresh match, is what refuses it.
+        """
+        with self._obs_lock:
+            cancel_ts = self._cancel_ts
+        disturbed = self._arm_disturbed_ts
+        cleared = self._arm_gate_cleared_ts
+        if not ((disturbed > 0.0 and disturbed >= cleared)
+                or cancel_ts > cleared):
+            return None
+        try:
+            px, py, pz = float(args[0]), float(args[1]), float(args[2])
+        except (TypeError, ValueError, IndexError):
+            return None  # _do_pick refuses malformed coords itself
+        if not all(math.isfinite(v) for v in (px, py, pz)):
+            return None
+        # (1) the park phase: one deadline for the join and the park
+        park_deadline = time.time() + PARK_JOIN_S
+        prev = self._park_thread
+        if prev is not None and prev.is_alive():
+            prev.join(max(0.0, park_deadline - time.time()))
+        q = self._read_arm_q()
+        verified = q is not None and _arm_safe_pose(q) is not None
+        if q is not None and not verified:
+            self._arm_disturbed_ts = time.time()
+            remaining = park_deadline - time.time()
+            if remaining > 0.0:
+                rec = self._park_sync("pre_pick_after_cancel",
+                                      join_s=remaining)
+                verified = bool(rec.get("ok"))
+        since = max(cancel_ts, self._arm_parked_ts)
+        if not verified:
+            # if the arm is unparked or unreadable, at least demand a packet taken
+            # after this gate gave up waiting for it.
+            since = max(since, time.time())
+        # (2) and (3): the fresh-match wait. the label is compared at class level
+        # (_b5_hint_class_keys), because a ref-form hint like 'bottle_1' names the
+        # class 'bottle' the perception rows actually carry.
+        hint = getattr(getattr(self, "_req_target_hint", None), "label", None)
+        hint_keys = _b5_hint_class_keys(hint)
+
+        def _label_ok(d) -> bool:
+            return _b5_row_matches_hint(d, hint_keys)
+
+        clock, sleep = self._b5_clock, self._b5_sleep
+        deadline = clock() + FRESH_DET_WAIT_S
+        newest = None
+        while True:
+            with self._obs_lock:
+                ts = self._assembler.last_detections_ts
+                rows = (list(self._assembler.observation().detections)
+                        if ts > since else [])
+            if ts > since:
+                newest = (ts, rows)
+                for d in rows:
+                    if (max(abs(d.x - px), abs(d.y - py), abs(d.z - pz))
+                            <= STALE_TARGET_TOL_M and _label_ok(d)):
+                        self._arm_gate_cleared_ts = time.time()
+                        return None
+            now = clock()
+            if now >= deadline:
+                break
+            sleep(min(B5_POLL_S, deadline - now))
+        if newest is None:
+            newest_txt = "none since the park"
+        elif not newest[1]:
+            newest_txt = "empty packet ts=%.3f" % newest[0]
+        else:
+            best = min(newest[1], key=lambda d: (
+                not _label_ok(d),
+                (d.x - px) ** 2 + (d.y - py) ** 2 + (d.z - pz) ** 2))
+            newest_txt = "%s@(%.3f,%.3f,%.3f) ts=%.3f" % (
+                _b5_tok_text(best.label, 32), best.x, best.y, best.z,
+                newest[0])
+        return (("ERROR:stale_target pick target (%.3f,%.3f,%.3f) is not "
+                 "confirmed by any detection newer than the post-cancel arm "
+                 "park (park_ts=%.3f); newest: %s; re-observe and call pick "
+                 "with fresh coordinates" % (px, py, pz, since, newest_txt)),
+                None)
+
+    # -- bounded re-observe before a pick verification -----------------------
+
+    def _detections_publisher_count(self) -> int:
+        """Publishers on /object_detections_body; -1 == unknown (no ROS)."""
+        return -1
+
+    def _pick_det_reobserve(self, dispatch_ts: float) -> str:
+        """G5: ``""`` when the channel is alive; else wait <= 4 s for a packet
+        newer than the motion end and return the evidence tokens.
+
+        The detection topic is event-driven (silence == empty scene), so a
+        quiet channel after a pick is NOT a dead node by itself (MEASURED F4:
+        yolo.log kept printing ``Candidate:`` lines through the 34.7 s gap).
+        The gateway does NOT change the verdict here; it hands the verifier
+        the freshest observation it can get and states what it saw.  No token
+        contains ``ERROR:`` (see _await_pick_daemon's docstring).
+        """
+        clock, sleep = self._b5_clock, self._b5_sleep
+        motion_end = clock()
+        with self._obs_lock:
+            alive = self._assembler.detections_alive(now=motion_end)
+        if alive:
+            return ""
+        deadline = motion_end + PICK_DET_REOBSERVE_S
+        while True:
+            with self._obs_lock:
+                ts = self._assembler.last_detections_ts
+            now = clock()
+            if ts > motion_end:
+                wait_tok = "fresh@%.1fs" % (now - motion_end)
+                break
+            if now >= deadline:
+                wait_tok = "still_silent@%.1fs" % (now - motion_end)
+                break
+            sleep(min(B5_POLL_S, deadline - now))
+        try:
+            pubs = int(self._detections_publisher_count())
+        except Exception:  # noqa: BLE001
+            pubs = -1
+        seen = 1 if (ts > 0.0 and ts >= dispatch_ts) else 0
+        return ("; det_wait=%s; det_publishers=%d; det_seen_since_dispatch=%d"
+                % (wait_tok, pubs, seen))
+
+    # -- the idle-held arm watchdog (no writer changes) ----------------------
+
