@@ -6152,3 +6152,11 @@ class GatewayNode:
         """Hook: publish one /yolo/strict String (_RosGateway overrides)."""
         raise RuntimeError("no /yolo/strict publisher outside ROS")
 
+    @staticmethod
+    def _strict_log(text: str) -> None:
+        try:
+            sys.stderr.write("[strict] %s\n" % text)
+            sys.stderr.flush()
+        except Exception:  # noqa: BLE001 -- a log line never breaks a verb
+            pass
+
