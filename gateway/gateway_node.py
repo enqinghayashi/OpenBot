@@ -5852,3 +5852,136 @@ class GatewayNode:
             self._motion_inflight[verb] = self._motion_inflight.get(verb, 0) + 1
         return verb
 
+    def _motion_exit(self, token: str) -> None:
+        with self._motion_lock:
+            n = self._motion_inflight.get(token, 0) - 1
+            if n > 0:
+                self._motion_inflight[token] = n
+            else:
+                self._motion_inflight.pop(token, None)
+
+    def _yolo_busy_verb(self) -> Optional[str]:
+        """Name of an actuator activity in flight, or None.
+
+        The dispatch-counted verbs first, then the in-flight signals the
+        cancel path (_do_cancel / _low_lane_cancel) reads: the descent lane's
+        context, the turn-around sweep, and the /place_target lane's lock
+        (that lane enters via its ROS callback, not through a tools socket).
+        """
+        lock = getattr(self, "_motion_lock", None)
+        if lock is not None:
+            with lock:
+                for verb in sorted(self._motion_inflight):
+                    if self._motion_inflight[verb] > 0:
+                        return verb
+        ctx = getattr(self, "_descent_ctx", None)
+        if ctx is not None:
+            try:
+                if ctx.in_flight():
+                    return "descent_lane"
+            except Exception:  # noqa: BLE001 — unknown == busy (fail closed)
+                return "descent_lane"
+        if getattr(self, "_turn_active", False):
+            return "turn_around"
+        pt_lock = getattr(self, "_place_target_lock", None)
+        if pt_lock is not None and pt_lock.locked():
+            return "place_target"
+        if self._yolo_walk_active():
+            return "walk"
+        return None
+
+    def _yolo_walk_active(self) -> bool:
+        """True while the last PARSED /walk_status phase is SEARCHING /
+        DETECTED / APPROACHING and no terminal frame has replaced it, bounded
+        by ``_YOLO_WALK_BUSY_STALE_CAP_S``.
+
+        Read-only on the assembler's last parsed walk frame AND the
+        assembler's own ``_last_walk_ts`` (assemble.py: moved only when
+        parse_walk_status accepts the packet), so a malformed packet can
+        never keep a latched phase alive.
+        """
+        obs_lock = getattr(self, "_obs_lock", None)
+        assembler = getattr(self, "_assembler", None)
+        if obs_lock is None or assembler is None:
+            return False
+        with obs_lock:
+            walk = getattr(assembler, "_walk", None)
+            ts = getattr(assembler, "_last_walk_ts", 0.0)
+        phase = getattr(walk, "phase", None)
+        if not isinstance(phase, str) or not ts:
+            return False
+        if phase.strip().upper() not in self._YOLO_WALK_BUSY_PHASES:
+            return False
+        return (time.time() - ts) <= self._YOLO_WALK_BUSY_STALE_CAP_S
+
+    @classmethod
+    def _yolo_classes_validate(cls, args: List
+                               ) -> Tuple[Optional[Dict[str, Any]], str]:
+        """Parse + validate a request (§3.4 rules).  ``(req, "")`` or
+        ``(None, why)`` — a bad request never reaches ROS."""
+        if len(args) != 1:
+            return None, "expected one JSON object argument, got %d" % len(args)
+        raw = args[0]
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except ValueError:
+                return None, "not JSON"
+        if not isinstance(raw, dict):
+            return None, "request must be a JSON object"
+        unknown = sorted(set(raw) - {"op", "classes", "min_conf"})
+        if unknown:
+            return None, "unknown key %s" % unknown[0]
+        op = raw.get("op")
+        if op not in cls._YOLO_OPS:
+            return None, "op must be one of set|reset|query, got %r" % (op,)
+        classes = raw.get("classes")
+        if classes is None:
+            classes = []
+        if not isinstance(classes, list):
+            return None, "classes must be a list"
+        if op != "set" and classes:
+            return None, "op %s takes no classes" % op
+        if len(classes) > cls._YOLO_CLASSES_MAX:
+            return None, "too many classes (%d > %d)" % (
+                len(classes), cls._YOLO_CLASSES_MAX)
+        try:
+            from brain.known_labels import TRACKED_CLASSES  # lazy import
+        except Exception as exc:  # noqa: BLE001 — fail closed
+            return None, "base vocabulary unavailable (%s)" % exc
+        base = set(TRACKED_CLASSES) | {
+            b.replace(" ", "_") for b in TRACKED_CLASSES}
+        out: List[Dict[str, str]] = []
+        seen = set()
+        for entry in classes:
+            if not isinstance(entry, dict):
+                return None, "each class must be an object {label, prompt}"
+            label, prompt = entry.get("label"), entry.get("prompt")
+            if not isinstance(label, str) or not cls._YOLO_LABEL_RE.fullmatch(
+                    label):
+                return None, "bad label %r" % (label,)
+            if label in base:
+                return None, "label %r is a base class (always on)" % label
+            if not isinstance(prompt, str) or not cls._YOLO_PROMPT_RE.fullmatch(
+                    prompt):
+                return None, "bad prompt %r for label %s" % (prompt, label)
+            if label in seen:
+                continue                     # duplicates by label: first wins
+            seen.add(label)
+            out.append({"label": label, "prompt": prompt})
+        req: Dict[str, Any] = {"op": op, "classes": out}
+        if "min_conf" in raw and raw["min_conf"] is not None:
+            mc = raw["min_conf"]
+            lo, hi = cls._YOLO_MIN_CONF_RANGE
+            if (isinstance(mc, bool) or not isinstance(mc, (int, float))
+                    or not math.isfinite(mc) or not lo <= mc <= hi):
+                return None, "min_conf must be a number in [%.2f, %.2f], got %r" % (
+                    lo, hi, mc)
+            req["min_conf"] = float(mc)
+        return req, ""
+
+    def publish_yolo_classes(self, text: str) -> None:
+        """Hook: publish one /yolo/classes String.  The rclpy-free core has
+        no publisher; _RosGateway overrides this."""
+        raise RuntimeError("no /yolo/classes publisher outside ROS")
+
