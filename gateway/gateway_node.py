@@ -5797,3 +5797,23 @@ class GatewayNode:
     #: 115.0, so the cap can never release inside navigate's own wait.
     _YOLO_WALK_BUSY_STALE_CAP_S = 120.0
 
+    def _yolo_vocab_setup(self, publisher: Any) -> None:
+        """Arm the verb: called by _RosGateway.__init__ ONLY when the param
+        ``open_vocab`` is exactly True, after the eager publisher exists.
+
+        ``epoch`` is this gateway process's boot time in ns (§3.4): constant
+        for the process, so a restarted gateway is always a NEW epoch at the
+        node and its seq 1 is applied, never mistaken for a duplicate.
+        """
+        from collections import deque  # stdlib import
+        self._classes_pub = publisher
+        self._vocab_epoch = time.time_ns()
+        self._vocab_seq = 0
+        self._vocab_lock = threading.Lock()
+        self._vocab_cond = threading.Condition(self._vocab_lock)
+        self._vocab_state = None            # last /yolo/classes_state seen (dict)
+        self._vocab_recent = deque(maxlen=16)
+        self._yolo_call_lock = threading.Lock()
+        self._motion_lock = threading.Lock()
+        self._motion_inflight: Dict[str, int] = {}
+
