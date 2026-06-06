@@ -5890,3 +5890,27 @@ class GatewayNode:
             return "walk"
         return None
 
+    def _yolo_walk_active(self) -> bool:
+        """True while the last PARSED /walk_status phase is SEARCHING /
+        DETECTED / APPROACHING and no terminal frame has replaced it, bounded
+        by ``_YOLO_WALK_BUSY_STALE_CAP_S``.
+
+        Read-only on the assembler's last parsed walk frame AND the
+        assembler's own ``_last_walk_ts`` (assemble.py: moved only when
+        parse_walk_status accepts the packet), so a malformed packet can
+        never keep a latched phase alive.
+        """
+        obs_lock = getattr(self, "_obs_lock", None)
+        assembler = getattr(self, "_assembler", None)
+        if obs_lock is None or assembler is None:
+            return False
+        with obs_lock:
+            walk = getattr(assembler, "_walk", None)
+            ts = getattr(assembler, "_last_walk_ts", 0.0)
+        phase = getattr(walk, "phase", None)
+        if not isinstance(phase, str) or not ts:
+            return False
+        if phase.strip().upper() not in self._YOLO_WALK_BUSY_PHASES:
+            return False
+        return (time.time() - ts) <= self._YOLO_WALK_BUSY_STALE_CAP_S
+
