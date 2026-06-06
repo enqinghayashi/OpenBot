@@ -6006,3 +6006,7 @@ class GatewayNode:
                 return False
             time.sleep(self._YOLO_CLASSES_POLL_S)
 
+    @staticmethod
+    def _yolo_is_int(value: Any) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool)
+
