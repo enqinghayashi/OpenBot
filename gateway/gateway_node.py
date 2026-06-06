@@ -5716,3 +5716,22 @@ class GatewayNode:
             return True
         return bool(getattr(self, "_turn_active", False))
 
+    def start_arm_watchdog(self) -> None:
+        """Start the G3 daemon thread (ROS wiring only; never the core ctor)."""
+        if self._wd_thread is not None and self._wd_thread.is_alive():
+            return
+        self._wd_enabled = True
+        self._wd_stop.clear()
+
+        def _loop() -> None:
+            while not self._wd_stop.wait(WATCHDOG_PERIOD_S):
+                try:
+                    self._arm_watchdog_tick(time.time())
+                except Exception as exc:  # noqa: BLE001 — never die silently
+                    sys.stderr.write("[arm-watchdog] tick error: %r\n" % (exc,))
+                    sys.stderr.flush()
+
+        self._wd_thread = threading.Thread(target=_loop, name="arm-watchdog",
+                                           daemon=True)
+        self._wd_thread.start()
+
