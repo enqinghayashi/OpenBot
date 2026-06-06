@@ -5735,3 +5735,8 @@ class GatewayNode:
                                            daemon=True)
         self._wd_thread.start()
 
+    def stop_arm_watchdog(self) -> None:
+        """Stop the G3 thread (node teardown)."""
+        self._wd_stop.set()
+        self._wd_enabled = False
+
