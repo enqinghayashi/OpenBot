@@ -5434,3 +5434,104 @@ class GatewayNode:
 
     # -- the post-cancel stale-target gate --------------------------------
 
+    def _post_cancel_target_gate(self, verb: str, args: List
+                                 ) -> Optional[Tuple[str, None]]:
+        """Refuse a post-cancel/abort pick whose target no FRESH detection
+        confirms, or None to fall through to today's path.
+
+        Active only after a cancel or an arm disturbance that no passing pick
+        has cleared since.  (1) Join a park in flight, then park an arm still
+        outside SAFE_ARM_POSES (the whole park phase bounded by PARK_JOIN_S).
+        (2) Within FRESH_DET_WAIT_S, look for a detection packet newer than
+        max(cancel, park) — and newer than the gate itself when the arm could
+        not be verified safe.  (3) Pass on the first such packet with a row
+        within STALE_TARGET_TOL_M per axis of args[0:3] (and of the hinted
+        label's CLASS, when one exists: 'bottle_1' matches a 'bottle' row);
+        the pass clears the gate.
+
+        MEASURED F5 (run21 snapshot gateway.log): after a cancel at
+        hand_close the engine froze the arm AT the bottle; every later
+        detection read z~0.108 against the original 0.005, and the re-pick
+        :316 [0.106, 0.403, 0.108] was taken from such a packet — 'fresh'
+        (ts 781 > cancel 710), so a cancel-timestamp gate alone would have
+        passed it.  Park first, then a fresh match, is what refuses it.
+        """
+        with self._obs_lock:
+            cancel_ts = self._cancel_ts
+        disturbed = self._arm_disturbed_ts
+        cleared = self._arm_gate_cleared_ts
+        if not ((disturbed > 0.0 and disturbed >= cleared)
+                or cancel_ts > cleared):
+            return None
+        try:
+            px, py, pz = float(args[0]), float(args[1]), float(args[2])
+        except (TypeError, ValueError, IndexError):
+            return None  # _do_pick refuses malformed coords itself
+        if not all(math.isfinite(v) for v in (px, py, pz)):
+            return None
+        # (1) the park phase: one deadline for the join and the park
+        park_deadline = time.time() + PARK_JOIN_S
+        prev = self._park_thread
+        if prev is not None and prev.is_alive():
+            prev.join(max(0.0, park_deadline - time.time()))
+        q = self._read_arm_q()
+        verified = q is not None and _arm_safe_pose(q) is not None
+        if q is not None and not verified:
+            self._arm_disturbed_ts = time.time()
+            remaining = park_deadline - time.time()
+            if remaining > 0.0:
+                rec = self._park_sync("pre_pick_after_cancel",
+                                      join_s=remaining)
+                verified = bool(rec.get("ok"))
+        since = max(cancel_ts, self._arm_parked_ts)
+        if not verified:
+            # if the arm is unparked or unreadable, at least demand a packet taken
+            # after this gate gave up waiting for it.
+            since = max(since, time.time())
+        # (2) and (3): the fresh-match wait. the label is compared at class level
+        # (_b5_hint_class_keys), because a ref-form hint like 'bottle_1' names the
+        # class 'bottle' the perception rows actually carry.
+        hint = getattr(getattr(self, "_req_target_hint", None), "label", None)
+        hint_keys = _b5_hint_class_keys(hint)
+
+        def _label_ok(d) -> bool:
+            return _b5_row_matches_hint(d, hint_keys)
+
+        clock, sleep = self._b5_clock, self._b5_sleep
+        deadline = clock() + FRESH_DET_WAIT_S
+        newest = None
+        while True:
+            with self._obs_lock:
+                ts = self._assembler.last_detections_ts
+                rows = (list(self._assembler.observation().detections)
+                        if ts > since else [])
+            if ts > since:
+                newest = (ts, rows)
+                for d in rows:
+                    if (max(abs(d.x - px), abs(d.y - py), abs(d.z - pz))
+                            <= STALE_TARGET_TOL_M and _label_ok(d)):
+                        self._arm_gate_cleared_ts = time.time()
+                        return None
+            now = clock()
+            if now >= deadline:
+                break
+            sleep(min(B5_POLL_S, deadline - now))
+        if newest is None:
+            newest_txt = "none since the park"
+        elif not newest[1]:
+            newest_txt = "empty packet ts=%.3f" % newest[0]
+        else:
+            best = min(newest[1], key=lambda d: (
+                not _label_ok(d),
+                (d.x - px) ** 2 + (d.y - py) ** 2 + (d.z - pz) ** 2))
+            newest_txt = "%s@(%.3f,%.3f,%.3f) ts=%.3f" % (
+                _b5_tok_text(best.label, 32), best.x, best.y, best.z,
+                newest[0])
+        return (("ERROR:stale_target pick target (%.3f,%.3f,%.3f) is not "
+                 "confirmed by any detection newer than the post-cancel arm "
+                 "park (park_ts=%.3f); newest: %s; re-observe and call pick "
+                 "with fresh coordinates" % (px, py, pz, since, newest_txt)),
+                None)
+
+    # -- bounded re-observe before a pick verification -----------------------
+
