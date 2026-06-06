@@ -5860,3 +5860,33 @@ class GatewayNode:
             else:
                 self._motion_inflight.pop(token, None)
 
+    def _yolo_busy_verb(self) -> Optional[str]:
+        """Name of an actuator activity in flight, or None.
+
+        The dispatch-counted verbs first, then the in-flight signals the
+        cancel path (_do_cancel / _low_lane_cancel) reads: the descent lane's
+        context, the turn-around sweep, and the /place_target lane's lock
+        (that lane enters via its ROS callback, not through a tools socket).
+        """
+        lock = getattr(self, "_motion_lock", None)
+        if lock is not None:
+            with lock:
+                for verb in sorted(self._motion_inflight):
+                    if self._motion_inflight[verb] > 0:
+                        return verb
+        ctx = getattr(self, "_descent_ctx", None)
+        if ctx is not None:
+            try:
+                if ctx.in_flight():
+                    return "descent_lane"
+            except Exception:  # noqa: BLE001 — unknown == busy (fail closed)
+                return "descent_lane"
+        if getattr(self, "_turn_active", False):
+            return "turn_around"
+        pt_lock = getattr(self, "_place_target_lock", None)
+        if pt_lock is not None and pt_lock.locked():
+            return "place_target"
+        if self._yolo_walk_active():
+            return "walk"
+        return None
+
