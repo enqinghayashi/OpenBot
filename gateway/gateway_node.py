@@ -6148,3 +6148,7 @@ class GatewayNode:
         self._strict_stop = threading.Event()
         self._strict_holds = strict_mod.StrictHolds()
 
+    def publish_yolo_strict(self, text: str) -> None:
+        """Hook: publish one /yolo/strict String (_RosGateway overrides)."""
+        raise RuntimeError("no /yolo/strict publisher outside ROS")
+
