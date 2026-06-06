@@ -6103,3 +6103,37 @@ class GatewayNode:
         finally:
             self._yolo_call_lock.release()
 
+    def _yolo_reply(self, op: str, seq: int, state: Dict[str, Any]) -> str:
+        """Map a matching state echo to the verb's reply (§3.5 step 5)."""
+        error = state.get("error")
+        if op == "query":
+            if error:
+                return "ERROR:yolo_classes state_error:%s" % (
+                    _defang_error_token(str(error).replace("\n", " "))[:200])
+            return "DONE:state seq=%d backend=%s %s" % (
+                seq, _defang_error_token(str(state.get("backend"))),
+                self._yolo_state_text(state))
+        backend = state.get("backend")
+        if backend == "yolo":
+            return ("ERROR:yolo_classes backend_fixed (node runs the "
+                    "fixed-vocabulary engine)")
+        if backend != "yoloe":
+            return "ERROR:yolo_classes bad_state:backend=%s" % (
+                _defang_error_token(str(backend))[:60])
+        if error:
+            return "ERROR:yolo_classes swap_failed:%s" % (
+                _defang_error_token(str(error).replace("\n", " "))[:200])
+        if state.get("dup") is True:
+            return "DONE:applied (dup) seq=%d %s" % (
+                seq, self._yolo_state_text(state))
+        return "DONE:applied seq=%d %s" % (seq, self._yolo_state_text(state))
+
+    # ── strict detection: holds on /yolo/strict ──────────────────────────────
+    # one hold narrows the yolo node to [targets] + KEEP_LABELS ('person') for one
+    # phase: navigate (opened around _do_navigate, ends with the walk) or look_for
+    # / place / pick target resolution (the brain, via yolo_strict). the node
+    # keeps the operator's full vocabulary and restores it on 'release', or when
+    # its lease (LEASE_S, renewed every RENEW_S by start_strict_renew) runs out.
+    # never motion, never a verdict.
+    YOLO_STRICT_TOPIC = "/yolo/strict"
+
