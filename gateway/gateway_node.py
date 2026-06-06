@@ -5831,3 +5831,19 @@ class GatewayNode:
             state = self._vocab_state
             return dict(state) if isinstance(state, dict) else None
 
+    def _yolo_vocab_store_state(self, state: Any) -> bool:
+        """State-callback core: cache a parsed state dict and wake the waiter.
+
+        Returns False (and caches nothing) for a non-dict payload.
+        """
+        if not isinstance(state, dict):
+            return False
+        cond = getattr(self, "_vocab_cond", None)
+        if cond is None:
+            return False
+        with cond:
+            self._vocab_state = dict(state)
+            self._vocab_recent.append(dict(state))
+            cond.notify_all()
+        return True
+
