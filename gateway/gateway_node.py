@@ -6010,3 +6010,23 @@ class GatewayNode:
     def _yolo_is_int(value: Any) -> bool:
         return isinstance(value, int) and not isinstance(value, bool)
 
+    def _yolo_wait_ack(self, seq: int, timeout_s: Optional[float] = None
+                       ) -> Optional[Dict[str, Any]]:
+        """The state echo with this process's (epoch, seq), or None after
+        ``_YOLO_CLASSES_ACK_S``.  A state for any other (epoch, seq) is
+        ignored."""
+        deadline = time.monotonic() + (self._YOLO_CLASSES_ACK_S if timeout_s is None
+                                       else timeout_s)
+        with self._vocab_cond:
+            while True:
+                for st in reversed(self._vocab_recent):
+                    if (self._yolo_is_int(st.get("epoch"))
+                            and self._yolo_is_int(st.get("seq"))
+                            and st.get("epoch") == self._vocab_epoch
+                            and st.get("seq") == seq):
+                        return dict(st)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._vocab_cond.wait(remaining)
+
