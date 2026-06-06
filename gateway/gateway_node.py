@@ -5539,3 +5539,42 @@ class GatewayNode:
         """Publishers on /object_detections_body; -1 == unknown (no ROS)."""
         return -1
 
+    def _pick_det_reobserve(self, dispatch_ts: float) -> str:
+        """G5: ``""`` when the channel is alive; else wait <= 4 s for a packet
+        newer than the motion end and return the evidence tokens.
+
+        The detection topic is event-driven (silence == empty scene), so a
+        quiet channel after a pick is NOT a dead node by itself (MEASURED F4:
+        yolo.log kept printing ``Candidate:`` lines through the 34.7 s gap).
+        The gateway does NOT change the verdict here; it hands the verifier
+        the freshest observation it can get and states what it saw.  No token
+        contains ``ERROR:`` (see _await_pick_daemon's docstring).
+        """
+        clock, sleep = self._b5_clock, self._b5_sleep
+        motion_end = clock()
+        with self._obs_lock:
+            alive = self._assembler.detections_alive(now=motion_end)
+        if alive:
+            return ""
+        deadline = motion_end + PICK_DET_REOBSERVE_S
+        while True:
+            with self._obs_lock:
+                ts = self._assembler.last_detections_ts
+            now = clock()
+            if ts > motion_end:
+                wait_tok = "fresh@%.1fs" % (now - motion_end)
+                break
+            if now >= deadline:
+                wait_tok = "still_silent@%.1fs" % (now - motion_end)
+                break
+            sleep(min(B5_POLL_S, deadline - now))
+        try:
+            pubs = int(self._detections_publisher_count())
+        except Exception:  # noqa: BLE001
+            pubs = -1
+        seen = 1 if (ts > 0.0 and ts >= dispatch_ts) else 0
+        return ("; det_wait=%s; det_publishers=%d; det_seen_since_dispatch=%d"
+                % (wait_tok, pubs, seen))
+
+    # -- the idle-held arm watchdog (no writer changes) ----------------------
+
