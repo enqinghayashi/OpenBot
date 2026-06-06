@@ -5740,3 +5740,60 @@ class GatewayNode:
         self._wd_stop.set()
         self._wd_enabled = False
 
+    def _arm_safety_status(self) -> Dict[str, Any]:
+        return {"watchdog": "on" if self._wd_enabled else "off",
+                "writer_log": self._wd_log_state,
+                "last_sample": self._wd_last_sample,
+                "last_park": self._arm_safety.get("last_park"),
+                "attempts": self._wd_attempts}
+
+    # ── yolo_classes: the open-vocabulary request ─────────────────────────────
+    #
+    # the gateway publishes one /yolo/classes message per call (QoS
+    # TRANSIENT_LOCAL, depth 1, RELIABLE, created eagerly in
+    # _RosGateway.__init__ and only with the ROS param `open_vocab` exactly
+    # true), then waits for the yolo node's /yolo/classes_state echo carrying
+    # the same (epoch, seq). any outcome other than a matching applied state
+    # becomes an ERROR:yolo_classes reply (ok:false), so a change the node
+    # never confirmed is never reported as applied.
+
+    #: the topics (std_msgs/String, JSON object).
+    YOLO_CLASSES_TOPIC = "/yolo/classes"
+    YOLO_CLASSES_STATE_TOPIC = "/yolo/classes_state"
+    #: bounded wait (s) for the yolo node's subscription to match.
+    _YOLO_CLASSES_SUB_WAIT_S = 1.0
+    #: bounded wait (s) for the matching state echo to land. a bank swap takes
+    #: milliseconds, and 3.0 s stays far inside the brain's socket timeout, so
+    #: the brain always gets this verb's own honest answer.
+    _YOLO_CLASSES_ACK_S = 3.0
+    _YOLO_CLASSES_POLL_S = 0.05
+    #: the backend's capacity limit on extra classes (20 base + up to 236 extras).
+    _YOLO_CLASSES_MAX = 236
+    _YOLO_MIN_CONF_RANGE = (0.20, 0.90)
+    _YOLO_OPS = ("set", "reset", "query")
+    _YOLO_LABEL_RE = re.compile(r"[a-z][a-z0-9_]{0,31}")
+    _YOLO_PROMPT_RE = re.compile(r"[a-z][a-z0-9 \-]{0,47}")
+    #: the actuator verbs a vocabulary swap must never overlap (counted in
+    #: flight by dispatch, and only while `open_vocab` is true). wider than the
+    #: verifier's motion set on purpose, since it covers every verb that
+    #: commands legs, arms or hands. the conservative direction is a refusal.
+    _YOLO_BUSY_VERBS = frozenset((
+        "pick", "pick_left", "place", "navigate", "turn_around",
+        "open_hand", "close_hand", "cmd_set", "writer", "grip", "engine",
+        "return_home"))                 # these all move the body
+    #: walk FSM phases where the body is still searching for or walking to a
+    #: target. navigate's dispatch count can drop to 0 while the FSM still
+    #: walks, and a swap that dropped the walk's extra-class target would
+    #: blind it mid-approach. DETECTED is here even though the assembler
+    #: folds it into SEARCHING anyway.
+    _YOLO_WALK_BUSY_PHASES = frozenset(("SEARCHING", "DETECTED", "APPROACHING"))
+    #: a busy walk phase stays busy until a terminal frame (REACHED / NOT_FOUND
+    #: / IDLE) replaces it. this is only a staleness cap, for the case where the
+    #: walk node dies without publishing IDLE, never a freshness window:
+    #: APPROACHING re-sends every APPROACH_HEARTBEAT_S = 5.0 s, SEARCHING once
+    #: per DETECT_WINDOW_S = 5.0 s window plus a ~1.05 s turn, while DETECTED is
+    #: published once and then held silently until /walk_go, a retarget or an
+    #: escape, unbounded while the target stays visible. 120.0 s > NAV_WAIT_S
+    #: 115.0, so the cap can never release inside navigate's own wait.
+    _YOLO_WALK_BUSY_STALE_CAP_S = 120.0
+
