@@ -6137,3 +6137,14 @@ class GatewayNode:
     # never motion, never a verdict.
     YOLO_STRICT_TOPIC = "/yolo/strict"
 
+    def _strict_setup(self, publisher: Any) -> None:
+        """Arm strict detection: _RosGateway.__init__ ONLY, with open_vocab
+        True and OPENBOT_STRICT_VOCAB not '0'.  Absent = every path inert."""
+        from gateway import strict_vocab as strict_mod  # lazy, needs package ctx
+        self._strict_mod = strict_mod
+        self._strict_pub = publisher
+        self._strict_lock = threading.Lock()
+        self._strict_sent = False           # true when the last publish narrowed
+        self._strict_stop = threading.Event()
+        self._strict_holds = strict_mod.StrictHolds()
+
