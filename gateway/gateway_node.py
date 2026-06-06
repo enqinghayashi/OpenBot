@@ -5980,3 +5980,8 @@ class GatewayNode:
             req["min_conf"] = float(mc)
         return req, ""
 
+    def publish_yolo_classes(self, text: str) -> None:
+        """Hook: publish one /yolo/classes String.  The rclpy-free core has
+        no publisher; _RosGateway overrides this."""
+        raise RuntimeError("no /yolo/classes publisher outside ROS")
+
