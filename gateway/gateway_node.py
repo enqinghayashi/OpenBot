@@ -5338,3 +5338,34 @@ class GatewayNode:
         t = self._park_thread
         return (t is not None and t.is_alive()) or self._park_lock.locked()
 
+    def _park_sync(self, reason: str, prefer_writer: bool = False,
+                   rc: str = "first", join_s: float = PARK_JOIN_S
+                   ) -> Dict[str, Any]:
+        """Park and wait at most ``join_s`` in total.  A park already in
+        flight is joined first; when it ended with the arm verified safe its
+        record is returned and no second park is sent."""
+        deadline = time.time() + join_s
+        prev = self._park_thread
+        if prev is not None and prev.is_alive():
+            prev.join(max(0.0, deadline - time.time()))
+            if prev.is_alive():
+                return {"reason": reason, "route": None, "ok": False,
+                        "result": "park_failed", "pose": None,
+                        "reply": "an earlier park is still running after "
+                                 "%.1fs" % join_s, "ts": time.time()}
+            res = dict(getattr(prev, "b5_result", None) or {})
+            if res.get("ok"):
+                return res
+        t = self._start_park_thread(reason, rc, prefer_writer)
+        t.join(max(0.0, deadline - time.time()))
+        if t.is_alive():
+            return {"reason": reason,
+                    "route": "writer_ready" if prefer_writer else "engine",
+                    "ok": False, "result": "park_failed", "pose": None,
+                    "reply": "park still running after %.1fs" % join_s,
+                    "ts": time.time()}
+        return dict(getattr(t, "b5_result", None) or {
+            "reason": reason, "route": None, "ok": False,
+            "result": "park_failed", "pose": None,
+            "reply": "no park record", "ts": time.time()})
+
