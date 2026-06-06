@@ -5914,3 +5914,69 @@ class GatewayNode:
             return False
         return (time.time() - ts) <= self._YOLO_WALK_BUSY_STALE_CAP_S
 
+    @classmethod
+    def _yolo_classes_validate(cls, args: List
+                               ) -> Tuple[Optional[Dict[str, Any]], str]:
+        """Parse + validate a request (§3.4 rules).  ``(req, "")`` or
+        ``(None, why)`` — a bad request never reaches ROS."""
+        if len(args) != 1:
+            return None, "expected one JSON object argument, got %d" % len(args)
+        raw = args[0]
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except ValueError:
+                return None, "not JSON"
+        if not isinstance(raw, dict):
+            return None, "request must be a JSON object"
+        unknown = sorted(set(raw) - {"op", "classes", "min_conf"})
+        if unknown:
+            return None, "unknown key %s" % unknown[0]
+        op = raw.get("op")
+        if op not in cls._YOLO_OPS:
+            return None, "op must be one of set|reset|query, got %r" % (op,)
+        classes = raw.get("classes")
+        if classes is None:
+            classes = []
+        if not isinstance(classes, list):
+            return None, "classes must be a list"
+        if op != "set" and classes:
+            return None, "op %s takes no classes" % op
+        if len(classes) > cls._YOLO_CLASSES_MAX:
+            return None, "too many classes (%d > %d)" % (
+                len(classes), cls._YOLO_CLASSES_MAX)
+        try:
+            from brain.known_labels import TRACKED_CLASSES  # lazy import
+        except Exception as exc:  # noqa: BLE001 — fail closed
+            return None, "base vocabulary unavailable (%s)" % exc
+        base = set(TRACKED_CLASSES) | {
+            b.replace(" ", "_") for b in TRACKED_CLASSES}
+        out: List[Dict[str, str]] = []
+        seen = set()
+        for entry in classes:
+            if not isinstance(entry, dict):
+                return None, "each class must be an object {label, prompt}"
+            label, prompt = entry.get("label"), entry.get("prompt")
+            if not isinstance(label, str) or not cls._YOLO_LABEL_RE.fullmatch(
+                    label):
+                return None, "bad label %r" % (label,)
+            if label in base:
+                return None, "label %r is a base class (always on)" % label
+            if not isinstance(prompt, str) or not cls._YOLO_PROMPT_RE.fullmatch(
+                    prompt):
+                return None, "bad prompt %r for label %s" % (prompt, label)
+            if label in seen:
+                continue                     # duplicates by label: first wins
+            seen.add(label)
+            out.append({"label": label, "prompt": prompt})
+        req: Dict[str, Any] = {"op": op, "classes": out}
+        if "min_conf" in raw and raw["min_conf"] is not None:
+            mc = raw["min_conf"]
+            lo, hi = cls._YOLO_MIN_CONF_RANGE
+            if (isinstance(mc, bool) or not isinstance(mc, (int, float))
+                    or not math.isfinite(mc) or not lo <= mc <= hi):
+                return None, "min_conf must be a number in [%.2f, %.2f], got %r" % (
+                    lo, hi, mc)
+            req["min_conf"] = float(mc)
+        return req, ""
+
