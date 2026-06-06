@@ -6030,3 +6030,18 @@ class GatewayNode:
                     return None
                 self._vocab_cond.wait(remaining)
 
+    @staticmethod
+    def _yolo_state_text(state: Dict[str, Any]) -> str:
+        """``active=20+3 extras=a,b rejected=x:not_in_bank`` (defanged)."""
+        base = state.get("base")
+        extras = state.get("extras")
+        extras = [str(e) for e in extras] if isinstance(extras, list) else []
+        rejected = state.get("rejected")
+        rej = ""
+        if isinstance(rejected, dict):
+            rej = ",".join("%s:%s" % (k, v) for k, v in rejected.items())
+        text = "active=%s+%d extras=%s rejected=%s" % (
+            len(base) if isinstance(base, list) else "?", len(extras),
+            ",".join(extras), rej)
+        return _defang_error_token(text.replace("\n", " "))[:400]
+
