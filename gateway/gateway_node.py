@@ -5578,3 +5578,34 @@ class GatewayNode:
 
     # -- the idle-held arm watchdog (no writer changes) ----------------------
 
+    def _wd_read_writer_log(self, now: float) -> Tuple[str, Optional[Tuple],
+                                                       float, float]:
+        """(state, newest sample, hot span s, hold span s) from writer.log.
+
+        ``state`` is ok | missing | stale (mtime older than
+        WATCHDOG_LOG_MAX_AGE_S) | unparsed (fresh, but no status line in the
+        tail).  Spans are 0.0 unless ``ok``.
+        """
+        path = self._wd_writer_log_path
+        try:
+            mtime = os.path.getmtime(path)
+            size = os.path.getsize(path)
+            with open(path, "rb") as fh:
+                if size > WATCHDOG_LOG_TAIL_BYTES:
+                    fh.seek(size - WATCHDOG_LOG_TAIL_BYTES)
+                data = fh.read(WATCHDOG_LOG_TAIL_BYTES)
+        except OSError:
+            return "missing", None, 0.0, 0.0
+        text = data.decode("utf-8", "replace")
+        if size > WATCHDOG_LOG_TAIL_BYTES:
+            text = text.split("\n", 1)[-1]  # drop the half-written first line
+        samples = _parse_writer_status_lines(text)
+        newest = samples[-1] if samples else None
+        if now - mtime > WATCHDOG_LOG_MAX_AGE_S:
+            return "stale", newest, 0.0, 0.0
+        if newest is None:
+            return "unparsed", None, 0.0, 0.0
+        hot = _trailing_span(samples, lambda s: s[3] >= WATCHDOG_TMAX_C)
+        hold = _trailing_span(samples, lambda s: s[4] == 1)
+        return "ok", newest, hot, hold
+
