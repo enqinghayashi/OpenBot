@@ -5985,3 +5985,24 @@ class GatewayNode:
         no publisher; _RosGateway overrides this."""
         raise RuntimeError("no /yolo/classes publisher outside ROS")
 
+    def _yolo_wait_subscriber(self) -> bool:
+        """True once the yolo node's subscription has matched (<= 1.0 s).
+
+        A publisher without ``get_subscription_count`` (an rclpy older than
+        the API) skips the wait: the ack wait below is still the authority, so
+        a missing node then answers ``no_ack`` — still an honest ERROR.
+        """
+        count = getattr(self._classes_pub, "get_subscription_count", None)
+        if count is None:
+            return True
+        deadline = time.monotonic() + self._YOLO_CLASSES_SUB_WAIT_S
+        while True:
+            try:
+                if count() > 0:
+                    return True
+            except Exception:  # noqa: BLE001 — treat as not matched
+                pass
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(self._YOLO_CLASSES_POLL_S)
+
