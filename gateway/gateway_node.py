@@ -5535,3 +5535,7 @@ class GatewayNode:
 
     # -- bounded re-observe before a pick verification -----------------------
 
+    def _detections_publisher_count(self) -> int:
+        """Publishers on /object_detections_body; -1 == unknown (no ROS)."""
+        return -1
+
