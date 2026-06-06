@@ -5609,3 +5609,83 @@ class GatewayNode:
         hold = _trailing_span(samples, lambda s: s[4] == 1)
         return "ok", newest, hot, hold
 
+    def _arm_watchdog_tick(self, now: float) -> Optional[str]:
+        """One watchdog decision.  Returns the park reason, or None.
+
+        TRIGGER (all): no arm task in flight AND no park running AND no arm
+        activity the counter cannot see (_arm_busy_elsewhere) AND idle >=
+        WATCHDOG_IDLE_GRACE_S AND at least one of [Tmax >= 90 C over the last
+        5 s of writer samples] / [hold=1 for >= 8 s] / [a cancel or abort
+        left the arm out: _arm_disturbed_ts newer than the last verified-safe
+        park AND than the last time this watchdog saw that disturbance
+        resolved] AND an arm outside SAFE_ARM_POSES (``q`` is read only once
+        a conjunct holds; an unreadable ``q`` never moves the arm).  The idle
+        gate is load-bearing: Tmax >= 100 C also occurs DURING legitimate
+        engine slews (run20 up to 128 C, run17 up to 122 C), so the watchdog
+        must never look at a busy arm.  Rate: WATCHDOG_COOLDOWN_S between
+        attempts, WATCHDOG_MAX_ATTEMPTS, then ONE GIVE UP line.
+        """
+        state, newest, hot_span, hold_span = self._wd_read_writer_log(now)
+        self._wd_log_state = state
+        if newest is not None:
+            self._wd_last_sample = {"t": newest[0], "arm": newest[1],
+                                    "mode": newest[2], "Tmax": newest[3],
+                                    "hold": newest[4]}
+        with self._inflight_lock:
+            inflight = self._arm_task_inflight
+            idle_since = self._arm_idle_since
+        if inflight > 0 or self._park_busy() or self._arm_busy_elsewhere(now):
+            return None
+        if now - idle_since < WATCHDOG_IDLE_GRACE_S:
+            return None
+        why = []
+        if hot_span >= WATCHDOG_HOT_HOLD_S:
+            why.append("hot")
+        if hold_span >= WATCHDOG_RC_HOLD_S:
+            why.append("hold")
+        disturbed = self._arm_disturbed_ts
+        if disturbed > max(self._arm_parked_ts,
+                           self._wd_disturbed_seen_safe_ts):
+            why.append("disturbed")
+        if not why:
+            self._wd_attempts = 0
+            self._wd_gave_up = False
+            return None
+        q = self._read_arm_q()
+        if q is None:
+            return None
+        if _arm_safe_pose(q) is not None:
+            # looks safe (e.g. a bottle held in CARRY_TUCK): never disturbed, and a
+            # disturbance seen resolved does not get re-armed until a newer one.
+            if "disturbed" in why:
+                self._wd_disturbed_seen_safe_ts = disturbed
+            self._wd_attempts = 0
+            self._wd_gave_up = False
+            return None
+        if self._wd_attempts >= WATCHDOG_MAX_ATTEMPTS:
+            if not self._wd_gave_up:
+                self._wd_gave_up = True
+                sys.stderr.write(
+                    "[arm-watchdog] GIVE UP after %d parks — OPERATOR: E-stop "
+                    "/ kill the stack\n" % self._wd_attempts)
+                sys.stderr.flush()
+            return None
+        if (self._wd_last_attempt_ts > 0.0
+                and now - self._wd_last_attempt_ts < WATCHDOG_COOLDOWN_S):
+            return None
+        self._wd_attempts += 1
+        self._wd_last_attempt_ts = now
+        reason = "watchdog:" + "+".join(why)
+        dev = _arm_pose_deviation(q)
+        s = self._wd_last_sample or {}
+        sys.stderr.write(
+            "[arm-watchdog] PARK reason=%s Tmax=%sC hold=%s arm=%s "
+            "q_dev=%.2frad attempt=%d/%d\n"
+            % (reason, s.get("Tmax", "?"), s.get("hold", "?"),
+               s.get("arm", "?"), dev if dev is not None else float("nan"),
+               self._wd_attempts, WATCHDOG_MAX_ATTEMPTS))
+        sys.stderr.flush()
+        t = self._start_park_thread(reason, "first", False)
+        t.join(WATCHDOG_PARK_JOIN_S)
+        return reason
+
