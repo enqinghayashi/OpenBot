@@ -5369,3 +5369,41 @@ class GatewayNode:
             "result": "park_failed", "pose": None,
             "reply": "no park record", "ts": time.time()})
 
+    def _cancel_arm_release(self, engine_reply: str) -> str:
+        """G1: the stop's ``; hold_rc=...; arm=...`` tokens.  Never blocks long.
+
+        (a) always ``hold_rc off`` (the stick interlock, G0);
+        (b) ``CANCEL:accepted`` -> the engine owns the in-flight unwind:
+            ``arm=engine_unwinding``, the disturbed stamp is set and nothing is
+            parked here (the pick's own G2 sweep parks the frozen arm when the
+            engine's CANCELLED reply lands; the G3 watchdog is the backstop);
+        (c) otherwise (refused / NOENGINE / anything else) read ``q``: both
+            arms safe -> ``arm=already_safe(<P>)``; unreadable ->
+            ``arm=unknown(q_read_failed)`` and NO motion; out -> ONE daemon
+            park thread and ``arm=park_started(<route>)`` at once, so the stop
+            reply stays inside CANCEL_REPLY_TIMEOUT_S and the brain's
+            CANCEL_TIMEOUT_S; a park already running -> ``arm=park_in_progress``.
+        """
+        out = "; hold_rc=%s" % self._release_rc()
+        if engine_reply.startswith("CANCEL:accepted"):
+            self._arm_disturbed_ts = time.time()
+            return out + "; arm=engine_unwinding"
+        q = self._read_arm_q()
+        if q is None:
+            return out + "; arm=unknown(q_read_failed)"
+        pose = _arm_safe_pose(q)
+        if pose is not None:
+            return out + "; arm=already_safe(%s)" % pose
+        self._arm_disturbed_ts = time.time()
+        if self._park_busy():
+            return out + "; arm=park_in_progress"
+        # writer-direct only when no engine socket exists at all (the
+        # FileNotFoundError form from cancel_engine). any other NOENGINE (timeout,
+        # refused, reset) does not prove the engine idle: the park tries the
+        # engine's queued `park` first and falls back to the writer by itself when
+        # nothing is listening.
+        prefer_writer = engine_reply.startswith("NOENGINE:no engine socket")
+        self._start_park_thread("stop", "skip", prefer_writer)
+        return out + "; arm=park_started(%s)" % (
+            "writer_ready" if prefer_writer else "engine")
+
