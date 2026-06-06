@@ -5407,3 +5407,30 @@ class GatewayNode:
         return out + "; arm=park_started(%s)" % (
             "writer_ready" if prefer_writer else "engine")
 
+    def _post_task_arm_sweep(self, task: str, outcome: str,
+                             prefer_writer: bool = False) -> str:
+        """G2: ``; arm_after=...`` after a pick/place that did not end DONE.
+
+        Reads q; an arm outside SAFE_ARM_POSES is parked SYNCHRONOUSLY,
+        bounded by PARK_JOIN_S, with the RC interlock released LAST.  Never
+        raises; no token contains ``ERROR:``.
+        """
+        q = self._read_arm_q()
+        if q is None:
+            return "; arm_after=unknown(q_read_failed)"
+        pose = _arm_safe_pose(q, segment=True)
+        if pose is not None:
+            return "; arm_after=already_safe(%s)" % pose
+        self._arm_disturbed_ts = time.time()
+        rec = self._park_sync("%s_%s" % (task, outcome),
+                              prefer_writer=prefer_writer, rc="last")
+        if rec.get("ok"):
+            if rec.get("result") == "already_safe":
+                return "; arm_after=already_safe(%s)" % (
+                    rec.get("pose") or "unknown")
+            return "; arm_after=parked(%s)" % rec.get("route")
+        return "; arm_after=park_failed(%s)" % _b5_tok_text(
+            rec.get("reply") or rec.get("result"))
+
+    # -- the post-cancel stale-target gate --------------------------------
+
