@@ -5847,3 +5847,8 @@ class GatewayNode:
             cond.notify_all()
         return True
 
+    def _motion_enter(self, verb: str) -> str:
+        with self._motion_lock:
+            self._motion_inflight[verb] = self._motion_inflight.get(verb, 0) + 1
+        return verb
+
