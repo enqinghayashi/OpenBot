@@ -5817,3 +5817,17 @@ class GatewayNode:
         self._motion_lock = threading.Lock()
         self._motion_inflight: Dict[str, int] = {}
 
+    def yolo_vocab_state(self) -> Optional[Dict[str, Any]]:
+        """A copy of the last cached /yolo/classes_state, or None.
+
+        None whenever the lane is off (param False) or no state has arrived.
+        Read under the lock; the copy is the caller's (P5b's observe ``vocab``
+        block reads through here).
+        """
+        lock = getattr(self, "_vocab_lock", None)
+        if lock is None:
+            return None
+        with lock:
+            state = self._vocab_state
+            return dict(state) if isinstance(state, dict) else None
+
