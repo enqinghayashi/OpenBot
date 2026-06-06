@@ -6045,3 +6045,61 @@ class GatewayNode:
             ",".join(extras), rej)
         return _defang_error_token(text.replace("\n", " "))[:400]
 
+    def _do_yolo_classes(self, args: List) -> str:
+        """``yolo_classes`` verb (§3.5).  Returns the reply text; no verdict."""
+        if getattr(self, "_open_vocab", False) is not True:
+            return ("ERROR:yolo_classes disabled (gateway param open_vocab is "
+                    "false)")
+        if not self._yolo_call_lock.acquire(blocking=False):
+            # one request at a time: the /yolo/classes publisher is transient-local with
+            # depth 1, so a second publish before the node takes the first could replace
+            # it in the history (the node then never sees seq N, a false no_ack), and two
+            # overlapping swaps would race on the node's single active vocabulary.
+            return "ERROR:yolo_classes busy (yolo_classes in flight)"
+        try:
+            busy = self._yolo_busy_verb()
+            if busy:
+                return "ERROR:yolo_classes busy (%s in flight)" % busy
+            req, why = self._yolo_classes_validate(list(args))
+            if req is None:
+                return "ERROR:yolo_classes bad_request:%s" % _defang_error_token(
+                    why.replace("\n", " "))
+            if not self._yolo_wait_subscriber():
+                return ("ERROR:yolo_classes no_subscriber (yolo node not "
+                        "running with OPENBOT_YOLO_CLASSES=1)")
+            # re-checked after the (<= 1 s) subscriber wait: a motion that started in
+            # the meantime still blocks the publish.
+            busy = self._yolo_busy_verb()
+            if busy:
+                return "ERROR:yolo_classes busy (%s in flight)" % busy
+            with self._vocab_cond:
+                self._vocab_seq += 1
+                seq = self._vocab_seq
+                # a state cached for this epoch with seq >= the one about to be sent cannot
+                # be an echo of it, since nothing with that seq is published, so drop it; it
+                # can never ack this request.
+                self._vocab_recent = type(self._vocab_recent)(
+                    (st for st in self._vocab_recent
+                     if not (st.get("epoch") == self._vocab_epoch
+                             and self._yolo_is_int(st.get("seq"))
+                             and st.get("seq") >= seq)),
+                    maxlen=self._vocab_recent.maxlen)
+            msg: Dict[str, Any] = {"v": 1, "epoch": self._vocab_epoch,
+                                   "seq": seq, "op": req["op"],
+                                   "classes": req["classes"]}
+            if "min_conf" in req:
+                msg["min_conf"] = req["min_conf"]
+            msg["origin"] = "brain"
+            try:
+                self.publish_yolo_classes(json.dumps(msg))
+            except Exception as exc:  # noqa: BLE001 — report, never raise
+                return "ERROR:yolo_classes publish_failed:%s" % (
+                    _defang_error_token(str(exc).replace("\n", " ")))
+            state = self._yolo_wait_ack(seq)
+            if state is None:
+                return ("ERROR:yolo_classes no_ack seq=%d within %.1fs"
+                        % (seq, self._YOLO_CLASSES_ACK_S))
+            return self._yolo_reply(req["op"], seq, state)
+        finally:
+            self._yolo_call_lock.release()
+
