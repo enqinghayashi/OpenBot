@@ -5852,3 +5852,11 @@ class GatewayNode:
             self._motion_inflight[verb] = self._motion_inflight.get(verb, 0) + 1
         return verb
 
+    def _motion_exit(self, token: str) -> None:
+        with self._motion_lock:
+            n = self._motion_inflight.get(token, 0) - 1
+            if n > 0:
+                self._motion_inflight[token] = n
+            else:
+                self._motion_inflight.pop(token, None)
+
