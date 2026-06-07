@@ -6470,3 +6470,11 @@ class GatewayNode:
         except Exception:  # noqa: BLE001 -- a log line never breaks a verb
             pass
 
+    @staticmethod
+    def _creep_log(text: str) -> None:
+        try:
+            sys.stderr.write("[creep] %s\n" % text)
+            sys.stderr.flush()
+        except Exception:  # noqa: BLE001 -- a log line never breaks a verb
+            pass
+
