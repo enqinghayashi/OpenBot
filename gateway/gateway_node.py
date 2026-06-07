@@ -6315,3 +6315,27 @@ class GatewayNode:
         threading.Thread(target=_loop, name="strict-renew",
                          daemon=True).start()
 
+    def _strict_nav_open(self, args: List) -> Optional[int]:
+        """navigate: open a hold on the bare target label ('cup#165@188' ->
+        'cup'); 'stop' closes every hold instead; malformed -> None."""
+        if getattr(self, "_strict_holds", None) is None:
+            return None
+        if len(args) != 1 or not isinstance(args[0], str) or not args[0].strip():
+            return None
+        label = args[0].strip()
+        if label.lower() == "stop":
+            try:
+                self._strict_close_all("navigate_stop")
+            except Exception as exc:  # noqa: BLE001 -- the stop always runs
+                self._strict_log("close_all (navigate_stop) failed: %r; "
+                                 "stopping anyway" % (exc,))
+            return None
+        if "#" in label or "@" in label:
+            parts = self._nav_split(label)
+            if parts is None:
+                return None
+            label = parts[0]
+        hid, _ts, _why = self._strict_open("navigate", [label.strip().lower()],
+                                           self._strict_mod.NAV_HOLD_MAX_S)
+        return hid
+
