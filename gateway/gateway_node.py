@@ -6586,3 +6586,73 @@ class GatewayNode:
     RETURN_START_S = 5.0            # no RETURNING this fast means the walk never started
     HOME_ROWS_MAX_AGE_S = 1.0       # the requester comes out of a packet this fresh
 
+    def _b8l_setup(self) -> None:
+        """__init__ (B8l): home anchor, odometry slot, pose-walk wait state,
+        navigate widening state.  An import failure leaves home OFF."""
+        self._home = None
+        self._home_m = None
+        self._odom_pose = None
+        self._odom_lock = threading.Lock()
+        self._pose_active = False
+        self._pose_events: List[tuple] = []
+        self._pose_lock = threading.Lock()
+        self._b8l_rows = (0.0, [])
+        self._nav_strict = None
+        self._nav_strict_lock = threading.Lock()
+        try:
+            from gateway import home_anchor as home_mod  # lazy, needs package ctx
+            self._home_m = home_mod
+            self._home = home_mod.HomeAnchor()
+        except Exception as exc:  # noqa: BLE001 -- degrade, never raise
+            self._home = None
+            self._home_m = None
+            print("[home] home anchor import FAILED (%r) - return_home OFF"
+                  % (exc,), flush=True)
+
+    @staticmethod
+    def _home_log(text: str) -> None:
+        try:
+            sys.stderr.write("[home] %s\n" % text)
+            sys.stderr.flush()
+        except Exception:  # noqa: BLE001 -- a log line never breaks a verb
+            pass
+
+    def on_odom(self, x: float, y: float, yaw: float) -> None:
+        """One /unitree/slam_mapping/odom pose (x, y, yaw; REP-103)."""
+        try:
+            pose = (float(x), float(y), float(yaw))
+        except (TypeError, ValueError):
+            return
+        if not all(math.isfinite(v) for v in pose):
+            return
+        lock = getattr(self, "_odom_lock", None)
+        if lock is None:
+            return
+        with lock:
+            self._odom_pose = (pose, time.time())
+
+    def _odom_now(self, max_age_s: float) -> Optional[tuple]:
+        """(x, y, yaw) when the last odometry pose is at most ``max_age_s``
+        old, else None."""
+        lock = getattr(self, "_odom_lock", None)
+        if lock is None:
+            return None
+        with lock:
+            slot = self._odom_pose
+        if slot is None or time.time() - slot[1] > max_age_s:
+            return None
+        return slot[0]
+
+    def _nav_bare_label(self, args: List) -> Optional[str]:
+        if len(args) != 1 or not isinstance(args[0], str):
+            return None
+        label = args[0].strip()
+        if not label or label.lower() == "stop":
+            return None
+        if "#" in label or "@" in label:
+            parts = self._nav_split(label)
+            if parts is None:
+                return None
+            label = parts[0]
+        return label.strip().lower()
+
