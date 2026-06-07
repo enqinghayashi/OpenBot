@@ -6177,3 +6177,32 @@ class GatewayNode:
                     wide.update(v for v in vals if isinstance(v, str))
         return wide
 
+    def _strict_sync(self) -> Optional[int]:
+        """Publish what the open holds need NOW: 'narrow' with their union
+        (this is also the renewal) or ONE 'release' after the last hold
+        closed.  Returns the published seq, None when nothing was sent."""
+        holds = getattr(self, "_strict_holds", None)
+        if holds is None:
+            return None
+        with self._strict_lock:
+            labels = holds.labels()
+            if not labels and not self._strict_sent:
+                return None
+            with self._vocab_cond:
+                self._vocab_seq += 1
+                seq = self._vocab_seq
+            msg: Dict[str, Any] = {"v": 1, "epoch": self._vocab_epoch,
+                                   "seq": seq,
+                                   "op": "narrow" if labels else "release",
+                                   "origin": "gateway"}
+            if labels:
+                msg["labels"] = list(labels)
+                msg["lease_s"] = self._strict_mod.LEASE_S
+            try:
+                self.publish_yolo_strict(json.dumps(msg))
+            except Exception as exc:  # noqa: BLE001 -- the lease still bounds it
+                self._strict_log("publish failed: %s" % exc)
+                return None
+            self._strict_sent = bool(labels)
+            return seq
+
