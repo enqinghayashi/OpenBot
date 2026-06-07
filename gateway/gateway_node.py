@@ -6360,3 +6360,121 @@ class GatewayNode:
         finally:
             self._strict_nav_done(self._nav_strict_end(ns, hid))
 
+    def _do_yolo_strict(self, args: List) -> str:
+        """``yolo_strict`` verb (B8i, the brain's look_for / place / pick).
+        begin {labels, owner[, wait_s]} -> 'DONE:strict hold=<n> owner=<o>
+        applied_ts=<t> fresh=yes|no labels=<csv>' once a packet arrived
+        SETTLE_S after the swap (<= SETTLE_MAX_S); end {hold[, wait_s]} ->
+        'DONE:strict released hold=<n> released_ts=<t> fresh=yes|no' once one
+        arrived REFILL_S after the restore (<= REFILL_MAX_S).  wait_s (0-5)
+        lowers both bounds.  Refusals: 'ERROR:yolo_strict <why>'."""
+        if getattr(self, "_strict_holds", None) is None:
+            return ("ERROR:yolo_strict disabled (needs open_vocab:=true and "
+                    "OPENBOT_STRICT_VOCAB not 0)")
+        if len(args) != 1:
+            return "ERROR:yolo_strict bad_request:expected one JSON object"
+        raw = args[0]
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except ValueError:
+                return "ERROR:yolo_strict bad_request:not JSON"
+        if not isinstance(raw, dict):
+            return "ERROR:yolo_strict bad_request:not a JSON object"
+        m = self._strict_mod
+        wait = raw.get("wait_s")
+        if wait is not None and (isinstance(wait, bool)
+                                 or not isinstance(wait, (int, float))
+                                 or not 0.0 <= wait <= 5.0):
+            return "ERROR:yolo_strict bad_request:wait_s must be 0-5"
+        op = raw.get("op")
+        if op == "end":
+            hid = raw.get("hold")
+            if isinstance(hid, bool) or not isinstance(hid, int) or hid < 1:
+                return "ERROR:yolo_strict bad_request:hold must be an int >= 1"
+            ts = self._strict_close(hid, wait=True, why="end")
+            ts = time.time() if ts is None else ts
+            fresh = self._strict_wait_packet(ts + m.REFILL_S, m.REFILL_MAX_S
+                                             if wait is None else
+                                             min(float(wait), m.REFILL_MAX_S))
+            return "DONE:strict released hold=%d released_ts=%.3f fresh=%s" % (
+                hid, ts, "yes" if fresh else "no")
+        if op != "begin":
+            return "ERROR:yolo_strict bad_request:op must be begin|end"
+        owner = raw.get("owner")
+        if owner not in self._strict_mod.BRAIN_OWNERS:
+            return "ERROR:yolo_strict bad_request:owner must be look_for|place|pick"
+        labels = raw.get("labels")
+        if (not isinstance(labels, list) or not labels or len(labels) > 6
+                or not all(isinstance(x, str) and x.strip() for x in labels)):
+            return "ERROR:yolo_strict bad_request:labels must be 1-6 strings"
+        if owner == "place":
+            # the narrowing dropped the locked bin's track (its label had turned into
+            # 'backpack') and silenced the detector for 3.1 s.
+            skip = self._lock_strict_skip([x.strip().lower() for x in labels])
+            if skip:
+                return "ERROR:yolo_strict skipped (%s)" % skip
+        hid, ts, why = self._strict_open(
+            owner, [x.strip().lower() for x in labels], m.BRAIN_HOLD_MAX_S)
+        if hid is None:
+            return "ERROR:yolo_strict %s" % why
+        fresh = self._strict_wait_packet(ts + m.SETTLE_S, m.SETTLE_MAX_S
+                                         if wait is None else
+                                         min(float(wait), m.SETTLE_MAX_S))
+        return "DONE:strict hold=%d owner=%s applied_ts=%.3f fresh=%s labels=%s" % (
+            hid, owner, ts, "yes" if fresh else "no",
+            ",".join(self._strict_holds.labels()))
+
+    # ── the container lock and creep (the pure half) ─────────────────────────
+    # the navigated container is kept by identity (instance id across label
+    # changes, otherwise geometry), a locked container's place never narrows the
+    # detector (once it dropped the bin's track and the place refused
+    # NOT_DETECTED), and creep covers the last few centimetres in short, bounded
+    # cmd_set pulses. switches (gateway terminal):
+    # OPENBOT_CONTAINER_LOCK=0 -> no lock; OPENBOT_CREEP=0 -> creep refused;
+    # OPENBOT_CREEP_EDGE_M sets the target near edge (0.25).
+    LOCK_ROWS_MAX_AGE_S = 2.0       # REACHED arms on a packet no older than this
+    LOCK_PENDING_S = 3.0            # ... otherwise on the next packet inside this
+
+    def _lock_setup(self) -> None:
+        """__init__ (B8j): the lock, its row cache and its clock seam.  An
+        import failure leaves every B8j path inert (B8i behaviour)."""
+        self._container_lock = None
+        self._lock_m = None
+        self._lock_rows: List[dict] = []
+        self._lock_rows_ts = 0.0
+        self._lock_pending = None
+        self._lock_armed_epoch = None
+        self._lock_clock = time.time
+        try:
+            from gateway import strict_vocab as lock_mod  # lazy, needs package ctx
+            self._lock_m = lock_mod
+            self._container_lock = lock_mod.ContainerLock()
+        except Exception as exc:  # noqa: BLE001 -- degrade, never raise
+            self._container_lock = None
+            self._lock_m = None
+            print("[lock] container lock import FAILED (%r) - B8j lock/creep "
+                  "OFF" % (exc,), flush=True)
+
+    def _lock_on(self) -> bool:
+        mod = getattr(self, "_lock_m", None)
+        return (mod is not None
+                and getattr(self, "_container_lock", None) is not None
+                and mod.env_on(mod.LOCK_ENV))
+
+    @staticmethod
+    def _lock_log(text: str) -> None:
+        try:
+            sys.stderr.write("[lock] %s\n" % text)
+            sys.stderr.flush()
+        except Exception:  # noqa: BLE001 -- a log line never breaks a verb
+            pass
+
+    @staticmethod
+    def _creep_log(text: str) -> None:
+        try:
+            sys.stderr.write("[creep] %s\n" % text)
+            sys.stderr.flush()
+        except Exception:  # noqa: BLE001 -- a log line never breaks a verb
+            pass
+
