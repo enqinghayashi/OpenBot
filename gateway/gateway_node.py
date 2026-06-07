@@ -6274,3 +6274,14 @@ class GatewayNode:
         return self._strict_stamp(
             self._yolo_wait_ack(seq, timeout_s=self._strict_mod.ACK_S))
 
+    def _strict_close_all(self, why: str) -> int:
+        """cancel / stop / navigate 'stop' / shutdown: close every hold."""
+        holds = getattr(self, "_strict_holds", None)
+        if holds is None:
+            return 0
+        n = holds.close_all()
+        if n:
+            self._strict_log("%d hold(s) CLOSED (%s)" % (n, why))
+        self._strict_sync()
+        return n
+
