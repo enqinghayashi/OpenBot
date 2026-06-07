@@ -6160,3 +6160,20 @@ class GatewayNode:
         except Exception:  # noqa: BLE001 -- a log line never breaks a verb
             pass
 
+    def _strict_wide_labels(self) -> set:
+        """Labels a hold may name: the 20 base classes + the node's extras
+        (from the last cached /yolo/classes_state)."""
+        wide = set()
+        try:
+            from brain.known_labels import TRACKED_CLASSES  # lazy import
+            wide.update(TRACKED_CLASSES)
+        except Exception:  # noqa: BLE001 -- fail closed: no base labels
+            pass
+        state = self.yolo_vocab_state()
+        if isinstance(state, dict):
+            for key in ("base", "extras"):
+                vals = state.get(key)
+                if isinstance(vals, list):
+                    wide.update(v for v in vals if isinstance(v, str))
+        return wide
+
