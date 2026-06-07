@@ -6478,3 +6478,111 @@ class GatewayNode:
         except Exception:  # noqa: BLE001 -- a log line never breaks a verb
             pass
 
+    def _lock_now(self) -> float:
+        return float(getattr(self, "_lock_clock", time.time)())
+
+    def _lock_clear(self, why: str) -> None:
+        """Any robot motion other than the creep ends the lock."""
+        lock = getattr(self, "_container_lock", None)
+        if lock is None:
+            return
+        self._lock_pending = None
+        try:
+            ev = lock.clear(why)
+        except Exception:  # noqa: BLE001 -- never blocks the verb
+            ev = None
+        if ev:
+            self._lock_log(ev)
+
+    def _lock_ingest(self, rows: List[dict]) -> None:
+        """on_detections_packet: cache the RAW rows (they carry depth_m) and
+        follow the lock; arm a pending REACHED."""
+        lock = getattr(self, "_container_lock", None)
+        if lock is None:
+            return
+        now = self._lock_now()
+        raw = [dict(r) for r in rows if isinstance(r, dict)]
+        with self._obs_lock:
+            self._lock_rows = raw
+            self._lock_rows_ts = now
+        pend = self._lock_pending
+        if pend is not None:
+            self._lock_pending = None
+            label, ev, t_req = pend
+            if self._lock_on() and now - t_req <= self.LOCK_PENDING_S:
+                msg = lock.arm(label, raw, now, ev)
+                self._lock_log(msg if msg else
+                               "NOT ARMED %s (no row matches the walk's stop)"
+                               % label)
+                return
+        try:
+            events = lock.update(raw, now)
+        except Exception as exc:  # noqa: BLE001 -- the packet path never raises
+            events = ["update failed: %r" % (exc,)]
+        for ev in events:
+            self._lock_log(ev)
+
+    def _lock_on_walk(self, phase_raw: Optional[str], label: Optional[str],
+                      payload: Any) -> None:
+        """on_walk_status_packet: a walk that moves again ends the lock; the
+        REACHED of THIS navigate's container label arms it (once)."""
+        lock = getattr(self, "_container_lock", None)
+        mod = getattr(self, "_lock_m", None)
+        if lock is None or mod is None or not phase_raw:
+            return
+        if phase_raw in ("SEARCHING", "DETECTED", "APPROACHING"):
+            if lock.armed():
+                self._lock_clear("walk_" + phase_raw.lower())
+            return
+        if phase_raw != "REACHED" or not self._lock_on():
+            return
+        if label not in mod.CONTAINER_CLASSES:
+            return
+        now = self._lock_now()
+        with self._obs_lock:
+            epoch_ts, epoch_label = self._nav_epoch
+            rows = list(self._lock_rows)
+            rows_ts = self._lock_rows_ts
+        if epoch_ts <= 0.0 or epoch_label != label:
+            return
+        if self._lock_armed_epoch == epoch_ts:
+            return                      # REACHED gets re-published at 1 Hz
+        self._lock_armed_epoch = epoch_ts
+        detail = payload.get("detail") if isinstance(payload, dict) else None
+        ev = detail.get("stop_law") if isinstance(detail, dict) else None
+        if rows and now - rows_ts <= self.LOCK_ROWS_MAX_AGE_S:
+            msg = lock.arm(label, rows, now, ev)
+            if msg:
+                self._lock_log(msg)
+                return
+        self._lock_pending = (label, ev, now)
+        self._lock_log("ARM PENDING %s (no matching fresh row yet)" % label)
+
+    def _lock_strict_skip(self, labels: List[str]) -> Optional[str]:
+        """yolo_strict begin owner=place: the reason the hold is SKIPPED (the
+        locked container is one of its labels), else None."""
+        lock = getattr(self, "_container_lock", None)
+        if lock is None or not self._lock_on():
+            return None
+        snap = lock.snapshot(self._lock_now())
+        if snap is None or snap["label"] not in labels:
+            return None
+        why = ("container lock %s#%s det=%s row_age=%.1fs: the navigated "
+               "container is held by identity, no narrowing"
+               % (snap["label"], snap["iid"], snap["det_label"],
+                  snap["row_age_s"]))
+        self._lock_log("place strict hold SKIPPED (%s)" % why)
+        return why
+
+    # ── navigate widening + the fetch start point ─────────────────────────────
+    # a navigate hold kept on {bin, person} stays narrowed for the whole walk, so
+    # the bin's carrier labels (backpack 0.67, suitcase 0.64 on the same track)
+    # are gone and a narrowed window can see no bin at all. narrowing helps find
+    # the label; from APPROACHING on, the walk follows the object by identity, so
+    # the hold is closed (the tracker keeps the id) and re-opened if the walk
+    # falls back to the sweep. OPENBOT_NAV_WIDEN=0 keeps narrowing throughout.
+    NAV_WIDEN_ENV = "OPENBOT_NAV_WIDEN"
+    RETURN_WAIT_S = 130.0           # a pose walk cannot exceed 120 s
+    RETURN_START_S = 5.0            # no RETURNING this fast means the walk never started
+    HOME_ROWS_MAX_AGE_S = 1.0       # the requester comes out of a packet this fresh
+
