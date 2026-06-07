@@ -6436,3 +6436,23 @@ class GatewayNode:
     LOCK_ROWS_MAX_AGE_S = 2.0       # REACHED arms on a packet no older than this
     LOCK_PENDING_S = 3.0            # ... otherwise on the next packet inside this
 
+    def _lock_setup(self) -> None:
+        """__init__ (B8j): the lock, its row cache and its clock seam.  An
+        import failure leaves every B8j path inert (B8i behaviour)."""
+        self._container_lock = None
+        self._lock_m = None
+        self._lock_rows: List[dict] = []
+        self._lock_rows_ts = 0.0
+        self._lock_pending = None
+        self._lock_armed_epoch = None
+        self._lock_clock = time.time
+        try:
+            from gateway import strict_vocab as lock_mod  # lazy, needs package ctx
+            self._lock_m = lock_mod
+            self._container_lock = lock_mod.ContainerLock()
+        except Exception as exc:  # noqa: BLE001 -- degrade, never raise
+            self._container_lock = None
+            self._lock_m = None
+            print("[lock] container lock import FAILED (%r) - B8j lock/creep "
+                  "OFF" % (exc,), flush=True)
+
