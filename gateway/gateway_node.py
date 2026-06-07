@@ -6456,3 +6456,9 @@ class GatewayNode:
             print("[lock] container lock import FAILED (%r) - B8j lock/creep "
                   "OFF" % (exc,), flush=True)
 
+    def _lock_on(self) -> bool:
+        mod = getattr(self, "_lock_m", None)
+        return (mod is not None
+                and getattr(self, "_container_lock", None) is not None
+                and mod.env_on(mod.LOCK_ENV))
+
