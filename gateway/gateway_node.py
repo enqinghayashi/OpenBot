@@ -6103,3 +6103,77 @@ class GatewayNode:
         finally:
             self._yolo_call_lock.release()
 
+    def _yolo_reply(self, op: str, seq: int, state: Dict[str, Any]) -> str:
+        """Map a matching state echo to the verb's reply (§3.5 step 5)."""
+        error = state.get("error")
+        if op == "query":
+            if error:
+                return "ERROR:yolo_classes state_error:%s" % (
+                    _defang_error_token(str(error).replace("\n", " "))[:200])
+            return "DONE:state seq=%d backend=%s %s" % (
+                seq, _defang_error_token(str(state.get("backend"))),
+                self._yolo_state_text(state))
+        backend = state.get("backend")
+        if backend == "yolo":
+            return ("ERROR:yolo_classes backend_fixed (node runs the "
+                    "fixed-vocabulary engine)")
+        if backend != "yoloe":
+            return "ERROR:yolo_classes bad_state:backend=%s" % (
+                _defang_error_token(str(backend))[:60])
+        if error:
+            return "ERROR:yolo_classes swap_failed:%s" % (
+                _defang_error_token(str(error).replace("\n", " "))[:200])
+        if state.get("dup") is True:
+            return "DONE:applied (dup) seq=%d %s" % (
+                seq, self._yolo_state_text(state))
+        return "DONE:applied seq=%d %s" % (seq, self._yolo_state_text(state))
+
+    # ── strict detection: holds on /yolo/strict ──────────────────────────────
+    # one hold narrows the yolo node to [targets] + KEEP_LABELS ('person') for one
+    # phase: navigate (opened around _do_navigate, ends with the walk) or look_for
+    # / place / pick target resolution (the brain, via yolo_strict). the node
+    # keeps the operator's full vocabulary and restores it on 'release', or when
+    # its lease (LEASE_S, renewed every RENEW_S by start_strict_renew) runs out.
+    # never motion, never a verdict.
+    YOLO_STRICT_TOPIC = "/yolo/strict"
+
+    def _strict_setup(self, publisher: Any) -> None:
+        """Arm strict detection: _RosGateway.__init__ ONLY, with open_vocab
+        True and OPENBOT_STRICT_VOCAB not '0'.  Absent = every path inert."""
+        from gateway import strict_vocab as strict_mod  # lazy, needs package ctx
+        self._strict_mod = strict_mod
+        self._strict_pub = publisher
+        self._strict_lock = threading.Lock()
+        self._strict_sent = False           # true when the last publish narrowed
+        self._strict_stop = threading.Event()
+        self._strict_holds = strict_mod.StrictHolds()
+
+    def publish_yolo_strict(self, text: str) -> None:
+        """Hook: publish one /yolo/strict String (_RosGateway overrides)."""
+        raise RuntimeError("no /yolo/strict publisher outside ROS")
+
+    @staticmethod
+    def _strict_log(text: str) -> None:
+        try:
+            sys.stderr.write("[strict] %s\n" % text)
+            sys.stderr.flush()
+        except Exception:  # noqa: BLE001 -- a log line never breaks a verb
+            pass
+
+    def _strict_wide_labels(self) -> set:
+        """Labels a hold may name: the 20 base classes + the node's extras
+        (from the last cached /yolo/classes_state)."""
+        wide = set()
+        try:
+            from brain.known_labels import TRACKED_CLASSES  # lazy import
+            wide.update(TRACKED_CLASSES)
+        except Exception:  # noqa: BLE001 -- fail closed: no base labels
+            pass
+        state = self.yolo_vocab_state()
+        if isinstance(state, dict):
+            for key in ("base", "extras"):
+                vals = state.get(key)
+                if isinstance(vals, list):
+                    wide.update(v for v in vals if isinstance(v, str))
+        return wide
+
