@@ -6206,3 +6206,10 @@ class GatewayNode:
             self._strict_sent = bool(labels)
             return seq
 
+    @staticmethod
+    def _strict_stamp(state: Any) -> Optional[float]:
+        stamp = state.get("stamp") if isinstance(state, dict) else None
+        if isinstance(stamp, (int, float)) and not isinstance(stamp, bool):
+            return float(stamp)
+        return None
+
