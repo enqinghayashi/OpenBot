@@ -6478,3 +6478,6 @@ class GatewayNode:
         except Exception:  # noqa: BLE001 -- a log line never breaks a verb
             pass
 
+    def _lock_now(self) -> float:
+        return float(getattr(self, "_lock_clock", time.time)())
+
