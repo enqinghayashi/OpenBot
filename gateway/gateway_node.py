@@ -6177,3 +6177,111 @@ class GatewayNode:
                     wide.update(v for v in vals if isinstance(v, str))
         return wide
 
+    def _strict_sync(self) -> Optional[int]:
+        """Publish what the open holds need NOW: 'narrow' with their union
+        (this is also the renewal) or ONE 'release' after the last hold
+        closed.  Returns the published seq, None when nothing was sent."""
+        holds = getattr(self, "_strict_holds", None)
+        if holds is None:
+            return None
+        with self._strict_lock:
+            labels = holds.labels()
+            if not labels and not self._strict_sent:
+                return None
+            with self._vocab_cond:
+                self._vocab_seq += 1
+                seq = self._vocab_seq
+            msg: Dict[str, Any] = {"v": 1, "epoch": self._vocab_epoch,
+                                   "seq": seq,
+                                   "op": "narrow" if labels else "release",
+                                   "origin": "gateway"}
+            if labels:
+                msg["labels"] = list(labels)
+                msg["lease_s"] = self._strict_mod.LEASE_S
+            try:
+                self.publish_yolo_strict(json.dumps(msg))
+            except Exception as exc:  # noqa: BLE001 -- the lease still bounds it
+                self._strict_log("publish failed: %s" % exc)
+                return None
+            self._strict_sent = bool(labels)
+            return seq
+
+    @staticmethod
+    def _strict_stamp(state: Any) -> Optional[float]:
+        stamp = state.get("stamp") if isinstance(state, dict) else None
+        if isinstance(stamp, (int, float)) and not isinstance(stamp, bool):
+            return float(stamp)
+        return None
+
+    def _strict_open(self, owner: str, targets: List[str],
+                     max_s: float) -> Tuple[Optional[int], float, str]:
+        """Open a hold on the targets that are in the wide vocabulary and
+        wait (<= ACK_S) for the node's echo.  (hold id, applied_ts, '') or
+        (None, 0.0, why); a hold the node did not confirm is closed again."""
+        holds = getattr(self, "_strict_holds", None)
+        if holds is None:
+            return None, 0.0, "disabled"
+        wide = self._strict_wide_labels()
+        keep = [t for t in targets if t in wide]
+        if not keep:
+            return None, 0.0, "not_in_vocabulary (%s)" % ",".join(targets)
+        hid = holds.open(owner, keep, max_s)
+        seq = self._strict_sync()
+        state = (self._yolo_wait_ack(seq, timeout_s=self._strict_mod.ACK_S)
+                 if seq is not None else None)
+        active = state.get("strict") if isinstance(state, dict) else None
+        if (state is None or state.get("error")
+                or not isinstance(active, list)
+                or not all(t in active for t in keep)):
+            holds.close(hid)
+            self._strict_sync()
+            why = ("no_ack (seq=%s within %.1fs)" % (seq, self._strict_mod.ACK_S)
+                   if state is None else "refused (%s)" % _defang_error_token(
+                       str(state.get("error") or "not applied"))[:120])
+            self._strict_log("%s %s: no hold, %s" % (owner, ",".join(keep), why))
+            return None, 0.0, why
+        ts = self._strict_stamp(state)
+        ts = time.time() if ts is None else ts
+        self._strict_log("hold %d OPEN %s labels=%s applied_ts=%.3f"
+                         % (hid, owner, ",".join(active), ts))
+        return hid, ts, ""
+
+    def _strict_wait_packet(self, after_ts: float, max_s: float) -> bool:
+        """True once a detections packet ARRIVED at or after ``after_ts``
+        (gateway clock), polling every POLL_S for at most ``max_s``.  Reads
+        the assembler stamp only (no grip refresh, unlike observe)."""
+        deadline = time.monotonic() + max(0.0, max_s)
+        while True:
+            with self._obs_lock:
+                ts = self._assembler.last_detections_ts
+            if ts >= after_ts:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(self._strict_mod.POLL_S)
+
+    def _strict_close(self, hid: Optional[int], wait: bool,
+                      why: str) -> Optional[float]:
+        """Close one hold and publish the new union (or the release).  With
+        ``wait`` returns the node's stamp of that change (None: no echo)."""
+        holds = getattr(self, "_strict_holds", None)
+        if holds is None or hid is None or not holds.close(hid):
+            return None
+        seq = self._strict_sync()
+        self._strict_log("hold %d CLOSED (%s)" % (hid, why))
+        if not wait or seq is None:
+            return None
+        return self._strict_stamp(
+            self._yolo_wait_ack(seq, timeout_s=self._strict_mod.ACK_S))
+
+    def _strict_close_all(self, why: str) -> int:
+        """cancel / stop / navigate 'stop' / shutdown: close every hold."""
+        holds = getattr(self, "_strict_holds", None)
+        if holds is None:
+            return 0
+        n = holds.close_all()
+        if n:
+            self._strict_log("%d hold(s) CLOSED (%s)" % (n, why))
+        self._strict_sync()
+        return n
+
