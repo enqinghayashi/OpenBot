@@ -6285,3 +6285,18 @@ class GatewayNode:
         self._strict_sync()
         return n
 
+    def _strict_tick(self) -> None:
+        """Every RENEW_S (start_strict_renew; tests call it directly): close
+        capped holds and done navigate holds whose walk ended, then renew
+        (or release).  Never waits for an echo."""
+        holds = getattr(self, "_strict_holds", None)
+        if holds is None:
+            return
+        try:
+            walk_active = self._yolo_walk_active()
+        except Exception:  # noqa: BLE001 -- unknown == still walking (capped)
+            walk_active = True
+        for hid, owner, why in holds.expire(walk_active):
+            self._strict_log("hold %d CLOSED %s (%s)" % (hid, owner, why))
+        self._strict_sync()
+
