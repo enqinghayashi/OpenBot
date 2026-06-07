@@ -6260,3 +6260,17 @@ class GatewayNode:
                 return False
             time.sleep(self._strict_mod.POLL_S)
 
+    def _strict_close(self, hid: Optional[int], wait: bool,
+                      why: str) -> Optional[float]:
+        """Close one hold and publish the new union (or the release).  With
+        ``wait`` returns the node's stamp of that change (None: no echo)."""
+        holds = getattr(self, "_strict_holds", None)
+        if holds is None or hid is None or not holds.close(hid):
+            return None
+        seq = self._strict_sync()
+        self._strict_log("hold %d CLOSED (%s)" % (hid, why))
+        if not wait or seq is None:
+            return None
+        return self._strict_stamp(
+            self._yolo_wait_ack(seq, timeout_s=self._strict_mod.ACK_S))
+
