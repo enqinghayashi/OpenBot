@@ -6246,3 +6246,17 @@ class GatewayNode:
                          % (hid, owner, ",".join(active), ts))
         return hid, ts, ""
 
+    def _strict_wait_packet(self, after_ts: float, max_s: float) -> bool:
+        """True once a detections packet ARRIVED at or after ``after_ts``
+        (gateway clock), polling every POLL_S for at most ``max_s``.  Reads
+        the assembler stamp only (no grip refresh, unlike observe)."""
+        deadline = time.monotonic() + max(0.0, max_s)
+        while True:
+            with self._obs_lock:
+                ts = self._assembler.last_detections_ts
+            if ts >= after_ts:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(self._strict_mod.POLL_S)
+
