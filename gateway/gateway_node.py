@@ -6285,3 +6285,78 @@ class GatewayNode:
         self._strict_sync()
         return n
 
+    def _strict_tick(self) -> None:
+        """Every RENEW_S (start_strict_renew; tests call it directly): close
+        capped holds and done navigate holds whose walk ended, then renew
+        (or release).  Never waits for an echo."""
+        holds = getattr(self, "_strict_holds", None)
+        if holds is None:
+            return
+        try:
+            walk_active = self._yolo_walk_active()
+        except Exception:  # noqa: BLE001 -- unknown == still walking (capped)
+            walk_active = True
+        for hid, owner, why in holds.expire(walk_active):
+            self._strict_log("hold %d CLOSED %s (%s)" % (hid, owner, why))
+        self._strict_sync()
+
+    def start_strict_renew(self) -> None:
+        """The renewal thread (ROS wiring only, like start_arm_watchdog)."""
+        if getattr(self, "_strict_holds", None) is None:
+            return
+
+        def _loop() -> None:
+            while not self._strict_stop.wait(self._strict_mod.RENEW_S):
+                try:
+                    self._strict_tick()
+                except Exception as exc:  # noqa: BLE001 -- never die silently
+                    self._strict_log("tick error: %r" % (exc,))
+
+        threading.Thread(target=_loop, name="strict-renew",
+                         daemon=True).start()
+
+    def _strict_nav_open(self, args: List) -> Optional[int]:
+        """navigate: open a hold on the bare target label ('cup#165@188' ->
+        'cup'); 'stop' closes every hold instead; malformed -> None."""
+        if getattr(self, "_strict_holds", None) is None:
+            return None
+        if len(args) != 1 or not isinstance(args[0], str) or not args[0].strip():
+            return None
+        label = args[0].strip()
+        if label.lower() == "stop":
+            try:
+                self._strict_close_all("navigate_stop")
+            except Exception as exc:  # noqa: BLE001 -- the stop always runs
+                self._strict_log("close_all (navigate_stop) failed: %r; "
+                                 "stopping anyway" % (exc,))
+            return None
+        if "#" in label or "@" in label:
+            parts = self._nav_split(label)
+            if parts is None:
+                return None
+            label = parts[0]
+        hid, _ts, _why = self._strict_open("navigate", [label.strip().lower()],
+                                           self._strict_mod.NAV_HOLD_MAX_S)
+        return hid
+
+    def _strict_nav_done(self, hid: Optional[int]) -> None:
+        """navigate returned: close now if the walk is over, else the tick
+        closes it when the walk ends (or at NAV_HOLD_MAX_S)."""
+        holds = getattr(self, "_strict_holds", None)
+        if holds is None or hid is None:
+            return
+        holds.mark_done(hid)
+        if not self._yolo_walk_active():
+            self._strict_close(hid, wait=False, why="navigate returned")
+
+    def _do_navigate_strict(self, args: List) -> Tuple[str, Optional[str]]:
+        """B8i: _do_navigate (unchanged) inside a navigate strict hold.
+        B8j: a navigate (also 'stop') ends the container lock first."""
+        self._lock_clear("navigate")
+        hid = self._strict_nav_open(args)
+        ns = self._nav_strict_begin(args, hid)      # begin the nav
+        try:
+            return self._do_navigate(args)
+        finally:
+            self._strict_nav_done(self._nav_strict_end(ns, hid))
+
