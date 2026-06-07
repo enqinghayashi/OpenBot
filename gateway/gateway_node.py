@@ -6213,3 +6213,36 @@ class GatewayNode:
             return float(stamp)
         return None
 
+    def _strict_open(self, owner: str, targets: List[str],
+                     max_s: float) -> Tuple[Optional[int], float, str]:
+        """Open a hold on the targets that are in the wide vocabulary and
+        wait (<= ACK_S) for the node's echo.  (hold id, applied_ts, '') or
+        (None, 0.0, why); a hold the node did not confirm is closed again."""
+        holds = getattr(self, "_strict_holds", None)
+        if holds is None:
+            return None, 0.0, "disabled"
+        wide = self._strict_wide_labels()
+        keep = [t for t in targets if t in wide]
+        if not keep:
+            return None, 0.0, "not_in_vocabulary (%s)" % ",".join(targets)
+        hid = holds.open(owner, keep, max_s)
+        seq = self._strict_sync()
+        state = (self._yolo_wait_ack(seq, timeout_s=self._strict_mod.ACK_S)
+                 if seq is not None else None)
+        active = state.get("strict") if isinstance(state, dict) else None
+        if (state is None or state.get("error")
+                or not isinstance(active, list)
+                or not all(t in active for t in keep)):
+            holds.close(hid)
+            self._strict_sync()
+            why = ("no_ack (seq=%s within %.1fs)" % (seq, self._strict_mod.ACK_S)
+                   if state is None else "refused (%s)" % _defang_error_token(
+                       str(state.get("error") or "not applied"))[:120])
+            self._strict_log("%s %s: no hold, %s" % (owner, ",".join(keep), why))
+            return None, 0.0, why
+        ts = self._strict_stamp(state)
+        ts = time.time() if ts is None else ts
+        self._strict_log("hold %d OPEN %s labels=%s applied_ts=%.3f"
+                         % (hid, owner, ",".join(active), ts))
+        return hid, ts, ""
+
