@@ -6300,3 +6300,18 @@ class GatewayNode:
             self._strict_log("hold %d CLOSED %s (%s)" % (hid, owner, why))
         self._strict_sync()
 
+    def start_strict_renew(self) -> None:
+        """The renewal thread (ROS wiring only, like start_arm_watchdog)."""
+        if getattr(self, "_strict_holds", None) is None:
+            return
+
+        def _loop() -> None:
+            while not self._strict_stop.wait(self._strict_mod.RENEW_S):
+                try:
+                    self._strict_tick()
+                except Exception as exc:  # noqa: BLE001 -- never die silently
+                    self._strict_log("tick error: %r" % (exc,))
+
+        threading.Thread(target=_loop, name="strict-renew",
+                         daemon=True).start()
+
