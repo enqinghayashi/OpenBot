@@ -6349,3 +6349,14 @@ class GatewayNode:
         if not self._yolo_walk_active():
             self._strict_close(hid, wait=False, why="navigate returned")
 
+    def _do_navigate_strict(self, args: List) -> Tuple[str, Optional[str]]:
+        """B8i: _do_navigate (unchanged) inside a navigate strict hold.
+        B8j: a navigate (also 'stop') ends the container lock first."""
+        self._lock_clear("navigate")
+        hid = self._strict_nav_open(args)
+        ns = self._nav_strict_begin(args, hid)      # begin the nav
+        try:
+            return self._do_navigate(args)
+        finally:
+            self._strict_nav_done(self._nav_strict_end(ns, hid))
+
