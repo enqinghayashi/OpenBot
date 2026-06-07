@@ -5985,3 +5985,121 @@ class GatewayNode:
         no publisher; _RosGateway overrides this."""
         raise RuntimeError("no /yolo/classes publisher outside ROS")
 
+    def _yolo_wait_subscriber(self) -> bool:
+        """True once the yolo node's subscription has matched (<= 1.0 s).
+
+        A publisher without ``get_subscription_count`` (an rclpy older than
+        the API) skips the wait: the ack wait below is still the authority, so
+        a missing node then answers ``no_ack`` — still an honest ERROR.
+        """
+        count = getattr(self._classes_pub, "get_subscription_count", None)
+        if count is None:
+            return True
+        deadline = time.monotonic() + self._YOLO_CLASSES_SUB_WAIT_S
+        while True:
+            try:
+                if count() > 0:
+                    return True
+            except Exception:  # noqa: BLE001 — treat as not matched
+                pass
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(self._YOLO_CLASSES_POLL_S)
+
+    @staticmethod
+    def _yolo_is_int(value: Any) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool)
+
+    def _yolo_wait_ack(self, seq: int, timeout_s: Optional[float] = None
+                       ) -> Optional[Dict[str, Any]]:
+        """The state echo with this process's (epoch, seq), or None after
+        ``_YOLO_CLASSES_ACK_S``.  A state for any other (epoch, seq) is
+        ignored."""
+        deadline = time.monotonic() + (self._YOLO_CLASSES_ACK_S if timeout_s is None
+                                       else timeout_s)
+        with self._vocab_cond:
+            while True:
+                for st in reversed(self._vocab_recent):
+                    if (self._yolo_is_int(st.get("epoch"))
+                            and self._yolo_is_int(st.get("seq"))
+                            and st.get("epoch") == self._vocab_epoch
+                            and st.get("seq") == seq):
+                        return dict(st)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._vocab_cond.wait(remaining)
+
+    @staticmethod
+    def _yolo_state_text(state: Dict[str, Any]) -> str:
+        """``active=20+3 extras=a,b rejected=x:not_in_bank`` (defanged)."""
+        base = state.get("base")
+        extras = state.get("extras")
+        extras = [str(e) for e in extras] if isinstance(extras, list) else []
+        rejected = state.get("rejected")
+        rej = ""
+        if isinstance(rejected, dict):
+            rej = ",".join("%s:%s" % (k, v) for k, v in rejected.items())
+        text = "active=%s+%d extras=%s rejected=%s" % (
+            len(base) if isinstance(base, list) else "?", len(extras),
+            ",".join(extras), rej)
+        return _defang_error_token(text.replace("\n", " "))[:400]
+
+    def _do_yolo_classes(self, args: List) -> str:
+        """``yolo_classes`` verb (§3.5).  Returns the reply text; no verdict."""
+        if getattr(self, "_open_vocab", False) is not True:
+            return ("ERROR:yolo_classes disabled (gateway param open_vocab is "
+                    "false)")
+        if not self._yolo_call_lock.acquire(blocking=False):
+            # one request at a time: the /yolo/classes publisher is transient-local with
+            # depth 1, so a second publish before the node takes the first could replace
+            # it in the history (the node then never sees seq N, a false no_ack), and two
+            # overlapping swaps would race on the node's single active vocabulary.
+            return "ERROR:yolo_classes busy (yolo_classes in flight)"
+        try:
+            busy = self._yolo_busy_verb()
+            if busy:
+                return "ERROR:yolo_classes busy (%s in flight)" % busy
+            req, why = self._yolo_classes_validate(list(args))
+            if req is None:
+                return "ERROR:yolo_classes bad_request:%s" % _defang_error_token(
+                    why.replace("\n", " "))
+            if not self._yolo_wait_subscriber():
+                return ("ERROR:yolo_classes no_subscriber (yolo node not "
+                        "running with OPENBOT_YOLO_CLASSES=1)")
+            # re-checked after the (<= 1 s) subscriber wait: a motion that started in
+            # the meantime still blocks the publish.
+            busy = self._yolo_busy_verb()
+            if busy:
+                return "ERROR:yolo_classes busy (%s in flight)" % busy
+            with self._vocab_cond:
+                self._vocab_seq += 1
+                seq = self._vocab_seq
+                # a state cached for this epoch with seq >= the one about to be sent cannot
+                # be an echo of it, since nothing with that seq is published, so drop it; it
+                # can never ack this request.
+                self._vocab_recent = type(self._vocab_recent)(
+                    (st for st in self._vocab_recent
+                     if not (st.get("epoch") == self._vocab_epoch
+                             and self._yolo_is_int(st.get("seq"))
+                             and st.get("seq") >= seq)),
+                    maxlen=self._vocab_recent.maxlen)
+            msg: Dict[str, Any] = {"v": 1, "epoch": self._vocab_epoch,
+                                   "seq": seq, "op": req["op"],
+                                   "classes": req["classes"]}
+            if "min_conf" in req:
+                msg["min_conf"] = req["min_conf"]
+            msg["origin"] = "brain"
+            try:
+                self.publish_yolo_classes(json.dumps(msg))
+            except Exception as exc:  # noqa: BLE001 — report, never raise
+                return "ERROR:yolo_classes publish_failed:%s" % (
+                    _defang_error_token(str(exc).replace("\n", " ")))
+            state = self._yolo_wait_ack(seq)
+            if state is None:
+                return ("ERROR:yolo_classes no_ack seq=%d within %.1fs"
+                        % (seq, self._YOLO_CLASSES_ACK_S))
+            return self._yolo_reply(req["op"], seq, state)
+        finally:
+            self._yolo_call_lock.release()
+
