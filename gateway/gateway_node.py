@@ -6339,3 +6339,13 @@ class GatewayNode:
                                            self._strict_mod.NAV_HOLD_MAX_S)
         return hid
 
+    def _strict_nav_done(self, hid: Optional[int]) -> None:
+        """navigate returned: close now if the walk is over, else the tick
+        closes it when the walk ends (or at NAV_HOLD_MAX_S)."""
+        holds = getattr(self, "_strict_holds", None)
+        if holds is None or hid is None:
+            return
+        holds.mark_done(hid)
+        if not self._yolo_walk_active():
+            self._strict_close(hid, wait=False, why="navigate returned")
+
