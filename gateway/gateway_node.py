@@ -6462,3 +6462,11 @@ class GatewayNode:
                 and getattr(self, "_container_lock", None) is not None
                 and mod.env_on(mod.LOCK_ENV))
 
+    @staticmethod
+    def _lock_log(text: str) -> None:
+        try:
+            sys.stderr.write("[lock] %s\n" % text)
+            sys.stderr.flush()
+        except Exception:  # noqa: BLE001 -- a log line never breaks a verb
+            pass
+
