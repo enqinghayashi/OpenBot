@@ -7300,3 +7300,243 @@ class GatewayNode:
                 % (label, math.degrees(bearing), turns, math.degrees(bearing),
                    math.degrees(target), last[0], last[1], z, turns))
 
+    def _do_step_back(self, args: List) -> str:
+        """``step_back`` verb (B8l-hf6, operator 10-17: "step back 5 steps
+        slowly before actually started sweeping"): walk BACKWARD at the gait
+        floor.  The brain calls it before a navigate whose target is not in
+        its current view.  Request: one optional JSON token {m} (metres,
+        0 < m <= 1; the gateway switch home_anchor.STEPBACK_ENV wins and the
+        distance is capped at STEPBACK_MAX_M).  Timed (the gateway runs no
+        odometry loop): one auto-expiring writer command re-armed every
+        STEPBACK_REARM_S for distance / STEPBACK_VX seconds, a cancel check
+        every tick, then 'cmd_set off' and a settle.  The lane is the
+        turn_around lane (_turn_active: _do_cancel sends 'cmd_set off' while
+        it is held).  Replies (ONE line): 'DONE step_back: ...; STEPBACK_M=;
+        STEPBACK_RESULT=done|off' or 'ERROR:step_back <why>;
+        STEPBACK_RESULT=<cancelled|busy|writer_refused|bad_args|disabled>;
+        STEPBACK_M=<nominal metres moved>'."""
+        mod = getattr(self, "_home_m", None)
+        tail0 = "STEPBACK_M=0.000"
+        if mod is None or not hasattr(mod, "stepback_distance"):
+            return ("ERROR:step_back unavailable (no home anchor module); "
+                    "STEPBACK_RESULT=disabled; " + tail0)
+        req_m = None
+        if args:
+            try:
+                req = json.loads(args[0]) if isinstance(args[0], str) else args[0]
+                if len(args) != 1 or not isinstance(req, dict):
+                    raise ValueError("one JSON object")
+                if req.get("m") is not None:
+                    req_m = float(req["m"])
+                    if not (math.isfinite(req_m) and 0.0 < req_m <= 1.0):
+                        raise ValueError("m")
+            except Exception:  # noqa: BLE001 -- a malformed request is a refusal
+                return ("ERROR:step_back bad_args; STEPBACK_RESULT=bad_args; "
+                        + tail0)
+        want = mod.stepback_distance(os.environ.get(mod.STEPBACK_ENV), req_m)
+        if want <= 0.0:
+            return ("DONE step_back: off (%s=0), nothing moved; %s; "
+                    "STEPBACK_RESULT=off" % (mod.STEPBACK_ENV, tail0))
+        if self._yolo_walk_active():
+            return ("ERROR:step_back busy (the walk FSM is moving); "
+                    "STEPBACK_RESULT=busy; " + tail0)
+        with self._obs_lock:
+            busy = bool(getattr(self, "_turn_active", False))
+            if not busy:
+                self._turn_active = True
+                self._turn_events = []
+        if busy:
+            return ("ERROR:step_back busy (a turn_around or creep is in "
+                    "flight; this request did NOT move the robot); "
+                    "STEPBACK_RESULT=busy; " + tail0)
+        clock, sleep = self._turn_clock, self._turn_sleep
+        cancel0 = self._cancel_ts
+        self._turn_pulsed = False
+        t_run = want / mod.STEPBACK_VX
+        result, detail = None, ""
+        elapsed = 0.0
+        try:
+            if not self._creep_walk_settled():
+                result, detail = "busy", "the walk FSM did not reach IDLE"
+            t0 = clock()
+            next_arm = t0
+            while result is None:
+                now = clock()
+                elapsed = min(now - t0, t_run) if self._turn_pulsed else 0.0
+                if self._cancel_ts > cancel0:
+                    result = "cancelled"
+                    break
+                if self._turn_pulsed and now - t0 >= t_run:
+                    result = "done"
+                    break
+                if now >= next_arm:
+                    left = t_run - (now - t0) if self._turn_pulsed else t_run
+                    if not self._turn_pulsed:
+                        t0 = now           # the clock starts when the motion does
+                    dur = max(0.05, min(mod.STEPBACK_CMD_S, left))
+                    line = "cmd_set %.3f 0.000 0.000 %.3f" % (-mod.STEPBACK_VX,
+                                                              dur)
+                    self._turn_pulsed = True
+                    try:
+                        wreply = str(self.writer_verb(line))
+                    except Exception as exc:  # noqa: BLE001 -- report, never raise
+                        wreply = "ERROR:%s" % exc
+                    if not wreply.startswith("DONE"):
+                        result = "writer_refused"
+                        detail = " ".join(_defang_error_token(wreply).split())[:60]
+                        break
+                    next_arm = now + mod.STEPBACK_REARM_S
+                sleep(TURN_TICK_S)
+        finally:
+            if self._turn_pulsed:
+                try:
+                    self.writer_verb("cmd_set off")
+                except Exception:  # noqa: BLE001 -- the command auto-expires
+                    pass
+                sleep(mod.STEPBACK_SETTLE_S)
+            with self._obs_lock:
+                self._turn_active = False
+            self._turn_pulsed = False
+        if result == "done" and self._cancel_ts > cancel0:
+            result, detail = "cancelled", "stop/cancel during the settle"
+        moved = mod.STEPBACK_VX * elapsed
+        self._home_log("STEPBACK END result=%s want=%.2f m moved~%.2f m %s"
+                       % (result, want, moved, detail))
+        if result != "done":
+            return ("ERROR:step_back %s%s; STEPBACK_RESULT=%s; STEPBACK_M=%.3f"
+                    % (result, (" (%s)" % detail) if detail else "", result,
+                       moved))
+        return ("DONE step_back: stepped back about %.2f m at %.2f m/s; "
+                "STEPBACK_M=%.3f; STEPBACK_RESULT=done"
+                % (moved, mod.STEPBACK_VX, moved))
+
+    def _do_container(self, args: List) -> str:
+        """``container`` verb (B8j, query, no motion): the locked container
+        as one JSON line, 'DONE:container {...}', or 'DONE:container none
+        (<why>)'."""
+        lock = getattr(self, "_container_lock", None)
+        if lock is None:
+            return "DONE:container none (unavailable)"
+        if not self._lock_on():
+            return "DONE:container none (disabled: OPENBOT_CONTAINER_LOCK=0)"
+        snap = lock.snapshot(self._lock_now())
+        if snap is None:
+            return ("DONE:container none (no lock: no container REACHED since "
+                    "the last motion)")
+        return "DONE:container " + json.dumps(snap, sort_keys=True)
+
+    _CREEP_LABEL_RE = re.compile(r"^[a-z][a-z0-9_ ]{0,31}$")
+
+    @classmethod
+    def _creep_parse(cls, args: List) -> Tuple[Optional[Dict[str, Any]], str]:
+        """One JSON object -> (spec, '') or (None, why)."""
+        if len(args) != 1:
+            return None, "expected one JSON object"
+        raw = args[0]
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except ValueError:
+                return None, "not JSON"
+        if not isinstance(raw, dict):
+            return None, "not a JSON object"
+        label = raw.get("label")
+        if not isinstance(label, str) or not cls._CREEP_LABEL_RE.match(
+                label.strip().lower()):
+            return None, "label"
+        iid = raw.get("iid")
+        if iid is not None and (isinstance(iid, bool) or not isinstance(iid, int)
+                                or iid < 1):
+            return None, "iid"
+        spec: Dict[str, Any] = {"label": label.strip().lower(), "iid": iid,
+                                "dry": raw.get("dry") is True}
+        bounds = {"x": (-2.0, 2.0), "y": (0.05, 2.0), "z": (-1.5, 1.5),
+                  "w": (0.0, 1.5), "dd": (0.0, 1.5), "h": (0.0, 1.5)}
+        for key, (lo, hi) in bounds.items():
+            v = raw.get(key)
+            if v is None and key in ("w", "dd", "h"):
+                spec[key] = None
+                continue
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                return None, key
+            v = float(v)
+            if not math.isfinite(v) or not lo <= v <= hi:
+                return None, key
+            spec[key] = v
+        return spec, ""
+
+    def _creep_reference(self, spec: Dict[str, Any], arm: bool
+                         ) -> Dict[str, Any]:
+        """The container the creep closes on: the LOCK when it is the same
+        container (same id, or within 0.12 m), else the caller's record (a
+        real creep arms the lock on it so the pulses follow it by identity)."""
+        mod = self._lock_m
+        lock = self._container_lock
+        now = self._lock_now()
+        snap = lock.snapshot(now) if self._lock_on() else None
+        same = snap is not None and (
+            (spec["iid"] is not None and snap["iid"] == spec["iid"])
+            or math.hypot(snap["x"] - spec["x"], snap["y"] - spec["y"]) <= 0.12)
+        if not same and arm and self._lock_on():
+            msg = lock.arm_pose(spec["label"], spec["iid"], spec["x"],
+                                spec["y"], spec["z"], spec["w"], spec["dd"],
+                                spec["h"], now, src="creep_spec")
+            if msg:
+                self._lock_log(msg)
+            snap = lock.snapshot(now)
+            same = snap is not None
+        if same:
+            return {"label": snap["label"], "iid": snap["iid"],
+                    "x": snap["x"], "y": snap["y"], "z": snap["z"],
+                    "half": snap["half"], "rim": snap["rim_z"],
+                    "bot": snap["bot_z"], "near": snap["near_m"], "src": "lock"}
+        ext = [v for v in (spec["w"], spec["dd"]) if v is not None and v > 0.0]
+        half = (max(ext) / 2.0) if ext else mod.LOCK_HALF_DEFAULT_M
+        half = max(mod.LOCK_HALF_MIN_M, min(mod.LOCK_HALF_MAX_M, half))
+        h = spec["h"] or 0.0
+        return {"label": spec["label"], "iid": spec["iid"], "x": spec["x"],
+                "y": spec["y"], "z": spec["z"], "half": half,
+                "rim": spec["z"] + h / 2.0, "bot": spec["z"] - h / 2.0,
+                "near": math.hypot(spec["x"], spec["y"]) - half, "src": "spec"}
+
+    def _creep_rows(self) -> Tuple[List[dict], float]:
+        with self._obs_lock:
+            return list(self._lock_rows), float(self._lock_rows_ts)
+
+    def _creep_blocked(self, rows: List[dict], iid: Optional[int],
+                       c_near: float) -> Optional[str]:
+        """A reason to stop: a plausible person within CREEP_PERSON_STOP_M, or
+        another object low in the corridor nearer than the container."""
+        mod = self._lock_m
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            try:
+                x, y, z = float(r["x"]), float(r["y"]), float(r["z"])
+                conf = float(r.get("conf") or 0.0)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
+                continue
+            if iid is not None and r.get("instance_id") == iid:
+                continue
+            d = math.hypot(x, y)
+            if d < mod.CREEP_SELF_ZONE_M:
+                continue                     # the robot's own arm and hand rows
+            lab = str(r.get("label") or "").strip().lower()
+            if lab == "person":
+                try:
+                    h = float(r.get("height_m") or 0.0)
+                except (TypeError, ValueError):
+                    h = 0.0
+                if (conf >= mod.CREEP_PERSON_MIN_CONF
+                        and h >= mod.CREEP_PERSON_MIN_H_M
+                        and d <= mod.CREEP_PERSON_STOP_M):
+                    return "person at %.2f m" % d
+                continue
+            if (conf >= mod.CREEP_OBST_MIN_CONF and z <= mod.CREEP_OBST_Z_MAX
+                    and abs(x) <= mod.CREEP_OBST_CORRIDOR_M
+                    and d < c_near - 0.05):
+                return "%s at %.2f m, nearer than the container" % (lab, d)
+        return None
+
