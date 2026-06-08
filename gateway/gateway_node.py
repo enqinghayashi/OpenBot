@@ -6617,3 +6617,17 @@ class GatewayNode:
         except Exception:  # noqa: BLE001 -- a log line never breaks a verb
             pass
 
+    def on_odom(self, x: float, y: float, yaw: float) -> None:
+        """One /unitree/slam_mapping/odom pose (x, y, yaw; REP-103)."""
+        try:
+            pose = (float(x), float(y), float(yaw))
+        except (TypeError, ValueError):
+            return
+        if not all(math.isfinite(v) for v in pose):
+            return
+        lock = getattr(self, "_odom_lock", None)
+        if lock is None:
+            return
+        with lock:
+            self._odom_pose = (pose, time.time())
+
