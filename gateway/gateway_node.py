@@ -7427,3 +7427,41 @@ class GatewayNode:
 
     _CREEP_LABEL_RE = re.compile(r"^[a-z][a-z0-9_ ]{0,31}$")
 
+    @classmethod
+    def _creep_parse(cls, args: List) -> Tuple[Optional[Dict[str, Any]], str]:
+        """One JSON object -> (spec, '') or (None, why)."""
+        if len(args) != 1:
+            return None, "expected one JSON object"
+        raw = args[0]
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except ValueError:
+                return None, "not JSON"
+        if not isinstance(raw, dict):
+            return None, "not a JSON object"
+        label = raw.get("label")
+        if not isinstance(label, str) or not cls._CREEP_LABEL_RE.match(
+                label.strip().lower()):
+            return None, "label"
+        iid = raw.get("iid")
+        if iid is not None and (isinstance(iid, bool) or not isinstance(iid, int)
+                                or iid < 1):
+            return None, "iid"
+        spec: Dict[str, Any] = {"label": label.strip().lower(), "iid": iid,
+                                "dry": raw.get("dry") is True}
+        bounds = {"x": (-2.0, 2.0), "y": (0.05, 2.0), "z": (-1.5, 1.5),
+                  "w": (0.0, 1.5), "dd": (0.0, 1.5), "h": (0.0, 1.5)}
+        for key, (lo, hi) in bounds.items():
+            v = raw.get(key)
+            if v is None and key in ("w", "dd", "h"):
+                spec[key] = None
+                continue
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                return None, key
+            v = float(v)
+            if not math.isfinite(v) or not lo <= v <= hi:
+                return None, key
+            spec[key] = v
+        return spec, ""
+
