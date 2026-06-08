@@ -6609,3 +6609,11 @@ class GatewayNode:
             print("[home] home anchor import FAILED (%r) - return_home OFF"
                   % (exc,), flush=True)
 
+    @staticmethod
+    def _home_log(text: str) -> None:
+        try:
+            sys.stderr.write("[home] %s\n" % text)
+            sys.stderr.flush()
+        except Exception:  # noqa: BLE001 -- a log line never breaks a verb
+            pass
+
