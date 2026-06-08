@@ -7540,3 +7540,341 @@ class GatewayNode:
                 return "%s at %.2f m, nearer than the container" % (lab, d)
         return None
 
+    def _creep_omega(self, x: float, y: float) -> float:
+        mod = self._lock_m
+        b = math.atan2(x, y)
+        if abs(b) <= mod.CREEP_TOL_RAD:
+            return 0.0
+        w = mod.CREEP_OMEGA_SIGN * mod.CREEP_K_THETA * b
+        return max(-mod.CREEP_OMEGA_MAX, min(mod.CREEP_OMEGA_MAX, w))
+
+    def _creep_walk_settled(self) -> bool:
+        """The walk FSM must not command the legs during the creep: a REACHED
+        hold (<= 5 s after REACHED) is ended with stop_walk() and IDLE is
+        awaited (turn_around's settle).  Lane already claimed."""
+        with self._obs_lock:
+            walk = getattr(self._assembler, "_walk", None)
+            ts = getattr(self._assembler, "_last_walk_ts", 0.0)
+            marker = len(self._turn_events)
+        phase = str(getattr(walk, "phase", "") or "").upper()
+        if phase != "REACHED" or time.time() - ts > 6.5:
+            return True
+        self.stop_walk()
+        return self._turn_wait_idle(marker)
+
+    def _do_pc_rim(self, args: List) -> str:
+        """``pc_rim`` verb (B8k): the point-cloud bowl-rim fit for a container
+        the BRAIN is about to place into while standing (the voice path; the
+        batch-6 hook served only the operator's /place_target topic).
+
+        Request (one JSON token): {label, x, y[, ts]} = the container row.  It
+        runs the client module's ``rim_for`` with EXACTLY the /place_target
+        gates (status OK, verdict RIM_FIT, pose unchanged between request and
+        now, row at most 1.0 s old, finite drop z) and logs its one
+        ``[pc] pc place_rim ...`` line.  ``apply`` is the ``pc_place_rim``
+        switch: in SHADOW the fit is measured and logged, never returned.
+        Replies (ONE line): ``NOPC:point-cloud lane off`` (no client: instant),
+        ``DONE:pc_rim applied drop_z=<z>`` (decisive and every gate passed) or
+        ``DONE:pc_rim none`` (shadow, or any gate failed: the brain keeps its
+        own rim).  ``ERROR:pc_rim bad_args`` on a malformed request.  Never
+        raises."""
+        pc = getattr(self, "_pc", None)
+        if pc is None:
+            return "NOPC:point-cloud lane off"
+        try:
+            req = json.loads(args[0]) if args else None
+            label = str(req.get("label") or "")
+            x, y = float(req["x"]), float(req["y"])
+            if not (label and math.isfinite(x) and math.isfinite(y)):
+                raise ValueError("label / x / y")
+            ts = req.get("ts")
+            row = {"label": label, "x": x, "y": y,
+                   "t": float(ts) if ts is not None else time.time()}
+        except Exception:  # noqa: BLE001 — a malformed request is a refusal
+            return "ERROR:pc_rim bad_args"
+        try:
+            from gateway import pointcloud_client as pc_client_mod  # lazy, then cached
+            res = pc_client_mod.rim_for(
+                pc, row, getattr(self, "_pc_place_rim", False) is True,
+                time.time, log=self._pc_log)
+        except Exception as exc:  # noqa: BLE001 — a failed fit is "none"
+            self._pc_say("pc_rim failed: %s: %s" % (type(exc).__name__, exc))
+            return "DONE:pc_rim none"
+        try:
+            z = float(res["drop"]["z"]) if isinstance(res, dict) else None
+        except (KeyError, TypeError, ValueError):
+            z = None
+        if z is None or not math.isfinite(z):
+            return "DONE:pc_rim none"
+        return "DONE:pc_rim applied drop_z=%.4f" % z
+
+    def _do_creep(self, args: List) -> str:
+        """``creep`` verb (B8j): close the last centimetres to a container in
+        short forward pulses (operator 2026-10-10: the walk stops at near edge
+        0.45, then "creeps forward slowly to near edge 0.25, then drops").
+
+        Request (one JSON token): {label, iid|null, x, y, z, w, dd, h[, dry]}
+        = the container the brain resolved.  The plan (strict_vocab.creep_plan)
+        is the most CREEP_PULSE_S pulses at CREEP_VX whose NOMINAL end
+        (CREEP_P_NOM_M each) stays at or beyond the target edge and whose WORST
+        case (CREEP_P_HI_M each) stays at or beyond creep_edge_floor().  A
+        measured near edge (the container's near rim in view, a row that
+        arrived after the robot stopped) can only END the creep EARLIER, never
+        add a pulse: there is no odometry and a tall container's centroid
+        drifts AWAY as its base leaves the image.  A trusted row that shows
+        MORE travel per pulse than CREEP_P_HI_M makes that measured travel
+        the worst case of the rest (B8j repair 3, gate 3: re-plan, table cap,
+        '[creep] OVER', ' over=' on the END line).  Every pulse is preceded by
+        a cancel / budget / person / obstacle / bump check; 'cmd_set off' and
+        a CREEP_FINAL_SETTLE_S settle end it after any pulse.  The lane is the
+        turn_around lane (_turn_active): single-flight with turn_around, and
+        _do_cancel already sends 'cmd_set off' while it is held.
+        Replies (ONE line): 'DONE creep: <result> after <n> pulse(s); EDGE_M=;
+        EDGE_NOM_M=; [EDGE_ERR_M=;] TRAVEL_M=; TRAVEL_HI_M=; PULSES=; SRC=row|
+        dead|lock|spec; X=; Y=; Z=; HALF_M=; RIM_Z=; BOT_Z=; IID=; CREEP_RESULT=
+        arrived|planned|in_place|dry_run' (EDGE_ERR_M: not in a dry run) or
+        'ERROR:creep <why>; CREEP_RESULT=<cancelled|blocked|bumped|busy|disabled|
+        too_far|bad_args|writer_refused|timeout>; TRAVEL_M=; PULSES='."""
+        mod = getattr(self, "_lock_m", None)
+        if mod is None or getattr(self, "_container_lock", None) is None:
+            return ("ERROR:creep unavailable (no strict_vocab); "
+                    "CREEP_RESULT=disabled; TRAVEL_M=0.000; PULSES=0")
+        spec, why = self._creep_parse(args)
+        if spec is None:
+            return ("ERROR:creep bad_args (%s); CREEP_RESULT=bad_args; "
+                    "TRAVEL_M=0.000; PULSES=0" % why)
+        if not mod.env_on(mod.CREEP_ENV):
+            return ("ERROR:creep disabled (OPENBOT_CREEP=0); "
+                    "CREEP_RESULT=disabled; TRAVEL_M=0.000; PULSES=0")
+        edge_t = mod.creep_edge_target()
+        ref = self._creep_reference(spec, arm=False)
+        e0 = ref["near"]
+        if e0 > mod.CREEP_START_MAX_EDGE_M:
+            return ("ERROR:creep too_far (near edge %.3f m > %.2f m: navigate "
+                    "first); CREEP_RESULT=too_far; TRAVEL_M=0.000; PULSES=0"
+                    % (e0, mod.CREEP_START_MAX_EDGE_M))
+        n = mod.creep_plan(e0, edge_t)
+        tail = ("HALF_M=%.3f; RIM_Z=%.3f; BOT_Z=%.3f; IID=%s"
+                % (ref["half"], ref["rim"], ref["bot"], ref["iid"]))
+        if spec["dry"]:
+            if ref["bot"] > mod.CREEP_FLOOR_BOT_Z:
+                # a container on a support stops after CREEP_TABLE_MAX_M of travel in the
+                # real loop below, so the dry plan has to end where the real creep ends.
+                n = min(n, mod.creep_table_pulses())
+            e_end = e0 - n * mod.CREEP_P_NOM_M
+            return ("DONE creep: dry_run %d pulse(s) from edge %.3f; EDGE_M=%.3f; "
+                    "EDGE_NOM_M=%.3f; TRAVEL_M=%.3f; TRAVEL_HI_M=%.3f; PULSES=%d; "
+                    "SRC=%s; X=%.3f; Y=%.3f; Z=%.3f; %s; CREEP_RESULT=dry_run"
+                    % (n, e0, e_end, e_end, n * mod.CREEP_P_NOM_M,
+                       n * mod.CREEP_P_HI_M, n, ref["src"], ref["x"],
+                       ref["y"] - n * mod.CREEP_P_NOM_M, ref["z"], tail))
+        if self._yolo_walk_active():
+            return ("ERROR:creep busy (the walk FSM is moving); "
+                    "CREEP_RESULT=busy; TRAVEL_M=0.000; PULSES=0")
+        with self._obs_lock:
+            busy = bool(getattr(self, "_turn_active", False))
+            if not busy:
+                self._turn_active = True
+                self._turn_events = []
+        if busy:
+            return ("ERROR:creep busy (a turn_around or another creep is in "
+                    "flight; this request did NOT move the robot); "
+                    "CREEP_RESULT=busy; TRAVEL_M=0.000; PULSES=0")
+        if ref["src"] == "spec" and self._lock_on():
+            # nothing locks this container (no navigate REACHED it), so arm one on the
+            # caller's own record so the pulses follow it by identity
+            ref = self._creep_reference(spec, arm=True)
+        clock, sleep = self._turn_clock, self._turn_sleep
+        cancel0 = self._cancel_ts
+        pulses, travel, travel_hi = 0, 0.0, 0.0
+        result, detail = None, ""
+        base = (ref["x"], ref["y"], ref["z"])
+        since_base = 0                 # pulses since the last still measurement
+        still_after = self._lock_now() - 3600.0   # rows newer than this count as still
+        e_prev = None
+        src = ref["src"]
+        p_seen = 0.0                   # longest travel per pulse a trusted row measured
+        try:
+            self._creep_log("START %s#%s e0=%.3f target=%.3f plan=%d pulse(s) "
+                            "(nom %.3f m, worst %.3f m) half=%.3f rim=%.3f src=%s"
+                            % (ref["label"], ref["iid"], e0, edge_t, n,
+                               n * mod.CREEP_P_NOM_M, n * mod.CREEP_P_HI_M,
+                               ref["half"], ref["rim"], ref["src"]))
+            if n > 0 and not self._creep_walk_settled():
+                result, detail = "busy", "the walk FSM did not reach IDLE"
+            t0 = clock()
+            t_lock0 = self._lock_now()
+            if n <= 0 and result is None:
+                result = "in_place"         # already at the target edge
+            while result is None:
+                if self._cancel_ts > cancel0:
+                    result = "cancelled"
+                    break
+                rows, _rows_ts = self._creep_rows()
+                snap = (self._container_lock.snapshot(self._lock_now())
+                        if self._lock_on() else None)
+                if snap is not None and snap["jump_t"] > t_lock0:
+                    result = "bumped"
+                    detail = ("the container's row jumped away (identity not "
+                              "followed)")
+                    break
+                if snap is not None and snap["t_row"] > still_after:
+                    e_meas = snap["near_m"]          # a row taken while standing still
+                    if e_meas >= mod.vis_edge(snap["rim_z"]) + mod.VIS_MARGIN_M:
+                        if (e_prev is not None and pulses > 0
+                                and e_meas - e_prev > mod.CREEP_BUMP_M):
+                            result = "bumped"
+                            detail = ("the container moved %.3f m AWAY after a "
+                                      "forward pulse" % (e_meas - e_prev))
+                            break
+                        moved = (e_prev - e_meas) if e_prev is not None else None
+                        if since_base > 0 and moved is not None:
+                            p_now = moved / since_base
+                            p_was = max(mod.CREEP_P_HI_M, p_seen)
+                            p_seen = max(p_seen, p_now)
+                            if p_now > p_was + 1e-6:
+                                # if travel per pulse is larger than the worst case planned, re-plan the
+                                # rest from the measured travel (never adds a pulse, and the table cap uses
+                                # it too)
+                                n_was = n
+                                n = min(n, pulses + mod.creep_plan(
+                                    e_meas, edge_t, p_hi=p_now))
+                                self._creep_log(
+                                    "OVER %.3f m/pulse measured after pulse %d "
+                                    "(planned worst %.3f): plan %d -> %d "
+                                    "pulse(s) e=%.3f"
+                                    % (p_now, pulses, p_was, n_was, n, e_meas))
+                        progress = (since_base > 0 and moved is not None
+                                    and mod.CREEP_P_LO_M * since_base - 0.01
+                                    <= moved <= mod.CREEP_P_HI_M * since_base + 0.01)
+                        if (progress and e_meas >= mod.vis_edge(snap["bot_z"])
+                                + mod.VIS_MARGIN_M):
+                            # the whole container is in view and the pulses measurably moved the robot,
+                            # so restart the plan from this measurement (worst case >= EDGE_MIN at the
+                            # longest measured pulse)
+                            n = min(mod.CREEP_MAX_PULSES,
+                                    pulses + mod.creep_plan(
+                                        e_meas, edge_t,
+                                        p_hi=max(mod.CREEP_P_HI_M, p_seen)))
+                        base = (snap["x"], snap["y"], snap["z"])
+                        since_base = 0
+                        src = "row"
+                        e_prev = e_meas
+                    if e_meas <= edge_t + mod.CREEP_P_NOM_M / 2.0:
+                        # any still row can end it: a container cut by the image edge reads
+                        # farther, never nearer. only a trusted row moves the reported pose.
+                        result = "arrived"
+                        break
+                if pulses >= n:
+                    break
+                p_dead = max(mod.CREEP_P_NOM_M, p_seen)   # the measured one
+                e_est = ((e_prev if e_prev is not None else e0)
+                         - since_base * p_dead)
+                if (ref["bot"] > mod.CREEP_FLOOR_BOT_Z
+                        and e0 - e_est + p_dead
+                        > mod.CREEP_TABLE_MAX_M + 0.005):
+                    detail = "table cap %.2f m" % mod.CREEP_TABLE_MAX_M
+                    break                   # on a table, so its edge is unseen
+                if clock() - t0 >= mod.CREEP_BUDGET_S:
+                    result = "timeout"
+                    break
+                c_near = (math.hypot(base[0], base[1]) - ref["half"]
+                          - since_base * mod.CREEP_P_NOM_M)
+                blocked = self._creep_blocked(
+                    rows, snap["iid"] if snap is not None else ref["iid"], c_near)
+                if blocked:
+                    result, detail = "blocked", blocked
+                    break
+                omega = self._creep_omega(base[0], base[1]
+                                          - since_base * mod.CREEP_P_NOM_M)
+                line = "cmd_set %.3f 0.000 %.3f %.3f" % (
+                    mod.CREEP_VX, omega, mod.CREEP_PULSE_S)
+                self._turn_pulsed = True
+                try:
+                    wreply = str(self.writer_verb(line))
+                except Exception as exc:  # noqa: BLE001 -- report, never raise
+                    wreply = "ERROR:%s" % exc
+                if not wreply.startswith("DONE"):
+                    result = "writer_refused"
+                    detail = " ".join(_defang_error_token(wreply).split())[:60]
+                    break
+                pulses += 1
+                since_base += 1
+                travel += mod.CREEP_P_NOM_M
+                travel_hi += mod.CREEP_P_HI_M
+                self._creep_log("PULSE %d/%d vx=%.2f omega=%+.3f e=%.3f(%s) "
+                                "travel_nom=%.3f worst=%.3f"
+                                % (pulses, n, mod.CREEP_VX, omega,
+                                   e_prev if e_prev is not None else e0, src,
+                                   travel, travel_hi))
+                t_end = clock() + mod.CREEP_PULSE_S + mod.CREEP_SETTLE_S
+                still_after = (self._lock_now() + mod.CREEP_PULSE_S
+                               + 0.5 * mod.CREEP_SETTLE_S)
+                while clock() < t_end:
+                    if self._cancel_ts > cancel0:
+                        break
+                    sleep(mod.CREEP_TICK_S)
+            if result is None:
+                result = "planned" if pulses > 0 else "in_place"
+        finally:
+            if self._turn_pulsed:
+                try:
+                    self.writer_verb("cmd_set off")
+                except Exception:  # noqa: BLE001 -- the pulse auto-expires
+                    pass
+                sleep(mod.CREEP_FINAL_SETTLE_S)
+            with self._obs_lock:
+                self._turn_active = False
+            self._turn_pulsed = False
+        if result in mod.CREEP_RESULTS_OK and self._cancel_ts > cancel0:
+            # a stop or cancel landing after the loop's last check, the 'cmd_set off'
+            # settle above, still ends the creep as 'cancelled', so the brain never runs
+            # the place after it.
+            result, detail = "cancelled", "stop/cancel during the final settle"
+        fx = base[0]
+        fy = base[1] - since_base * mod.CREEP_P_NOM_M
+        fz = base[2]
+        if since_base > 0:
+            src = "dead"                 # pulses since the last still measurement
+        edge = math.hypot(fx, fy) - ref["half"]
+        over = (" over=%.3f" % p_seen) if p_seen > mod.CREEP_P_HI_M + 1e-6 else ""
+        if result not in mod.CREEP_RESULTS_OK:
+            if result == "bumped":
+                self._lock_clear("creep bumped")
+            elif self._lock_on() and pulses > 0:
+                self._container_lock.set_pose(fx, fy, fz, travel)
+            self._creep_log("END result=%s pulses=%d travel_nom=%.3f worst=%.3f %s%s"
+                            % (result, pulses, travel, travel_hi, detail, over))
+            return ("ERROR:creep %s%s; CREEP_RESULT=%s; TRAVEL_M=%.3f; "
+                    "TRAVEL_HI_M=%.3f; PULSES=%d"
+                    % (result, (" (%s)" % detail) if detail else "", result,
+                       travel, travel_hi, pulses))
+        if self._lock_on() and pulses > 0:
+            self._container_lock.set_pose(fx, fy, fz, travel)
+        self._creep_log("END result=%s pulses=%d edge=%.3f nominal=%.3f "
+                        "travel_nom=%.3f worst=%.3f src=%s%s%s"
+                        % (result, pulses, edge, e0 - travel, travel, travel_hi,
+                           src, (" (%s)" % detail) if detail else "", over))
+        # the true near edge can sit nearer than EDGE_M by the dead pulses times
+        # (worst case per pulse - nominal); the brain uses it to keep the drop inside
+        # the far rim
+        edge_err = since_base * (max(mod.CREEP_P_HI_M, p_seen) - mod.CREEP_P_NOM_M)
+        return ("DONE creep: %s after %d pulse(s); EDGE_M=%.3f; EDGE_NOM_M=%.3f; "
+                "EDGE_ERR_M=%.3f; TRAVEL_M=%.3f; TRAVEL_HI_M=%.3f; PULSES=%d; "
+                "SRC=%s; X=%.3f; Y=%.3f; Z=%.3f; HALF_M=%.3f; RIM_Z=%.3f; "
+                "BOT_Z=%.3f; IID=%s; CREEP_RESULT=%s"
+                % (result, pulses, edge, e0 - travel, edge_err, travel, travel_hi,
+                   pulses, src, fx, fy, fz, ref["half"], ref["rim"], ref["bot"],
+                   self._creep_iid(ref), result))
+
+    def _creep_iid(self, ref: Dict[str, Any]) -> Any:
+        """The container's CURRENT instance id (the lock may have re-acquired)."""
+        lock = getattr(self, "_container_lock", None)
+        if lock is not None and self._lock_on():
+            snap = lock.snapshot(self._lock_now())
+            if snap is not None:
+                return snap["iid"]
+        return ref["iid"]
+
+    # ── turn_around: sight wait + centre loop ─────────────────────────────────
+
