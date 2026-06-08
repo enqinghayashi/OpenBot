@@ -7540,3 +7540,11 @@ class GatewayNode:
                 return "%s at %.2f m, nearer than the container" % (lab, d)
         return None
 
+    def _creep_omega(self, x: float, y: float) -> float:
+        mod = self._lock_m
+        b = math.atan2(x, y)
+        if abs(b) <= mod.CREEP_TOL_RAD:
+            return 0.0
+        w = mod.CREEP_OMEGA_SIGN * mod.CREEP_K_THETA * b
+        return max(-mod.CREEP_OMEGA_MAX, min(mod.CREEP_OMEGA_MAX, w))
+
