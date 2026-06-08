@@ -6586,3 +6586,26 @@ class GatewayNode:
     RETURN_START_S = 5.0            # no RETURNING this fast means the walk never started
     HOME_ROWS_MAX_AGE_S = 1.0       # the requester comes out of a packet this fresh
 
+    def _b8l_setup(self) -> None:
+        """__init__ (B8l): home anchor, odometry slot, pose-walk wait state,
+        navigate widening state.  An import failure leaves home OFF."""
+        self._home = None
+        self._home_m = None
+        self._odom_pose = None
+        self._odom_lock = threading.Lock()
+        self._pose_active = False
+        self._pose_events: List[tuple] = []
+        self._pose_lock = threading.Lock()
+        self._b8l_rows = (0.0, [])
+        self._nav_strict = None
+        self._nav_strict_lock = threading.Lock()
+        try:
+            from gateway import home_anchor as home_mod  # lazy, needs package ctx
+            self._home_m = home_mod
+            self._home = home_mod.HomeAnchor()
+        except Exception as exc:  # noqa: BLE001 -- degrade, never raise
+            self._home = None
+            self._home_m = None
+            print("[home] home anchor import FAILED (%r) - return_home OFF"
+                  % (exc,), flush=True)
+
