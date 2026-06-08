@@ -6834,3 +6834,114 @@ class GatewayNode:
         """Hook: publish one /walk_pose String (_RosGateway overrides)."""
         raise RuntimeError("no /walk_pose publisher outside ROS")
 
+    def _do_return_home(self, args: List) -> str:
+        """``return_home`` verb (B8l F7, motion, BLOCKS <= RETURN_WAIT_S):
+        walk_node walks to the recorded start point on odometry and faces the
+        requester (or the start heading).  'DONE return_home: ...' on
+        HOME_REACHED; 'ERROR:return_home <why>' otherwise."""
+        home = getattr(self, "_home", None)
+        if home is None:
+            return "ERROR:return_home unavailable (no home anchor module)"
+        if args:
+            return "ERROR:return_home takes no arguments"
+        now = time.time()
+        pose = self._odom_now(self._home_m.ODOM_FRESH_S)
+        if pose is None:
+            return ("ERROR:return_home odometry is stale (no fresh "
+                    "/unitree/slam_mapping/odom): the start point cannot be "
+                    "found")
+        goal = home.goal(now)
+        if goal is None:
+            return ("ERROR:return_home no start point recorded (the first "
+                    "navigate of a fetch request - 'get me ...', 'bring me ...' - "
+                    "with an empty hand records it; it expires after 15 min)")
+        snap = home.snapshot(pose, now) or {}
+        # the walk's obstacle stop needs the detector, and an empty view and a dead
+        # node look the same, so refuse to start when it has been silent for the
+        # assembler's whole liveness window.
+        with self._obs_lock:
+            alive = self._assembler.detections_alive()
+        if not alive:
+            return ("ERROR:return_home the detector has been silent for more "
+                    "than 10 s: the walk could not see a person in its way. "
+                    "Nothing moved.")
+        if not self._pose_lock.acquire(blocking=False):
+            return "ERROR:return_home busy (a return_home is already running)"
+        try:
+            with self._obs_lock:
+                self._pose_events = []
+                self._pose_active = True
+            # a coordinator watch left over from an earlier navigate could time out
+            # mid-return and send its own 'stop', so reset it first; its relayed
+            # /walk_target 'stop' then finds the walk idle.
+            try:
+                self.stop_walk()
+            except Exception as exc:  # noqa: BLE001 -- the return still runs
+                self._home_log("coordinator reset failed: %r" % (exc,))
+            time.sleep(self.RETURN_COORD_SETTLE_S)
+            t_sent = time.time()
+            try:
+                self.publish_walk_pose(json.dumps(goal, sort_keys=True))
+            except Exception as exc:  # noqa: BLE001
+                return "ERROR:return_home publish failed: %s" % exc
+            self._home_log("RETURN sent goal=%s (%.2f m away)"
+                           % (json.dumps(goal, sort_keys=True),
+                              snap.get("robot_to_home_m", -1.0)))
+            started = False
+            seen = 0
+            while True:
+                time.sleep(0.1)
+                with self._obs_lock:
+                    events = list(self._pose_events)
+                for phase, _lab, payload, ts in events[seen:]:
+                    if ts < t_sent:
+                        continue
+                    det = payload.get("detail") if isinstance(payload, dict) else None
+                    det = det if isinstance(det, dict) else {}
+                    if phase == "RETURNING":
+                        started = True
+                    elif phase == "HOME_REACHED":
+                        faced = det.get("faced") is True
+                        face = ("the person who asked" if goal.get("face_x") is not None
+                                else "the start heading")
+                        if det.get("requester_ahead_m") is not None:
+                            return ("DONE return_home: stopped in front of the "
+                                    "person who asked, %.2f m short of the start "
+                                    "point; %s them; HOME_ERR_M=%.3f; "
+                                    "REQUESTER_SEEN=yes; REQUESTER_AHEAD=yes; "
+                                    "PERSON_RADIUS_M=%.1f"
+                                    % (float(det.get("requester_ahead_m")),
+                                       "facing" if faced else "could not fully turn to",
+                                       float(det.get("err_m") or 0.0),
+                                       snap.get("radius_m", 0.0)))
+                        return ("DONE return_home: back at the start point "
+                                "(%.2f m from it by odometry); %s %s; "
+                                "HOME_ERR_M=%.3f; REQUESTER_SEEN=%s; "
+                                "PERSON_RADIUS_M=%.1f"
+                                % (float(det.get("err_m") or 0.0),
+                                   "facing" if faced else "could not fully turn to",
+                                   face, float(det.get("err_m") or 0.0),
+                                   "yes" if goal.get("face_x") is not None else "no",
+                                   snap.get("radius_m", 0.0)))
+                    elif phase == "HOME_FAILED":
+                        why = str(det.get("reason") or "unknown")
+                        if why == "stop":
+                            return ("ERROR:return_home cancelled: the walk was "
+                                    "stopped before the start point")
+                        return "ERROR:return_home failed: %s" % why
+                seen = len(events)
+                el = time.time() - t_sent
+                if not started and el > self.RETURN_START_S:
+                    self._return_stop()
+                    return ("ERROR:return_home the walk node did not start "
+                            "(no RETURNING within %.0f s: is the B8l walk_node "
+                            "running, OPENBOT_WALK_POSE not 0?)"
+                            % self.RETURN_START_S)
+                if el > self.RETURN_WAIT_S:
+                    self._return_stop()
+                    return "ERROR:return_home timeout after %.0f s" % el
+        finally:
+            with self._obs_lock:
+                self._pose_active = False
+            self._pose_lock.release()
+
