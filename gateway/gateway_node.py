@@ -7465,3 +7465,37 @@ class GatewayNode:
             spec[key] = v
         return spec, ""
 
+    def _creep_reference(self, spec: Dict[str, Any], arm: bool
+                         ) -> Dict[str, Any]:
+        """The container the creep closes on: the LOCK when it is the same
+        container (same id, or within 0.12 m), else the caller's record (a
+        real creep arms the lock on it so the pulses follow it by identity)."""
+        mod = self._lock_m
+        lock = self._container_lock
+        now = self._lock_now()
+        snap = lock.snapshot(now) if self._lock_on() else None
+        same = snap is not None and (
+            (spec["iid"] is not None and snap["iid"] == spec["iid"])
+            or math.hypot(snap["x"] - spec["x"], snap["y"] - spec["y"]) <= 0.12)
+        if not same and arm and self._lock_on():
+            msg = lock.arm_pose(spec["label"], spec["iid"], spec["x"],
+                                spec["y"], spec["z"], spec["w"], spec["dd"],
+                                spec["h"], now, src="creep_spec")
+            if msg:
+                self._lock_log(msg)
+            snap = lock.snapshot(now)
+            same = snap is not None
+        if same:
+            return {"label": snap["label"], "iid": snap["iid"],
+                    "x": snap["x"], "y": snap["y"], "z": snap["z"],
+                    "half": snap["half"], "rim": snap["rim_z"],
+                    "bot": snap["bot_z"], "near": snap["near_m"], "src": "lock"}
+        ext = [v for v in (spec["w"], spec["dd"]) if v is not None and v > 0.0]
+        half = (max(ext) / 2.0) if ext else mod.LOCK_HALF_DEFAULT_M
+        half = max(mod.LOCK_HALF_MIN_M, min(mod.LOCK_HALF_MAX_M, half))
+        h = spec["h"] or 0.0
+        return {"label": spec["label"], "iid": spec["iid"], "x": spec["x"],
+                "y": spec["y"], "z": spec["z"], "half": half,
+                "rim": spec["z"] + h / 2.0, "bot": spec["z"] - h / 2.0,
+                "near": math.hypot(spec["x"], spec["y"]) - half, "src": "spec"}
+
