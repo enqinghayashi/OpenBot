@@ -6494,3 +6494,31 @@ class GatewayNode:
         if ev:
             self._lock_log(ev)
 
+    def _lock_ingest(self, rows: List[dict]) -> None:
+        """on_detections_packet: cache the RAW rows (they carry depth_m) and
+        follow the lock; arm a pending REACHED."""
+        lock = getattr(self, "_container_lock", None)
+        if lock is None:
+            return
+        now = self._lock_now()
+        raw = [dict(r) for r in rows if isinstance(r, dict)]
+        with self._obs_lock:
+            self._lock_rows = raw
+            self._lock_rows_ts = now
+        pend = self._lock_pending
+        if pend is not None:
+            self._lock_pending = None
+            label, ev, t_req = pend
+            if self._lock_on() and now - t_req <= self.LOCK_PENDING_S:
+                msg = lock.arm(label, raw, now, ev)
+                self._lock_log(msg if msg else
+                               "NOT ARMED %s (no row matches the walk's stop)"
+                               % label)
+                return
+        try:
+            events = lock.update(raw, now)
+        except Exception as exc:  # noqa: BLE001 -- the packet path never raises
+            events = ["update failed: %r" % (exc,)]
+        for ev in events:
+            self._lock_log(ev)
+
