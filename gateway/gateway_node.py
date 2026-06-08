@@ -7878,3 +7878,108 @@ class GatewayNode:
 
     # ── turn_around: sight wait + centre loop ─────────────────────────────────
 
+    def _turn_rows(self) -> Tuple[List[dict], float]:
+        """Test seam: the latest detection rows and their packet timestamp.
+
+        Reads the assembler directly (NOT ``observe_dict``, which calls
+        ``_refresh_grip_state`` and has side effects).  Returns
+        ``(rows, detections_ts)``; ``detections_ts`` is 0.0 when no packet
+        has ever arrived.
+
+        Batch 4 (OFF-4, the SECOND ``asdict`` site): rows carry every
+        Detection field, including ``instance_id`` (None unless perception
+        runs with OPENBOT_INSTANCE_IDS=1).  They are NOT stripped like the
+        ``observe`` reply because they never reach the model: the only
+        consumers (``_turn_plausible`` / ``_turn_pick`` / ``_turn_centre``)
+        read them by literal key (``.get("label")``, ``["x"]``, ``["y"]``,
+        ``.get("conf")``, ``.get("height_m")``), so an extra key is inert —
+        pinned by tests/test_instance_id_contract.py.
+        """
+        from dataclasses import asdict  # stdlib import
+
+        with self._obs_lock:
+            obs = self._assembler.observation()
+        return [asdict(d) for d in obs.detections], float(obs.detections_ts)
+
+    @staticmethod
+    def _turn_plausible(row: dict, label: str) -> bool:
+        """Is ``row`` a believable sighting of ``label``?
+
+        'person' additionally needs conf >= TURN_PERSON_MIN_CONF and a
+        height_m >= TURN_PERSON_MIN_HEIGHT_M (run20's false 'person' hits had
+        height_m 0.02-0.11).  Other labels need conf >= TURN_OTHER_MIN_CONF.
+        Position must be finite.
+        """
+        try:
+            if str(row.get("label", "")).strip().lower() != label:
+                return False
+            x = float(row["x"])
+            y = float(row["y"])
+            conf = float(row.get("conf", 0.0))
+        except (KeyError, TypeError, ValueError):
+            return False
+        if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(conf)):
+            return False
+        if label == "person":
+            h = row.get("height_m")
+            try:
+                h = float(h)
+            except (TypeError, ValueError):
+                return False
+            if not math.isfinite(h):
+                return False
+            return conf >= TURN_PERSON_MIN_CONF and h >= TURN_PERSON_MIN_HEIGHT_M
+        return conf >= TURN_OTHER_MIN_CONF
+
+    def _turn_pick(self, rows: List[dict], label: str,
+                   last_err: Optional[float]):
+        """Associate: (row, yaw_err) or (None, None).
+
+        First lock = highest-conf plausible row.  Afterwards the plausible row
+        whose bearing is nearest the last locked bearing, and only if inside
+        TURN_ASSOC_GATE_RAD (so the loop never hops to a second person).
+        """
+        cands = []
+        for r in rows:
+            if self._turn_plausible(r, label):
+                cands.append((float(r.get("conf", 0.0)),
+                              _turn_bearing(float(r["x"]), float(r["y"])), r))
+        if not cands:
+            return None, None
+        if last_err is None:
+            conf, err, row = max(cands, key=lambda c: c[0])
+            return row, err
+        conf, err, row = min(cands, key=lambda c: abs(c[1] - last_err))
+        if abs(err - last_err) > TURN_ASSOC_GATE_RAD:
+            return None, None
+        return row, err
+
+    def _turn_wait_sight(self, label: str, t0: float, sweep_t0: float,
+                         cancel0: float, ev_mark: int):
+        """Block until cancel / budget / FSM give-up / a plausible sighting.
+
+        Returns ('cancelled', None, None) | ('not_seen', (reason, elapsed),
+        None) | ('sight', yaw_err, ts).  Priority per tick: cancel, budget,
+        NOT_FOUND, sight.  A /walk_status DETECTED with no plausible row is
+        NOT a sighting (run20 false 'person' hits): keep waiting, the FSM's
+        own lost-timeout re-sweeps.
+        """
+        clock, sleep = self._turn_clock, self._turn_sleep
+        while True:
+            now = clock()
+            if self._cancel_ts > cancel0:
+                return "cancelled", None, None
+            if (now - t0 >= TURN_TOTAL_BUDGET_S
+                    or now - sweep_t0 >= TURN_SWEEP_BUDGET_S):
+                return "not_seen", ("sweep_budget", now - sweep_t0), None
+            with self._obs_lock:
+                evs = list(self._turn_events[ev_mark:])
+            if any(e[0] == "NOT_FOUND" for e in evs):
+                return "not_seen", ("sweep_complete", now - sweep_t0), None
+            rows, pts = self._turn_rows()
+            if pts > 0.0 and (now - pts) <= TURN_ROW_MAX_AGE_S:
+                row, err = self._turn_pick(rows, label, None)
+                if row is not None:
+                    return "sight", err, now
+            sleep(TURN_TICK_S)
+
