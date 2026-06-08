@@ -7499,3 +7499,7 @@ class GatewayNode:
                 "rim": spec["z"] + h / 2.0, "bot": spec["z"] - h / 2.0,
                 "near": math.hypot(spec["x"], spec["y"]) - half, "src": "spec"}
 
+    def _creep_rows(self) -> Tuple[List[dict], float]:
+        with self._obs_lock:
+            return list(self._lock_rows), float(self._lock_rows_ts)
+
