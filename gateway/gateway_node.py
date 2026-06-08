@@ -6558,3 +6558,31 @@ class GatewayNode:
         self._lock_pending = (label, ev, now)
         self._lock_log("ARM PENDING %s (no matching fresh row yet)" % label)
 
+    def _lock_strict_skip(self, labels: List[str]) -> Optional[str]:
+        """yolo_strict begin owner=place: the reason the hold is SKIPPED (the
+        locked container is one of its labels), else None."""
+        lock = getattr(self, "_container_lock", None)
+        if lock is None or not self._lock_on():
+            return None
+        snap = lock.snapshot(self._lock_now())
+        if snap is None or snap["label"] not in labels:
+            return None
+        why = ("container lock %s#%s det=%s row_age=%.1fs: the navigated "
+               "container is held by identity, no narrowing"
+               % (snap["label"], snap["iid"], snap["det_label"],
+                  snap["row_age_s"]))
+        self._lock_log("place strict hold SKIPPED (%s)" % why)
+        return why
+
+    # ── navigate widening + the fetch start point ─────────────────────────────
+    # a navigate hold kept on {bin, person} stays narrowed for the whole walk, so
+    # the bin's carrier labels (backpack 0.67, suitcase 0.64 on the same track)
+    # are gone and a narrowed window can see no bin at all. narrowing helps find
+    # the label; from APPROACHING on, the walk follows the object by identity, so
+    # the hold is closed (the tracker keeps the id) and re-opened if the walk
+    # falls back to the sweep. OPENBOT_NAV_WIDEN=0 keeps narrowing throughout.
+    NAV_WIDEN_ENV = "OPENBOT_NAV_WIDEN"
+    RETURN_WAIT_S = 130.0           # a pose walk cannot exceed 120 s
+    RETURN_START_S = 5.0            # no RETURNING this fast means the walk never started
+    HOME_ROWS_MAX_AGE_S = 1.0       # the requester comes out of a packet this fresh
+
