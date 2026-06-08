@@ -7300,3 +7300,113 @@ class GatewayNode:
                 % (label, math.degrees(bearing), turns, math.degrees(bearing),
                    math.degrees(target), last[0], last[1], z, turns))
 
+    def _do_step_back(self, args: List) -> str:
+        """``step_back`` verb (B8l-hf6, operator 10-17: "step back 5 steps
+        slowly before actually started sweeping"): walk BACKWARD at the gait
+        floor.  The brain calls it before a navigate whose target is not in
+        its current view.  Request: one optional JSON token {m} (metres,
+        0 < m <= 1; the gateway switch home_anchor.STEPBACK_ENV wins and the
+        distance is capped at STEPBACK_MAX_M).  Timed (the gateway runs no
+        odometry loop): one auto-expiring writer command re-armed every
+        STEPBACK_REARM_S for distance / STEPBACK_VX seconds, a cancel check
+        every tick, then 'cmd_set off' and a settle.  The lane is the
+        turn_around lane (_turn_active: _do_cancel sends 'cmd_set off' while
+        it is held).  Replies (ONE line): 'DONE step_back: ...; STEPBACK_M=;
+        STEPBACK_RESULT=done|off' or 'ERROR:step_back <why>;
+        STEPBACK_RESULT=<cancelled|busy|writer_refused|bad_args|disabled>;
+        STEPBACK_M=<nominal metres moved>'."""
+        mod = getattr(self, "_home_m", None)
+        tail0 = "STEPBACK_M=0.000"
+        if mod is None or not hasattr(mod, "stepback_distance"):
+            return ("ERROR:step_back unavailable (no home anchor module); "
+                    "STEPBACK_RESULT=disabled; " + tail0)
+        req_m = None
+        if args:
+            try:
+                req = json.loads(args[0]) if isinstance(args[0], str) else args[0]
+                if len(args) != 1 or not isinstance(req, dict):
+                    raise ValueError("one JSON object")
+                if req.get("m") is not None:
+                    req_m = float(req["m"])
+                    if not (math.isfinite(req_m) and 0.0 < req_m <= 1.0):
+                        raise ValueError("m")
+            except Exception:  # noqa: BLE001 -- a malformed request is a refusal
+                return ("ERROR:step_back bad_args; STEPBACK_RESULT=bad_args; "
+                        + tail0)
+        want = mod.stepback_distance(os.environ.get(mod.STEPBACK_ENV), req_m)
+        if want <= 0.0:
+            return ("DONE step_back: off (%s=0), nothing moved; %s; "
+                    "STEPBACK_RESULT=off" % (mod.STEPBACK_ENV, tail0))
+        if self._yolo_walk_active():
+            return ("ERROR:step_back busy (the walk FSM is moving); "
+                    "STEPBACK_RESULT=busy; " + tail0)
+        with self._obs_lock:
+            busy = bool(getattr(self, "_turn_active", False))
+            if not busy:
+                self._turn_active = True
+                self._turn_events = []
+        if busy:
+            return ("ERROR:step_back busy (a turn_around or creep is in "
+                    "flight; this request did NOT move the robot); "
+                    "STEPBACK_RESULT=busy; " + tail0)
+        clock, sleep = self._turn_clock, self._turn_sleep
+        cancel0 = self._cancel_ts
+        self._turn_pulsed = False
+        t_run = want / mod.STEPBACK_VX
+        result, detail = None, ""
+        elapsed = 0.0
+        try:
+            if not self._creep_walk_settled():
+                result, detail = "busy", "the walk FSM did not reach IDLE"
+            t0 = clock()
+            next_arm = t0
+            while result is None:
+                now = clock()
+                elapsed = min(now - t0, t_run) if self._turn_pulsed else 0.0
+                if self._cancel_ts > cancel0:
+                    result = "cancelled"
+                    break
+                if self._turn_pulsed and now - t0 >= t_run:
+                    result = "done"
+                    break
+                if now >= next_arm:
+                    left = t_run - (now - t0) if self._turn_pulsed else t_run
+                    if not self._turn_pulsed:
+                        t0 = now           # the clock starts when the motion does
+                    dur = max(0.05, min(mod.STEPBACK_CMD_S, left))
+                    line = "cmd_set %.3f 0.000 0.000 %.3f" % (-mod.STEPBACK_VX,
+                                                              dur)
+                    self._turn_pulsed = True
+                    try:
+                        wreply = str(self.writer_verb(line))
+                    except Exception as exc:  # noqa: BLE001 -- report, never raise
+                        wreply = "ERROR:%s" % exc
+                    if not wreply.startswith("DONE"):
+                        result = "writer_refused"
+                        detail = " ".join(_defang_error_token(wreply).split())[:60]
+                        break
+                    next_arm = now + mod.STEPBACK_REARM_S
+                sleep(TURN_TICK_S)
+        finally:
+            if self._turn_pulsed:
+                try:
+                    self.writer_verb("cmd_set off")
+                except Exception:  # noqa: BLE001 -- the command auto-expires
+                    pass
+                sleep(mod.STEPBACK_SETTLE_S)
+            with self._obs_lock:
+                self._turn_active = False
+            self._turn_pulsed = False
+        if result == "done" and self._cancel_ts > cancel0:
+            result, detail = "cancelled", "stop/cancel during the settle"
+        moved = mod.STEPBACK_VX * elapsed
+        self._home_log("STEPBACK END result=%s want=%.2f m moved~%.2f m %s"
+                       % (result, want, moved, detail))
+        if result != "done":
+            return ("ERROR:step_back %s%s; STEPBACK_RESULT=%s; STEPBACK_M=%.3f"
+                    % (result, (" (%s)" % detail) if detail else "", result,
+                       moved))
+        return ("DONE step_back: stepped back about %.2f m at %.2f m/s; "
+                "STEPBACK_M=%.3f; STEPBACK_RESULT=done"
+                % (moved, mod.STEPBACK_VX, moved))
+
