@@ -6730,3 +6730,9 @@ class GatewayNode:
         except Exception as exc:  # noqa: BLE001 -- the status path never raises
             self._strict_log("navigate widen/narrow failed: %r" % (exc,))
 
+    def _home_rows(self) -> List[dict]:
+        ts, rows = getattr(self, "_b8l_rows", (0.0, []))
+        if time.time() - ts > self.HOME_ROWS_MAX_AGE_S:
+            return []
+        return [r for r in rows if isinstance(r, dict)]
+
