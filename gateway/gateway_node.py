@@ -6643,3 +6643,16 @@ class GatewayNode:
             return None
         return slot[0]
 
+    def _nav_bare_label(self, args: List) -> Optional[str]:
+        if len(args) != 1 or not isinstance(args[0], str):
+            return None
+        label = args[0].strip()
+        if not label or label.lower() == "stop":
+            return None
+        if "#" in label or "@" in label:
+            parts = self._nav_split(label)
+            if parts is None:
+                return None
+            label = parts[0]
+        return label.strip().lower()
+
