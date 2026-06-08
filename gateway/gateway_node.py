@@ -6686,3 +6686,47 @@ class GatewayNode:
                              % (ns["label"], ns["widened"], ns["narrowed"]))
         return cur
 
+    def _strict_on_walk(self, phase_raw: Optional[str], label: Optional[str],
+                        payload: Any) -> None:
+        """F2 (walk-status callback, never blocks): APPROACHING for the
+        navigate's label closes its hold; any SEARCHING after that (the
+        approach ended: a re-sweep, a retarget, the sweep's own frames)
+        re-opens it.  The walk's reacquire speaks APPROACHING, so it stays
+        wide while it looks for the object it lost."""
+        lk = getattr(self, "_nav_strict_lock", None)
+        holds = getattr(self, "_strict_holds", None)
+        if lk is None or holds is None or not phase_raw:
+            return
+        with lk:
+            ns = self._nav_strict
+            if ns is None or label != ns["label"]:
+                return
+            if phase_raw == "APPROACHING" and ns["hid"] is not None:
+                act, hid = "widen", ns["hid"]
+                ns["hid"] = None
+                ns["widened"] += 1
+            elif phase_raw == "SEARCHING" and ns["hid"] is None:
+                act, hid = "narrow", None
+            else:
+                return
+        try:
+            if act == "widen":
+                self._strict_close(hid, wait=False,
+                                   why="walk APPROACHING: the walk follows %s "
+                                   "by identity, full vocabulary back" % label)
+                return
+            new = holds.open("navigate", [label], self._strict_mod.NAV_HOLD_MAX_S)
+            with lk:
+                keep = self._nav_strict is ns
+                if keep:
+                    ns["hid"] = new
+                    ns["narrowed"] += 1
+            if not keep:
+                holds.close(new)            # the navigate has already returned
+                return
+            self._strict_sync()
+            self._strict_log("hold %d RE-OPENED navigate labels=%s (walk re-sweep)"
+                             % (new, ",".join(holds.labels())))
+        except Exception as exc:  # noqa: BLE001 -- the status path never raises
+            self._strict_log("navigate widen/narrow failed: %r" % (exc,))
+
