@@ -6736,3 +6736,79 @@ class GatewayNode:
             return []
         return [r for r in rows if isinstance(r, dict)]
 
+    def _do_home(self, args: List) -> str:
+        """``home`` verb (B8l, no motion): one JSON object {op, why}.
+        op status (default) -> 'DONE:home {...}' | 'DONE:home none (<why>)';
+        mark / auto -> 'DONE:home marked {...}' | 'DONE:home kept {...}' |
+        'DONE:home none (<why>)'; clear -> 'DONE:home cleared' | 'DONE:home
+        none (no start point)'.  'ERROR:home bad_request:<why>' otherwise."""
+        home = getattr(self, "_home", None)
+        if home is None:
+            return "DONE:home none (unavailable)"
+        req: Any = {}
+        if args:
+            if len(args) != 1:
+                return "ERROR:home bad_request:expected one JSON object"
+            req = args[0]
+            if isinstance(req, str):
+                try:
+                    req = json.loads(req) if req.strip() else {}
+                except ValueError:
+                    return "ERROR:home bad_request:not JSON"
+            if not isinstance(req, dict):
+                return "ERROR:home bad_request:not a JSON object"
+        op = str(req.get("op") or "status").strip().lower()
+        now = time.time()
+        pose = self._odom_now(self._home_m.ODOM_FRESH_S)
+        if op == "status":
+            snap = home.snapshot(pose, now)
+            if snap is None:
+                return "DONE:home none (no start point recorded)"
+            snap["odom_fresh"] = pose is not None
+            return "DONE:home " + json.dumps(snap, sort_keys=True)
+        if op in ("mark", "auto"):
+            if pose is None:
+                self._home_log("%s refused: odometry stale" % op)
+                return ("DONE:home none (odometry stale: the start point was "
+                        "NOT recorded)")
+            rows = self._home_rows()
+            if op == "mark":
+                ev, marked = home.mark(pose, rows, now, src="mark"), True
+            else:
+                marked, ev = home.auto(pose, rows, now)
+            if ev:
+                self._home_log(ev)
+            snap = home.snapshot(pose, now) or {}
+            return "DONE:home %s %s" % ("marked" if marked else "kept",
+                                        json.dumps(snap, sort_keys=True))
+        if op in ("candidate", "promote"):     # candidate/promote ops
+            if pose is None:
+                self._home_log("%s refused: odometry stale" % op)
+                return ("DONE:home none (odometry stale: the start point was "
+                        "NOT recorded)")
+            rows = self._home_rows()
+            if op == "candidate":
+                ev = home.candidate(pose, rows, now)
+                if ev:
+                    self._home_log(ev)
+                return "DONE:home candidate"
+            ev = home.promote(pose, rows, now)
+            if ev:
+                self._home_log(ev)
+            snap = home.snapshot(pose, now) or {}
+            return "DONE:home marked " + json.dumps(snap, sort_keys=True)
+        if op == "picked":
+            ev = home.set_held(now)
+            if ev:
+                self._home_log(ev)
+                return "DONE:home held"
+            return "DONE:home none (no start point)"
+        if op == "clear":
+            ev = home.clear(str(req.get("why") or "brain")[:40])
+            if ev:
+                self._home_log(ev)
+                return "DONE:home cleared"
+            return "DONE:home none (no start point)"
+        return ("ERROR:home bad_request:op must be "
+                "status|mark|auto|candidate|promote|picked|clear")
+
