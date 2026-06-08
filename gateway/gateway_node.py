@@ -6830,3 +6830,7 @@ class GatewayNode:
     #: goal, so its relayed /walk_target 'stop' lands first.
     RETURN_COORD_SETTLE_S = 0.5
 
+    def publish_walk_pose(self, text: str) -> None:
+        """Hook: publish one /walk_pose String (_RosGateway overrides)."""
+        raise RuntimeError("no /walk_pose publisher outside ROS")
+
