@@ -6830,3 +6830,473 @@ class GatewayNode:
     #: goal, so its relayed /walk_target 'stop' lands first.
     RETURN_COORD_SETTLE_S = 0.5
 
+    def publish_walk_pose(self, text: str) -> None:
+        """Hook: publish one /walk_pose String (_RosGateway overrides)."""
+        raise RuntimeError("no /walk_pose publisher outside ROS")
+
+    def _do_return_home(self, args: List) -> str:
+        """``return_home`` verb (B8l F7, motion, BLOCKS <= RETURN_WAIT_S):
+        walk_node walks to the recorded start point on odometry and faces the
+        requester (or the start heading).  'DONE return_home: ...' on
+        HOME_REACHED; 'ERROR:return_home <why>' otherwise."""
+        home = getattr(self, "_home", None)
+        if home is None:
+            return "ERROR:return_home unavailable (no home anchor module)"
+        if args:
+            return "ERROR:return_home takes no arguments"
+        now = time.time()
+        pose = self._odom_now(self._home_m.ODOM_FRESH_S)
+        if pose is None:
+            return ("ERROR:return_home odometry is stale (no fresh "
+                    "/unitree/slam_mapping/odom): the start point cannot be "
+                    "found")
+        goal = home.goal(now)
+        if goal is None:
+            return ("ERROR:return_home no start point recorded (the first "
+                    "navigate of a fetch request - 'get me ...', 'bring me ...' - "
+                    "with an empty hand records it; it expires after 15 min)")
+        snap = home.snapshot(pose, now) or {}
+        # the walk's obstacle stop needs the detector, and an empty view and a dead
+        # node look the same, so refuse to start when it has been silent for the
+        # assembler's whole liveness window.
+        with self._obs_lock:
+            alive = self._assembler.detections_alive()
+        if not alive:
+            return ("ERROR:return_home the detector has been silent for more "
+                    "than 10 s: the walk could not see a person in its way. "
+                    "Nothing moved.")
+        if not self._pose_lock.acquire(blocking=False):
+            return "ERROR:return_home busy (a return_home is already running)"
+        try:
+            with self._obs_lock:
+                self._pose_events = []
+                self._pose_active = True
+            # a coordinator watch left over from an earlier navigate could time out
+            # mid-return and send its own 'stop', so reset it first; its relayed
+            # /walk_target 'stop' then finds the walk idle.
+            try:
+                self.stop_walk()
+            except Exception as exc:  # noqa: BLE001 -- the return still runs
+                self._home_log("coordinator reset failed: %r" % (exc,))
+            time.sleep(self.RETURN_COORD_SETTLE_S)
+            t_sent = time.time()
+            try:
+                self.publish_walk_pose(json.dumps(goal, sort_keys=True))
+            except Exception as exc:  # noqa: BLE001
+                return "ERROR:return_home publish failed: %s" % exc
+            self._home_log("RETURN sent goal=%s (%.2f m away)"
+                           % (json.dumps(goal, sort_keys=True),
+                              snap.get("robot_to_home_m", -1.0)))
+            started = False
+            seen = 0
+            while True:
+                time.sleep(0.1)
+                with self._obs_lock:
+                    events = list(self._pose_events)
+                for phase, _lab, payload, ts in events[seen:]:
+                    if ts < t_sent:
+                        continue
+                    det = payload.get("detail") if isinstance(payload, dict) else None
+                    det = det if isinstance(det, dict) else {}
+                    if phase == "RETURNING":
+                        started = True
+                    elif phase == "HOME_REACHED":
+                        faced = det.get("faced") is True
+                        face = ("the person who asked" if goal.get("face_x") is not None
+                                else "the start heading")
+                        if det.get("requester_ahead_m") is not None:
+                            return ("DONE return_home: stopped in front of the "
+                                    "person who asked, %.2f m short of the start "
+                                    "point; %s them; HOME_ERR_M=%.3f; "
+                                    "REQUESTER_SEEN=yes; REQUESTER_AHEAD=yes; "
+                                    "PERSON_RADIUS_M=%.1f"
+                                    % (float(det.get("requester_ahead_m")),
+                                       "facing" if faced else "could not fully turn to",
+                                       float(det.get("err_m") or 0.0),
+                                       snap.get("radius_m", 0.0)))
+                        return ("DONE return_home: back at the start point "
+                                "(%.2f m from it by odometry); %s %s; "
+                                "HOME_ERR_M=%.3f; REQUESTER_SEEN=%s; "
+                                "PERSON_RADIUS_M=%.1f"
+                                % (float(det.get("err_m") or 0.0),
+                                   "facing" if faced else "could not fully turn to",
+                                   face, float(det.get("err_m") or 0.0),
+                                   "yes" if goal.get("face_x") is not None else "no",
+                                   snap.get("radius_m", 0.0)))
+                    elif phase == "HOME_FAILED":
+                        why = str(det.get("reason") or "unknown")
+                        if why == "stop":
+                            return ("ERROR:return_home cancelled: the walk was "
+                                    "stopped before the start point")
+                        return "ERROR:return_home failed: %s" % why
+                seen = len(events)
+                el = time.time() - t_sent
+                if not started and el > self.RETURN_START_S:
+                    self._return_stop()
+                    return ("ERROR:return_home the walk node did not start "
+                            "(no RETURNING within %.0f s: is the B8l walk_node "
+                            "running, OPENBOT_WALK_POSE not 0?)"
+                            % self.RETURN_START_S)
+                if el > self.RETURN_WAIT_S:
+                    self._return_stop()
+                    return "ERROR:return_home timeout after %.0f s" % el
+        finally:
+            with self._obs_lock:
+                self._pose_active = False
+            self._pose_lock.release()
+
+    def _return_stop(self) -> None:
+        try:
+            self.publish_walk_pose("stop")
+        except Exception:  # noqa: BLE001 -- best effort
+            pass
+
+    def _do_approach_person(self, args: List) -> str:
+        """``approach_person`` verb (B8l-hf5, operator 10-17 "Centre + creep
+        in"): turn in place until the person is centred (turn_around law),
+        then close in with short forward pulses (the creep pulse) until the
+        person is within the arm's reach (home_anchor.HANDOVER_ARRIVE_M),
+        never planning a pulse that could end nearer than HANDOVER_MIN_M.
+
+        Request: one optional JSON token {x, y} = the person row the brain
+        means (body frame); the first lock is the plausible person nearest it.
+        Every pulse is preceded by a cancel / budget / lost / obstacle check;
+        the lane is the turn_around lane (_turn_active: _do_cancel sends
+        'cmd_set off' while it is held).  Replies (ONE line):
+        'DONE approach_person: arrived ...; RANGE_M=; BEARING_DEG=; X=; Y=;
+        TRAVEL_M=; PULSES=; TURNS=; APPROACH_RESULT=arrived' or
+        'ERROR:approach_person <why>; APPROACH_RESULT=<lost|not_seen|
+        cancelled|busy|timeout|writer_refused|blocked|max_travel|too_far|
+        disabled|bad_args>; RANGE_M=; TRAVEL_M=; PULSES='."""
+        mod = getattr(self, "_home_m", None)
+        tail0 = "RANGE_M=-1.000; TRAVEL_M=0.000; PULSES=0"
+        if mod is None or not hasattr(mod, "handover_step"):
+            return ("ERROR:approach_person unavailable (no home anchor "
+                    "module); APPROACH_RESULT=disabled; " + tail0)
+        if not mod.handover_on(os.environ):
+            return ("ERROR:approach_person disabled (%s=0); "
+                    "APPROACH_RESULT=disabled; %s" % (mod.HANDOVER_ENV, tail0))
+        seed = None
+        if args:
+            try:
+                req = json.loads(args[0]) if isinstance(args[0], str) else args[0]
+                if len(args) != 1 or not isinstance(req, dict):
+                    raise ValueError("one JSON object")
+                if req.get("x") is not None or req.get("y") is not None:
+                    sx, sy = float(req["x"]), float(req["y"])
+                    if not (math.isfinite(sx) and math.isfinite(sy)
+                            and abs(sx) <= 3.0 and 0.0 < sy <= 3.0):
+                        raise ValueError("x / y")
+                    seed = (sx, sy)
+            except Exception:  # noqa: BLE001 -- a malformed request is a refusal
+                return ("ERROR:approach_person bad_args; "
+                        "APPROACH_RESULT=bad_args; " + tail0)
+        if self._yolo_walk_active():
+            return ("ERROR:approach_person busy (the walk FSM is moving); "
+                    "APPROACH_RESULT=busy; " + tail0)
+        with self._obs_lock:
+            busy = bool(getattr(self, "_turn_active", False))
+            if not busy:
+                self._turn_active = True
+                self._turn_events = []
+        if busy:
+            return ("ERROR:approach_person busy (a turn_around or creep is in "
+                    "flight; this request did NOT move the robot); "
+                    "APPROACH_RESULT=busy; " + tail0)
+        clock, sleep = self._turn_clock, self._turn_sleep
+        cancel0 = self._cancel_ts
+        self._turn_pulsed = False
+        pulses = turns = 0
+        travel = 0.0
+        result, detail = None, ""
+        last = None                  # (x, y) of the person being tracked
+        rng, err = -1.0, 0.0
+        centred = False
+        unseen = 0                   # forward pulses since that last row
+        fwd_from = None              # range at which the last forward pulse left
+        max_drop = 0.0               # biggest range drop seen per pulse
+        try:
+            if not self._creep_walk_settled():
+                result, detail = "busy", "the walk FSM did not reach IDLE"
+            t0 = clock()
+            last_seen = t0
+            next_read = t0               # a row has to arrive after this point
+            first = True
+            while result is None:
+                now = clock()
+                if self._cancel_ts > cancel0:
+                    result = "cancelled"
+                    break
+                if now - t0 >= mod.HANDOVER_BUDGET_S:
+                    result = "timeout"
+                    break
+                rows, pts = self._turn_rows()
+                row = None
+                if pts > next_read and (now - pts) <= TURN_ROW_MAX_AGE_S:
+                    row = mod.handover_track(rows, last, seed if first else None)
+                if row is None:
+                    if now - last_seen >= mod.HANDOVER_LOST_S:
+                        result = "not_seen" if first else "lost"
+                        # get this close to a person and they drop out of the frame
+                        est = (mod.handover_close_lost(rng, centred, unseen)
+                               if not first else None)
+                        if est is not None:
+                            result = "close_lost"
+                            detail = ("last seen %.2f m away, %d pulse(s) ago"
+                                      % (rng, unseen))
+                            last = (last[0], last[1]
+                                    - mod.HANDOVER_P_NOM_M * unseen)
+                            rng = est
+                        break
+                    sleep(TURN_TICK_S)
+                    continue
+                if first:
+                    x0, y0 = float(row["x"]), float(row["y"])
+                    if math.hypot(x0, y0) > mod.HANDOVER_START_MAX_M:
+                        result = "too_far"
+                        detail = ("the person is %.2f m away (> %.2f m): "
+                                  "navigate first" % (math.hypot(x0, y0),
+                                                      mod.HANDOVER_START_MAX_M))
+                        rng = math.hypot(x0, y0)
+                        break
+                first = False
+                last_seen = now
+                unseen = 0
+                last = (float(row["x"]), float(row["y"]))
+                rng = math.hypot(last[0], last[1])
+                err = _turn_bearing(last[0], last[1])
+                if fwd_from is not None:
+                    # measure what the pulse actually closed (or the person). walking too close
+                    # is a safety failure.
+                    max_drop = max(max_drop, fwd_from - rng)
+                    fwd_from = None
+                if abs(err) <= mod.HANDOVER_TOL_RAD:
+                    centred = True
+                step = mod.handover_step(rng, err, centred, pulses,
+                                         mod.handover_p_hi(max_drop))
+                if step == "arrived":
+                    result = "arrived"
+                    break
+                if step == "max_travel":
+                    result = "max_travel"
+                    detail = "%d pulses sent, the person is still %.2f m away" % (
+                        pulses, rng)
+                    break
+                if step == "turn":
+                    vx, omega, pulse = 0.0, _turn_omega(err), TURN_PULSE_S
+                    dur = TURN_PULSE_S
+                else:
+                    blocked = mod.handover_blocked(rows, row)
+                    if blocked:
+                        result, detail = "blocked", blocked
+                        break
+                    vx, omega = mod.HANDOVER_VX, mod.handover_corr_omega(err)
+                    pulse = mod.HANDOVER_PULSE_S
+                    dur = mod.HANDOVER_PULSE_S + mod.HANDOVER_SETTLE_S
+                line = "cmd_set %.3f 0.000 %.3f %.3f" % (vx, omega, pulse)
+                self._turn_pulsed = True
+                try:
+                    wreply = str(self.writer_verb(line))
+                except Exception as exc:  # noqa: BLE001 -- report, never raise
+                    wreply = "ERROR:%s" % exc
+                if not wreply.startswith("DONE"):
+                    result = "writer_refused"
+                    detail = " ".join(_defang_error_token(wreply).split())[:60]
+                    break
+                if step == "turn":
+                    turns += 1
+                    fwd_from = None
+                else:
+                    pulses += 1
+                    unseen += 1
+                    fwd_from = rng
+                    travel += mod.HANDOVER_P_NOM_M
+                self._home_log("APPROACH %s %s range=%.2f bearing=%+.1f deg "
+                               "omega=%+.3f pulses=%d turns=%d max_drop=%.3f"
+                               % (step, "centred" if centred else "centring",
+                                  rng, math.degrees(err), omega, pulses, turns,
+                                  max_drop))
+                t_end = clock() + dur
+                next_read = t_end if step != "turn" else clock() + TURN_PULSE_S
+                last_seen = max(last_seen, t_end)
+                while clock() < t_end:
+                    if self._cancel_ts > cancel0:
+                        break
+                    sleep(TURN_TICK_S)
+        finally:
+            if self._turn_pulsed:
+                try:
+                    self.writer_verb("cmd_set off")
+                except Exception:  # noqa: BLE001 -- the pulse auto-expires
+                    pass
+                sleep(mod.HANDOVER_FINAL_SETTLE_S)
+            with self._obs_lock:
+                self._turn_active = False
+            self._turn_pulsed = False
+        if result in mod.HANDOVER_RESULTS_OK and self._cancel_ts > cancel0:
+            result, detail = "cancelled", "stop/cancel during the final settle"
+        self._home_log("APPROACH END result=%s range=%.2f bearing=%+.1f deg "
+                       "pulses=%d turns=%d %s" % (result, rng, math.degrees(err),
+                                                  pulses, turns, detail))
+        if result not in mod.HANDOVER_RESULTS_OK:
+            return ("ERROR:approach_person %s%s; APPROACH_RESULT=%s; "
+                    "RANGE_M=%.3f; TRAVEL_M=%.3f; PULSES=%d"
+                    % (result, (" (%s)" % detail) if detail else "", result,
+                       rng, travel, pulses))
+        how = ("arrived" if result == "arrived" else
+               "lost sight of the person at close range (%s)" % detail)
+        return ("DONE approach_person: %s after %d pulse(s) and %d turn "
+                "pulse(s); RANGE_M=%.3f; BEARING_DEG=%+.1f; X=%.3f; Y=%.3f; "
+                "TRAVEL_M=%.3f; PULSES=%d; TURNS=%d; APPROACH_RESULT=%s"
+                % (how, pulses, turns, rng, math.degrees(err), last[0], last[1],
+                   travel, pulses, turns, result))
+
+    def _do_aim_turn(self, args: List) -> str:
+        """``aim_turn`` verb (B8l-hf7, Stuart 10-17 23:06: a pick refused
+        'self_collision' because the bottle sat a few cm left of the right
+        arm's limit): turn IN PLACE, closed loop on the object's own
+        detection (the turn_around law), until it sits ``shift_m`` further
+        right than it was at the first lock; never a step.  Request: one
+        JSON token {label, x, y, shift_m} (x/y = the row the brain means).
+        Lane: the turn_around lane.  Replies (ONE line): 'DONE aim_turn: ...;
+        BEARING_DEG=; TARGET_DEG=; X=; Y=; Z=; TURNS=; AIM_RESULT=aimed' or
+        'ERROR:aim_turn <why>; AIM_RESULT=<not_seen|lost|no_small_turn|
+        max_turns|timeout|cancelled|busy|writer_refused|disabled|bad_args>;
+        TURNS='."""
+        mod = getattr(self, "_home_m", None)
+        if mod is None or not hasattr(mod, "aim_track"):
+            return ("ERROR:aim_turn unavailable (no home anchor module); "
+                    "AIM_RESULT=disabled; TURNS=0")
+        if not mod.aim_on(os.environ):
+            return ("ERROR:aim_turn disabled (%s=0); AIM_RESULT=disabled; "
+                    "TURNS=0" % mod.AIM_ENV)
+        try:
+            req = json.loads(args[0]) if isinstance(args[0], str) else args[0]
+            if len(args) != 1 or not isinstance(req, dict):
+                raise ValueError("one JSON object")
+            label = str(req.get("label") or "").strip().lower()
+            sx, sy = float(req["x"]), float(req["y"])
+            shift = float(req["shift_m"])
+            if not (label and math.isfinite(sx) and math.isfinite(sy)
+                    and abs(sx) <= 2.0 and 0.0 < sy <= 2.0
+                    and math.isfinite(shift) and 0.0 < shift <= 1.0):
+                raise ValueError("fields")
+        except Exception:  # noqa: BLE001 -- a malformed request is a refusal
+            return "ERROR:aim_turn bad_args; AIM_RESULT=bad_args; TURNS=0"
+        if self._yolo_walk_active():
+            return ("ERROR:aim_turn busy (the walk FSM is moving); "
+                    "AIM_RESULT=busy; TURNS=0")
+        with self._obs_lock:
+            busy = bool(getattr(self, "_turn_active", False))
+            if not busy:
+                self._turn_active = True
+                self._turn_events = []
+        if busy:
+            return ("ERROR:aim_turn busy (a turn_around or creep is in flight; "
+                    "this request did NOT move the robot); AIM_RESULT=busy; "
+                    "TURNS=0")
+        clock, sleep = self._turn_clock, self._turn_sleep
+        cancel0 = self._cancel_ts
+        self._turn_pulsed = False
+        turns = 0
+        result, detail = None, ""
+        last, row = None, None
+        target, bearing = None, 0.0
+        try:
+            if not self._creep_walk_settled():
+                result, detail = "busy", "the walk FSM did not reach IDLE"
+            t0 = clock()
+            last_seen = t0
+            next_read = t0
+            while result is None:
+                now = clock()
+                if self._cancel_ts > cancel0:
+                    result = "cancelled"
+                    break
+                if now - t0 >= mod.AIM_BUDGET_S:
+                    result = "timeout"
+                    break
+                rows, pts = self._turn_rows()
+                got = None
+                if pts > next_read and (now - pts) <= TURN_ROW_MAX_AGE_S:
+                    got = mod.aim_track(rows, label, last,
+                                        (sx, sy) if last is None else None)
+                if got is None:
+                    if now - last_seen >= mod.AIM_LOST_S:
+                        result = "not_seen" if last is None else "lost"
+                        break
+                    sleep(TURN_TICK_S)
+                    continue
+                row = got
+                last_seen = now
+                last = (float(row["x"]), float(row["y"]))
+                bearing = _turn_bearing(last[0], last[1])
+                if target is None:
+                    target = mod.aim_target_bearing(last[0], last[1], shift)
+                    if target is None:
+                        result = "no_small_turn"
+                        detail = ("%s at x=%.3f y=%.3f cannot move %.2f m right "
+                                  "by a small turn" % (label, last[0], last[1],
+                                                       shift))
+                        break
+                err = bearing - target
+                if mod.aim_done(err):
+                    result = "aimed"
+                    break
+                if turns >= mod.AIM_MAX_PULSES:
+                    result = "max_turns"
+                    break
+                omega = mod.aim_omega(err)
+                line = "cmd_set %.3f %.3f %.3f %.3f" % (0.0, 0.0, omega, TURN_PULSE_S)
+                self._turn_pulsed = True
+                try:
+                    wreply = str(self.writer_verb(line))
+                except Exception as exc:  # noqa: BLE001 -- report, never raise
+                    wreply = "ERROR:%s" % exc
+                if not wreply.startswith("DONE"):
+                    result = "writer_refused"
+                    detail = " ".join(_defang_error_token(wreply).split())[:60]
+                    break
+                turns += 1
+                self._home_log("AIM %s bearing=%+.1f deg target=%+.1f deg "
+                               "omega=%+.3f turns=%d"
+                               % (label, math.degrees(bearing),
+                                  math.degrees(target), omega, turns))
+                t_end = clock() + TURN_PULSE_S + 0.3
+                next_read = t_end
+                last_seen = max(last_seen, t_end)
+                while clock() < t_end:
+                    if self._cancel_ts > cancel0:
+                        break
+                    sleep(TURN_TICK_S)
+        finally:
+            if self._turn_pulsed:
+                try:
+                    self.writer_verb("cmd_set off")
+                except Exception:  # noqa: BLE001 -- the pulse auto-expires
+                    pass
+                sleep(mod.AIM_FINAL_SETTLE_S)
+            with self._obs_lock:
+                self._turn_active = False
+            self._turn_pulsed = False
+        if result == "aimed" and self._cancel_ts > cancel0:
+            result, detail = "cancelled", "stop/cancel during the final settle"
+        self._home_log("AIM END result=%s bearing=%+.1f deg target=%s turns=%d %s"
+                       % (result, math.degrees(bearing),
+                          "%+.1f deg" % math.degrees(target)
+                          if target is not None else "-", turns, detail))
+        if result != "aimed":
+            return ("ERROR:aim_turn %s%s; AIM_RESULT=%s; TURNS=%d"
+                    % (result, (" (%s)" % detail) if detail else "", result,
+                       turns))
+        z = row.get("z") if isinstance(row, dict) else None
+        try:
+            z = float(z)
+        except (TypeError, ValueError):
+            z = float("nan")
+        return ("DONE aim_turn: %s now at %+.1f deg (+ = right) after %d turn "
+                "pulse(s); BEARING_DEG=%+.1f; TARGET_DEG=%+.1f; X=%.3f; Y=%.3f; "
+                "Z=%.3f; TURNS=%d; AIM_RESULT=aimed"
+                % (label, math.degrees(bearing), turns, math.degrees(bearing),
+                   math.degrees(target), last[0], last[1], z, turns))
+
