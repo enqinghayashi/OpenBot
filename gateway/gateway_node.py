@@ -6656,3 +6656,177 @@ class GatewayNode:
             label = parts[0]
         return label.strip().lower()
 
+    def _nav_strict_begin(self, args: List, hid: Optional[int]):
+        """F2: track this navigate's hold so the walk status can widen /
+        re-narrow it.  None (nothing tracked) without a hold or switched off."""
+        lk = getattr(self, "_nav_strict_lock", None)
+        if hid is None or lk is None:
+            return None
+        if os.environ.get(self.NAV_WIDEN_ENV, "").strip() == "0":
+            return None
+        label = self._nav_bare_label(args)
+        if label is None:
+            return None
+        ns = {"label": label, "hid": hid, "widened": 0, "narrowed": 0}
+        with lk:
+            self._nav_strict = ns
+        return ns
+
+    def _nav_strict_end(self, ns, hid: Optional[int]) -> Optional[int]:
+        """F2: the navigate returned -> the hold it holds NOW (None when it
+        is widened), which _strict_nav_done then hands to the walk's end."""
+        if ns is None:
+            return hid
+        with self._nav_strict_lock:
+            if self._nav_strict is ns:
+                self._nav_strict = None
+            cur = ns["hid"]
+        if ns["widened"]:
+            self._strict_log("navigate %s returned (widened %d, re-narrowed %d)"
+                             % (ns["label"], ns["widened"], ns["narrowed"]))
+        return cur
+
+    def _strict_on_walk(self, phase_raw: Optional[str], label: Optional[str],
+                        payload: Any) -> None:
+        """F2 (walk-status callback, never blocks): APPROACHING for the
+        navigate's label closes its hold; any SEARCHING after that (the
+        approach ended: a re-sweep, a retarget, the sweep's own frames)
+        re-opens it.  The walk's reacquire speaks APPROACHING, so it stays
+        wide while it looks for the object it lost."""
+        lk = getattr(self, "_nav_strict_lock", None)
+        holds = getattr(self, "_strict_holds", None)
+        if lk is None or holds is None or not phase_raw:
+            return
+        with lk:
+            ns = self._nav_strict
+            if ns is None or label != ns["label"]:
+                return
+            if phase_raw == "APPROACHING" and ns["hid"] is not None:
+                act, hid = "widen", ns["hid"]
+                ns["hid"] = None
+                ns["widened"] += 1
+            elif phase_raw == "SEARCHING" and ns["hid"] is None:
+                act, hid = "narrow", None
+            else:
+                return
+        try:
+            if act == "widen":
+                self._strict_close(hid, wait=False,
+                                   why="walk APPROACHING: the walk follows %s "
+                                   "by identity, full vocabulary back" % label)
+                return
+            new = holds.open("navigate", [label], self._strict_mod.NAV_HOLD_MAX_S)
+            with lk:
+                keep = self._nav_strict is ns
+                if keep:
+                    ns["hid"] = new
+                    ns["narrowed"] += 1
+            if not keep:
+                holds.close(new)            # the navigate has already returned
+                return
+            self._strict_sync()
+            self._strict_log("hold %d RE-OPENED navigate labels=%s (walk re-sweep)"
+                             % (new, ",".join(holds.labels())))
+        except Exception as exc:  # noqa: BLE001 -- the status path never raises
+            self._strict_log("navigate widen/narrow failed: %r" % (exc,))
+
+    def _home_rows(self) -> List[dict]:
+        ts, rows = getattr(self, "_b8l_rows", (0.0, []))
+        if time.time() - ts > self.HOME_ROWS_MAX_AGE_S:
+            return []
+        return [r for r in rows if isinstance(r, dict)]
+
+    def _do_home(self, args: List) -> str:
+        """``home`` verb (B8l, no motion): one JSON object {op, why}.
+        op status (default) -> 'DONE:home {...}' | 'DONE:home none (<why>)';
+        mark / auto -> 'DONE:home marked {...}' | 'DONE:home kept {...}' |
+        'DONE:home none (<why>)'; clear -> 'DONE:home cleared' | 'DONE:home
+        none (no start point)'.  'ERROR:home bad_request:<why>' otherwise."""
+        home = getattr(self, "_home", None)
+        if home is None:
+            return "DONE:home none (unavailable)"
+        req: Any = {}
+        if args:
+            if len(args) != 1:
+                return "ERROR:home bad_request:expected one JSON object"
+            req = args[0]
+            if isinstance(req, str):
+                try:
+                    req = json.loads(req) if req.strip() else {}
+                except ValueError:
+                    return "ERROR:home bad_request:not JSON"
+            if not isinstance(req, dict):
+                return "ERROR:home bad_request:not a JSON object"
+        op = str(req.get("op") or "status").strip().lower()
+        now = time.time()
+        pose = self._odom_now(self._home_m.ODOM_FRESH_S)
+        if op == "status":
+            snap = home.snapshot(pose, now)
+            if snap is None:
+                return "DONE:home none (no start point recorded)"
+            snap["odom_fresh"] = pose is not None
+            return "DONE:home " + json.dumps(snap, sort_keys=True)
+        if op in ("mark", "auto"):
+            if pose is None:
+                self._home_log("%s refused: odometry stale" % op)
+                return ("DONE:home none (odometry stale: the start point was "
+                        "NOT recorded)")
+            rows = self._home_rows()
+            if op == "mark":
+                ev, marked = home.mark(pose, rows, now, src="mark"), True
+            else:
+                marked, ev = home.auto(pose, rows, now)
+            if ev:
+                self._home_log(ev)
+            snap = home.snapshot(pose, now) or {}
+            return "DONE:home %s %s" % ("marked" if marked else "kept",
+                                        json.dumps(snap, sort_keys=True))
+        if op in ("candidate", "promote"):     # candidate/promote ops
+            if pose is None:
+                self._home_log("%s refused: odometry stale" % op)
+                return ("DONE:home none (odometry stale: the start point was "
+                        "NOT recorded)")
+            rows = self._home_rows()
+            if op == "candidate":
+                ev = home.candidate(pose, rows, now)
+                if ev:
+                    self._home_log(ev)
+                return "DONE:home candidate"
+            ev = home.promote(pose, rows, now)
+            if ev:
+                self._home_log(ev)
+            snap = home.snapshot(pose, now) or {}
+            return "DONE:home marked " + json.dumps(snap, sort_keys=True)
+        if op == "picked":
+            ev = home.set_held(now)
+            if ev:
+                self._home_log(ev)
+                return "DONE:home held"
+            return "DONE:home none (no start point)"
+        if op == "clear":
+            ev = home.clear(str(req.get("why") or "brain")[:40])
+            if ev:
+                self._home_log(ev)
+                return "DONE:home cleared"
+            return "DONE:home none (no start point)"
+        return ("ERROR:home bad_request:op must be "
+                "status|mark|auto|candidate|promote|picked|clear")
+
+    def _home_stop(self, why: str) -> None:
+        """B8l (operator decision 2026-10-17): a stop / cancel ends a fetch that
+        has not picked yet, and only pauses one carrying the object (never
+        raises)."""
+        home = getattr(self, "_home", None)
+        if home is None:
+            return
+        try:
+            ev = home.stop(why, time.time())
+        except Exception:  # noqa: BLE001 -- never blocks the verb
+            ev = None
+        if ev:
+            self._home_log(ev)
+
+    #: return_home: after the coordinator reset, wait this long before the pose
+    #: goal, so its relayed /walk_target 'stop' lands first.
+    RETURN_COORD_SETTLE_S = 0.5
+
