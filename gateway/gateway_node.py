@@ -6812,3 +6812,21 @@ class GatewayNode:
         return ("ERROR:home bad_request:op must be "
                 "status|mark|auto|candidate|promote|picked|clear")
 
+    def _home_stop(self, why: str) -> None:
+        """B8l (operator decision 2026-10-17): a stop / cancel ends a fetch that
+        has not picked yet, and only pauses one carrying the object (never
+        raises)."""
+        home = getattr(self, "_home", None)
+        if home is None:
+            return
+        try:
+            ev = home.stop(why, time.time())
+        except Exception:  # noqa: BLE001 -- never blocks the verb
+            ev = None
+        if ev:
+            self._home_log(ev)
+
+    #: return_home: after the coordinator reset, wait this long before the pose
+    #: goal, so its relayed /walk_target 'stop' lands first.
+    RETURN_COORD_SETTLE_S = 0.5
+
