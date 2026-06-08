@@ -6481,3 +6481,16 @@ class GatewayNode:
     def _lock_now(self) -> float:
         return float(getattr(self, "_lock_clock", time.time)())
 
+    def _lock_clear(self, why: str) -> None:
+        """Any robot motion other than the creep ends the lock."""
+        lock = getattr(self, "_container_lock", None)
+        if lock is None:
+            return
+        self._lock_pending = None
+        try:
+            ev = lock.clear(why)
+        except Exception:  # noqa: BLE001 -- never blocks the verb
+            ev = None
+        if ev:
+            self._lock_log(ev)
+
