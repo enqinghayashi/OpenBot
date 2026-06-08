@@ -7410,3 +7410,20 @@ class GatewayNode:
                 "STEPBACK_M=%.3f; STEPBACK_RESULT=done"
                 % (moved, mod.STEPBACK_VX, moved))
 
+    def _do_container(self, args: List) -> str:
+        """``container`` verb (B8j, query, no motion): the locked container
+        as one JSON line, 'DONE:container {...}', or 'DONE:container none
+        (<why>)'."""
+        lock = getattr(self, "_container_lock", None)
+        if lock is None:
+            return "DONE:container none (unavailable)"
+        if not self._lock_on():
+            return "DONE:container none (disabled: OPENBOT_CONTAINER_LOCK=0)"
+        snap = lock.snapshot(self._lock_now())
+        if snap is None:
+            return ("DONE:container none (no lock: no container REACHED since "
+                    "the last motion)")
+        return "DONE:container " + json.dumps(snap, sort_keys=True)
+
+    _CREEP_LABEL_RE = re.compile(r"^[a-z][a-z0-9_ ]{0,31}$")
+
