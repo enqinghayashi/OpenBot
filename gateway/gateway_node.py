@@ -7503,3 +7503,40 @@ class GatewayNode:
         with self._obs_lock:
             return list(self._lock_rows), float(self._lock_rows_ts)
 
+    def _creep_blocked(self, rows: List[dict], iid: Optional[int],
+                       c_near: float) -> Optional[str]:
+        """A reason to stop: a plausible person within CREEP_PERSON_STOP_M, or
+        another object low in the corridor nearer than the container."""
+        mod = self._lock_m
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            try:
+                x, y, z = float(r["x"]), float(r["y"]), float(r["z"])
+                conf = float(r.get("conf") or 0.0)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
+                continue
+            if iid is not None and r.get("instance_id") == iid:
+                continue
+            d = math.hypot(x, y)
+            if d < mod.CREEP_SELF_ZONE_M:
+                continue                     # the robot's own arm and hand rows
+            lab = str(r.get("label") or "").strip().lower()
+            if lab == "person":
+                try:
+                    h = float(r.get("height_m") or 0.0)
+                except (TypeError, ValueError):
+                    h = 0.0
+                if (conf >= mod.CREEP_PERSON_MIN_CONF
+                        and h >= mod.CREEP_PERSON_MIN_H_M
+                        and d <= mod.CREEP_PERSON_STOP_M):
+                    return "person at %.2f m" % d
+                continue
+            if (conf >= mod.CREEP_OBST_MIN_CONF and z <= mod.CREEP_OBST_Z_MAX
+                    and abs(x) <= mod.CREEP_OBST_CORRIDOR_M
+                    and d < c_near - 0.05):
+                return "%s at %.2f m, nearer than the container" % (lab, d)
+        return None
+
