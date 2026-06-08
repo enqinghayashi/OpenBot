@@ -7151,3 +7151,152 @@ class GatewayNode:
                 % (how, pulses, turns, rng, math.degrees(err), last[0], last[1],
                    travel, pulses, turns, result))
 
+    def _do_aim_turn(self, args: List) -> str:
+        """``aim_turn`` verb (B8l-hf7, Stuart 10-17 23:06: a pick refused
+        'self_collision' because the bottle sat a few cm left of the right
+        arm's limit): turn IN PLACE, closed loop on the object's own
+        detection (the turn_around law), until it sits ``shift_m`` further
+        right than it was at the first lock; never a step.  Request: one
+        JSON token {label, x, y, shift_m} (x/y = the row the brain means).
+        Lane: the turn_around lane.  Replies (ONE line): 'DONE aim_turn: ...;
+        BEARING_DEG=; TARGET_DEG=; X=; Y=; Z=; TURNS=; AIM_RESULT=aimed' or
+        'ERROR:aim_turn <why>; AIM_RESULT=<not_seen|lost|no_small_turn|
+        max_turns|timeout|cancelled|busy|writer_refused|disabled|bad_args>;
+        TURNS='."""
+        mod = getattr(self, "_home_m", None)
+        if mod is None or not hasattr(mod, "aim_track"):
+            return ("ERROR:aim_turn unavailable (no home anchor module); "
+                    "AIM_RESULT=disabled; TURNS=0")
+        if not mod.aim_on(os.environ):
+            return ("ERROR:aim_turn disabled (%s=0); AIM_RESULT=disabled; "
+                    "TURNS=0" % mod.AIM_ENV)
+        try:
+            req = json.loads(args[0]) if isinstance(args[0], str) else args[0]
+            if len(args) != 1 or not isinstance(req, dict):
+                raise ValueError("one JSON object")
+            label = str(req.get("label") or "").strip().lower()
+            sx, sy = float(req["x"]), float(req["y"])
+            shift = float(req["shift_m"])
+            if not (label and math.isfinite(sx) and math.isfinite(sy)
+                    and abs(sx) <= 2.0 and 0.0 < sy <= 2.0
+                    and math.isfinite(shift) and 0.0 < shift <= 1.0):
+                raise ValueError("fields")
+        except Exception:  # noqa: BLE001 -- a malformed request is a refusal
+            return "ERROR:aim_turn bad_args; AIM_RESULT=bad_args; TURNS=0"
+        if self._yolo_walk_active():
+            return ("ERROR:aim_turn busy (the walk FSM is moving); "
+                    "AIM_RESULT=busy; TURNS=0")
+        with self._obs_lock:
+            busy = bool(getattr(self, "_turn_active", False))
+            if not busy:
+                self._turn_active = True
+                self._turn_events = []
+        if busy:
+            return ("ERROR:aim_turn busy (a turn_around or creep is in flight; "
+                    "this request did NOT move the robot); AIM_RESULT=busy; "
+                    "TURNS=0")
+        clock, sleep = self._turn_clock, self._turn_sleep
+        cancel0 = self._cancel_ts
+        self._turn_pulsed = False
+        turns = 0
+        result, detail = None, ""
+        last, row = None, None
+        target, bearing = None, 0.0
+        try:
+            if not self._creep_walk_settled():
+                result, detail = "busy", "the walk FSM did not reach IDLE"
+            t0 = clock()
+            last_seen = t0
+            next_read = t0
+            while result is None:
+                now = clock()
+                if self._cancel_ts > cancel0:
+                    result = "cancelled"
+                    break
+                if now - t0 >= mod.AIM_BUDGET_S:
+                    result = "timeout"
+                    break
+                rows, pts = self._turn_rows()
+                got = None
+                if pts > next_read and (now - pts) <= TURN_ROW_MAX_AGE_S:
+                    got = mod.aim_track(rows, label, last,
+                                        (sx, sy) if last is None else None)
+                if got is None:
+                    if now - last_seen >= mod.AIM_LOST_S:
+                        result = "not_seen" if last is None else "lost"
+                        break
+                    sleep(TURN_TICK_S)
+                    continue
+                row = got
+                last_seen = now
+                last = (float(row["x"]), float(row["y"]))
+                bearing = _turn_bearing(last[0], last[1])
+                if target is None:
+                    target = mod.aim_target_bearing(last[0], last[1], shift)
+                    if target is None:
+                        result = "no_small_turn"
+                        detail = ("%s at x=%.3f y=%.3f cannot move %.2f m right "
+                                  "by a small turn" % (label, last[0], last[1],
+                                                       shift))
+                        break
+                err = bearing - target
+                if mod.aim_done(err):
+                    result = "aimed"
+                    break
+                if turns >= mod.AIM_MAX_PULSES:
+                    result = "max_turns"
+                    break
+                omega = mod.aim_omega(err)
+                line = "cmd_set %.3f %.3f %.3f %.3f" % (0.0, 0.0, omega, TURN_PULSE_S)
+                self._turn_pulsed = True
+                try:
+                    wreply = str(self.writer_verb(line))
+                except Exception as exc:  # noqa: BLE001 -- report, never raise
+                    wreply = "ERROR:%s" % exc
+                if not wreply.startswith("DONE"):
+                    result = "writer_refused"
+                    detail = " ".join(_defang_error_token(wreply).split())[:60]
+                    break
+                turns += 1
+                self._home_log("AIM %s bearing=%+.1f deg target=%+.1f deg "
+                               "omega=%+.3f turns=%d"
+                               % (label, math.degrees(bearing),
+                                  math.degrees(target), omega, turns))
+                t_end = clock() + TURN_PULSE_S + 0.3
+                next_read = t_end
+                last_seen = max(last_seen, t_end)
+                while clock() < t_end:
+                    if self._cancel_ts > cancel0:
+                        break
+                    sleep(TURN_TICK_S)
+        finally:
+            if self._turn_pulsed:
+                try:
+                    self.writer_verb("cmd_set off")
+                except Exception:  # noqa: BLE001 -- the pulse auto-expires
+                    pass
+                sleep(mod.AIM_FINAL_SETTLE_S)
+            with self._obs_lock:
+                self._turn_active = False
+            self._turn_pulsed = False
+        if result == "aimed" and self._cancel_ts > cancel0:
+            result, detail = "cancelled", "stop/cancel during the final settle"
+        self._home_log("AIM END result=%s bearing=%+.1f deg target=%s turns=%d %s"
+                       % (result, math.degrees(bearing),
+                          "%+.1f deg" % math.degrees(target)
+                          if target is not None else "-", turns, detail))
+        if result != "aimed":
+            return ("ERROR:aim_turn %s%s; AIM_RESULT=%s; TURNS=%d"
+                    % (result, (" (%s)" % detail) if detail else "", result,
+                       turns))
+        z = row.get("z") if isinstance(row, dict) else None
+        try:
+            z = float(z)
+        except (TypeError, ValueError):
+            z = float("nan")
+        return ("DONE aim_turn: %s now at %+.1f deg (+ = right) after %d turn "
+                "pulse(s); BEARING_DEG=%+.1f; TARGET_DEG=%+.1f; X=%.3f; Y=%.3f; "
+                "Z=%.3f; TURNS=%d; AIM_RESULT=aimed"
+                % (label, math.degrees(bearing), turns, math.degrees(bearing),
+                   math.degrees(target), last[0], last[1], z, turns))
+
