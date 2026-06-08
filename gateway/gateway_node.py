@@ -6522,3 +6522,39 @@ class GatewayNode:
         for ev in events:
             self._lock_log(ev)
 
+    def _lock_on_walk(self, phase_raw: Optional[str], label: Optional[str],
+                      payload: Any) -> None:
+        """on_walk_status_packet: a walk that moves again ends the lock; the
+        REACHED of THIS navigate's container label arms it (once)."""
+        lock = getattr(self, "_container_lock", None)
+        mod = getattr(self, "_lock_m", None)
+        if lock is None or mod is None or not phase_raw:
+            return
+        if phase_raw in ("SEARCHING", "DETECTED", "APPROACHING"):
+            if lock.armed():
+                self._lock_clear("walk_" + phase_raw.lower())
+            return
+        if phase_raw != "REACHED" or not self._lock_on():
+            return
+        if label not in mod.CONTAINER_CLASSES:
+            return
+        now = self._lock_now()
+        with self._obs_lock:
+            epoch_ts, epoch_label = self._nav_epoch
+            rows = list(self._lock_rows)
+            rows_ts = self._lock_rows_ts
+        if epoch_ts <= 0.0 or epoch_label != label:
+            return
+        if self._lock_armed_epoch == epoch_ts:
+            return                      # REACHED gets re-published at 1 Hz
+        self._lock_armed_epoch = epoch_ts
+        detail = payload.get("detail") if isinstance(payload, dict) else None
+        ev = detail.get("stop_law") if isinstance(detail, dict) else None
+        if rows and now - rows_ts <= self.LOCK_ROWS_MAX_AGE_S:
+            msg = lock.arm(label, rows, now, ev)
+            if msg:
+                self._lock_log(msg)
+                return
+        self._lock_pending = (label, ev, now)
+        self._lock_log("ARM PENDING %s (no matching fresh row yet)" % label)
+
