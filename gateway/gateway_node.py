@@ -6945,3 +6945,9 @@ class GatewayNode:
                 self._pose_active = False
             self._pose_lock.release()
 
+    def _return_stop(self) -> None:
+        try:
+            self.publish_walk_pose("stop")
+        except Exception:  # noqa: BLE001 -- best effort
+            pass
+
