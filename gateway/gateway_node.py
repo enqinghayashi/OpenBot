@@ -6631,3 +6631,15 @@ class GatewayNode:
         with lock:
             self._odom_pose = (pose, time.time())
 
+    def _odom_now(self, max_age_s: float) -> Optional[tuple]:
+        """(x, y, yaw) when the last odometry pose is at most ``max_age_s``
+        old, else None."""
+        lock = getattr(self, "_odom_lock", None)
+        if lock is None:
+            return None
+        with lock:
+            slot = self._odom_pose
+        if slot is None or time.time() - slot[1] > max_age_s:
+            return None
+        return slot[0]
+
