@@ -6656,3 +6656,19 @@ class GatewayNode:
             label = parts[0]
         return label.strip().lower()
 
+    def _nav_strict_begin(self, args: List, hid: Optional[int]):
+        """F2: track this navigate's hold so the walk status can widen /
+        re-narrow it.  None (nothing tracked) without a hold or switched off."""
+        lk = getattr(self, "_nav_strict_lock", None)
+        if hid is None or lk is None:
+            return None
+        if os.environ.get(self.NAV_WIDEN_ENV, "").strip() == "0":
+            return None
+        label = self._nav_bare_label(args)
+        if label is None:
+            return None
+        ns = {"label": label, "hid": hid, "widened": 0, "narrowed": 0}
+        with lk:
+            self._nav_strict = ns
+        return ns
+
