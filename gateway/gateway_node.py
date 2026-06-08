@@ -6672,3 +6672,17 @@ class GatewayNode:
             self._nav_strict = ns
         return ns
 
+    def _nav_strict_end(self, ns, hid: Optional[int]) -> Optional[int]:
+        """F2: the navigate returned -> the hold it holds NOW (None when it
+        is widened), which _strict_nav_done then hands to the walk's end."""
+        if ns is None:
+            return hid
+        with self._nav_strict_lock:
+            if self._nav_strict is ns:
+                self._nav_strict = None
+            cur = ns["hid"]
+        if ns["widened"]:
+            self._strict_log("navigate %s returned (widened %d, re-narrowed %d)"
+                             % (ns["label"], ns["widened"], ns["narrowed"]))
+        return cur
+
