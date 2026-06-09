@@ -8596,3 +8596,13 @@ class GatewayNode:
             return "ERROR:no_user_reply:timeout"
         return "DONE:" + answer
 
+    def _do_notify_user(self, args: List) -> str:
+        """Non-blocking notice to the human (no reply wait).
+
+        Prints "[OpenBot NOTICE] <message>" to the gateway stdout (flushed)
+        and returns the exact reply "DONE:notified".
+        """
+        message = str(args[0]) if args else ""
+        print("[OpenBot NOTICE] %s" % message, flush=True)
+        return "DONE:notified"
+
