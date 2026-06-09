@@ -8066,3 +8066,149 @@ class GatewayNode:
                 last_pulse_end = clock() + TURN_PULSE_S
             sleep(TURN_TICK_S)
 
+    def _do_turn_around(self, args: List) -> Tuple[str, Optional[str]]:
+        """TURN IN PLACE, find a person, CENTRE them in the frame, stop.
+
+        THE OPERATOR ASK (verbatim 2026-10-03): *"just the simple turn around
+        sweep when i ask it to turn around, it will turn around to look for
+        person, once detected person, it stopped sweeping"*; and (run20, test
+        6) the turn-around should centre the person in the frame like the
+        navigate module does instead of stopping at the edge detection.
+
+        THIS VERB BLOCKS (<= TURN_TOTAL_BUDGET_S sweeping + TURN_CENTRE_BUDGET_S
+        centring, always < the 150 s gateway socket timeout).  Flow:
+
+          1. ``start_sweep(label)`` — the label goes DIRECTLY on /walk_target
+             (the walk FSM sweeps).  NEVER /navigate_target (the coordinator's
+             3rd-beat auto-approach would walk TO the person) and NEVER
+             /walk_go.
+          2. Wait for a PLAUSIBLE fresh /object_detections_body row (the
+             gateway sees detections itself).  A /walk_status NOT_FOUND ends
+             it (the FSM's own full-circle give-up).
+          3. On sight: ``stop_walk()`` (coordinator-routed), wait up to
+             TURN_STOP_SETTLE_S for IDLE so the FSM's loco stop cannot land
+             after the first pulse.
+          4. CENTRE: writer ``cmd_set 0 0 omega 0.35`` pulses with the SAME
+             bearing law and sign as walk_node (atan2(x, y); OMEGA_SIGN -1),
+             until the bearing is within TURN_TOL_RAD on TURN_CONFIRM_READS
+             fresh reads (the CENTRED outcome).  vx = vy = 0 always — no translation.
+          5. Lost while centring -> up to TURN_MAX_RESWEEPS re-sweeps.
+
+        REPLY (single line).  ONLY a verified centring starts with 'DONE
+        turn_around:' (brain/verifier.py certifies success on that prefix);
+        everything else leads with 'ERROR:turn_around' and ends with
+        TURN_RESULT=centred|seen_not_centred|not_seen|cancelled.  The verdict
+        element stays None; the brain post-hook owns the verdict.
+        The cancel stamp is polled every tick; ``_do_cancel`` also sends one
+        'cmd_set off' while a turn is active.
+        """
+        if len(args) > 1:
+            return "ERROR:turn_around [label]", None
+        label = "person" if not args else str(args[0] or "").strip().lower()
+        if not label:
+            return "ERROR:turn_around [label]", None
+        shown = _defang_error_token(" ".join(label.split()))
+        clock = self._turn_clock
+        t0 = clock()
+        cancel0 = self._cancel_ts
+        # the re-entrancy guard. the server runs one thread per connection, so a
+        # second turn_around can arrive while one is sweeping or centring, and two
+        # loops would double-pulse the writer. check-and-claim happens in one critical
+        # section on _obs_lock, and a refused call returns before the try/finally
+        # below, so it cannot clear the running turn's flag and sends nothing.
+        with self._obs_lock:
+            busy = bool(getattr(self, "_turn_active", False))
+            if not busy:
+                self._turn_active = True
+                self._turn_events = []
+        if busy:
+            return ("ERROR:turn_around busy - a turn_around is already in "
+                    "flight; this second request was refused and did NOT "
+                    "move the robot"), None
+        self._turn_pulsed = False
+        fsm_sweeping = False  # true while the walk FSM might still be turning
+        try:
+            resweeps = 0
+            while True:
+                with self._obs_lock:
+                    ev_mark = len(self._turn_events)
+                try:
+                    self.start_sweep(label)
+                except Exception as exc:  # noqa: BLE001 — report, never raise
+                    return "ERROR:turn_around publish failed: %s" % exc, None
+                fsm_sweeping = True
+                kind, info, sight_ts = self._turn_wait_sight(
+                    label, t0, clock(), cancel0, ev_mark)
+                if kind == "cancelled":
+                    return ("ERROR:turn_around: cancelled by the operator at "
+                            "phase %s; the robot is stopped; "
+                            "TURN_RESULT=cancelled" % "sweep"), None
+                if kind == "not_seen":
+                    reason, elapsed = info
+                    span = ("the full circle" if reason == "sweep_complete"
+                            else "for %.0f s" % elapsed)
+                    return ("ERROR:turn_around: swept %s and saw no '%s' "
+                            "(reason=%s); TURN_RESULT=not_seen"
+                            % (span, shown, reason)), None
+                seed_err = info
+                with self._obs_lock:
+                    marker = len(self._turn_events)
+                try:
+                    self.stop_walk()
+                except Exception as exc:  # noqa: BLE001 — cannot centre safely
+                    return ("ERROR:turn_around: saw '%s' but could NOT centre "
+                            "it (reason=stop_failed (%s); last bearing "
+                            "%+.1f deg; robot stopped, no walking); "
+                            "TURN_RESULT=seen_not_centred"
+                            % (shown, " ".join(_defang_error_token(
+                                str(exc)).split())[:60],
+                               math.degrees(seed_err))), None
+                fsm_sweeping = False
+                settled = self._turn_wait_idle(marker)
+                status, err, rng, detail = self._turn_centre(label, cancel0)
+                bearing = math.degrees(err if err is not None else seed_err)
+                if status == "cancelled":
+                    return ("ERROR:turn_around: cancelled by the operator at "
+                            "phase %s; the robot is stopped; "
+                            "TURN_RESULT=cancelled" % "centre"), None
+                if status == "centred":
+                    return ("DONE turn_around: turned and CENTRED on '%s' "
+                            "(bearing %+.1f deg, range %.2f m; centred %.1f s "
+                            "after first sight; stopped, no walking%s); "
+                            "TURN_RESULT=centred"
+                            % (shown, bearing, rng, clock() - sight_ts,
+                               "" if settled else "; settle=timeout")), None
+                if (status == "lost" and resweeps < TURN_MAX_RESWEEPS
+                        and (clock() - t0)
+                        < TURN_TOTAL_BUDGET_S - TURN_CENTRE_BUDGET_S):
+                    resweeps += 1
+                    continue  # start_sweep() re-arms fsm_sweeping
+                reason = status
+                if status == "lost" and not settled:
+                    reason = "settle_timeout_then_lost"
+                if status == "writer_refused" and detail:
+                    reason = "writer_refused (%s)" % detail
+                return ("ERROR:turn_around: saw '%s' but could NOT centre it "
+                        "(reason=%s; last bearing %+.1f deg; robot stopped, "
+                        "no walking); TURN_RESULT=seen_not_centred"
+                        % (shown, reason, bearing)), None
+        finally:
+            with self._obs_lock:
+                self._turn_active = False
+                last_ev = (self._turn_events[-1][0]
+                           if self._turn_events else None)
+            # every exit that would leave the walk FSM sweeping (not_seen budget, cancel,
+            # exception) has to stop it: the model is told the turn is over, so the body
+            # must not keep rotating. skipped when the FSM already reported IDLE or
+            # NOT_FOUND, since it stops by itself.
+            if fsm_sweeping and last_ev not in ("IDLE", "NOT_FOUND"):
+                try:
+                    self.stop_walk()
+                except Exception:  # noqa: BLE001 — best effort
+                    pass
+            if self._turn_pulsed:
+                try:
+                    self.writer_verb("cmd_set off")
+                except Exception:  # noqa: BLE001 — best effort; pulse auto-expires
+                    pass
+
