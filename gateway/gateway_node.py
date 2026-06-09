@@ -8606,3 +8606,198 @@ class GatewayNode:
         print("[OpenBot NOTICE] %s" % message, flush=True)
         return "DONE:notified"
 
+    def _read_user_answer(self, timeout_s: float) -> Optional[str]:
+        """Wait up to ``timeout_s`` for ONE human answer line on sys.stdin.
+
+        select-pattern polling (per-iteration grace 0.2 s, bounded by the
+        total deadline): a background reader thread would consume stdin while
+        idle and fight an ``input()`` elsewhere, so nothing reads stdin until
+        select() reports it readable.  The answer is sanitized — stripped,
+        whitespace collapsed to a single line, capped at 500 chars; an
+        empty/whitespace-only line is not an answer and keeps waiting.  EOF,
+        the total timeout, or an ABNORMAL/DETACHED stdin -> None (the caller
+        maps it to the honest "ERROR:no_user_reply:timeout"); this method
+        NEVER raises (round 8.5): an OSError/ValueError from ``select`` (e.g.
+        EBADF on a closed stdin) or an OSError/ValueError/EOFError from
+        ``readline`` is treated as EOF, so the exact reply grammar survives
+        a detached/closed operator terminal.  One private method so tests
+        can inject a scripted reader.
+        """
+        deadline = time.time() + float(timeout_s)
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return None
+            try:
+                readable, _, _ = select.select(
+                    [sys.stdin], [], [], min(0.2, remaining))
+            except (OSError, ValueError):
+                return None  # abnormal or detached stdin means EOF, never raise
+            if not readable:
+                continue
+            try:
+                line = sys.stdin.readline()
+            except (OSError, ValueError, EOFError):
+                return None  # detached/closed stdin -> no reply possible
+            if not line:  # EOF -> no reply coming
+                return None
+            answer = " ".join(line.strip().split())  # strip it, keep one line
+            if not answer:
+                continue  # an empty or whitespace-only line just keeps waiting
+            return answer[:500]
+
+    # ── verifier post-hook (runs after a verb) ───────────────────────────────
+
+    def _verify(self, tool: str, tool_result: str) -> Optional[str]:
+        """Run the SkillVerifier post-hook on a motion result.
+
+        Conservative rule comes from the verifier itself (ambiguous ->
+        'in_progress' + 're-observe'; never a false success). The returned
+        string is published on /skill_verdict by the caller.
+
+        Errors are NEVER swallowed: a verifier failure must be distinguishable
+        from 'no contracted tool'. On exception the reply is the honest
+        ``VERDICT:error|Evidence:(verifier error) <exc>`` string, which the
+        tools-server reply path surfaces as ok:false with the reason.
+        """
+        try:
+            from dataclasses import replace  # stdlib import
+            from brain.tool_contract import CONTRACTS  # lazy: these are brain modules
+            from brain.verifier import SkillVerifier
+            contract = CONTRACTS.get(tool)
+            if contract is None:
+                return None  # not a contracted tool, so no verdict
+            # pick only: _do_pick mints its verdict here rather than through
+            # the brain's post-hook, so the fix the brain applied to its own
+            # verifier is applied here too. the pick contract context is static
+            # prose carrying no `target_label=`, so verify_pick could resolve no
+            # target and returned the unconfirmable in_progress branch on every
+            # pick. prepended because _resolve_target takes the first match, so
+            # a named object beats anything in the static prose.
+            hint = getattr(self._req_target_hint, "label", None)
+            if tool == "pick" and hint:
+                contract = replace(
+                    contract,
+                    context="target_label=%s\n" % hint + contract.context)
+            # the pick point _do_pick parked for this call, using the identical
+            # `pick_point=%.3f,%.3f,%.3f` grammar the brain appends. lane off means slot
+            # None and nothing changes.
+            point = getattr(GatewayNode._PICK_POINT_TLS, "point", None)
+            if tool == "pick" and point is not None:
+                try:
+                    px, py, pz = (float(v) for v in point)
+                except (TypeError, ValueError):
+                    px = py = pz = float("nan")
+                if all(math.isfinite(v) for v in (px, py, pz)):
+                    contract = replace(
+                        contract,
+                        context="pick_point=%.3f,%.3f,%.3f\n" % (px, py, pz)
+                        + contract.context)
+            if self._verifier is None:
+                # one persistent instance: the navigate epoch gate keeps last-success state
+                # across calls. the silence switch is wired from the same runtime embodiment
+                # value the assembler uses.
+                self._verifier = SkillVerifier(
+                    silence_means_empty=self._silence_means_empty)
+            self._refresh_grip_state()  # obs.grip has to carry the live state
+            with self._obs_lock:
+                obs = self._assembler.observation()
+            verdict = self._verifier.verify(contract, obs, tool_result)
+            verdict_str = verdict.to_string()
+            # the confirmed-epoch memory lives in the persistent verifier
+            # (SkillVerifier.last_confirmed_epoch), with no gateway-side copy. through
+            # _emit_verdict: a lane run on this thread owns the publish and may still
+            # downgrade this verdict.
+            self._emit_verdict(verdict_str)
+            return verdict_str
+        except Exception as exc:
+            return "VERDICT:error|Evidence:(verifier error) %s" % exc
+
+    #: per-field bound on a trace line. the wire payloads are small (a verb, a
+    #: label, a few scalars), but a pick or place reply carries the engine's
+    #: whole verdict, and an unbounded stderr write off the socket thread is how
+    #: a trace turns into a stall. 4000 keeps a lane reply's ~500 chars of
+    #: hold-window disclosure plus the engine's own reply, including its trailing
+    #: `engine_reply=` token. log-only.
+    _WIRE_TRACE_CHARS = 4000
+
+    @classmethod
+    def _trace_wire(cls, verb: str, args: object,
+                    out: Dict[str, object]) -> None:
+        """Write ONE line per tool call to stderr: the request AND the reply.
+
+        WHY THIS EXISTS (MEASURED 2026-09-30, run9 post-mortem).  The pick
+        physically SUCCEEDED — engine grasp verdict, pre-lift pin, LIFT ->
+        CARRY_TUCK — and the operator was told "pick not confirmed".  That
+        verdict text is built HERE and until now it went exactly one place:
+        back down the socket to the brain.  Neither end recorded it.  The
+        gateway's own logging covers only `/walk_status` parsing (7
+        `get_logger()` calls, none on the tool path); the brain logs a tool
+        result ONLY when its kind is failure/unknown (`tool_executor.py:306`);
+        a SUCCESS verdict is written nowhere at all.  So no run could be asked
+        what the gateway had answered, and stating that question cost two runs.
+
+        ONE CHOKE POINT, THEREFORE TOTAL.  Every tool call leaves through the
+        single `conn.sendall` in `handle()`; tracing just before it captures
+        success, refusal, verifier error and malformed-JSON alike, in both
+        protocol shapes (brain_client named-args and legacy positional).
+
+        NEVER RAISES.  This runs on the socket thread inside a loop whose only
+        guard is `except OSError`: an exception here would break the client
+        mid-conversation.  A trace that can kill the call it describes is worse
+        than no trace, so the whole body sits inside the try.
+        """
+        try:
+            def _clip(value: object) -> str:
+                text = value if isinstance(value, str) else repr(value)
+                text = text.replace("\n", " ")
+                if len(text) > cls._WIRE_TRACE_CHARS:
+                    text = text[:cls._WIRE_TRACE_CHARS] + "...(clipped)"
+                return text
+
+            sys.stderr.write(
+                "[wire] %s %s -> ok=%s verdict=%s reply=%s\n"
+                % (verb or "<none>", _clip(args), out.get("ok"),
+                   _clip(out.get("verdict")), _clip(out.get("reply"))))
+            sys.stderr.flush()
+        except Exception:  # noqa: BLE001 — a trace must never break the call
+            pass
+
+    @staticmethod
+    def _shape_reply(reply: str, verdict: Optional[str]) -> Dict[str, object]:
+        """Shape a tools-server reply dict; never masks a verifier error.
+
+        A ``VERDICT:error`` verdict is surfaced honestly as ok:false with the
+        reason in the reply — indistinguishable from a null verdict would hide
+        a broken verifier behind 'no contracted tool'.
+
+        ENVELOPE HONESTY (R7-3): ok:false is rendered not only for a reply
+        that LEADS with ``ERROR`` but for ANY reply whose BODY carries an
+        embedded ``ERROR:`` substring — e.g. the close_both per-side
+        annotations (``right_close=ERROR:no_dds``) inside a 'DONE close_both
+        dispatched' lead.  This mirrors the verifier's own definitive
+        classification (brain/verifier.py _classify_reply: any ``ERROR:``
+        anywhere in the reply is an error), so the envelope can never claim
+        ok:true for a reply the verifier judges failure.  The reply text is
+        surfaced VERBATIM either way.  Pure DONE / Q: / STATE: / DONE:...
+        lines without an ``ERROR:`` substring stay ok:true — the writer
+        (DONE | ERROR:<msg> | Q:<14f> | STATE:...), grip (DONE:... |
+        ERROR:no_dds) and engine (DONE | ERROR:<msg>) passthrough replies are
+        single-line and never embed the literal on success, so their envelope
+        semantics are unchanged.
+
+        The brain_client protocol reads ``ok`` + ``value`` | ``reason``
+        (gateway/brain_client.py); the legacy protocol reads ``ok`` +
+        ``reply`` + ``verdict``.  Both are always present (superset).
+        """
+        if verdict is not None and verdict.startswith("VERDICT:error"):
+            reason = verdict[len("VERDICT:error|Evidence:"):]
+            return {"ok": False, "reply": "ERROR:%s" % reason,
+                    "verdict": verdict, "value": None,
+                    "reason": "ERROR:%s" % reason}
+        ok_flag = "ERROR:" not in reply and not reply.startswith("ERROR")
+        return {"ok": ok_flag, "reply": reply, "verdict": verdict,
+                "value": reply if ok_flag else None,
+                "reason": None if ok_flag else reply}
+
+
