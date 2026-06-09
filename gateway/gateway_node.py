@@ -8002,3 +8002,67 @@ class GatewayNode:
             sleep(TURN_TICK_S)
         return False
 
+    def _turn_centre(self, label: str, cancel0: float):
+        """Rotate in place until the person's bearing is ~0 (omega-only).
+
+        Returns (status, last_yaw_err, last_range_m, detail) with status in
+        centred | lost | timeout | writer_refused | cancelled.  vx = vy = 0
+        ALWAYS (no translation).  A pulse is only ever computed from a row
+        whose packet arrived AFTER the previous pulse ended and is not older
+        than TURN_ROW_MAX_AGE_S; the cancel stamp is polled before every
+        pulse.
+        """
+        clock, sleep = self._turn_clock, self._turn_sleep
+        start = clock()
+        last_pulse_end = start
+        last_seen = start
+        last_err: Optional[float] = None
+        last_range = 0.0
+        last_pts = None
+        reads = 0
+        while True:
+            now = clock()
+            e = last_err if last_err is not None else 0.0
+            row = None
+            rows, pts = self._turn_rows()
+            if (pts > last_pulse_end and pts != last_pts
+                    and (now - pts) <= TURN_ROW_MAX_AGE_S):
+                last_pts = pts
+                row, err = self._turn_pick(rows, label, last_err)
+            # the single cancel check of this loop sits after the detection read and
+            # ahead of every branch, so it guards both the no-pulse-due paths (target out
+            # of view or within tolerance) and every cmd_set pulse below, since only
+            # arithmetic sits between it and writer_verb. a cancel landing during the read
+            # is never followed by a rotation pulse, and a cancel outranks the budget
+            # timeout.
+            if self._cancel_ts > cancel0:
+                return "cancelled", e, last_range, ""
+            if now - start >= TURN_CENTRE_BUDGET_S:
+                return "timeout", e, last_range, ""
+            if row is None:
+                if now - last_seen >= TURN_LOST_S:
+                    return "lost", e, last_range, ""
+                sleep(TURN_TICK_S)
+                continue
+            last_seen = now
+            last_err = err
+            last_range = math.hypot(float(row["x"]), float(row["y"]))
+            if abs(err) <= TURN_TOL_RAD:
+                reads += 1
+                if reads >= TURN_CONFIRM_READS:
+                    return "centred", err, last_range, ""
+            else:
+                reads = 0
+                omega = _turn_omega(err)
+                line = "cmd_set 0.000 0.000 %.3f %.3f" % (omega, TURN_PULSE_S)
+                self._turn_pulsed = True
+                try:
+                    wreply = str(self.writer_verb(line))
+                except Exception as exc:  # noqa: BLE001 — report, never raise
+                    wreply = "ERROR:%s" % exc
+                if not wreply.startswith("DONE"):
+                    return ("writer_refused", err, last_range,
+                            " ".join(_defang_error_token(wreply).split())[:60])
+                last_pulse_end = clock() + TURN_PULSE_S
+            sleep(TURN_TICK_S)
+
