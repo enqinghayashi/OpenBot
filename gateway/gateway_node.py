@@ -7562,3 +7562,49 @@ class GatewayNode:
         self.stop_walk()
         return self._turn_wait_idle(marker)
 
+    def _do_pc_rim(self, args: List) -> str:
+        """``pc_rim`` verb (B8k): the point-cloud bowl-rim fit for a container
+        the BRAIN is about to place into while standing (the voice path; the
+        batch-6 hook served only the operator's /place_target topic).
+
+        Request (one JSON token): {label, x, y[, ts]} = the container row.  It
+        runs the client module's ``rim_for`` with EXACTLY the /place_target
+        gates (status OK, verdict RIM_FIT, pose unchanged between request and
+        now, row at most 1.0 s old, finite drop z) and logs its one
+        ``[pc] pc place_rim ...`` line.  ``apply`` is the ``pc_place_rim``
+        switch: in SHADOW the fit is measured and logged, never returned.
+        Replies (ONE line): ``NOPC:point-cloud lane off`` (no client: instant),
+        ``DONE:pc_rim applied drop_z=<z>`` (decisive and every gate passed) or
+        ``DONE:pc_rim none`` (shadow, or any gate failed: the brain keeps its
+        own rim).  ``ERROR:pc_rim bad_args`` on a malformed request.  Never
+        raises."""
+        pc = getattr(self, "_pc", None)
+        if pc is None:
+            return "NOPC:point-cloud lane off"
+        try:
+            req = json.loads(args[0]) if args else None
+            label = str(req.get("label") or "")
+            x, y = float(req["x"]), float(req["y"])
+            if not (label and math.isfinite(x) and math.isfinite(y)):
+                raise ValueError("label / x / y")
+            ts = req.get("ts")
+            row = {"label": label, "x": x, "y": y,
+                   "t": float(ts) if ts is not None else time.time()}
+        except Exception:  # noqa: BLE001 — a malformed request is a refusal
+            return "ERROR:pc_rim bad_args"
+        try:
+            from gateway import pointcloud_client as pc_client_mod  # lazy, then cached
+            res = pc_client_mod.rim_for(
+                pc, row, getattr(self, "_pc_place_rim", False) is True,
+                time.time, log=self._pc_log)
+        except Exception as exc:  # noqa: BLE001 — a failed fit is "none"
+            self._pc_say("pc_rim failed: %s: %s" % (type(exc).__name__, exc))
+            return "DONE:pc_rim none"
+        try:
+            z = float(res["drop"]["z"]) if isinstance(res, dict) else None
+        except (KeyError, TypeError, ValueError):
+            z = None
+        if z is None or not math.isfinite(z):
+            return "DONE:pc_rim none"
+        return "DONE:pc_rim applied drop_z=%.4f" % z
+
