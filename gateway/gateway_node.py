@@ -8578,3 +8578,21 @@ class GatewayNode:
 
     # ── human I/O verbs (query_user and notify_user) ─────────────────────────
 
+    def _do_query_user(self, args: List) -> str:
+        """Ask the human one question and wait for ONE answer line.
+
+        Prints "[OpenBot QUESTION] <question>" to the gateway stdout (flushed)
+        then waits on sys.stdin via :meth:`_read_user_answer` for the human's
+        answer — select-pattern polling, never a background reader thread (the
+        reader must NOT consume stdin while idle, so it can never fight an
+        ``input()`` elsewhere in the process).  Reply grammar:
+        "DONE:<answer>" on success, "ERROR:no_user_reply:timeout" on timeout
+        or stdin EOF.
+        """
+        question = str(args[0]) if args else ""
+        print("[OpenBot QUESTION] %s" % question, flush=True)
+        answer = self._read_user_answer(QUERY_USER_REPLY_TIMEOUT_S)
+        if answer is None:
+            return "ERROR:no_user_reply:timeout"
+        return "DONE:" + answer
+
