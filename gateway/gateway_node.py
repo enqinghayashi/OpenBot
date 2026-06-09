@@ -7867,3 +7867,14 @@ class GatewayNode:
                    pulses, src, fx, fy, fz, ref["half"], ref["rim"], ref["bot"],
                    self._creep_iid(ref), result))
 
+    def _creep_iid(self, ref: Dict[str, Any]) -> Any:
+        """The container's CURRENT instance id (the lock may have re-acquired)."""
+        lock = getattr(self, "_container_lock", None)
+        if lock is not None and self._lock_on():
+            snap = lock.snapshot(self._lock_now())
+            if snap is not None:
+                return snap["iid"]
+        return ref["iid"]
+
+    # ── turn_around: sight wait + centre loop ─────────────────────────────────
+
