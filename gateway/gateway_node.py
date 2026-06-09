@@ -8544,3 +8544,37 @@ class GatewayNode:
             line += " %.3f" % dur
         return self.writer_verb(line)
 
+    def _do_status(self, args: List) -> str:
+        if args:
+            return "ERROR:status takes no args (use writer/grip/engine passthrough)"
+        out: Dict[str, object] = {}
+        try:
+            out["writer"] = self.writer_verb("status")
+        except Exception as exc:
+            out["writer"] = "ERROR:%s" % exc
+        self._refresh_grip_state()
+        try:
+            out["grip"] = self.grip_verb("state")
+        except Exception as exc:
+            out["grip"] = "ERROR:%s" % exc
+        with self._obs_lock:
+            out["walk"] = None
+            obs = self._assembler.observation()
+            if obs.walk is not None:
+                from dataclasses import asdict
+                out["walk"] = asdict(obs.walk)
+            out["fresh"] = obs.fresh
+            out["detections_alive"] = self._assembler.detections_alive()
+            out["last_detections_ts"] = self._assembler.last_detections_ts
+            out["detections_frame"] = self._detections_frame
+            out["silence_means_empty"] = self._silence_means_empty
+            out["min_arm_dur_s"] = self._min_arm_dur_s
+        # an additive key, only with the arm-safety switch or the watchdog on;
+        # every pre-existing key and value stays unchanged.
+        if (getattr(self, "_b5_on", False) is True
+                or getattr(self, "_wd_enabled", False) is True):
+            out["arm_safety"] = self._arm_safety_status()
+        return json.dumps(out)
+
+    # ── human I/O verbs (query_user and notify_user) ─────────────────────────
+
