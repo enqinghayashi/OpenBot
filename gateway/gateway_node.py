@@ -7901,3 +7901,33 @@ class GatewayNode:
             obs = self._assembler.observation()
         return [asdict(d) for d in obs.detections], float(obs.detections_ts)
 
+    @staticmethod
+    def _turn_plausible(row: dict, label: str) -> bool:
+        """Is ``row`` a believable sighting of ``label``?
+
+        'person' additionally needs conf >= TURN_PERSON_MIN_CONF and a
+        height_m >= TURN_PERSON_MIN_HEIGHT_M (run20's false 'person' hits had
+        height_m 0.02-0.11).  Other labels need conf >= TURN_OTHER_MIN_CONF.
+        Position must be finite.
+        """
+        try:
+            if str(row.get("label", "")).strip().lower() != label:
+                return False
+            x = float(row["x"])
+            y = float(row["y"])
+            conf = float(row.get("conf", 0.0))
+        except (KeyError, TypeError, ValueError):
+            return False
+        if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(conf)):
+            return False
+        if label == "person":
+            h = row.get("height_m")
+            try:
+                h = float(h)
+            except (TypeError, ValueError):
+                return False
+            if not math.isfinite(h):
+                return False
+            return conf >= TURN_PERSON_MIN_CONF and h >= TURN_PERSON_MIN_HEIGHT_M
+        return conf >= TURN_OTHER_MIN_CONF
+
