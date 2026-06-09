@@ -8894,3 +8894,6 @@ class GatewayNode:
             threading.Thread(target=loop, args=(srv,), daemon=True).start()
 
 
+class _RosGateway(GatewayNode):
+    """The rclpy adapter. All ROS imports happen here, lazily, never at top."""
+
