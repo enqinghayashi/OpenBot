@@ -8228,3 +8228,127 @@ class GatewayNode:
             return None
         return (label, int(iid_s) if sep2 else None, int(hue_s) if sep else None)
 
+    def _do_navigate(self, args: List) -> Tuple[str, Optional[str]]:
+        if len(args) != 1 or not isinstance(args[0], str) or not args[0].strip():
+            return "ERROR:navigate <label> (or 'stop')", None
+        label = args[0].strip()
+        # 'cup#165@188' names exactly one cup. everything below (coordinator, epoch
+        # gate, /walk_status matching, NAV_LABEL, the verdict) works on the bare
+        # label, while the instance goes to the walk FSM on its own topic; a bare
+        # label clears any earlier one.
+        nav_instance = None
+        if "#" in label or "@" in label:
+            parts = self._nav_split(label)
+            if parts is None:
+                return ("ERROR:navigate target %r is malformed; use <label>, "
+                        "<label>#<id>, <label>#<id>@<hue> or <label>@<hue> "
+                        "(id >= 1, hue 0..359)" % label), None
+            nav_instance = label
+            label = parts[0]
+        # a stop always bypasses every gate: the agent's only stop path to the walk
+        # FSM must never be swallowed by the reuse gate. stop_walk routes 'stop' to
+        # /navigate_target, so the coordinator resets its own epoch/flow state and
+        # passes on the FSM's real stop trigger, /walk_target 'stop' (/walk_go is not
+        # a stop channel).
+        # clear all gateway epoch state here too. no verdict: a stop claims no goal
+        # post-condition at all.
+        if label.lower() == "stop":
+            self._home_stop("navigate_stop")     # same rule as the cancel
+            try:
+                self.stop_walk()
+            except Exception as exc:
+                return "ERROR:navigate stop publish failed: %s" % exc, None
+            with self._obs_lock:
+                self._nav_epoch = (0.0, None)
+                self._phases_seen = []
+            return "DONE walk stop commanded; epoch cleared", None
+
+        # a navigate dispatch changes no hand state, so under the causal open
+        # reference it never forms or invalidates a qualifying context.
+        # navigate epoch gate: every dispatch makes _nav_epoch = (epoch_ts,
+        # target_label); phases (state, label, ts) pile up for ts >= epoch_ts. the
+        # reuse rule re-uses an epoch only when the FSM is still working on the same
+        # label. any of (different label, FSM IDLE after epoch start, epoch too old,
+        # epoch already confirmed) forces a fresh dispatch: re-publishing
+        # /walk_target is safe there, since the FSM is not in an in-flight approach,
+        # and a mid-approach /walk_target would be a retarget that restarts the
+        # sweep.
+        now = time.time()
+        # when the walk FSM already stands at the requested label (REACHED standby,
+        # fresh packet), reply right away instead of waiting 115 s for a transition
+        # that never comes.
+        with self._obs_lock:
+            _lp = getattr(self, "_last_walk_phase", None)
+            _ll = getattr(self, "_last_walk_label", None)
+            _lt = float(getattr(self, "_last_walk_ts", 0.0) or 0.0)
+        if (_lp == "REACHED" and _ll == label.lower()
+                and (now - _lt) <= NAV_ALREADY_REACHED_FRESH_S):
+            with self._obs_lock:
+                self._nav_epoch = (now, label.lower())
+                self._phases_seen = [("REACHED", _ll, now)]
+            reply = ("DONE already at target: %s (walk REACHED standby, packet "
+                     "%.1fs old, no re-trigger); NAV_EPOCH=%.6f; NAV_LABEL=%s; "
+                     "LATEST_WALK_TS=%.6f; PHASES_SEEN=REACHED; "
+                     "WALK_WAIT=already_reached"
+                     % (label, now - _lt, now, label, _lt))
+            if nav_instance is not None:
+                reply += "; NAV_INSTANCE=%s" % nav_instance
+            return reply, self._verify("navigate", reply)
+        with self._obs_lock:
+            epoch_ts, epoch_label = self._nav_epoch
+            confirmed = self._nav_confirmed_epoch()
+            phases = list(self._phases_seen)
+        # the confirmed epoch lives in the verifier as the value parsed back from the
+        # reply's '%.6f', so it can differ from the stored timestamp by ~5e-7. compare
+        # at the formatting precision, never with an exact !=, or the latch stays
+        # latched.
+        epoch_confirmed = confirmed > 0.0 and abs(epoch_ts - confirmed) < 1e-6
+        in_flight = (epoch_ts > 0.0
+                     and not epoch_confirmed
+                     and (now - epoch_ts) <= NAV_EPOCH_MAX_AGE_S
+                     and any(p in ("SEARCHING", "APPROACHING")
+                             for p, _l, _t in phases)
+                     and not any(p == "IDLE" for p, _l, _t in phases))
+        reuse = in_flight and epoch_label == label.lower()
+        walk_wait = "reused_in_flight"
+        try:
+            self.set_walk_instance(nav_instance or label)  # set it before the walk
+        except Exception as exc:
+            return "ERROR:navigate publish failed: %s" % exc, None
+        if not reuse:
+            with self._obs_lock:
+                self._nav_epoch = (now, label.lower())
+                self._phases_seen = []
+            try:
+                self.navigate(label)  # /navigate_target, coordinator + search-then-go
+            except Exception as exc:
+                return "ERROR:navigate publish failed: %s" % exc, None
+            # wait for the motion, not for the reply. the publish above only starts the
+            # walk, and the FSM then sweeps, approaches and arrives seconds later;
+            # returning here is what made PHASES_SEEN always empty and every navigate
+            # verdict in_progress. the epoch just stored bounds the wait to
+            # exactly this one dispatch.
+            walk_wait = self._await_walk_reached(label, now)
+        # snapshot after the wait, so LATEST_WALK_TS and PHASES_SEEN describe what
+        # the walk actually did; the verifier's transition guard can only be
+        # satisfied from there.
+        with self._obs_lock:
+            latest_ts = self._last_walk_ts
+            phases_seen = list(self._phases_seen)
+            epoch_ts, _ = self._nav_epoch
+        phases_csv = ",".join(p for p, _l, _t in phases_seen)
+        if reuse:
+            reply = ("DONE walk already in progress: %s (epoch %.6f, no "
+                     "re-trigger); NAV_EPOCH=%.6f; NAV_LABEL=%s; "
+                     "LATEST_WALK_TS=%.6f; PHASES_SEEN=%s; WALK_WAIT=%s"
+                     % (label, epoch_ts, epoch_ts, label, latest_ts,
+                        phases_csv, walk_wait))
+        else:
+            reply = ("DONE walk triggered: %s; NAV_EPOCH=%.6f; NAV_LABEL=%s; "
+                     "LATEST_WALK_TS=%.6f; PHASES_SEEN=%s; WALK_WAIT=%s"
+                     % (label, epoch_ts, label, latest_ts, phases_csv,
+                        walk_wait))
+        if nav_instance is not None:
+            reply += "; NAV_INSTANCE=%s" % nav_instance  # says which one
+        return reply, self._verify("navigate", reply)
+
