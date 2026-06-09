@@ -9120,3 +9120,85 @@ class _RosGateway(GatewayNode):
 
     # ── callbacks (ROS subscriptions) ────────────────────────────────────────
 
+    def _on_detections(self, msg) -> None:
+        try:
+            rows = json.loads(msg.data)
+            if not isinstance(rows, list):
+                raise ValueError("payload must be a JSON list of detections")
+            self.on_detections_packet(rows)
+            write_body_rows(rows)   # hladder side channel, ROS callback only
+        except Exception as exc:
+            self._node.get_logger().warn(
+                "/object_detections_body parse failed: %s" % exc)
+
+    def _on_walk_status(self, msg) -> None:
+        try:
+            payload = json.loads(msg.data)
+            if not isinstance(payload, dict):
+                raise ValueError("payload must be a JSON object")
+            self.on_walk_status_packet(payload)
+        except Exception as exc:
+            self._node.get_logger().warn("/walk_status parse failed: %s" % exc)
+
+    def _on_camera(self, msg) -> None:
+        """Copy the camera frame buffer to bytes and hand it to the core.
+
+        CAMERA PLAN LAW: this callback NEVER encodes — it only copies the
+        buffer and stamps the time; the core's worker thread owns the JPEG
+        encode.  sensor_msgs/Image uint8[] may arrive as bytes or an
+        array-like; both normalize to bytes here.  The Image metadata
+        (width/height/encoding) is copied too so the worker can RESHAPE
+        the uncompressed buffer instead of imdecoding it.  Duck-typed or
+        partial messages fall back to the dimensionless path (imdecode).
+        """
+        try:
+            data = msg.data
+            if not isinstance(data, bytes):
+                data = bytes(data)
+            width = int(getattr(msg, "width", 0) or 0)
+            height = int(getattr(msg, "height", 0) or 0)
+            encoding = getattr(msg, "encoding", "") or ""
+            self.on_camera_frame(data, width, height, encoding)
+        except Exception as exc:
+            self._node.get_logger().warn(
+                "camera frame ingest failed: %s" % exc)
+
+    def _on_place_target(self, msg) -> None:
+        """Hand a /place_target to a WORKER THREAD — never place inline.
+
+        This executor is SingleThreaded and a place's engine reply timeout is
+        300 s, so performing the place here would freeze the detection and
+        vision lanes for the entire motion.  This callback only reads
+        ``msg.data``; the worker owns the blocking call, and ``place_target``'s
+        own non-blocking lock refuses a concurrent second request.
+        """
+        label = str(getattr(msg, "data", "") or "")
+        if not label.strip():
+            self._node.get_logger().warn(
+                "%s: empty label ignored" % self._place_target_law.PLACE_TARGET_TOPIC)
+            return
+        threading.Thread(target=self._place_target_worker,
+                         args=(label,), daemon=True).start()
+
+    def _place_target_worker(self, label: str) -> None:
+        try:
+            self.place_target(label)
+        except Exception as exc:  # the lane must never die quietly
+            self._node.get_logger().error("place_target crashed: %s" % exc)
+
+    def _on_pc_result(self, msg) -> None:
+        """/pc_result (batch 3b): hand the consumer's JSON envelope to the client.
+
+        Exists in the graph only with the client built.  The client wakes the
+        one waiter whose rid matches and ignores everything else (malformed
+        JSON, non-objects, unknown rids); this callback only forwards
+        ``msg.data`` and can never raise into rclpy.
+        """
+        pc = self._pc
+        if pc is None:
+            return
+        try:
+            pc.on_result(msg.data)
+        except Exception as exc:  # noqa: BLE001 — never raise into rclpy
+            self._node.get_logger().warn("/pc_result handling failed: %s" % exc)
+
