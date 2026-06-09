@@ -8801,3 +8801,94 @@ class GatewayNode:
                 "reason": None if ok_flag else reply}
 
 
+    def _start_tools_server(self, sock_path: str, tcp_port: int,
+                            bind_host: str = "0.0.0.0") -> None:
+        """Start the tools server (UNIX socket + optional TCP listener).
+
+        Lives on the rclpy-free core (relocated here round 8 from the
+        _RosGateway adapter) so the JSON-lines tools protocol is runnable
+        without ROS — the brain_client smoke tests drive the SHIPPED
+        handle() loop + dispatch + _shape_reply end to end.  _RosGateway
+        inherits it unchanged.  stdlib only; threads are daemons.
+        """
+        sockets = []
+        try:
+            os.unlink(sock_path)
+        except OSError:
+            pass
+        unix = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        unix.bind(sock_path)
+        unix.listen(4)
+        sockets.append(unix)
+        if tcp_port > 0:
+            tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            tcp.bind((bind_host, tcp_port))
+            tcp.listen(4)
+            sockets.append(tcp)
+
+        def handle(conn) -> None:
+            conn_file = conn.makefile("r", encoding="utf-8")
+            try:
+                for raw in conn_file:
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    # bound before the parse, not inside it: a malformed line raises at
+                    # `json.loads`, and the trace still has to say what arrived. left unbound,
+                    # the except path would blow up with NameError and the loop's `except OSError`
+                    # would not catch it, breaking the client.
+                    verb = ""
+                    args = []
+                    try:
+                        req = json.loads(line)
+                        # the brain_client protocol sends {'tool': ..., 'args': {named}}, and the
+                        # legacy one sends {'verb': ..., 'args': [positional]}. both accepted; named
+                        # args get shaped onto the positional grammar by _shape_named_args.
+                        verb = str(req.get("tool") or req.get("verb") or "")
+                        args = req.get("args") or []
+                        # cleared on every request, not only named ones: a hint left over from an
+                        # earlier request on this thread must never colour a later verdict. set
+                        # before shaping, because _shape_named_args returns the positional list and
+                        # this is the last point where the raw dict and the label still exist.
+                        self._req_target_hint.label = None
+                        if isinstance(args, dict):
+                            # the brain_client named-args protocol
+                            self._req_target_hint.label = self._pick_hint_label(
+                                verb, args)
+                            args = self._shape_named_args(verb, args)
+                        elif not isinstance(args, list):
+                            raise ValueError("args must be a list or object")
+                        reply, verdict = self.dispatch(verb, args)
+                        out = self._shape_reply(reply, verdict)
+                    except Exception as exc:
+                        out = {"ok": False,
+                               "reply": "ERROR:%s" % exc, "verdict": None,
+                               "value": None, "reason": "ERROR:%s" % exc}
+                    self._trace_wire(verb, args, out)
+                    try:
+                        conn.sendall((json.dumps(out) + "\n").encode("utf-8"))
+                    except OSError:
+                        break
+            except OSError:
+                pass
+            finally:
+                conn_file.close()
+                conn.close()
+
+        def loop(srv) -> None:
+            try:
+                while True:
+                    conn, _ = srv.accept()
+                    threading.Thread(target=handle, args=(conn,),
+                                     daemon=True).start()
+            except OSError:
+                pass
+            finally:
+                try:
+                    srv.close()
+                except OSError:
+                    pass
+
+        for srv in sockets:
+            threading.Thread(target=loop, args=(srv,), daemon=True).start()
