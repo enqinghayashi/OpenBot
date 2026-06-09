@@ -7878,3 +7878,26 @@ class GatewayNode:
 
     # ── turn_around: sight wait + centre loop ─────────────────────────────────
 
+    def _turn_rows(self) -> Tuple[List[dict], float]:
+        """Test seam: the latest detection rows and their packet timestamp.
+
+        Reads the assembler directly (NOT ``observe_dict``, which calls
+        ``_refresh_grip_state`` and has side effects).  Returns
+        ``(rows, detections_ts)``; ``detections_ts`` is 0.0 when no packet
+        has ever arrived.
+
+        Batch 4 (OFF-4, the SECOND ``asdict`` site): rows carry every
+        Detection field, including ``instance_id`` (None unless perception
+        runs with OPENBOT_INSTANCE_IDS=1).  They are NOT stripped like the
+        ``observe`` reply because they never reach the model: the only
+        consumers (``_turn_plausible`` / ``_turn_pick`` / ``_turn_centre``)
+        read them by literal key (``.get("label")``, ``["x"]``, ``["y"]``,
+        ``.get("conf")``, ``.get("height_m")``), so an extra key is inert —
+        pinned by tests/test_instance_id_contract.py.
+        """
+        from dataclasses import asdict  # stdlib import
+
+        with self._obs_lock:
+            obs = self._assembler.observation()
+        return [asdict(d) for d in obs.detections], float(obs.detections_ts)
+
