@@ -9110,3 +9110,13 @@ class _RosGateway(GatewayNode):
         except Exception:  # noqa: BLE001
             return -1
 
+    def _param(self, name, default):
+        """Declare + read a node parameter (Foxy rclpy)."""
+        try:
+            self._node.declare_parameter(name, default)
+        except Exception:
+            pass  # already declared, or the launcher declared it
+        return self._node.get_parameter(name).value
+
+    # ── callbacks (ROS subscriptions) ────────────────────────────────────────
+
