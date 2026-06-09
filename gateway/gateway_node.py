@@ -7983,3 +7983,446 @@ class GatewayNode:
                     return "sight", err, now
             sleep(TURN_TICK_S)
 
+    def _turn_wait_idle(self, marker: int) -> bool:
+        """After stop_walk(): wait <= TURN_STOP_SETTLE_S for the FSM's IDLE.
+
+        True when settled (IDLE seen after ``marker``, or the last event is
+        already IDLE/NOT_FOUND); False on timeout.
+        """
+        clock, sleep = self._turn_clock, self._turn_sleep
+        with self._obs_lock:
+            last = self._turn_events[-1][0] if self._turn_events else None
+        if last in ("IDLE", "NOT_FOUND"):
+            return True
+        t_end = clock() + TURN_STOP_SETTLE_S
+        while clock() < t_end:
+            with self._obs_lock:
+                if any(e[0] == "IDLE" for e in self._turn_events[marker:]):
+                    return True
+            sleep(TURN_TICK_S)
+        return False
+
+    def _turn_centre(self, label: str, cancel0: float):
+        """Rotate in place until the person's bearing is ~0 (omega-only).
+
+        Returns (status, last_yaw_err, last_range_m, detail) with status in
+        centred | lost | timeout | writer_refused | cancelled.  vx = vy = 0
+        ALWAYS (no translation).  A pulse is only ever computed from a row
+        whose packet arrived AFTER the previous pulse ended and is not older
+        than TURN_ROW_MAX_AGE_S; the cancel stamp is polled before every
+        pulse.
+        """
+        clock, sleep = self._turn_clock, self._turn_sleep
+        start = clock()
+        last_pulse_end = start
+        last_seen = start
+        last_err: Optional[float] = None
+        last_range = 0.0
+        last_pts = None
+        reads = 0
+        while True:
+            now = clock()
+            e = last_err if last_err is not None else 0.0
+            row = None
+            rows, pts = self._turn_rows()
+            if (pts > last_pulse_end and pts != last_pts
+                    and (now - pts) <= TURN_ROW_MAX_AGE_S):
+                last_pts = pts
+                row, err = self._turn_pick(rows, label, last_err)
+            # the single cancel check of this loop sits after the detection read and
+            # ahead of every branch, so it guards both the no-pulse-due paths (target out
+            # of view or within tolerance) and every cmd_set pulse below, since only
+            # arithmetic sits between it and writer_verb. a cancel landing during the read
+            # is never followed by a rotation pulse, and a cancel outranks the budget
+            # timeout.
+            if self._cancel_ts > cancel0:
+                return "cancelled", e, last_range, ""
+            if now - start >= TURN_CENTRE_BUDGET_S:
+                return "timeout", e, last_range, ""
+            if row is None:
+                if now - last_seen >= TURN_LOST_S:
+                    return "lost", e, last_range, ""
+                sleep(TURN_TICK_S)
+                continue
+            last_seen = now
+            last_err = err
+            last_range = math.hypot(float(row["x"]), float(row["y"]))
+            if abs(err) <= TURN_TOL_RAD:
+                reads += 1
+                if reads >= TURN_CONFIRM_READS:
+                    return "centred", err, last_range, ""
+            else:
+                reads = 0
+                omega = _turn_omega(err)
+                line = "cmd_set 0.000 0.000 %.3f %.3f" % (omega, TURN_PULSE_S)
+                self._turn_pulsed = True
+                try:
+                    wreply = str(self.writer_verb(line))
+                except Exception as exc:  # noqa: BLE001 — report, never raise
+                    wreply = "ERROR:%s" % exc
+                if not wreply.startswith("DONE"):
+                    return ("writer_refused", err, last_range,
+                            " ".join(_defang_error_token(wreply).split())[:60])
+                last_pulse_end = clock() + TURN_PULSE_S
+            sleep(TURN_TICK_S)
+
+    def _do_turn_around(self, args: List) -> Tuple[str, Optional[str]]:
+        """TURN IN PLACE, find a person, CENTRE them in the frame, stop.
+
+        THE OPERATOR ASK (verbatim 2026-10-03): *"just the simple turn around
+        sweep when i ask it to turn around, it will turn around to look for
+        person, once detected person, it stopped sweeping"*; and (run20, test
+        6) the turn-around should centre the person in the frame like the
+        navigate module does instead of stopping at the edge detection.
+
+        THIS VERB BLOCKS (<= TURN_TOTAL_BUDGET_S sweeping + TURN_CENTRE_BUDGET_S
+        centring, always < the 150 s gateway socket timeout).  Flow:
+
+          1. ``start_sweep(label)`` — the label goes DIRECTLY on /walk_target
+             (the walk FSM sweeps).  NEVER /navigate_target (the coordinator's
+             3rd-beat auto-approach would walk TO the person) and NEVER
+             /walk_go.
+          2. Wait for a PLAUSIBLE fresh /object_detections_body row (the
+             gateway sees detections itself).  A /walk_status NOT_FOUND ends
+             it (the FSM's own full-circle give-up).
+          3. On sight: ``stop_walk()`` (coordinator-routed), wait up to
+             TURN_STOP_SETTLE_S for IDLE so the FSM's loco stop cannot land
+             after the first pulse.
+          4. CENTRE: writer ``cmd_set 0 0 omega 0.35`` pulses with the SAME
+             bearing law and sign as walk_node (atan2(x, y); OMEGA_SIGN -1),
+             until the bearing is within TURN_TOL_RAD on TURN_CONFIRM_READS
+             fresh reads (the CENTRED outcome).  vx = vy = 0 always — no translation.
+          5. Lost while centring -> up to TURN_MAX_RESWEEPS re-sweeps.
+
+        REPLY (single line).  ONLY a verified centring starts with 'DONE
+        turn_around:' (brain/verifier.py certifies success on that prefix);
+        everything else leads with 'ERROR:turn_around' and ends with
+        TURN_RESULT=centred|seen_not_centred|not_seen|cancelled.  The verdict
+        element stays None; the brain post-hook owns the verdict.
+        The cancel stamp is polled every tick; ``_do_cancel`` also sends one
+        'cmd_set off' while a turn is active.
+        """
+        if len(args) > 1:
+            return "ERROR:turn_around [label]", None
+        label = "person" if not args else str(args[0] or "").strip().lower()
+        if not label:
+            return "ERROR:turn_around [label]", None
+        shown = _defang_error_token(" ".join(label.split()))
+        clock = self._turn_clock
+        t0 = clock()
+        cancel0 = self._cancel_ts
+        # the re-entrancy guard. the server runs one thread per connection, so a
+        # second turn_around can arrive while one is sweeping or centring, and two
+        # loops would double-pulse the writer. check-and-claim happens in one critical
+        # section on _obs_lock, and a refused call returns before the try/finally
+        # below, so it cannot clear the running turn's flag and sends nothing.
+        with self._obs_lock:
+            busy = bool(getattr(self, "_turn_active", False))
+            if not busy:
+                self._turn_active = True
+                self._turn_events = []
+        if busy:
+            return ("ERROR:turn_around busy - a turn_around is already in "
+                    "flight; this second request was refused and did NOT "
+                    "move the robot"), None
+        self._turn_pulsed = False
+        fsm_sweeping = False  # true while the walk FSM might still be turning
+        try:
+            resweeps = 0
+            while True:
+                with self._obs_lock:
+                    ev_mark = len(self._turn_events)
+                try:
+                    self.start_sweep(label)
+                except Exception as exc:  # noqa: BLE001 — report, never raise
+                    return "ERROR:turn_around publish failed: %s" % exc, None
+                fsm_sweeping = True
+                kind, info, sight_ts = self._turn_wait_sight(
+                    label, t0, clock(), cancel0, ev_mark)
+                if kind == "cancelled":
+                    return ("ERROR:turn_around: cancelled by the operator at "
+                            "phase %s; the robot is stopped; "
+                            "TURN_RESULT=cancelled" % "sweep"), None
+                if kind == "not_seen":
+                    reason, elapsed = info
+                    span = ("the full circle" if reason == "sweep_complete"
+                            else "for %.0f s" % elapsed)
+                    return ("ERROR:turn_around: swept %s and saw no '%s' "
+                            "(reason=%s); TURN_RESULT=not_seen"
+                            % (span, shown, reason)), None
+                seed_err = info
+                with self._obs_lock:
+                    marker = len(self._turn_events)
+                try:
+                    self.stop_walk()
+                except Exception as exc:  # noqa: BLE001 — cannot centre safely
+                    return ("ERROR:turn_around: saw '%s' but could NOT centre "
+                            "it (reason=stop_failed (%s); last bearing "
+                            "%+.1f deg; robot stopped, no walking); "
+                            "TURN_RESULT=seen_not_centred"
+                            % (shown, " ".join(_defang_error_token(
+                                str(exc)).split())[:60],
+                               math.degrees(seed_err))), None
+                fsm_sweeping = False
+                settled = self._turn_wait_idle(marker)
+                status, err, rng, detail = self._turn_centre(label, cancel0)
+                bearing = math.degrees(err if err is not None else seed_err)
+                if status == "cancelled":
+                    return ("ERROR:turn_around: cancelled by the operator at "
+                            "phase %s; the robot is stopped; "
+                            "TURN_RESULT=cancelled" % "centre"), None
+                if status == "centred":
+                    return ("DONE turn_around: turned and CENTRED on '%s' "
+                            "(bearing %+.1f deg, range %.2f m; centred %.1f s "
+                            "after first sight; stopped, no walking%s); "
+                            "TURN_RESULT=centred"
+                            % (shown, bearing, rng, clock() - sight_ts,
+                               "" if settled else "; settle=timeout")), None
+                if (status == "lost" and resweeps < TURN_MAX_RESWEEPS
+                        and (clock() - t0)
+                        < TURN_TOTAL_BUDGET_S - TURN_CENTRE_BUDGET_S):
+                    resweeps += 1
+                    continue  # start_sweep() re-arms fsm_sweeping
+                reason = status
+                if status == "lost" and not settled:
+                    reason = "settle_timeout_then_lost"
+                if status == "writer_refused" and detail:
+                    reason = "writer_refused (%s)" % detail
+                return ("ERROR:turn_around: saw '%s' but could NOT centre it "
+                        "(reason=%s; last bearing %+.1f deg; robot stopped, "
+                        "no walking); TURN_RESULT=seen_not_centred"
+                        % (shown, reason, bearing)), None
+        finally:
+            with self._obs_lock:
+                self._turn_active = False
+                last_ev = (self._turn_events[-1][0]
+                           if self._turn_events else None)
+            # every exit that would leave the walk FSM sweeping (not_seen budget, cancel,
+            # exception) has to stop it: the model is told the turn is over, so the body
+            # must not keep rotating. skipped when the FSM already reported IDLE or
+            # NOT_FOUND, since it stops by itself.
+            if fsm_sweeping and last_ev not in ("IDLE", "NOT_FOUND"):
+                try:
+                    self.stop_walk()
+                except Exception:  # noqa: BLE001 — best effort
+                    pass
+            if self._turn_pulsed:
+                try:
+                    self.writer_verb("cmd_set off")
+                except Exception:  # noqa: BLE001 — best effort; pulse auto-expires
+                    pass
+
+    @staticmethod
+    def _nav_split(text: str):
+        """B8: '<label>[#<iid>][@<hue>]' -> (label, iid|None, hue|None), or None
+        when a '#'/'@' suffix does not fit (iid int >= 1, hue int 0..359).
+        The same grammar as skills/locomotion/hunt_law.parse_target."""
+        head, sep, hue_s = text.partition("@")
+        label, sep2, iid_s = head.partition("#")
+        label = label.strip()
+        if not label:
+            return None
+        if sep and not (hue_s.isdigit() and hue_s.isascii() and int(hue_s) <= 359):
+            return None
+        if sep2 and not (iid_s.isdigit() and iid_s.isascii() and int(iid_s) >= 1):
+            return None
+        return (label, int(iid_s) if sep2 else None, int(hue_s) if sep else None)
+
+    def _do_navigate(self, args: List) -> Tuple[str, Optional[str]]:
+        if len(args) != 1 or not isinstance(args[0], str) or not args[0].strip():
+            return "ERROR:navigate <label> (or 'stop')", None
+        label = args[0].strip()
+        # 'cup#165@188' names exactly one cup. everything below (coordinator, epoch
+        # gate, /walk_status matching, NAV_LABEL, the verdict) works on the bare
+        # label, while the instance goes to the walk FSM on its own topic; a bare
+        # label clears any earlier one.
+        nav_instance = None
+        if "#" in label or "@" in label:
+            parts = self._nav_split(label)
+            if parts is None:
+                return ("ERROR:navigate target %r is malformed; use <label>, "
+                        "<label>#<id>, <label>#<id>@<hue> or <label>@<hue> "
+                        "(id >= 1, hue 0..359)" % label), None
+            nav_instance = label
+            label = parts[0]
+        # a stop always bypasses every gate: the agent's only stop path to the walk
+        # FSM must never be swallowed by the reuse gate. stop_walk routes 'stop' to
+        # /navigate_target, so the coordinator resets its own epoch/flow state and
+        # passes on the FSM's real stop trigger, /walk_target 'stop' (/walk_go is not
+        # a stop channel).
+        # clear all gateway epoch state here too. no verdict: a stop claims no goal
+        # post-condition at all.
+        if label.lower() == "stop":
+            self._home_stop("navigate_stop")     # same rule as the cancel
+            try:
+                self.stop_walk()
+            except Exception as exc:
+                return "ERROR:navigate stop publish failed: %s" % exc, None
+            with self._obs_lock:
+                self._nav_epoch = (0.0, None)
+                self._phases_seen = []
+            return "DONE walk stop commanded; epoch cleared", None
+
+        # a navigate dispatch changes no hand state, so under the causal open
+        # reference it never forms or invalidates a qualifying context.
+        # navigate epoch gate: every dispatch makes _nav_epoch = (epoch_ts,
+        # target_label); phases (state, label, ts) pile up for ts >= epoch_ts. the
+        # reuse rule re-uses an epoch only when the FSM is still working on the same
+        # label. any of (different label, FSM IDLE after epoch start, epoch too old,
+        # epoch already confirmed) forces a fresh dispatch: re-publishing
+        # /walk_target is safe there, since the FSM is not in an in-flight approach,
+        # and a mid-approach /walk_target would be a retarget that restarts the
+        # sweep.
+        now = time.time()
+        # when the walk FSM already stands at the requested label (REACHED standby,
+        # fresh packet), reply right away instead of waiting 115 s for a transition
+        # that never comes.
+        with self._obs_lock:
+            _lp = getattr(self, "_last_walk_phase", None)
+            _ll = getattr(self, "_last_walk_label", None)
+            _lt = float(getattr(self, "_last_walk_ts", 0.0) or 0.0)
+        if (_lp == "REACHED" and _ll == label.lower()
+                and (now - _lt) <= NAV_ALREADY_REACHED_FRESH_S):
+            with self._obs_lock:
+                self._nav_epoch = (now, label.lower())
+                self._phases_seen = [("REACHED", _ll, now)]
+            reply = ("DONE already at target: %s (walk REACHED standby, packet "
+                     "%.1fs old, no re-trigger); NAV_EPOCH=%.6f; NAV_LABEL=%s; "
+                     "LATEST_WALK_TS=%.6f; PHASES_SEEN=REACHED; "
+                     "WALK_WAIT=already_reached"
+                     % (label, now - _lt, now, label, _lt))
+            if nav_instance is not None:
+                reply += "; NAV_INSTANCE=%s" % nav_instance
+            return reply, self._verify("navigate", reply)
+        with self._obs_lock:
+            epoch_ts, epoch_label = self._nav_epoch
+            confirmed = self._nav_confirmed_epoch()
+            phases = list(self._phases_seen)
+        # the confirmed epoch lives in the verifier as the value parsed back from the
+        # reply's '%.6f', so it can differ from the stored timestamp by ~5e-7. compare
+        # at the formatting precision, never with an exact !=, or the latch stays
+        # latched.
+        epoch_confirmed = confirmed > 0.0 and abs(epoch_ts - confirmed) < 1e-6
+        in_flight = (epoch_ts > 0.0
+                     and not epoch_confirmed
+                     and (now - epoch_ts) <= NAV_EPOCH_MAX_AGE_S
+                     and any(p in ("SEARCHING", "APPROACHING")
+                             for p, _l, _t in phases)
+                     and not any(p == "IDLE" for p, _l, _t in phases))
+        reuse = in_flight and epoch_label == label.lower()
+        walk_wait = "reused_in_flight"
+        try:
+            self.set_walk_instance(nav_instance or label)  # set it before the walk
+        except Exception as exc:
+            return "ERROR:navigate publish failed: %s" % exc, None
+        if not reuse:
+            with self._obs_lock:
+                self._nav_epoch = (now, label.lower())
+                self._phases_seen = []
+            try:
+                self.navigate(label)  # /navigate_target, coordinator + search-then-go
+            except Exception as exc:
+                return "ERROR:navigate publish failed: %s" % exc, None
+            # wait for the motion, not for the reply. the publish above only starts the
+            # walk, and the FSM then sweeps, approaches and arrives seconds later;
+            # returning here is what made PHASES_SEEN always empty and every navigate
+            # verdict in_progress. the epoch just stored bounds the wait to
+            # exactly this one dispatch.
+            walk_wait = self._await_walk_reached(label, now)
+        # snapshot after the wait, so LATEST_WALK_TS and PHASES_SEEN describe what
+        # the walk actually did; the verifier's transition guard can only be
+        # satisfied from there.
+        with self._obs_lock:
+            latest_ts = self._last_walk_ts
+            phases_seen = list(self._phases_seen)
+            epoch_ts, _ = self._nav_epoch
+        phases_csv = ",".join(p for p, _l, _t in phases_seen)
+        if reuse:
+            reply = ("DONE walk already in progress: %s (epoch %.6f, no "
+                     "re-trigger); NAV_EPOCH=%.6f; NAV_LABEL=%s; "
+                     "LATEST_WALK_TS=%.6f; PHASES_SEEN=%s; WALK_WAIT=%s"
+                     % (label, epoch_ts, epoch_ts, label, latest_ts,
+                        phases_csv, walk_wait))
+        else:
+            reply = ("DONE walk triggered: %s; NAV_EPOCH=%.6f; NAV_LABEL=%s; "
+                     "LATEST_WALK_TS=%.6f; PHASES_SEEN=%s; WALK_WAIT=%s"
+                     % (label, epoch_ts, label, latest_ts, phases_csv,
+                        walk_wait))
+        if nav_instance is not None:
+            reply += "; NAV_INSTANCE=%s" % nav_instance  # says which one
+        return reply, self._verify("navigate", reply)
+
+    def _do_open_hand(self, args: List) -> Tuple[str, Optional[str]]:
+        if args and str(args[0]) not in ("right", "left", "both"):
+            return "ERROR:open_hand [right|left|both]", None
+        side = str(args[0]) if args else "right"
+        verb_map = {"right": "open", "left": "open_left", "both": "open_both"}
+        # record each side's pre-open holding state before the open runs: the open
+        # clears the verdicts, so a post contact == False proves nothing alone, and
+        # only prev_contact True plus post False plus a DONE command means 'opened'.
+        prev_right = self._holding_state("right")
+        prev_left = self._holding_state("left")
+        try:
+            reply = self.grip_verb(verb_map[side])
+        except Exception as exc:
+            return "ERROR:%s" % exc, None
+        # an open invalidates prior close verdicts. open_both and open_left clear
+        # both sides, while plain open clears right.
+        sides = ("right", "left") if side in ("left", "both") else ("right",)
+        # causal-fact gate: every causal record an open has (verdict clear,
+        # verified-hold release, the open-trust mark) is recorded only when the grip
+        # reply is a DONE. an ERROR line (e.g. 'ERROR:no_dds', palm DDS lane down)
+        # means the open never verifiably ran, so it records nothing and the reads
+        # that follow are untrusted and can never form a reference. without the
+        # gate, open -> ERROR:no_dds -> lane recovers -> two matching closed-hand
+        # reads would form the closed shape as the measured-open reference, and a
+        # later real open would measure 'closed' forever, so verify_open_hand and
+        # verify_place answer in_progress permanently.
+        if reply.startswith("DONE"):
+            self._clear_close_verdicts(sides)
+            # an open command marks only the commanded side(s) open-trusted: open_both
+            # marks both, open_left marks left only, since the right hand is not told
+            # to open and its reads must never qualify for a reference that command
+            # never created. the mark makes later state reads for that side
+            # qualifying, and releases any engine-verified hold record.
+            with self._obs_lock:
+                for s in sides:
+                    self._last_verified_grasp.pop(s, None)
+                commanded = ("right", "left") if side == "both" else (side,)
+                # the daemon lane's `held` is the same kind of claim and has to die the
+                # same way: this open released the payload, so a daemon still claiming a
+                # hold on a hand commanded open is stale. key on `commanded`, not on
+                # `sides`, because `sides` is the asymmetric verdict-clear set and includes
+                # the right hand even for a left open, so keying on it would drop a live
+                # right hold over an unrelated open.
+                #
+                # the record's own side bounds this clear, and a daemon that publishes no
+                # `side` never names one, so this branch stays inert there. the bound is
+                # kept for a daemon that does report a side, and widening it to fire on any
+                # unattributable record would disarm the measured tier for the whole hold
+                # epoch: a gateway open on the hand that is not holding would turn the next
+                # place into the refusal this tier exists to remove. with the side unknown
+                # the measurement invalidates an opened hand, since a hand this open
+                # actually released reads eff ~0 and cannot be chosen, while an open that
+                # failed leaves a held hand measuring closed, which is the truth. do not
+                # replace the bound with a side constant.
+                if self._pick_state_hold is not None and \
+                        self._pick_state_hold["side"] in commanded:
+                    self._pick_state_hold = None
+                    # the daemon's sticky 'held: true' would re-arm this within one 5 Hz
+                    # publish, so the clear has to be latched, not just written.
+                    self._pick_state_consumed = True
+                for s in commanded:
+                    self._assembler.note_open_commanded(s)
+        active = "right" if side == "both" else side
+        with self._obs_lock:
+            self._assembler.set_active_side(active)
+        if side == "both":
+            reply = ("%s; sides=both; prev_contact=right:%s; "
+                     "prev_contact_left=%s" % (reply, prev_right, prev_left))
+        else:
+            prev = prev_right if side == "right" else prev_left
+            reply = "%s; sides=%s; prev_contact=%s:%s" % (reply, side, side,
+                                                          prev)
+        return reply, self._verify("open_hand", reply)
+
