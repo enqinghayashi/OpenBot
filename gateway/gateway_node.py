@@ -8426,3 +8426,183 @@ class GatewayNode:
                                                           prev)
         return reply, self._verify("open_hand", reply)
 
+    def _do_close_hand(self, args: List) -> Tuple[str, Optional[str]]:
+        side = "right"
+        rest: List[str] = []
+        if args and str(args[0]) in ("right", "left", "both"):
+            side = str(args[0])
+            rest = [str(a) for a in args[1:]]
+        elif args:
+            rest = [str(a) for a in args]
+        affected = ("right", "left") if side == "both" else (side,)
+        # a close command is hand-affecting: it ends open-trust for the affected
+        # side(s), so a closed hand never refreshes an open-shaped reference
+        # afterwards.
+        with self._obs_lock:
+            for s in affected:
+                self._assembler.note_hand_command(s)
+        if side == "both":
+            # the close_both satisfaction path: dispatch close_adaptive right then
+            # close_adaptive left, since the only close evidence the platform has is
+            # the per-side close_adaptive verdict, DONE:contact|full|no_data. a plain
+            # close gives no tactile evidence, so a plain close_both dispatch is a
+            # verification dead end: it wiped both sides' verdicts, so verify_close_both
+            # could never succeed. the plain 'close_both' verb survives only as the grip
+            # passthrough, never as the brain close_hand tool. prior verdicts on both
+            # sides are invalidated up front.
+            self._clear_close_verdicts(("right", "left"))
+            per_side: List[str] = []
+            for s in ("right", "left"):
+                try:
+                    # `fingers_neutral`: this is an explicit human close, the only caller the
+                    # grip server straightens fingers for.
+                    r = self.grip_verb("close_adaptive %s fingers_neutral" % s)
+                except Exception as exc:
+                    return "ERROR:%s" % exc, None
+                verdict = (r[len("DONE:"):] if r.startswith("DONE:") else r)
+                if r.startswith("DONE"):
+                    # causal-fact gate. an ERROR reply is not a close verdict: the close never
+                    # verifiably ran, so nothing is recorded (the error is itself the fact,
+                    # surfaced in the per-side annotation and judged a failure by the
+                    # verifier's error classifier). DONE:contact|full|no_data are close results,
+                    # and contact is the real grasp signal.
+                    with self._obs_lock:
+                        self._close_verdicts[s] = (verdict, time.time())
+                        self._assembler.note_close_result(s, verdict)
+                per_side.append("%s_close=%s" % (s, verdict))
+            # the verifier's obs has to carry the right state with the left fold
+            # (both-hands verification); a stale active-side 'left' would
+            # self-reference and hide the fold.
+            with self._obs_lock:
+                self._assembler.set_active_side("right")
+            reply = ("DONE close_both dispatched (per-side close_adaptive); "
+                     "sides=both; " + "; ".join(per_side))
+            return reply, self._verify("close_hand", reply)
+        cmd = "close_adaptive %s" % side
+        if rest:
+            cmd += " " + " ".join(rest)
+        # `fingers_neutral` asks the grip server to straighten the fingers and
+        # settle the whole thumb before ramping closed. a close can otherwise drag
+        # thumb_1 and thumb_2 into a curling middle_0, the collision the operator
+        # feels. this is the explicit close_hand tool, a human close, and the one
+        # caller the grip server straightens fingers for: doing that on a loaded
+        # hand is a release, and no pre-close sensor here can tell the two apart
+        # (the pads read ~0 for 5 of 13 objects, and the closure-block margin reads
+        # a false 'blocked' on an empty hand after any bounded-lead close).
+        # appended after any passthrough args, since the server accepts the token in
+        # any trailing position.
+        cmd += " fingers_neutral"
+        try:
+            reply = self.grip_verb(cmd)
+        except Exception as exc:
+            return "ERROR:%s" % exc, None
+        if reply.startswith("DONE"):
+            # causal-fact gate: an ERROR reply (say 'ERROR:no_dds') is not a close
+            # verdict, because the close did not verifiably run, so no verdict is
+            # recorded. storing an error string as the verdict would wipe prior real
+            # contact evidence and inject a fake verdict into the fold. DONE:contact|
+            # full|no_data are by definition close results, and contact is the real
+            # grasp signal.
+            verdict = reply[len("DONE:"):]
+            with self._obs_lock:
+                self._close_verdicts[side] = (verdict, time.time())
+                self._assembler.note_close_result(side, verdict)
+        return reply, self._verify("close_hand", reply)
+
+    def _do_cmd_set(self, args: List) -> str:
+        """Locomotion via the writer cmd_set verb ONLY (never sport RPC 3102).
+
+        Frame mapping (world-truth round 5): vx/vy/omega and the detections
+        rows share one right-handed frame — the detections frame name from
+        embodiment.perception.frame ('torso'; x = lateral RIGHT, y =
+        forward, z = up, metres).  Omega is the left-hand rule about +z
+        (counter-clockwise seen from above, yaw toward +x): a negative
+        target x needs a positive omega, etc.  The mapping is documented in
+        gateway/assemble.py (DETECTIONS FRAME) and served by status as
+        ``detections_frame``.
+        """
+        if args and str(args[0]) == "off":
+            return self.writer_verb("cmd_set off")
+        if len(args) < 3:
+            return "ERROR:cmd_set <vx> <vy> <omega> [dur] | off"
+        try:
+            vx, vy, omega = float(args[0]), float(args[1]), float(args[2])
+        except (TypeError, ValueError):
+            return "ERROR:cmd_set vx vy omega must be numbers"
+        # NaN or Inf locomotion would reach the writer as garbage, so refuse it,
+        # the same finite law the pick floor refusal uses.
+        if not (math.isfinite(vx) and math.isfinite(vy) and math.isfinite(omega)):
+            return "ERROR:cmd_set vx vy omega must be finite numbers"
+        line = "cmd_set %.3f %.3f %.3f" % (vx, vy, omega)
+        if len(args) >= 4:
+            try:
+                dur = float(args[3])
+            except (TypeError, ValueError):
+                return "ERROR:cmd_set duration must be a number"
+            if not math.isfinite(dur):
+                return "ERROR:cmd_set duration must be a finite number"
+            line += " %.3f" % dur
+        return self.writer_verb(line)
+
+    def _do_status(self, args: List) -> str:
+        if args:
+            return "ERROR:status takes no args (use writer/grip/engine passthrough)"
+        out: Dict[str, object] = {}
+        try:
+            out["writer"] = self.writer_verb("status")
+        except Exception as exc:
+            out["writer"] = "ERROR:%s" % exc
+        self._refresh_grip_state()
+        try:
+            out["grip"] = self.grip_verb("state")
+        except Exception as exc:
+            out["grip"] = "ERROR:%s" % exc
+        with self._obs_lock:
+            out["walk"] = None
+            obs = self._assembler.observation()
+            if obs.walk is not None:
+                from dataclasses import asdict
+                out["walk"] = asdict(obs.walk)
+            out["fresh"] = obs.fresh
+            out["detections_alive"] = self._assembler.detections_alive()
+            out["last_detections_ts"] = self._assembler.last_detections_ts
+            out["detections_frame"] = self._detections_frame
+            out["silence_means_empty"] = self._silence_means_empty
+            out["min_arm_dur_s"] = self._min_arm_dur_s
+        # an additive key, only with the arm-safety switch or the watchdog on;
+        # every pre-existing key and value stays unchanged.
+        if (getattr(self, "_b5_on", False) is True
+                or getattr(self, "_wd_enabled", False) is True):
+            out["arm_safety"] = self._arm_safety_status()
+        return json.dumps(out)
+
+    # ── human I/O verbs (query_user and notify_user) ─────────────────────────
+
+    def _do_query_user(self, args: List) -> str:
+        """Ask the human one question and wait for ONE answer line.
+
+        Prints "[OpenBot QUESTION] <question>" to the gateway stdout (flushed)
+        then waits on sys.stdin via :meth:`_read_user_answer` for the human's
+        answer — select-pattern polling, never a background reader thread (the
+        reader must NOT consume stdin while idle, so it can never fight an
+        ``input()`` elsewhere in the process).  Reply grammar:
+        "DONE:<answer>" on success, "ERROR:no_user_reply:timeout" on timeout
+        or stdin EOF.
+        """
+        question = str(args[0]) if args else ""
+        print("[OpenBot QUESTION] %s" % question, flush=True)
+        answer = self._read_user_answer(QUERY_USER_REPLY_TIMEOUT_S)
+        if answer is None:
+            return "ERROR:no_user_reply:timeout"
+        return "DONE:" + answer
+
+    def _do_notify_user(self, args: List) -> str:
+        """Non-blocking notice to the human (no reply wait).
+
+        Prints "[OpenBot NOTICE] <message>" to the gateway stdout (flushed)
+        and returns the exact reply "DONE:notified".
+        """
+        message = str(args[0]) if args else ""
+        print("[OpenBot NOTICE] %s" % message, flush=True)
+        return "DONE:notified"
+
