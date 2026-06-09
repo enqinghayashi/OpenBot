@@ -8212,3 +8212,19 @@ class GatewayNode:
                 except Exception:  # noqa: BLE001 — best effort; pulse auto-expires
                     pass
 
+    @staticmethod
+    def _nav_split(text: str):
+        """B8: '<label>[#<iid>][@<hue>]' -> (label, iid|None, hue|None), or None
+        when a '#'/'@' suffix does not fit (iid int >= 1, hue int 0..359).
+        The same grammar as skills/locomotion/hunt_law.parse_target."""
+        head, sep, hue_s = text.partition("@")
+        label, sep2, iid_s = head.partition("#")
+        label = label.strip()
+        if not label:
+            return None
+        if sep and not (hue_s.isdigit() and hue_s.isascii() and int(hue_s) <= 359):
+            return None
+        if sep2 and not (iid_s.isdigit() and iid_s.isascii() and int(iid_s) >= 1):
+            return None
+        return (label, int(iid_s) if sep2 else None, int(hue_s) if sep else None)
+
