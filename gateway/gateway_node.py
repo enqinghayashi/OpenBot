@@ -8606,3 +8606,45 @@ class GatewayNode:
         print("[OpenBot NOTICE] %s" % message, flush=True)
         return "DONE:notified"
 
+    def _read_user_answer(self, timeout_s: float) -> Optional[str]:
+        """Wait up to ``timeout_s`` for ONE human answer line on sys.stdin.
+
+        select-pattern polling (per-iteration grace 0.2 s, bounded by the
+        total deadline): a background reader thread would consume stdin while
+        idle and fight an ``input()`` elsewhere, so nothing reads stdin until
+        select() reports it readable.  The answer is sanitized — stripped,
+        whitespace collapsed to a single line, capped at 500 chars; an
+        empty/whitespace-only line is not an answer and keeps waiting.  EOF,
+        the total timeout, or an ABNORMAL/DETACHED stdin -> None (the caller
+        maps it to the honest "ERROR:no_user_reply:timeout"); this method
+        NEVER raises (round 8.5): an OSError/ValueError from ``select`` (e.g.
+        EBADF on a closed stdin) or an OSError/ValueError/EOFError from
+        ``readline`` is treated as EOF, so the exact reply grammar survives
+        a detached/closed operator terminal.  One private method so tests
+        can inject a scripted reader.
+        """
+        deadline = time.time() + float(timeout_s)
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return None
+            try:
+                readable, _, _ = select.select(
+                    [sys.stdin], [], [], min(0.2, remaining))
+            except (OSError, ValueError):
+                return None  # abnormal or detached stdin means EOF, never raise
+            if not readable:
+                continue
+            try:
+                line = sys.stdin.readline()
+            except (OSError, ValueError, EOFError):
+                return None  # detached/closed stdin -> no reply possible
+            if not line:  # EOF -> no reply coming
+                return None
+            answer = " ".join(line.strip().split())  # strip it, keep one line
+            if not answer:
+                continue  # an empty or whitespace-only line just keeps waiting
+            return answer[:500]
+
+    # ── verifier post-hook (runs after a verb) ───────────────────────────────
+
