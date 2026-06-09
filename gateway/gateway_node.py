@@ -8352,3 +8352,77 @@ class GatewayNode:
             reply += "; NAV_INSTANCE=%s" % nav_instance  # says which one
         return reply, self._verify("navigate", reply)
 
+    def _do_open_hand(self, args: List) -> Tuple[str, Optional[str]]:
+        if args and str(args[0]) not in ("right", "left", "both"):
+            return "ERROR:open_hand [right|left|both]", None
+        side = str(args[0]) if args else "right"
+        verb_map = {"right": "open", "left": "open_left", "both": "open_both"}
+        # record each side's pre-open holding state before the open runs: the open
+        # clears the verdicts, so a post contact == False proves nothing alone, and
+        # only prev_contact True plus post False plus a DONE command means 'opened'.
+        prev_right = self._holding_state("right")
+        prev_left = self._holding_state("left")
+        try:
+            reply = self.grip_verb(verb_map[side])
+        except Exception as exc:
+            return "ERROR:%s" % exc, None
+        # an open invalidates prior close verdicts. open_both and open_left clear
+        # both sides, while plain open clears right.
+        sides = ("right", "left") if side in ("left", "both") else ("right",)
+        # causal-fact gate: every causal record an open has (verdict clear,
+        # verified-hold release, the open-trust mark) is recorded only when the grip
+        # reply is a DONE. an ERROR line (e.g. 'ERROR:no_dds', palm DDS lane down)
+        # means the open never verifiably ran, so it records nothing and the reads
+        # that follow are untrusted and can never form a reference. without the
+        # gate, open -> ERROR:no_dds -> lane recovers -> two matching closed-hand
+        # reads would form the closed shape as the measured-open reference, and a
+        # later real open would measure 'closed' forever, so verify_open_hand and
+        # verify_place answer in_progress permanently.
+        if reply.startswith("DONE"):
+            self._clear_close_verdicts(sides)
+            # an open command marks only the commanded side(s) open-trusted: open_both
+            # marks both, open_left marks left only, since the right hand is not told
+            # to open and its reads must never qualify for a reference that command
+            # never created. the mark makes later state reads for that side
+            # qualifying, and releases any engine-verified hold record.
+            with self._obs_lock:
+                for s in sides:
+                    self._last_verified_grasp.pop(s, None)
+                commanded = ("right", "left") if side == "both" else (side,)
+                # the daemon lane's `held` is the same kind of claim and has to die the
+                # same way: this open released the payload, so a daemon still claiming a
+                # hold on a hand commanded open is stale. key on `commanded`, not on
+                # `sides`, because `sides` is the asymmetric verdict-clear set and includes
+                # the right hand even for a left open, so keying on it would drop a live
+                # right hold over an unrelated open.
+                #
+                # the record's own side bounds this clear, and a daemon that publishes no
+                # `side` never names one, so this branch stays inert there. the bound is
+                # kept for a daemon that does report a side, and widening it to fire on any
+                # unattributable record would disarm the measured tier for the whole hold
+                # epoch: a gateway open on the hand that is not holding would turn the next
+                # place into the refusal this tier exists to remove. with the side unknown
+                # the measurement invalidates an opened hand, since a hand this open
+                # actually released reads eff ~0 and cannot be chosen, while an open that
+                # failed leaves a held hand measuring closed, which is the truth. do not
+                # replace the bound with a side constant.
+                if self._pick_state_hold is not None and \
+                        self._pick_state_hold["side"] in commanded:
+                    self._pick_state_hold = None
+                    # the daemon's sticky 'held: true' would re-arm this within one 5 Hz
+                    # publish, so the clear has to be latched, not just written.
+                    self._pick_state_consumed = True
+                for s in commanded:
+                    self._assembler.note_open_commanded(s)
+        active = "right" if side == "both" else side
+        with self._obs_lock:
+            self._assembler.set_active_side(active)
+        if side == "both":
+            reply = ("%s; sides=both; prev_contact=right:%s; "
+                     "prev_contact_left=%s" % (reply, prev_right, prev_left))
+        else:
+            prev = prev_right if side == "right" else prev_left
+            reply = "%s; sides=%s; prev_contact=%s:%s" % (reply, side, side,
+                                                          prev)
+        return reply, self._verify("open_hand", reply)
+
