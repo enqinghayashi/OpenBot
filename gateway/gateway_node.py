@@ -9202,3 +9202,50 @@ class _RosGateway(GatewayNode):
         except Exception as exc:  # noqa: BLE001 — never raise into rclpy
             self._node.get_logger().warn("/pc_result handling failed: %s" % exc)
 
+    def _on_odom_msg(self, msg) -> None:
+        """/unitree/slam_mapping/odom (B8l): x, y and the yaw of the ZYX
+        quaternion (walk_node._on_odom's formula).  Never raises into rclpy."""
+        try:
+            p = msg.pose.pose.position
+            q = msg.pose.pose.orientation
+            yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                             1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+            self.on_odom(p.x, p.y, yaw)
+        except Exception as exc:  # noqa: BLE001 — never raise into rclpy
+            self._node.get_logger().warn("odom handling failed: %s" % exc)
+
+    def publish_walk_pose(self, text: str) -> None:
+        """B8l: one /walk_pose String (a goal JSON or 'stop')."""
+        msg = self._String()
+        msg.data = text
+        self._walk_pose_pub.publish(msg)
+
+    def _on_body_pose_msg(self, msg) -> None:
+        """/openbot/body_pose (B8k): store it for the point-cloud client.
+        Never raises into rclpy."""
+        try:
+            self.on_body_pose(msg.data)
+        except Exception as exc:  # noqa: BLE001 — never raise into rclpy
+            self._node.get_logger().warn("/openbot/body_pose handling failed: %s" % exc)
+
+    def _on_yolo_classes_state(self, msg) -> None:
+        """/yolo/classes_state (batch 4, P3): cache the node's state dict.
+
+        Exists in the graph only with ``open_vocab`` True.  Parse failures are
+        logged and ignored — never cached, never acked.
+        """
+        try:
+            state = json.loads(msg.data)
+            if not self._yolo_vocab_store_state(state):
+                raise ValueError("payload must be a JSON object")
+        except Exception as exc:
+            self._node.get_logger().warn(
+                "%s parse failed: %s" % (self.YOLO_CLASSES_STATE_TOPIC, exc))
+
+    # ── hooks (the _RosGateway implementations) ──────────────────────────────
+
+    def publish_yolo_strict(self, text: str) -> None:
+        msg = self._String()
+        msg.data = text
+        self._strict_pub.publish(msg)
+
