@@ -8721,3 +8721,45 @@ class GatewayNode:
     #: `engine_reply=` token. log-only.
     _WIRE_TRACE_CHARS = 4000
 
+    @classmethod
+    def _trace_wire(cls, verb: str, args: object,
+                    out: Dict[str, object]) -> None:
+        """Write ONE line per tool call to stderr: the request AND the reply.
+
+        WHY THIS EXISTS (MEASURED 2026-09-30, run9 post-mortem).  The pick
+        physically SUCCEEDED — engine grasp verdict, pre-lift pin, LIFT ->
+        CARRY_TUCK — and the operator was told "pick not confirmed".  That
+        verdict text is built HERE and until now it went exactly one place:
+        back down the socket to the brain.  Neither end recorded it.  The
+        gateway's own logging covers only `/walk_status` parsing (7
+        `get_logger()` calls, none on the tool path); the brain logs a tool
+        result ONLY when its kind is failure/unknown (`tool_executor.py:306`);
+        a SUCCESS verdict is written nowhere at all.  So no run could be asked
+        what the gateway had answered, and stating that question cost two runs.
+
+        ONE CHOKE POINT, THEREFORE TOTAL.  Every tool call leaves through the
+        single `conn.sendall` in `handle()`; tracing just before it captures
+        success, refusal, verifier error and malformed-JSON alike, in both
+        protocol shapes (brain_client named-args and legacy positional).
+
+        NEVER RAISES.  This runs on the socket thread inside a loop whose only
+        guard is `except OSError`: an exception here would break the client
+        mid-conversation.  A trace that can kill the call it describes is worse
+        than no trace, so the whole body sits inside the try.
+        """
+        try:
+            def _clip(value: object) -> str:
+                text = value if isinstance(value, str) else repr(value)
+                text = text.replace("\n", " ")
+                if len(text) > cls._WIRE_TRACE_CHARS:
+                    text = text[:cls._WIRE_TRACE_CHARS] + "...(clipped)"
+                return text
+
+            sys.stderr.write(
+                "[wire] %s %s -> ok=%s verdict=%s reply=%s\n"
+                % (verb or "<none>", _clip(args), out.get("ok"),
+                   _clip(out.get("verdict")), _clip(out.get("reply"))))
+            sys.stderr.flush()
+        except Exception:  # noqa: BLE001 — a trace must never break the call
+            pass
+
