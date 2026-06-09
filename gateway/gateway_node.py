@@ -8763,3 +8763,41 @@ class GatewayNode:
         except Exception:  # noqa: BLE001 — a trace must never break the call
             pass
 
+    @staticmethod
+    def _shape_reply(reply: str, verdict: Optional[str]) -> Dict[str, object]:
+        """Shape a tools-server reply dict; never masks a verifier error.
+
+        A ``VERDICT:error`` verdict is surfaced honestly as ok:false with the
+        reason in the reply — indistinguishable from a null verdict would hide
+        a broken verifier behind 'no contracted tool'.
+
+        ENVELOPE HONESTY (R7-3): ok:false is rendered not only for a reply
+        that LEADS with ``ERROR`` but for ANY reply whose BODY carries an
+        embedded ``ERROR:`` substring — e.g. the close_both per-side
+        annotations (``right_close=ERROR:no_dds``) inside a 'DONE close_both
+        dispatched' lead.  This mirrors the verifier's own definitive
+        classification (brain/verifier.py _classify_reply: any ``ERROR:``
+        anywhere in the reply is an error), so the envelope can never claim
+        ok:true for a reply the verifier judges failure.  The reply text is
+        surfaced VERBATIM either way.  Pure DONE / Q: / STATE: / DONE:...
+        lines without an ``ERROR:`` substring stay ok:true — the writer
+        (DONE | ERROR:<msg> | Q:<14f> | STATE:...), grip (DONE:... |
+        ERROR:no_dds) and engine (DONE | ERROR:<msg>) passthrough replies are
+        single-line and never embed the literal on success, so their envelope
+        semantics are unchanged.
+
+        The brain_client protocol reads ``ok`` + ``value`` | ``reason``
+        (gateway/brain_client.py); the legacy protocol reads ``ok`` +
+        ``reply`` + ``verdict``.  Both are always present (superset).
+        """
+        if verdict is not None and verdict.startswith("VERDICT:error"):
+            reason = verdict[len("VERDICT:error|Evidence:"):]
+            return {"ok": False, "reply": "ERROR:%s" % reason,
+                    "verdict": verdict, "value": None,
+                    "reason": "ERROR:%s" % reason}
+        ok_flag = "ERROR:" not in reply and not reply.startswith("ERROR")
+        return {"ok": ok_flag, "reply": reply, "verdict": verdict,
+                "value": reply if ok_flag else None,
+                "reason": None if ok_flag else reply}
+
+
