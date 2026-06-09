@@ -7983,3 +7983,22 @@ class GatewayNode:
                     return "sight", err, now
             sleep(TURN_TICK_S)
 
+    def _turn_wait_idle(self, marker: int) -> bool:
+        """After stop_walk(): wait <= TURN_STOP_SETTLE_S for the FSM's IDLE.
+
+        True when settled (IDLE seen after ``marker``, or the last event is
+        already IDLE/NOT_FOUND); False on timeout.
+        """
+        clock, sleep = self._turn_clock, self._turn_sleep
+        with self._obs_lock:
+            last = self._turn_events[-1][0] if self._turn_events else None
+        if last in ("IDLE", "NOT_FOUND"):
+            return True
+        t_end = clock() + TURN_STOP_SETTLE_S
+        while clock() < t_end:
+            with self._obs_lock:
+                if any(e[0] == "IDLE" for e in self._turn_events[marker:]):
+                    return True
+            sleep(TURN_TICK_S)
+        return False
+
