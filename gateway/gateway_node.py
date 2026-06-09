@@ -7548,3 +7548,17 @@ class GatewayNode:
         w = mod.CREEP_OMEGA_SIGN * mod.CREEP_K_THETA * b
         return max(-mod.CREEP_OMEGA_MAX, min(mod.CREEP_OMEGA_MAX, w))
 
+    def _creep_walk_settled(self) -> bool:
+        """The walk FSM must not command the legs during the creep: a REACHED
+        hold (<= 5 s after REACHED) is ended with stop_walk() and IDLE is
+        awaited (turn_around's settle).  Lane already claimed."""
+        with self._obs_lock:
+            walk = getattr(self._assembler, "_walk", None)
+            ts = getattr(self._assembler, "_last_walk_ts", 0.0)
+            marker = len(self._turn_events)
+        phase = str(getattr(walk, "phase", "") or "").upper()
+        if phase != "REACHED" or time.time() - ts > 6.5:
+            return True
+        self.stop_walk()
+        return self._turn_wait_idle(marker)
+
