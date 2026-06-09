@@ -8897,3 +8897,208 @@ class GatewayNode:
 class _RosGateway(GatewayNode):
     """The rclpy adapter. All ROS imports happen here, lazily, never at top."""
 
+    def __init__(self, config: Optional[Any] = None):
+        import rclpy  # noqa: F401  (lazy — module must import without rclpy)
+        from rclpy.node import Node
+        from std_msgs.msg import String
+
+        # the config seam: the CLI wiring reads skills.writer_sock / grip_sock /
+        # engine_cmd and gateway.port out of the loaded config
+        # (resolve_skill_endpoints), plus the runtime embodiment values, and hands
+        # them in here as the ROS-parameter defaults. an explicitly-set parameter, or
+        # the launcher's param file, still wins through _param.
+        writer_sock, grip_sock, engine_cmd, tools_port = resolve_skill_endpoints(config)
+        engine_sock = resolve_engine_sock(config)
+        pick_min_z_m, silence_means_empty, frame, min_arm_dur_s, descent = \
+            resolve_embodiment_config(config, with_descent=True)
+        # the descent lane's switch and law inputs come from the config file directly,
+        # not through _param: arming a motion lane has to show up in the config file,
+        # never in a launch parameter. plain kwargs keep the node's own lazy import
+        # the single degeneracy guard, and lane_operation_budget_s rides that path
+        # (None means the lane's default).
+        (low_workspace_lane, height_stand_m, height_min_m, hold_tol_m,
+         descend_confirm_timeout_s, lane_operation_budget_s) = descent
+        vision_enabled, vision_topic, vision_max_age_s, vision_jpeg_quality, \
+            vision_min_interval_s = resolve_vision_config(config)
+        # point-cloud switches from the config file directly, like the lane's own
+        # switch, never a ROS parameter. {} means every one off, so the
+        # super().__init__ below is exactly the plain call.
+        pc_kw = _pc_switch_kwargs(resolve_pc_switches(config))
+        self._node = Node("openbot_gateway")
+        self._String = String
+        super().__init__(
+            writer_sock=self._param("writer_sock", writer_sock),
+            grip_sock=self._param("grip_sock", grip_sock),
+            engine_cmd=self._param("engine_cmd", engine_cmd),
+            engine_sock=self._param("engine_sock", engine_sock),
+            max_stale_s=self._param("max_stale_s", MAX_STALE_S_DEFAULT),
+            pick_min_z_m=self._param("pick_min_z_m", pick_min_z_m),
+            min_arm_dur_s=self._param("min_arm_dur_s", min_arm_dur_s),
+            silence_means_empty=self._param("silence_means_empty",
+                                            silence_means_empty),
+            detections_frame=self._param("detections_frame", frame),
+            vision_enabled=self._param("vision_enabled", vision_enabled),
+            vision_topic=self._param("vision_topic", vision_topic),
+            vision_max_age_s=self._param("vision_max_age_s", vision_max_age_s),
+            vision_jpeg_quality=self._param("vision_jpeg_quality",
+                                            vision_jpeg_quality),
+            vision_min_interval_s=self._param("vision_min_interval_s",
+                                              vision_min_interval_s),
+            low_workspace_lane=low_workspace_lane,
+            height_stand_m=height_stand_m,
+            height_min_m=height_min_m,
+            hold_tol_m=hold_tol_m,
+            descend_confirm_timeout_s=descend_confirm_timeout_s,
+            operation_budget_s=lane_operation_budget_s,
+            pre_descent_step=_pre_descent_step_flag(
+                getattr(getattr(config, "embodiment", None), "envelope", None)),
+            **pc_kw
+        )
+        self._node.create_subscription(
+            String, "/object_detections_body", self._on_detections, 10)
+        self._node.create_subscription(
+            String, "/walk_status", self._on_walk_status, 10)
+        # ── arm safety, node params ───────────────────────────────────────────────
+        # node params, not config keys. both default on because this is a safety
+        # item, and a launch line can switch either off (`-p arm_safety:=false`).
+        # only exactly true arms it, since a string 'false' is truthy and must never
+        # arm a motion source.
+        self._b5_on = self._param("arm_safety", True) is True
+        self._wd_writer_log_path = str(self._param(
+            "writer_log_path", WRITER_LOG_PATH_DEFAULT))
+        if self._param("arm_watchdog", True) is True:
+            self.start_arm_watchdog()
+        if self._vision_enabled:
+            # lazy ros-message import inside the subscribe path, per the module's
+            # lazy-import law: sensor_msgs loads only for a vision-enabled config.
+            from sensor_msgs.msg import Image
+
+            self._node.create_subscription(
+                Image, self._vision_topic, self._on_camera, 10)
+        self._verdict_pub = self._node.create_publisher(
+            String, "/skill_verdict", 10)
+        # the coordinator is the sole publisher of /walk_target and /walk_go for
+        # walk-to-target. the gateway talks to it only via /navigate_target (label
+        # plus 'confirm' for a navigate, 'stop' for a stop) and /skill_verdict. one
+        # deliberate exception: the turn-around sweep puts the label directly on
+        # /walk_target, so the coordinator's auto-approach never sees a nav request
+        # and the FSM stops on sight. /walk_go stays coordinator-only.
+        self._walk_target_pub = self._node.create_publisher(
+            String, "/walk_target", 10)
+        self._walk_go_pub = self._node.create_publisher(String, "/walk_go", 10)
+        # which single object of the class a navigate means (see set_walk_instance);
+        # only walk_node reads it.
+        self._walk_instance_pub = self._node.create_publisher(
+            String, "/walk_instance", 10)
+        # returning to the fetch start point (walk_node /walk_pose) plus the
+        # odometry pose that records and finds it. with no nav_msgs the odometry slot
+        # stays empty, so home marks and return_home answer 'odometry stale' rather
+        # than guessing.
+        self._walk_pose_pub = self._node.create_publisher(
+            String, "/walk_pose", 10)
+        try:
+            from nav_msgs.msg import Odometry  # lazy: only in a ROS env
+            self._node.create_subscription(
+                Odometry, "/unitree/slam_mapping/odom", self._on_odom_msg, 10)
+        except Exception as exc:  # noqa: BLE001 -- degrade, never raise
+            print("[home] odometry subscription FAILED (%r) - return_home "
+                  "will refuse" % (exc,), flush=True)
+        self._navigate_target_pub = self._node.create_publisher(
+            String, "/navigate_target", 10)
+        # /place_target lane: one label comes in, one JSON status object goes out
+        # per phase (the last object also carries the rendered table).
+        law = self._place_target_law
+        self._place_status_pub = self._node.create_publisher(
+            String, law.PLACE_STATUS_TOPIC, 10)
+        self._node.create_subscription(
+            String, law.PLACE_TARGET_TOPIC, self._on_place_target, 10)
+        # the /pick_state fold (see _daemon_held_side): the daemon lane's hold,
+        # which the gateway's own pick path cannot observe. read as ROS parameters with the
+        # constants as defaults, and the shipped launcher passes no --ros-args/-p, so
+        # on this robot the constants apply; these are hooks for a future launcher,
+        # not a config knob. do not put pick_state_* in the config file, because the
+        # loader rejects unknown skills keys and the gateway would not boot. there is
+        # deliberately no `pick_state_held_side` knob: the side is measured or
+        # declared by the daemon, and an override could only bring back the
+        # wrong-hand release the tier exists to prevent.
+        self._pick_state_topic = str(self._param(
+            "pick_state_topic", PICK_STATE_TOPIC_DEFAULT))
+        self._pick_state_max_age_s = float(self._param(
+            "pick_state_max_age_s", PICK_STATE_MAX_AGE_S))
+        self._pick_daemon_wait_s = float(self._param(
+            "pick_daemon_wait_s", PICK_DAEMON_WAIT_S))
+        self._pick_daemon_start_s = float(self._param(
+            "pick_daemon_start_s", PICK_DAEMON_START_S))
+        self._nav_wait_s = float(self._param("nav_wait_s", NAV_WAIT_S))
+        self._nav_start_s = float(self._param("nav_start_s", NAV_START_S))
+        self._closed_eff_min = float(self._param(
+            "closed_eff_min", CLOSED_EFF_MIN))
+        if not (0.0 < self._closed_eff_min < 1.0):
+            raise ValueError(
+                "closed_eff_min must be in (0, 1), got %r"
+                % (self._closed_eff_min,))
+        self._node.create_subscription(
+            String, self._pick_state_topic, self._on_pick_state, 10)
+        # ── the open-vocabulary lane ──────────────────────────────────────────────
+        # a single ROS param, default false, set only on a launch line (--ros-args -p
+        # open_vocab:=true). exactly true arms it, since a string 'false' is truthy
+        # and must never arm a graph change. off: no publisher, no subscription, no
+        # attribute, and the verb answers ERROR:yolo_classes disabled. on: the
+        # /yolo/classes publisher is created eagerly (a lazily created publisher
+        # loses its first message to DDS matching), transient-local depth 1 reliable
+        # so a restarted yolo node gets the last vocabulary. the state subscription
+        # is volatile reliable depth 10: a volatile reader matches a writer of
+        # either durability, while a transient-local reader would not match a
+        # volatile state writer and the cache would quietly stay empty.
+        self._open_vocab = False
+        if self._param("open_vocab", False) is True:
+            from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
+                                   ReliabilityPolicy)
+            classes_qos = QoSProfile(
+                depth=1, history=HistoryPolicy.KEEP_LAST,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                reliability=ReliabilityPolicy.RELIABLE)
+            self._yolo_vocab_setup(self._node.create_publisher(
+                String, self.YOLO_CLASSES_TOPIC, classes_qos))
+            self._node.create_subscription(
+                String, self.YOLO_CLASSES_STATE_TOPIC,
+                self._on_yolo_classes_state, 10)
+            self._open_vocab = True
+        # ── strict detection (rides on the open-vocabulary lane) ──────────────────
+        # OPENBOT_STRICT_VOCAB=0 turns it off: no /yolo/strict publisher, no renewal
+        # thread, and yolo_strict refuses.
+        if (self._open_vocab
+                and os.environ.get("OPENBOT_STRICT_VOCAB", "1") != "0"):
+            from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
+                                   ReliabilityPolicy)
+            strict_qos = QoSProfile(
+                depth=10, history=HistoryPolicy.KEEP_LAST,
+                durability=DurabilityPolicy.VOLATILE,
+                reliability=ReliabilityPolicy.RELIABLE)
+            self._strict_setup(self._node.create_publisher(
+                String, self.YOLO_STRICT_TOPIC, strict_qos))
+            self.start_strict_renew()
+        # ── the point-cloud consumer ──────────────────────────────────────────────
+        # it exists only with the client built (a switch on and the pc client
+        # importable). off: no publisher, no subscription, no attribute, and the ROS
+        # graph stays as before. on: /pc_arm out and /pc_result in, both
+        # std_msgs/String depth 10. the publisher is created eagerly, before the
+        # tools server starts, so DDS matching has begun by the first request, and
+        # the consumer stays disarmed until asked to arm.
+        if self._pc is not None:
+            self._pc_arm_pub = self._node.create_publisher(
+                String, "/pc_arm", 10)
+            self._node.create_subscription(
+                String, "/pc_result", self._on_pc_result, 10)
+            #: the odometry body pose is the lane's measured pose
+            self._node.create_subscription(
+                String, "/openbot/body_pose", self._on_body_pose_msg, 10)
+        tools_sock = self._param("tools_sock", TOOLS_SOCK_DEFAULT)
+        tools_port = int(self._param("tools_port", tools_port))
+        tools_bind_host = self._param("tools_bind_host",
+                                      resolve_tools_bind_host(config))
+        self._start_tools_server(tools_sock, tools_port, tools_bind_host)
+        self._node.get_logger().info(
+            "openbot_gateway ready — tools socket %s (tcp port %s)"
+            % (tools_sock, tools_port))
+
