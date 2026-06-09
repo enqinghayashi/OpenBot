@@ -7931,3 +7931,26 @@ class GatewayNode:
             return conf >= TURN_PERSON_MIN_CONF and h >= TURN_PERSON_MIN_HEIGHT_M
         return conf >= TURN_OTHER_MIN_CONF
 
+    def _turn_pick(self, rows: List[dict], label: str,
+                   last_err: Optional[float]):
+        """Associate: (row, yaw_err) or (None, None).
+
+        First lock = highest-conf plausible row.  Afterwards the plausible row
+        whose bearing is nearest the last locked bearing, and only if inside
+        TURN_ASSOC_GATE_RAD (so the loop never hops to a second person).
+        """
+        cands = []
+        for r in rows:
+            if self._turn_plausible(r, label):
+                cands.append((float(r.get("conf", 0.0)),
+                              _turn_bearing(float(r["x"]), float(r["y"])), r))
+        if not cands:
+            return None, None
+        if last_err is None:
+            conf, err, row = max(cands, key=lambda c: c[0])
+            return row, err
+        conf, err, row = min(cands, key=lambda c: abs(c[1] - last_err))
+        if abs(err - last_err) > TURN_ASSOC_GATE_RAD:
+            return None, None
+        return row, err
+
