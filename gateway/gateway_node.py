@@ -7954,3 +7954,32 @@ class GatewayNode:
             return None, None
         return row, err
 
+    def _turn_wait_sight(self, label: str, t0: float, sweep_t0: float,
+                         cancel0: float, ev_mark: int):
+        """Block until cancel / budget / FSM give-up / a plausible sighting.
+
+        Returns ('cancelled', None, None) | ('not_seen', (reason, elapsed),
+        None) | ('sight', yaw_err, ts).  Priority per tick: cancel, budget,
+        NOT_FOUND, sight.  A /walk_status DETECTED with no plausible row is
+        NOT a sighting (run20 false 'person' hits): keep waiting, the FSM's
+        own lost-timeout re-sweeps.
+        """
+        clock, sleep = self._turn_clock, self._turn_sleep
+        while True:
+            now = clock()
+            if self._cancel_ts > cancel0:
+                return "cancelled", None, None
+            if (now - t0 >= TURN_TOTAL_BUDGET_S
+                    or now - sweep_t0 >= TURN_SWEEP_BUDGET_S):
+                return "not_seen", ("sweep_budget", now - sweep_t0), None
+            with self._obs_lock:
+                evs = list(self._turn_events[ev_mark:])
+            if any(e[0] == "NOT_FOUND" for e in evs):
+                return "not_seen", ("sweep_complete", now - sweep_t0), None
+            rows, pts = self._turn_rows()
+            if pts > 0.0 and (now - pts) <= TURN_ROW_MAX_AGE_S:
+                row, err = self._turn_pick(rows, label, None)
+                if row is not None:
+                    return "sight", err, now
+            sleep(TURN_TICK_S)
+
