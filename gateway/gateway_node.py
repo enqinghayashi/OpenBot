@@ -8509,3 +8509,38 @@ class GatewayNode:
                 self._assembler.note_close_result(side, verdict)
         return reply, self._verify("close_hand", reply)
 
+    def _do_cmd_set(self, args: List) -> str:
+        """Locomotion via the writer cmd_set verb ONLY (never sport RPC 3102).
+
+        Frame mapping (world-truth round 5): vx/vy/omega and the detections
+        rows share one right-handed frame — the detections frame name from
+        embodiment.perception.frame ('torso'; x = lateral RIGHT, y =
+        forward, z = up, metres).  Omega is the left-hand rule about +z
+        (counter-clockwise seen from above, yaw toward +x): a negative
+        target x needs a positive omega, etc.  The mapping is documented in
+        gateway/assemble.py (DETECTIONS FRAME) and served by status as
+        ``detections_frame``.
+        """
+        if args and str(args[0]) == "off":
+            return self.writer_verb("cmd_set off")
+        if len(args) < 3:
+            return "ERROR:cmd_set <vx> <vy> <omega> [dur] | off"
+        try:
+            vx, vy, omega = float(args[0]), float(args[1]), float(args[2])
+        except (TypeError, ValueError):
+            return "ERROR:cmd_set vx vy omega must be numbers"
+        # NaN or Inf locomotion would reach the writer as garbage, so refuse it,
+        # the same finite law the pick floor refusal uses.
+        if not (math.isfinite(vx) and math.isfinite(vy) and math.isfinite(omega)):
+            return "ERROR:cmd_set vx vy omega must be finite numbers"
+        line = "cmd_set %.3f %.3f %.3f" % (vx, vy, omega)
+        if len(args) >= 4:
+            try:
+                dur = float(args[3])
+            except (TypeError, ValueError):
+                return "ERROR:cmd_set duration must be a number"
+            if not math.isfinite(dur):
+                return "ERROR:cmd_set duration must be a finite number"
+            line += " %.3f" % dur
+        return self.writer_verb(line)
+
