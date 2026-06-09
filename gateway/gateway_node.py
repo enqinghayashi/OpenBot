@@ -8426,3 +8426,86 @@ class GatewayNode:
                                                           prev)
         return reply, self._verify("open_hand", reply)
 
+    def _do_close_hand(self, args: List) -> Tuple[str, Optional[str]]:
+        side = "right"
+        rest: List[str] = []
+        if args and str(args[0]) in ("right", "left", "both"):
+            side = str(args[0])
+            rest = [str(a) for a in args[1:]]
+        elif args:
+            rest = [str(a) for a in args]
+        affected = ("right", "left") if side == "both" else (side,)
+        # a close command is hand-affecting: it ends open-trust for the affected
+        # side(s), so a closed hand never refreshes an open-shaped reference
+        # afterwards.
+        with self._obs_lock:
+            for s in affected:
+                self._assembler.note_hand_command(s)
+        if side == "both":
+            # the close_both satisfaction path: dispatch close_adaptive right then
+            # close_adaptive left, since the only close evidence the platform has is
+            # the per-side close_adaptive verdict, DONE:contact|full|no_data. a plain
+            # close gives no tactile evidence, so a plain close_both dispatch is a
+            # verification dead end: it wiped both sides' verdicts, so verify_close_both
+            # could never succeed. the plain 'close_both' verb survives only as the grip
+            # passthrough, never as the brain close_hand tool. prior verdicts on both
+            # sides are invalidated up front.
+            self._clear_close_verdicts(("right", "left"))
+            per_side: List[str] = []
+            for s in ("right", "left"):
+                try:
+                    # `fingers_neutral`: this is an explicit human close, the only caller the
+                    # grip server straightens fingers for.
+                    r = self.grip_verb("close_adaptive %s fingers_neutral" % s)
+                except Exception as exc:
+                    return "ERROR:%s" % exc, None
+                verdict = (r[len("DONE:"):] if r.startswith("DONE:") else r)
+                if r.startswith("DONE"):
+                    # causal-fact gate. an ERROR reply is not a close verdict: the close never
+                    # verifiably ran, so nothing is recorded (the error is itself the fact,
+                    # surfaced in the per-side annotation and judged a failure by the
+                    # verifier's error classifier). DONE:contact|full|no_data are close results,
+                    # and contact is the real grasp signal.
+                    with self._obs_lock:
+                        self._close_verdicts[s] = (verdict, time.time())
+                        self._assembler.note_close_result(s, verdict)
+                per_side.append("%s_close=%s" % (s, verdict))
+            # the verifier's obs has to carry the right state with the left fold
+            # (both-hands verification); a stale active-side 'left' would
+            # self-reference and hide the fold.
+            with self._obs_lock:
+                self._assembler.set_active_side("right")
+            reply = ("DONE close_both dispatched (per-side close_adaptive); "
+                     "sides=both; " + "; ".join(per_side))
+            return reply, self._verify("close_hand", reply)
+        cmd = "close_adaptive %s" % side
+        if rest:
+            cmd += " " + " ".join(rest)
+        # `fingers_neutral` asks the grip server to straighten the fingers and
+        # settle the whole thumb before ramping closed. a close can otherwise drag
+        # thumb_1 and thumb_2 into a curling middle_0, the collision the operator
+        # feels. this is the explicit close_hand tool, a human close, and the one
+        # caller the grip server straightens fingers for: doing that on a loaded
+        # hand is a release, and no pre-close sensor here can tell the two apart
+        # (the pads read ~0 for 5 of 13 objects, and the closure-block margin reads
+        # a false 'blocked' on an empty hand after any bounded-lead close).
+        # appended after any passthrough args, since the server accepts the token in
+        # any trailing position.
+        cmd += " fingers_neutral"
+        try:
+            reply = self.grip_verb(cmd)
+        except Exception as exc:
+            return "ERROR:%s" % exc, None
+        if reply.startswith("DONE"):
+            # causal-fact gate: an ERROR reply (say 'ERROR:no_dds') is not a close
+            # verdict, because the close did not verifiably run, so no verdict is
+            # recorded. storing an error string as the verdict would wipe prior real
+            # contact evidence and inject a fake verdict into the fold. DONE:contact|
+            # full|no_data are by definition close results, and contact is the real
+            # grasp signal.
+            verdict = reply[len("DONE:"):]
+            with self._obs_lock:
+                self._close_verdicts[side] = (verdict, time.time())
+                self._assembler.note_close_result(side, verdict)
+        return reply, self._verify("close_hand", reply)
+
