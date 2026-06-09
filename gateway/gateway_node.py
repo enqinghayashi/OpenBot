@@ -9102,3 +9102,11 @@ class _RosGateway(GatewayNode):
             "openbot_gateway ready — tools socket %s (tcp port %s)"
             % (tools_sock, tools_port))
 
+    def _detections_publisher_count(self) -> int:
+        """G5: rclpy Foxy ``Node.count_publishers`` (UNVERIFIED on the box
+        under its Cyclone config); -1 when the call fails."""
+        try:
+            return int(self._node.count_publishers("/object_detections_body"))
+        except Exception:  # noqa: BLE001
+            return -1
+
