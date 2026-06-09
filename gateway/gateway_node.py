@@ -8648,3 +8648,76 @@ class GatewayNode:
 
     # ── verifier post-hook (runs after a verb) ───────────────────────────────
 
+    def _verify(self, tool: str, tool_result: str) -> Optional[str]:
+        """Run the SkillVerifier post-hook on a motion result.
+
+        Conservative rule comes from the verifier itself (ambiguous ->
+        'in_progress' + 're-observe'; never a false success). The returned
+        string is published on /skill_verdict by the caller.
+
+        Errors are NEVER swallowed: a verifier failure must be distinguishable
+        from 'no contracted tool'. On exception the reply is the honest
+        ``VERDICT:error|Evidence:(verifier error) <exc>`` string, which the
+        tools-server reply path surfaces as ok:false with the reason.
+        """
+        try:
+            from dataclasses import replace  # stdlib import
+            from brain.tool_contract import CONTRACTS  # lazy: these are brain modules
+            from brain.verifier import SkillVerifier
+            contract = CONTRACTS.get(tool)
+            if contract is None:
+                return None  # not a contracted tool, so no verdict
+            # pick only: _do_pick mints its verdict here rather than through
+            # the brain's post-hook, so the fix the brain applied to its own
+            # verifier is applied here too. the pick contract context is static
+            # prose carrying no `target_label=`, so verify_pick could resolve no
+            # target and returned the unconfirmable in_progress branch on every
+            # pick. prepended because _resolve_target takes the first match, so
+            # a named object beats anything in the static prose.
+            hint = getattr(self._req_target_hint, "label", None)
+            if tool == "pick" and hint:
+                contract = replace(
+                    contract,
+                    context="target_label=%s\n" % hint + contract.context)
+            # the pick point _do_pick parked for this call, using the identical
+            # `pick_point=%.3f,%.3f,%.3f` grammar the brain appends. lane off means slot
+            # None and nothing changes.
+            point = getattr(GatewayNode._PICK_POINT_TLS, "point", None)
+            if tool == "pick" and point is not None:
+                try:
+                    px, py, pz = (float(v) for v in point)
+                except (TypeError, ValueError):
+                    px = py = pz = float("nan")
+                if all(math.isfinite(v) for v in (px, py, pz)):
+                    contract = replace(
+                        contract,
+                        context="pick_point=%.3f,%.3f,%.3f\n" % (px, py, pz)
+                        + contract.context)
+            if self._verifier is None:
+                # one persistent instance: the navigate epoch gate keeps last-success state
+                # across calls. the silence switch is wired from the same runtime embodiment
+                # value the assembler uses.
+                self._verifier = SkillVerifier(
+                    silence_means_empty=self._silence_means_empty)
+            self._refresh_grip_state()  # obs.grip has to carry the live state
+            with self._obs_lock:
+                obs = self._assembler.observation()
+            verdict = self._verifier.verify(contract, obs, tool_result)
+            verdict_str = verdict.to_string()
+            # the confirmed-epoch memory lives in the persistent verifier
+            # (SkillVerifier.last_confirmed_epoch), with no gateway-side copy. through
+            # _emit_verdict: a lane run on this thread owns the publish and may still
+            # downgrade this verdict.
+            self._emit_verdict(verdict_str)
+            return verdict_str
+        except Exception as exc:
+            return "VERDICT:error|Evidence:(verifier error) %s" % exc
+
+    #: per-field bound on a trace line. the wire payloads are small (a verb, a
+    #: label, a few scalars), but a pick or place reply carries the engine's
+    #: whole verdict, and an unbounded stderr write off the socket thread is how
+    #: a trace turns into a stall. 4000 keeps a lane reply's ~500 chars of
+    #: hold-window disclosure plus the engine's own reply, including its trailing
+    #: `engine_reply=` token. log-only.
+    _WIRE_TRACE_CHARS = 4000
+
