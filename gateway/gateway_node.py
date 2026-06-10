@@ -9228,3 +9228,19 @@ class _RosGateway(GatewayNode):
         except Exception as exc:  # noqa: BLE001 — never raise into rclpy
             self._node.get_logger().warn("/openbot/body_pose handling failed: %s" % exc)
 
+    def _on_yolo_classes_state(self, msg) -> None:
+        """/yolo/classes_state (batch 4, P3): cache the node's state dict.
+
+        Exists in the graph only with ``open_vocab`` True.  Parse failures are
+        logged and ignored — never cached, never acked.
+        """
+        try:
+            state = json.loads(msg.data)
+            if not self._yolo_vocab_store_state(state):
+                raise ValueError("payload must be a JSON object")
+        except Exception as exc:
+            self._node.get_logger().warn(
+                "%s parse failed: %s" % (self.YOLO_CLASSES_STATE_TOPIC, exc))
+
+    # ── hooks (the _RosGateway implementations) ──────────────────────────────
+
