@@ -9220,3 +9220,11 @@ class _RosGateway(GatewayNode):
         msg.data = text
         self._walk_pose_pub.publish(msg)
 
+    def _on_body_pose_msg(self, msg) -> None:
+        """/openbot/body_pose (B8k): store it for the point-cloud client.
+        Never raises into rclpy."""
+        try:
+            self.on_body_pose(msg.data)
+        except Exception as exc:  # noqa: BLE001 — never raise into rclpy
+            self._node.get_logger().warn("/openbot/body_pose handling failed: %s" % exc)
+
