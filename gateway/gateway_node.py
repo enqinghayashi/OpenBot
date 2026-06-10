@@ -9298,3 +9298,22 @@ class _RosGateway(GatewayNode):
         msg.data = target
         self._walk_instance_pub.publish(msg)
 
+    def stop_walk(self) -> None:
+        """Route 'stop' through pick_walk_coordinator.py.
+
+        Publishes 'stop' to /navigate_target; the coordinator's stop/abort
+        branch resets ITS epoch, pending/active label and flow state AND
+        relays the walk FSM's real stop trigger /walk_target 'stop'
+        (walk_node.py _on_walk_target queues ('stop', None) on data
+        'stop'/'abort'; /walk_go is the approach-trigger queue and must NEVER
+        carry 'stop').  Routing through the coordinator — instead of
+        publishing /walk_target 'stop' directly — clears the coordinator's
+        own state so a superseded in-flight watch thread cannot re-start the
+        walk (its DETECTION LOST path re-sends the label on /walk_target).
+        walk_node.py reads exactly 'stop'/'abort' on /walk_target — never
+        invent another verb.
+        """
+        msg = self._String()
+        msg.data = "stop"
+        self._navigate_target_pub.publish(msg)
+
