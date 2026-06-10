@@ -9356,3 +9356,5 @@ class _RosGateway(GatewayNode):
             self._strict_stop.set()
             self._strict_close_all("shutdown")   # put the vocabulary back before teardown
         self._node.destroy_node()
+
+
