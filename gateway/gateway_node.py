@@ -9421,3 +9421,15 @@ def main(argv: Optional[List[str]] = None) -> int:
 _OBSERVE_VOCAB_KEYS = ("backend", "extras", "seq", "epoch", "stamp")
 
 
+def _observe_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """One ``observe`` detection row: ``asdict(Detection)`` minus a None
+    ``instance_id``.
+
+    The key exists on the dataclass since batch 4; a row without an id must
+    serialise byte-identically to today's reply, so the None key is dropped
+    here (and ONLY here — the reply is the model-facing site).  A row WITH an
+    id keeps it (the one additive key).
+    """
+    if row.get("instance_id") is None:
+        row.pop("instance_id", None)
+    return row
