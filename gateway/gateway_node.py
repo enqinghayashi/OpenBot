@@ -9120,3 +9120,14 @@ class _RosGateway(GatewayNode):
 
     # ── callbacks (ROS subscriptions) ────────────────────────────────────────
 
+    def _on_detections(self, msg) -> None:
+        try:
+            rows = json.loads(msg.data)
+            if not isinstance(rows, list):
+                raise ValueError("payload must be a JSON list of detections")
+            self.on_detections_packet(rows)
+            write_body_rows(rows)   # hladder side channel, ROS callback only
+        except Exception as exc:
+            self._node.get_logger().warn(
+                "/object_detections_body parse failed: %s" % exc)
+
