@@ -9186,3 +9186,19 @@ class _RosGateway(GatewayNode):
         except Exception as exc:  # the lane must never die quietly
             self._node.get_logger().error("place_target crashed: %s" % exc)
 
+    def _on_pc_result(self, msg) -> None:
+        """/pc_result (batch 3b): hand the consumer's JSON envelope to the client.
+
+        Exists in the graph only with the client built.  The client wakes the
+        one waiter whose rid matches and ignores everything else (malformed
+        JSON, non-objects, unknown rids); this callback only forwards
+        ``msg.data`` and can never raise into rclpy.
+        """
+        pc = self._pc
+        if pc is None:
+            return
+        try:
+            pc.on_result(msg.data)
+        except Exception as exc:  # noqa: BLE001 — never raise into rclpy
+            self._node.get_logger().warn("/pc_result handling failed: %s" % exc)
+
