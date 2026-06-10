@@ -9347,3 +9347,12 @@ class _RosGateway(GatewayNode):
 
     # ── executor entry (main / spin) ─────────────────────────────────────────
 
+    def spin(self) -> None:
+        import rclpy  # lazy import
+        rclpy.spin(self._node)
+        self.close_camera()  # stop the JPEG worker before teardown
+        self.stop_arm_watchdog()  # no watchdog tick while tearing down
+        if getattr(self, "_strict_holds", None) is not None:   # strict holds active
+            self._strict_stop.set()
+            self._strict_close_all("shutdown")   # put the vocabulary back before teardown
+        self._node.destroy_node()
