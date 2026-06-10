@@ -9266,3 +9266,6 @@ class _RosGateway(GatewayNode):
         msg.data = text
         self._pc_arm_pub.publish(msg)
 
+    def log_place_target(self, table: str) -> None:
+        self._node.get_logger().info("\n" + table)
+
