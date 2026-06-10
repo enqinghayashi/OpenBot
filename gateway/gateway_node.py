@@ -9274,3 +9274,21 @@ class _RosGateway(GatewayNode):
         msg.data = verdict_str
         self._verdict_pub.publish(msg)
 
+    def navigate(self, label: str) -> None:
+        """Route the label through pick_walk_coordinator.py (auto-confirm).
+
+        The coordinator's /navigate_target handler is a TWO-STEP handshake: a
+        bare label only stages PENDING, and the search-then-go handshake
+        (/walk_target sweep + /walk_go trigger) fires only on an explicit
+        'confirm' message.  Publish the LABEL then 'confirm' so the walk
+        actually starts — the brain's own pre-hook confirm gate has already
+        run, so the confirm here is automatic.  The gateway no longer
+        publishes /walk_target + /walk_go directly for a navigate.
+        """
+        msg = self._String()
+        msg.data = label
+        self._navigate_target_pub.publish(msg)
+        confirm = self._String()
+        confirm.data = "confirm"
+        self._navigate_target_pub.publish(confirm)
+
