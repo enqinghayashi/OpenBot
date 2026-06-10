@@ -9202,3 +9202,15 @@ class _RosGateway(GatewayNode):
         except Exception as exc:  # noqa: BLE001 — never raise into rclpy
             self._node.get_logger().warn("/pc_result handling failed: %s" % exc)
 
+    def _on_odom_msg(self, msg) -> None:
+        """/unitree/slam_mapping/odom (B8l): x, y and the yaw of the ZYX
+        quaternion (walk_node._on_odom's formula).  Never raises into rclpy."""
+        try:
+            p = msg.pose.pose.position
+            q = msg.pose.pose.orientation
+            yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                             1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+            self.on_odom(p.x, p.y, yaw)
+        except Exception as exc:  # noqa: BLE001 — never raise into rclpy
+            self._node.get_logger().warn("odom handling failed: %s" % exc)
+
