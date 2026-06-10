@@ -9180,3 +9180,9 @@ class _RosGateway(GatewayNode):
         threading.Thread(target=self._place_target_worker,
                          args=(label,), daemon=True).start()
 
+    def _place_target_worker(self, label: str) -> None:
+        try:
+            self.place_target(label)
+        except Exception as exc:  # the lane must never die quietly
+            self._node.get_logger().error("place_target crashed: %s" % exc)
+
