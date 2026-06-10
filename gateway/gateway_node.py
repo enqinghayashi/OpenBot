@@ -9249,3 +9249,28 @@ class _RosGateway(GatewayNode):
         msg.data = text
         self._strict_pub.publish(msg)
 
+    def publish_yolo_classes(self, text: str) -> None:
+        msg = self._String()
+        msg.data = text
+        self._classes_pub.publish(msg)
+
+    def publish_place_status(self, message: str) -> None:
+        msg = self._String()
+        msg.data = message
+        self._place_status_pub.publish(msg)
+
+    def _publish_pc_arm(self, text: str) -> None:
+        """One /pc_arm String (batch 3b).  Reachable only through the client,
+        which exists only with the publisher below it."""
+        msg = self._String()
+        msg.data = text
+        self._pc_arm_pub.publish(msg)
+
+    def log_place_target(self, table: str) -> None:
+        self._node.get_logger().info("\n" + table)
+
+    def publish_verdict(self, verdict_str: str) -> None:
+        msg = self._String()
+        msg.data = verdict_str
+        self._verdict_pub.publish(msg)
+
