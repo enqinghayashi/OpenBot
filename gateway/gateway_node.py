@@ -9254,3 +9254,8 @@ class _RosGateway(GatewayNode):
         msg.data = text
         self._classes_pub.publish(msg)
 
+    def publish_place_status(self, message: str) -> None:
+        msg = self._String()
+        msg.data = message
+        self._place_status_pub.publish(msg)
+
