@@ -9269,3 +9269,8 @@ class _RosGateway(GatewayNode):
     def log_place_target(self, table: str) -> None:
         self._node.get_logger().info("\n" + table)
 
+    def publish_verdict(self, verdict_str: str) -> None:
+        msg = self._String()
+        msg.data = verdict_str
+        self._verdict_pub.publish(msg)
+
