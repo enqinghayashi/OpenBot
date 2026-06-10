@@ -9163,3 +9163,20 @@ class _RosGateway(GatewayNode):
             self._node.get_logger().warn(
                 "camera frame ingest failed: %s" % exc)
 
+    def _on_place_target(self, msg) -> None:
+        """Hand a /place_target to a WORKER THREAD — never place inline.
+
+        This executor is SingleThreaded and a place's engine reply timeout is
+        300 s, so performing the place here would freeze the detection and
+        vision lanes for the entire motion.  This callback only reads
+        ``msg.data``; the worker owns the blocking call, and ``place_target``'s
+        own non-blocking lock refuses a concurrent second request.
+        """
+        label = str(getattr(msg, "data", "") or "")
+        if not label.strip():
+            self._node.get_logger().warn(
+                "%s: empty label ignored" % self._place_target_law.PLACE_TARGET_TOPIC)
+            return
+        threading.Thread(target=self._place_target_worker,
+                         args=(label,), daemon=True).start()
+
