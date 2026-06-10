@@ -9435,3 +9435,18 @@ def _observe_row(row: Dict[str, Any]) -> Dict[str, Any]:
     return row
 
 
+def _observe_vocab_block(state: Any) -> Optional[Dict[str, Any]]:
+    """The ``vocab`` block from a cached classes_state, or None.
+
+    None for anything that is not a dict (no cached state => no key at all).
+    Missing fields are None (never invented); ``extras`` is copied as a list.
+    """
+    if not isinstance(state, dict):
+        return None
+    block = {k: state.get(k) for k in _OBSERVE_VOCAB_KEYS}
+    if isinstance(block["extras"], (list, tuple)):
+        block["extras"] = list(block["extras"])
+    strict = state.get("strict")
+    if isinstance(strict, list) and strict:     # only while narrowed
+        block["strict"] = [str(s) for s in strict]
+    return block
