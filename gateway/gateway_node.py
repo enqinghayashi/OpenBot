@@ -9450,3 +9450,7 @@ def _observe_vocab_block(state: Any) -> Optional[Dict[str, Any]]:
     if isinstance(strict, list) and strict:     # only while narrowed
         block["strict"] = [str(s) for s in strict]
     return block
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
