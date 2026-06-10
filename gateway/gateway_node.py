@@ -9317,3 +9317,33 @@ class _RosGateway(GatewayNode):
         msg.data = "stop"
         self._navigate_target_pub.publish(msg)
 
+    def start_sweep(self, label: str) -> None:
+        """THE turn-around publish: a bare label DIRECTLY on /walk_target.
+
+        walk_node._on_walk_target reads it as a command: a label queues
+        ('target', label) and starts the FSM thread when it is idle (a replay
+        while busy is a RETARGET — the FSM's own law, which is what makes a
+        second 'turn around' re-sweep); 'stop'/'abort' are the only other
+        accepted words.  The FSM then sweeps and its ``_sweep_turn``
+        interrupts on the first sighting, parking in the DETECTED hold with
+        NO approach — /walk_go, the only approach trigger, is never published
+        by this verb.
+        (Batch 2: once the gateway sees a plausible person row it calls
+        ``stop_walk()`` itself, so the DETECTED hold does not outlive the
+        sighting, then centres the person via writer cmd_set pulses.)
+
+        WHY NOT /navigate_target: that is the coordinator's topic, and the
+        coordinator's 3rd-beat auto-approach would walk the robot to the
+        person (see ``_do_turn_around``).  _walk_target_pub exists for
+        exactly this; until 2026-10-03 it was retained-for-visibility only,
+        so this override is the pair's FIRST publisher on this topic — the
+        navigate/stop paths remain coordinator-routed and unchanged.
+        """
+        msg = self._String()
+        msg.data = label
+        self._walk_target_pub.publish(msg)
+
+    # ── the tools server (single reader, only the brain agent connects) ─────
+
+    # ── executor entry (main / spin) ─────────────────────────────────────────
+
