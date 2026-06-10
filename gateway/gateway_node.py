@@ -9131,3 +9131,12 @@ class _RosGateway(GatewayNode):
             self._node.get_logger().warn(
                 "/object_detections_body parse failed: %s" % exc)
 
+    def _on_walk_status(self, msg) -> None:
+        try:
+            payload = json.loads(msg.data)
+            if not isinstance(payload, dict):
+                raise ValueError("payload must be a JSON object")
+            self.on_walk_status_packet(payload)
+        except Exception as exc:
+            self._node.get_logger().warn("/walk_status parse failed: %s" % exc)
+
