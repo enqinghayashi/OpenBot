@@ -9214,3 +9214,9 @@ class _RosGateway(GatewayNode):
         except Exception as exc:  # noqa: BLE001 — never raise into rclpy
             self._node.get_logger().warn("odom handling failed: %s" % exc)
 
+    def publish_walk_pose(self, text: str) -> None:
+        """B8l: one /walk_pose String (a goal JSON or 'stop')."""
+        msg = self._String()
+        msg.data = text
+        self._walk_pose_pub.publish(msg)
+
