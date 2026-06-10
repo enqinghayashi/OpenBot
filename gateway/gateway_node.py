@@ -9140,3 +9140,26 @@ class _RosGateway(GatewayNode):
         except Exception as exc:
             self._node.get_logger().warn("/walk_status parse failed: %s" % exc)
 
+    def _on_camera(self, msg) -> None:
+        """Copy the camera frame buffer to bytes and hand it to the core.
+
+        CAMERA PLAN LAW: this callback NEVER encodes — it only copies the
+        buffer and stamps the time; the core's worker thread owns the JPEG
+        encode.  sensor_msgs/Image uint8[] may arrive as bytes or an
+        array-like; both normalize to bytes here.  The Image metadata
+        (width/height/encoding) is copied too so the worker can RESHAPE
+        the uncompressed buffer instead of imdecoding it.  Duck-typed or
+        partial messages fall back to the dimensionless path (imdecode).
+        """
+        try:
+            data = msg.data
+            if not isinstance(data, bytes):
+                data = bytes(data)
+            width = int(getattr(msg, "width", 0) or 0)
+            height = int(getattr(msg, "height", 0) or 0)
+            encoding = getattr(msg, "encoding", "") or ""
+            self.on_camera_frame(data, width, height, encoding)
+        except Exception as exc:
+            self._node.get_logger().warn(
+                "camera frame ingest failed: %s" % exc)
+
