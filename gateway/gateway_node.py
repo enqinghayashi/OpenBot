@@ -9244,3 +9244,8 @@ class _RosGateway(GatewayNode):
 
     # ── hooks (the _RosGateway implementations) ──────────────────────────────
 
+    def publish_yolo_strict(self, text: str) -> None:
+        msg = self._String()
+        msg.data = text
+        self._strict_pub.publish(msg)
+
