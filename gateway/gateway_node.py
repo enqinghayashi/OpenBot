@@ -9358,3 +9358,55 @@ class _RosGateway(GatewayNode):
         self._node.destroy_node()
 
 
+def main(argv: Optional[List[str]] = None) -> int:
+    """Standalone launch: ros2 run ... gateway_node (or python3 -m ...).
+
+    CLI wiring (round 3): ``--config`` names the repo config.yaml and
+    ``--profile`` the deployment profile.  The GATEWAY PROCESS ALONE
+    cold-starts 'offline' (DEFAULT_BOOT_PROFILE — a member of the v4
+    loader allowlist laptop|cloud|voice|offline; config.offline.yaml
+    carries the same gateway section as config.voice.yaml: real
+    transport on 127.0.0.1:3900); ``OPENBOT_PROFILE`` env is honored
+    when the flag is absent.  The full on-box VOICE boot is
+    voice/run_voice.sh -> config.voice.yaml (profile 'voice'), not this
+    CLI.  The config's skills.writer_sock / skills.grip_sock /
+    skills.engine_cmd and gateway.port become the ROS-parameter
+    defaults via :func:`gateway_from_config` (rclpy imported lazily —
+    this CLI only exists on the robot).  Returns an exit code (0 =
+    clean shutdown).
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="gateway_node")
+    parser.add_argument(
+        "--config",
+        default=os.environ.get("OPENBOT_CONFIG",
+                                os.path.join(os.path.dirname(os.path.dirname(
+                                    os.path.abspath(__file__))), "config.yaml")),
+        help="repo config.yaml (skills:/gateway: endpoint wiring)")
+    parser.add_argument(
+        "--profile",
+        default=os.environ.get("OPENBOT_PROFILE", DEFAULT_BOOT_PROFILE),
+        help="deployment profile (default 'offline'; v4 allowlist "
+             "laptop|cloud|voice|offline; the on-box voice boot is "
+             "voice/run_voice.sh -> config.voice.yaml, profile 'voice')")
+    args = parser.parse_args(argv)
+
+    import rclpy  # lazy: the rclpy-only branch
+
+    # lazy brain.config_loader.load, so gateway_node imports cleanly on a laptop
+    # with neither ROS nor the brain package present.
+    from brain.config_loader import load as load_config
+
+    cfg = load_config(args.config, profile=args.profile)
+    # rclpy.init() has to come before the Node(...) created inside
+    # gateway_from_config(ros=True); constructing first and initialising after
+    # raised NotInitializedException on the robot. the try covers construction
+    # too, so any failure still runs rclpy.shutdown().
+    rclpy.init()
+    try:
+        gw = gateway_from_config(cfg, ros=True)
+        gw.spin()
+    finally:
+        rclpy.shutdown()
+    return 0
