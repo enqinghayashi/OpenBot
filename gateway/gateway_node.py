@@ -9410,3 +9410,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     finally:
         rclpy.shutdown()
     return 0
+
+
+
+# ── shaping the observe reply ─────────────────────────────────────────────
+
+#: the keys of the ``vocab`` block: a summary of the cached
+#: /yolo/classes_state, never the whole state (``base``, ``resolved`` and
+#: ``rejected`` stay on the topic), only what the reply needs.
+_OBSERVE_VOCAB_KEYS = ("backend", "extras", "seq", "epoch", "stamp")
+
+
