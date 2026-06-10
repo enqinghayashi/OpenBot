@@ -9259,3 +9259,10 @@ class _RosGateway(GatewayNode):
         msg.data = message
         self._place_status_pub.publish(msg)
 
+    def _publish_pc_arm(self, text: str) -> None:
+        """One /pc_arm String (batch 3b).  Reachable only through the client,
+        which exists only with the publisher below it."""
+        msg = self._String()
+        msg.data = text
+        self._pc_arm_pub.publish(msg)
+
