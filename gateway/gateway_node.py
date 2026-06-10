@@ -9292,3 +9292,9 @@ class _RosGateway(GatewayNode):
         confirm.data = "confirm"
         self._navigate_target_pub.publish(confirm)
 
+    def set_walk_instance(self, target: str) -> None:
+        """B8: '<label>#<iid>@<hue>' (follow that one) or the bare label (clear)."""
+        msg = self._String()
+        msg.data = target
+        self._walk_instance_pub.publish(msg)
+
