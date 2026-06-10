@@ -9249,3 +9249,8 @@ class _RosGateway(GatewayNode):
         msg.data = text
         self._strict_pub.publish(msg)
 
+    def publish_yolo_classes(self, text: str) -> None:
+        msg = self._String()
+        msg.data = text
+        self._classes_pub.publish(msg)
+
