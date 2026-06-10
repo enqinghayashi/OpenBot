@@ -9274,3 +9274,85 @@ class _RosGateway(GatewayNode):
         msg.data = verdict_str
         self._verdict_pub.publish(msg)
 
+    def navigate(self, label: str) -> None:
+        """Route the label through pick_walk_coordinator.py (auto-confirm).
+
+        The coordinator's /navigate_target handler is a TWO-STEP handshake: a
+        bare label only stages PENDING, and the search-then-go handshake
+        (/walk_target sweep + /walk_go trigger) fires only on an explicit
+        'confirm' message.  Publish the LABEL then 'confirm' so the walk
+        actually starts — the brain's own pre-hook confirm gate has already
+        run, so the confirm here is automatic.  The gateway no longer
+        publishes /walk_target + /walk_go directly for a navigate.
+        """
+        msg = self._String()
+        msg.data = label
+        self._navigate_target_pub.publish(msg)
+        confirm = self._String()
+        confirm.data = "confirm"
+        self._navigate_target_pub.publish(confirm)
+
+    def set_walk_instance(self, target: str) -> None:
+        """B8: '<label>#<iid>@<hue>' (follow that one) or the bare label (clear)."""
+        msg = self._String()
+        msg.data = target
+        self._walk_instance_pub.publish(msg)
+
+    def stop_walk(self) -> None:
+        """Route 'stop' through pick_walk_coordinator.py.
+
+        Publishes 'stop' to /navigate_target; the coordinator's stop/abort
+        branch resets ITS epoch, pending/active label and flow state AND
+        relays the walk FSM's real stop trigger /walk_target 'stop'
+        (walk_node.py _on_walk_target queues ('stop', None) on data
+        'stop'/'abort'; /walk_go is the approach-trigger queue and must NEVER
+        carry 'stop').  Routing through the coordinator — instead of
+        publishing /walk_target 'stop' directly — clears the coordinator's
+        own state so a superseded in-flight watch thread cannot re-start the
+        walk (its DETECTION LOST path re-sends the label on /walk_target).
+        walk_node.py reads exactly 'stop'/'abort' on /walk_target — never
+        invent another verb.
+        """
+        msg = self._String()
+        msg.data = "stop"
+        self._navigate_target_pub.publish(msg)
+
+    def start_sweep(self, label: str) -> None:
+        """THE turn-around publish: a bare label DIRECTLY on /walk_target.
+
+        walk_node._on_walk_target reads it as a command: a label queues
+        ('target', label) and starts the FSM thread when it is idle (a replay
+        while busy is a RETARGET — the FSM's own law, which is what makes a
+        second 'turn around' re-sweep); 'stop'/'abort' are the only other
+        accepted words.  The FSM then sweeps and its ``_sweep_turn``
+        interrupts on the first sighting, parking in the DETECTED hold with
+        NO approach — /walk_go, the only approach trigger, is never published
+        by this verb.
+        (Batch 2: once the gateway sees a plausible person row it calls
+        ``stop_walk()`` itself, so the DETECTED hold does not outlive the
+        sighting, then centres the person via writer cmd_set pulses.)
+
+        WHY NOT /navigate_target: that is the coordinator's topic, and the
+        coordinator's 3rd-beat auto-approach would walk the robot to the
+        person (see ``_do_turn_around``).  _walk_target_pub exists for
+        exactly this; until 2026-10-03 it was retained-for-visibility only,
+        so this override is the pair's FIRST publisher on this topic — the
+        navigate/stop paths remain coordinator-routed and unchanged.
+        """
+        msg = self._String()
+        msg.data = label
+        self._walk_target_pub.publish(msg)
+
+    # ── the tools server (single reader, only the brain agent connects) ─────
+
+    # ── executor entry (main / spin) ─────────────────────────────────────────
+
+    def spin(self) -> None:
+        import rclpy  # lazy import
+        rclpy.spin(self._node)
+        self.close_camera()  # stop the JPEG worker before teardown
+        self.stop_arm_watchdog()  # no watchdog tick while tearing down
+        if getattr(self, "_strict_holds", None) is not None:   # strict holds active
+            self._strict_stop.set()
+            self._strict_close_all("shutdown")   # put the vocabulary back before teardown
+        self._node.destroy_node()
