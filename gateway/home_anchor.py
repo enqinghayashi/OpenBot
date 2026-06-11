@@ -161,3 +161,26 @@ class HomeAnchor(object):
             return None if ev is None else ev + ' (promoted %.0f s later)' % (float(now) - cand['t'])
         return self.mark(pose, rows, now, src='pick')
 
+    def auto(self, pose, rows, now):
+        """'auto' (navigate with an empty hand): keep a live anchor while the
+        robot is still within HOME_STAY_M of it (a re-navigate from the start
+        point), else mark here.  Returns (marked, event)."""
+        if pose is None:
+            return False, None
+        with self._lock:
+            st = self._live(now)
+            if st is not None:
+                d = math.hypot(pose[0] - st['x'], pose[1] - st['y'])
+                if d <= HOME_STAY_M:
+                    if st['req'] is None:
+                        req = pick_requester(rows)
+                        if req is not None:     # requester spotted
+                            st['req'] = body_to_world(pose, _f(req, 'x'), _f(req, 'y'))
+                            st['req_body'] = (round(_f(req, 'x'), 3),
+                                              round(_f(req, 'y'), 3))
+                            return False, ('KEPT home (%.2f m away); requester '
+                                           'now seen at world (%.3f, %.3f)'
+                                           % (d, st['req'][0], st['req'][1]))
+                    return False, 'KEPT home (%.2f m away)' % d
+        return True, self.mark(pose, rows, now, src='auto')
+
