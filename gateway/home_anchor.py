@@ -215,3 +215,16 @@ class HomeAnchor(object):
             return None
         return 'CLEARED home (%s)' % why
 
+    def goal(self, now):
+        """The /walk_pose goal for the return, or None (no anchor)."""
+        with self._lock:
+            st = self._live(now)
+            if st is None:
+                return None
+            g = {'x': round(st['x'], 4), 'y': round(st['y'], 4),
+                 'yaw': round(st['yaw'], 4), 'label': 'home'}
+            if st['req'] is not None:
+                g['face_x'] = round(st['req'][0], 4)
+                g['face_y'] = round(st['req'][1], 4)
+            return g
+
