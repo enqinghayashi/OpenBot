@@ -71,3 +71,5 @@ def is_plausible_person(row):
     if h is not None and h < REQ_MIN_H_M:
         return False
     return _f(row, 'x') is not None and _f(row, 'y') is not None
+
+
