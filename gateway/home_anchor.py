@@ -134,3 +134,17 @@ class HomeAnchor(object):
                        st['req'][0], st['req'][1])) if req is not None
                    else 'none in view'))
 
+    def candidate(self, pose, rows, now):
+        """B8l-hf3: remember where an empty-handed walk started (pose + the
+        person in front) WITHOUT making it the start point.  Returns the event."""
+        if pose is None:
+            return None
+        req = pick_requester(rows)
+        cand = {'pose': (float(pose[0]), float(pose[1]), float(pose[2])), 't': float(now),
+                'req': None if req is None else dict(req)}
+        with self._lock:
+            self._cand = cand
+        return ('CANDIDATE home (%.3f, %.3f, %.1f deg) requester=%s'
+                % (cand['pose'][0], cand['pose'][1], math.degrees(cand['pose'][2]),
+                   'person#%s' % req.get('instance_id') if req is not None else 'none in view'))
+
