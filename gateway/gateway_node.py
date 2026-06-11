@@ -9356,3 +9356,101 @@ class _RosGateway(GatewayNode):
             self._strict_stop.set()
             self._strict_close_all("shutdown")   # put the vocabulary back before teardown
         self._node.destroy_node()
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """Standalone launch: ros2 run ... gateway_node (or python3 -m ...).
+
+    CLI wiring (round 3): ``--config`` names the repo config.yaml and
+    ``--profile`` the deployment profile.  The GATEWAY PROCESS ALONE
+    cold-starts 'offline' (DEFAULT_BOOT_PROFILE — a member of the v4
+    loader allowlist laptop|cloud|voice|offline; config.offline.yaml
+    carries the same gateway section as config.voice.yaml: real
+    transport on 127.0.0.1:3900); ``OPENBOT_PROFILE`` env is honored
+    when the flag is absent.  The full on-box VOICE boot is
+    voice/run_voice.sh -> config.voice.yaml (profile 'voice'), not this
+    CLI.  The config's skills.writer_sock / skills.grip_sock /
+    skills.engine_cmd and gateway.port become the ROS-parameter
+    defaults via :func:`gateway_from_config` (rclpy imported lazily —
+    this CLI only exists on the robot).  Returns an exit code (0 =
+    clean shutdown).
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="gateway_node")
+    parser.add_argument(
+        "--config",
+        default=os.environ.get("OPENBOT_CONFIG",
+                                os.path.join(os.path.dirname(os.path.dirname(
+                                    os.path.abspath(__file__))), "config.yaml")),
+        help="repo config.yaml (skills:/gateway: endpoint wiring)")
+    parser.add_argument(
+        "--profile",
+        default=os.environ.get("OPENBOT_PROFILE", DEFAULT_BOOT_PROFILE),
+        help="deployment profile (default 'offline'; v4 allowlist "
+             "laptop|cloud|voice|offline; the on-box voice boot is "
+             "voice/run_voice.sh -> config.voice.yaml, profile 'voice')")
+    args = parser.parse_args(argv)
+
+    import rclpy  # lazy: the rclpy-only branch
+
+    # lazy brain.config_loader.load, so gateway_node imports cleanly on a laptop
+    # with neither ROS nor the brain package present.
+    from brain.config_loader import load as load_config
+
+    cfg = load_config(args.config, profile=args.profile)
+    # rclpy.init() has to come before the Node(...) created inside
+    # gateway_from_config(ros=True); constructing first and initialising after
+    # raised NotInitializedException on the robot. the try covers construction
+    # too, so any failure still runs rclpy.shutdown().
+    rclpy.init()
+    try:
+        gw = gateway_from_config(cfg, ros=True)
+        gw.spin()
+    finally:
+        rclpy.shutdown()
+    return 0
+
+
+
+# ── shaping the observe reply ─────────────────────────────────────────────
+
+#: the keys of the ``vocab`` block: a summary of the cached
+#: /yolo/classes_state, never the whole state (``base``, ``resolved`` and
+#: ``rejected`` stay on the topic), only what the reply needs.
+_OBSERVE_VOCAB_KEYS = ("backend", "extras", "seq", "epoch", "stamp")
+
+
+def _observe_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """One ``observe`` detection row: ``asdict(Detection)`` minus a None
+    ``instance_id``.
+
+    The key exists on the dataclass since batch 4; a row without an id must
+    serialise byte-identically to today's reply, so the None key is dropped
+    here (and ONLY here — the reply is the model-facing site).  A row WITH an
+    id keeps it (the one additive key).
+    """
+    if row.get("instance_id") is None:
+        row.pop("instance_id", None)
+    return row
+
+
+def _observe_vocab_block(state: Any) -> Optional[Dict[str, Any]]:
+    """The ``vocab`` block from a cached classes_state, or None.
+
+    None for anything that is not a dict (no cached state => no key at all).
+    Missing fields are None (never invented); ``extras`` is copied as a list.
+    """
+    if not isinstance(state, dict):
+        return None
+    block = {k: state.get(k) for k in _OBSERVE_VOCAB_KEYS}
+    if isinstance(block["extras"], (list, tuple)):
+        block["extras"] = list(block["extras"])
+    strict = state.get("strict")
+    if isinstance(strict, list) and strict:     # only while narrowed
+        block["strict"] = [str(s) for s in strict]
+    return block
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
