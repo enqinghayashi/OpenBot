@@ -60,3 +60,14 @@ def _f(row, key):
     return v if math.isfinite(v) else None
 
 
+def is_plausible_person(row):
+    """A 'person' row the requester rules may use (conf, height, x/y)."""
+    if not isinstance(row, dict) or str(row.get('label', '')).lower() != 'person':
+        return False
+    conf = _f(row, 'conf')
+    if conf is None or conf < REQ_MIN_CONF:
+        return False
+    h = _f(row, 'height_m')
+    if h is not None and h < REQ_MIN_H_M:
+        return False
+    return _f(row, 'x') is not None and _f(row, 'y') is not None
