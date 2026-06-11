@@ -37,3 +37,8 @@ REQ_MIN_H_M = 0.30          # = TURN_PERSON_MIN_HEIGHT_M
 ODOM_FRESH_S = 0.5
 
 
+def body_to_world(pose, x_b, y_b):
+    rx, ry, yaw = pose[0], pose[1], pose[2]
+    fwd, left = y_b, -x_b
+    return (rx + math.cos(yaw) * fwd - math.sin(yaw) * left,
+            ry + math.sin(yaw) * fwd + math.cos(yaw) * left)
