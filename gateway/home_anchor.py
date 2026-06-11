@@ -52,3 +52,9 @@ def world_to_body(pose, wx, wy):
     return -left, fwd
 
 
+def _f(row, key):
+    try:
+        v = float(row.get(key))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return v if math.isfinite(v) else None
