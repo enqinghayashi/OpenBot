@@ -90,3 +90,6 @@ def pick_requester(rows):
     return None if best is None else best[1]
 
 
+class HomeAnchor(object):
+    """The start point of the current fetch.  Thread-safe."""
+
