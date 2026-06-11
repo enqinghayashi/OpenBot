@@ -37,3 +37,54 @@ REQ_MIN_H_M = 0.30          # = TURN_PERSON_MIN_HEIGHT_M
 ODOM_FRESH_S = 0.5
 
 
+def body_to_world(pose, x_b, y_b):
+    rx, ry, yaw = pose[0], pose[1], pose[2]
+    fwd, left = y_b, -x_b
+    return (rx + math.cos(yaw) * fwd - math.sin(yaw) * left,
+            ry + math.sin(yaw) * fwd + math.cos(yaw) * left)
+
+
+def world_to_body(pose, wx, wy):
+    rx, ry, yaw = pose[0], pose[1], pose[2]
+    dx, dy = wx - rx, wy - ry
+    fwd = dx * math.cos(yaw) + dy * math.sin(yaw)
+    left = -dx * math.sin(yaw) + dy * math.cos(yaw)
+    return -left, fwd
+
+
+def _f(row, key):
+    try:
+        v = float(row.get(key))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return v if math.isfinite(v) else None
+
+
+def is_plausible_person(row):
+    """A 'person' row the requester rules may use (conf, height, x/y)."""
+    if not isinstance(row, dict) or str(row.get('label', '')).lower() != 'person':
+        return False
+    conf = _f(row, 'conf')
+    if conf is None or conf < REQ_MIN_CONF:
+        return False
+    h = _f(row, 'height_m')
+    if h is not None and h < REQ_MIN_H_M:
+        return False
+    return _f(row, 'x') is not None and _f(row, 'y') is not None
+
+
+def pick_requester(rows):
+    """The person row that asked: the nearest plausible person in front
+    (REQ_MAX_RANGE_M, REQ_MAX_BEARING_RAD), or None."""
+    best = None
+    for r in rows or ():
+        if not is_plausible_person(r):
+            continue
+        x, y = _f(r, 'x'), _f(r, 'y')
+        d = math.hypot(x, y)
+        if (y <= 0.0 or d > REQ_MAX_RANGE_M or d < REQ_MIN_RANGE_M
+                or abs(math.atan2(x, y)) > REQ_MAX_BEARING_RAD):
+            continue
+        if best is None or d < best[0]:
+            best = (d, r)
+    return None if best is None else best[1]
