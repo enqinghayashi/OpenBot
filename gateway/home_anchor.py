@@ -98,3 +98,7 @@ class HomeAnchor(object):
         self._st = None
         self._cand = None
 
+    def active(self, now):
+        with self._lock:
+            return self._live(now) is not None
+
