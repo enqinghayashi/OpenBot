@@ -184,3 +184,14 @@ class HomeAnchor(object):
                     return False, 'KEPT home (%.2f m away)' % d
         return True, self.mark(pose, rows, now, src='auto')
 
+    def set_held(self, now):
+        """The fetched object is in the hand (a pick succeeded during the fetch):
+        from now on a stop only PAUSES the fetch (operator decision 2026-10-17).
+        Returns the event string, or None (no anchor)."""
+        with self._lock:
+            st = self._live(now)
+            if st is None:
+                return None
+            st['held'] = True
+        return 'HELD home: the fetched object is in the hand (a stop now pauses)'
+
