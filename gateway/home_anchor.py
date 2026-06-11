@@ -195,3 +195,16 @@ class HomeAnchor(object):
             st['held'] = True
         return 'HELD home: the fetched object is in the hand (a stop now pauses)'
 
+    def stop(self, why, now):
+        """A stop / cancel / 'wait' / 'never mind' (operator decision 2026-10-17):
+        before the pick the fetch is ABANDONED (cleared); with the object in the
+        hand it is only paused (kept).  Returns the event string or None."""
+        with self._lock:
+            st = self._live(now)
+            if st is None:
+                return None
+            if st.get('held'):
+                return 'KEPT home (%s): the fetched object is in the hand, the fetch is paused' % why
+            self._st = None
+        return 'CLEARED home (%s): stopped before the pick, the fetch is abandoned' % why
+
