@@ -73,3 +73,18 @@ def is_plausible_person(row):
     return _f(row, 'x') is not None and _f(row, 'y') is not None
 
 
+def pick_requester(rows):
+    """The person row that asked: the nearest plausible person in front
+    (REQ_MAX_RANGE_M, REQ_MAX_BEARING_RAD), or None."""
+    best = None
+    for r in rows or ():
+        if not is_plausible_person(r):
+            continue
+        x, y = _f(r, 'x'), _f(r, 'y')
+        d = math.hypot(x, y)
+        if (y <= 0.0 or d > REQ_MAX_RANGE_M or d < REQ_MIN_RANGE_M
+                or abs(math.atan2(x, y)) > REQ_MAX_BEARING_RAD):
+            continue
+        if best is None or d < best[0]:
+            best = (d, r)
+    return None if best is None else best[1]
