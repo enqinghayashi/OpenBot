@@ -148,3 +148,16 @@ class HomeAnchor(object):
                 % (cand['pose'][0], cand['pose'][1], math.degrees(cand['pose'][2]),
                    'person#%s' % req.get('instance_id') if req is not None else 'none in view'))
 
+    def promote(self, pose, rows, now, max_age_s=CANDIDATE_MAX_AGE_S):
+        """B8l-hf3: the fetch is confirmed (its first pick): a candidate at most
+        ``max_age_s`` old becomes the start point (where the robot stood when
+        the walk began); without one the robot never walked, so ``pose`` (here)
+        is the start point.  Returns the event."""
+        with self._lock:
+            cand, self._cand = self._cand, None
+        if cand is not None and float(now) - cand['t'] <= max_age_s:
+            rows_then = [cand['req']] if cand['req'] is not None else []
+            ev = self.mark(cand['pose'], rows_then, cand['t'], src='candidate')
+            return None if ev is None else ev + ' (promoted %.0f s later)' % (float(now) - cand['t'])
+        return self.mark(pose, rows, now, src='pick')
+
