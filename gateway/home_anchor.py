@@ -93,3 +93,8 @@ def pick_requester(rows):
 class HomeAnchor(object):
     """The start point of the current fetch.  Thread-safe."""
 
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._st = None
+        self._cand = None
+
