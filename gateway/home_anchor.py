@@ -109,3 +109,28 @@ class HomeAnchor(object):
             st = None
         return st
 
+    def mark(self, pose, rows, now, src='mark'):
+        """Record ``pose`` (x, y, yaw) as home, and the requester from
+        ``rows`` (body frame) if a person is in view.  Returns the event
+        string, or None when there is no pose."""
+        if pose is None:
+            return None
+        req = pick_requester(rows)
+        st = {'x': float(pose[0]), 'y': float(pose[1]), 'yaw': float(pose[2]),
+              't': float(now), 'src': src, 'req': None, 'req_iid': None,
+              'req_body': None, 'held': False}
+        if req is not None:
+            xb, yb = _f(req, 'x'), _f(req, 'y')
+            st['req'] = body_to_world(pose, xb, yb)
+            st['req_body'] = (round(xb, 3), round(yb, 3))
+            iid = req.get('instance_id')
+            st['req_iid'] = iid if isinstance(iid, int) and not isinstance(iid, bool) else None
+        with self._lock:
+            self._st = st
+        return ('MARKED home (%.3f, %.3f, %.1f deg) src=%s requester=%s'
+                % (st['x'], st['y'], math.degrees(st['yaw']), src,
+                   ('person#%s at body (%.2f, %.2f) world (%.3f, %.3f)'
+                    % (st['req_iid'], st['req_body'][0], st['req_body'][1],
+                       st['req'][0], st['req'][1])) if req is not None
+                   else 'none in view'))
+
