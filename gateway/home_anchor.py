@@ -88,3 +88,5 @@ def pick_requester(rows):
         if best is None or d < best[0]:
             best = (d, r)
     return None if best is None else best[1]
+
+
