@@ -208,3 +208,10 @@ class HomeAnchor(object):
             self._st = None
         return 'CLEARED home (%s): stopped before the pick, the fetch is abandoned' % why
 
+    def clear(self, why):
+        with self._lock:
+            st, self._st = self._st, None
+        if st is None:
+            return None
+        return 'CLEARED home (%s)' % why
+
