@@ -102,3 +102,10 @@ class HomeAnchor(object):
         with self._lock:
             return self._live(now) is not None
 
+    def _live(self, now):
+        st = self._st
+        if st is not None and float(now) - st['t'] > HOME_TTL_S:
+            self._st = None
+            st = None
+        return st
+
