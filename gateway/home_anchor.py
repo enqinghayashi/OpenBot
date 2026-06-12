@@ -393,3 +393,12 @@ def handover_blocked(rows, person):
             return '%s at %.2f m, between the robot and the person' % (
                 str(r.get('label') or '?'), d)
     return None
+
+
+#: operator 10-17: "make sure robot dont overreach and walk way too
+#: close to person".  A pulse SEEN to close more than HANDOVER_P_HI_M
+#: (real travel unmeasured; they can step in) bumps the worst case for
+#: later pulses to this factor times it.
+HANDOVER_P_HI_GAIN = 1.25
+
+
