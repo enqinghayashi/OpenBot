@@ -134,3 +134,77 @@ class HomeAnchor(object):
                        st['req'][0], st['req'][1])) if req is not None
                    else 'none in view'))
 
+    def candidate(self, pose, rows, now):
+        """B8l-hf3: remember where an empty-handed walk started (pose + the
+        person in front) WITHOUT making it the start point.  Returns the event."""
+        if pose is None:
+            return None
+        req = pick_requester(rows)
+        cand = {'pose': (float(pose[0]), float(pose[1]), float(pose[2])), 't': float(now),
+                'req': None if req is None else dict(req)}
+        with self._lock:
+            self._cand = cand
+        return ('CANDIDATE home (%.3f, %.3f, %.1f deg) requester=%s'
+                % (cand['pose'][0], cand['pose'][1], math.degrees(cand['pose'][2]),
+                   'person#%s' % req.get('instance_id') if req is not None else 'none in view'))
+
+    def promote(self, pose, rows, now, max_age_s=CANDIDATE_MAX_AGE_S):
+        """B8l-hf3: the fetch is confirmed (its first pick): a candidate at most
+        ``max_age_s`` old becomes the start point (where the robot stood when
+        the walk began); without one the robot never walked, so ``pose`` (here)
+        is the start point.  Returns the event."""
+        with self._lock:
+            cand, self._cand = self._cand, None
+        if cand is not None and float(now) - cand['t'] <= max_age_s:
+            rows_then = [cand['req']] if cand['req'] is not None else []
+            ev = self.mark(cand['pose'], rows_then, cand['t'], src='candidate')
+            return None if ev is None else ev + ' (promoted %.0f s later)' % (float(now) - cand['t'])
+        return self.mark(pose, rows, now, src='pick')
+
+    def auto(self, pose, rows, now):
+        """'auto' (navigate with an empty hand): keep a live anchor while the
+        robot is still within HOME_STAY_M of it (a re-navigate from the start
+        point), else mark here.  Returns (marked, event)."""
+        if pose is None:
+            return False, None
+        with self._lock:
+            st = self._live(now)
+            if st is not None:
+                d = math.hypot(pose[0] - st['x'], pose[1] - st['y'])
+                if d <= HOME_STAY_M:
+                    if st['req'] is None:
+                        req = pick_requester(rows)
+                        if req is not None:     # requester spotted
+                            st['req'] = body_to_world(pose, _f(req, 'x'), _f(req, 'y'))
+                            st['req_body'] = (round(_f(req, 'x'), 3),
+                                              round(_f(req, 'y'), 3))
+                            return False, ('KEPT home (%.2f m away); requester '
+                                           'now seen at world (%.3f, %.3f)'
+                                           % (d, st['req'][0], st['req'][1]))
+                    return False, 'KEPT home (%.2f m away)' % d
+        return True, self.mark(pose, rows, now, src='auto')
+
+    def set_held(self, now):
+        """The fetched object is in the hand (a pick succeeded during the fetch):
+        from now on a stop only PAUSES the fetch (operator decision 2026-10-17).
+        Returns the event string, or None (no anchor)."""
+        with self._lock:
+            st = self._live(now)
+            if st is None:
+                return None
+            st['held'] = True
+        return 'HELD home: the fetched object is in the hand (a stop now pauses)'
+
+    def stop(self, why, now):
+        """A stop / cancel / 'wait' / 'never mind' (operator decision 2026-10-17):
+        before the pick the fetch is ABANDONED (cleared); with the object in the
+        hand it is only paused (kept).  Returns the event string or None."""
+        with self._lock:
+            st = self._live(now)
+            if st is None:
+                return None
+            if st.get('held'):
+                return 'KEPT home (%s): the fetched object is in the hand, the fetch is paused' % why
+            self._st = None
+        return 'CLEARED home (%s): stopped before the pick, the fetch is abandoned' % why
+
