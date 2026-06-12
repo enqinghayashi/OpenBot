@@ -500,3 +500,5 @@ def aim_omega(err):
     return math.copysign(mag, HANDOVER_OMEGA_SIGN * err) if err else 0.0
 
 
+def aim_on(environ):
+    return str(environ.get(AIM_ENV, '')).strip() != '0'
