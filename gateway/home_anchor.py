@@ -412,3 +412,5 @@ def handover_p_hi(max_drop):
     if not math.isfinite(d):
         return HANDOVER_P_HI_M
     return max(HANDOVER_P_HI_M, HANDOVER_P_HI_GAIN * d)
+
+
