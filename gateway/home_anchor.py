@@ -462,3 +462,33 @@ def stepback_distance(raw, req=None):
         if r is not None and math.isfinite(r) and r > 0.0:
             return min(STEPBACK_MAX_M, r)
     return STEPBACK_M
+
+
+# ── turn it right of centre ──
+# Stuart 10-17 23:06 (fetch demo): the pick got refused 'self_collision'
+# (the bottle sat a few cm LEFT of the right arm's limit) and the model
+# asked the operator to move it.  So the brain asks the gateway to turn
+# LEFT in place (closed loop on the object's detection, the turn_around
+# law) until it is ``shift_m`` further right, then picks once.
+# OPENBOT_AIM_TURN=0 in the gateway terminal = refused.
+AIM_ENV = 'OPENBOT_AIM_TURN'
+AIM_MARGIN_M = 0.04          # past move_right_m
+AIM_TOL_RAD = 0.03           # done at target - this
+AIM_OVER_RAD = 0.20          # no overshoot
+AIM_MAX_SHIFT_M = 0.25       # too big to aim
+AIM_MAX_TURN_RAD = 0.70      # never past ~40 deg
+AIM_MAX_PULSES = 12
+AIM_ASSOC_M = 0.10           # range near the last
+AIM_BEARING_WIN_RAD = 1.0    # ... bearing too
+AIM_SEED_M = 0.25            # near brain row
+AIM_MIN_CONF = 0.25
+AIM_LOST_S = 2.0
+AIM_BUDGET_S = 12.0
+AIM_FINAL_SETTLE_S = 1.0
+
+
+AIM_K_THETA = 1.5            # = TURN_K_THETA
+AIM_OMEGA_MIN = 0.15         # = OMEGA_MIN
+AIM_OMEGA_MAX = 0.40         # = OMEGA_MAX
+
+
