@@ -502,3 +502,5 @@ def aim_omega(err):
 
 def aim_on(environ):
     return str(environ.get(AIM_ENV, '')).strip() != '0'
+
+
