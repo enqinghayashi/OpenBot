@@ -349,3 +349,18 @@ def handover_track(rows, last=None, seed=None):
     return min(cands, key=lambda c: math.hypot(c[0], c[1]))[2]
 
 
+def handover_step(rng, err, centred, pulses, p_hi=None):
+    """'arrived' | 'turn' | 'forward' | 'max_travel' for a person at range
+    ``rng`` (m) and bearing ``err`` (rad, + = right).  ``p_hi`` = the worst
+    case one pulse may close (B8l-hf6: handover_p_hi of the pulses seen so
+    far; never below HANDOVER_P_HI_M)."""
+    hi = HANDOVER_P_HI_M if p_hi is None else max(HANDOVER_P_HI_M, p_hi)
+    if rng <= HANDOVER_ARRIVE_M:
+        return 'arrived' if abs(err) <= HANDOVER_TOL_RAD else 'turn'
+    if abs(err) > (HANDOVER_TURN_RAD if centred else HANDOVER_TOL_RAD):
+        return 'turn'
+    if pulses >= HANDOVER_MAX_PULSES:
+        return 'max_travel'
+    if rng - hi < HANDOVER_MIN_M:
+        return 'arrived'            # worst-case closest
+    return 'forward'
