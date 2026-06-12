@@ -366,3 +366,9 @@ def handover_step(rng, err, centred, pulses, p_hi=None):
     return 'forward'
 
 
+def handover_corr_omega(err):
+    """Heading correction during a forward pulse (0 inside the tolerance)."""
+    if abs(err) <= HANDOVER_TOL_RAD:
+        return 0.0
+    w = HANDOVER_OMEGA_SIGN * HANDOVER_K_THETA * err
+    return max(-HANDOVER_OMEGA_CORR_MAX, min(HANDOVER_OMEGA_CORR_MAX, w))
