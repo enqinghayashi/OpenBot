@@ -402,3 +402,13 @@ def handover_blocked(rows, person):
 HANDOVER_P_HI_GAIN = 1.25
 
 
+def handover_p_hi(max_drop):
+    """The worst case one pulse may close, from the largest range drop seen
+    across one forward pulse (never below HANDOVER_P_HI_M)."""
+    try:
+        d = float(max_drop)
+    except (TypeError, ValueError):
+        return HANDOVER_P_HI_M
+    if not math.isfinite(d):
+        return HANDOVER_P_HI_M
+    return max(HANDOVER_P_HI_M, HANDOVER_P_HI_GAIN * d)
