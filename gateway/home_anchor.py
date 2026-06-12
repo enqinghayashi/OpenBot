@@ -321,3 +321,5 @@ HANDOVER_CLOSE_LOST_M = 0.55
 
 def handover_on(environ):
     return str(environ.get(HANDOVER_ENV, '1')).strip() != '0'
+
+
