@@ -347,3 +347,5 @@ def handover_track(rows, last=None, seed=None):
         x, y, r = min(cands, key=lambda c: math.hypot(c[0] - sx, c[1] - sy))
         return r if math.hypot(x - sx, y - sy) <= HANDOVER_SEED_M else None
     return min(cands, key=lambda c: math.hypot(c[0], c[1]))[2]
+
+
