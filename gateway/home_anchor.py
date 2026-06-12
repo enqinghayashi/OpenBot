@@ -492,3 +492,9 @@ AIM_OMEGA_MIN = 0.15         # = OMEGA_MIN
 AIM_OMEGA_MAX = 0.40         # = OMEGA_MAX
 
 
+def aim_omega(err):
+    """Yaw rate toward the target bearing (err = bearing - target, rad):
+    no dead band (the band is AIM_TOL_RAD / AIM_OVER_RAD), at least
+    AIM_OMEGA_MIN, at most AIM_OMEGA_MAX; +omega turns LEFT."""
+    mag = max(AIM_OMEGA_MIN, min(AIM_OMEGA_MAX, AIM_K_THETA * abs(err)))
+    return math.copysign(mag, HANDOVER_OMEGA_SIGN * err) if err else 0.0
