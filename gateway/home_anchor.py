@@ -374,3 +374,22 @@ def handover_corr_omega(err):
     return max(-HANDOVER_OMEGA_CORR_MAX, min(HANDOVER_OMEGA_CORR_MAX, w))
 
 
+def handover_blocked(rows, person):
+    """A reason to stop: a non-person object low in the corridor nearer than
+    the person (rows inside HANDOVER_SELF_ZONE_M are the robot's own arm and
+    the held object)."""
+    p_rng = math.hypot(_f(person, 'x'), _f(person, 'y'))
+    for r in rows or ():
+        if not isinstance(r, dict) or str(r.get('label', '')).lower() == 'person':
+            continue
+        x, y, z, conf = _f(r, 'x'), _f(r, 'y'), _f(r, 'z'), _f(r, 'conf')
+        if None in (x, y, z) or conf is None:
+            continue
+        d = math.hypot(x, y)
+        if d < HANDOVER_SELF_ZONE_M:
+            continue
+        if (conf >= HANDOVER_OBST_MIN_CONF and z <= HANDOVER_OBST_Z_MAX
+                and abs(x) <= HANDOVER_OBST_CORRIDOR_M and d < p_rng - 0.05):
+            return '%s at %.2f m, between the robot and the person' % (
+                str(r.get('label') or '?'), d)
+    return None
