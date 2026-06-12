@@ -254,3 +254,23 @@ class HomeAnchor(object):
             out['center_body'] = [round(cx, 3), round(cy, 3)]
         return out
 
+    def filter_persons(self, rows, pose, now):
+        """(kept, ignored): person rows within the radius of the requester's
+        spot (or of home) -- the only people a handover may target.  Rows of
+        other labels pass through in ``kept``.  No anchor or no pose: every
+        row is kept (today's behaviour)."""
+        snap = self.snapshot(pose, now) if pose is not None else None
+        if snap is None or 'center_body' not in snap:
+            return list(rows or ()), []
+        cx, cy = snap['center_body']
+        rad = snap['radius_m']
+        kept, ignored = [], []
+        for r in rows or ():
+            if isinstance(r, dict) and str(r.get('label', '')).lower() == 'person':
+                x, y = _f(r, 'x'), _f(r, 'y')
+                if (x is None or y is None or math.hypot(x - cx, y - cy) > rad
+                        or math.hypot(x, y) < REQ_MIN_RANGE_M):
+                    ignored.append(r)
+                    continue
+            kept.append(r)
+        return kept, ignored
