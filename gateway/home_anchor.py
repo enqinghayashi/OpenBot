@@ -319,3 +319,77 @@ HANDOVER_RESULTS_OK = ('arrived', 'close_lost')
 HANDOVER_CLOSE_LOST_M = 0.55
 
 
+def handover_on(environ):
+    return str(environ.get(HANDOVER_ENV, '1')).strip() != '0'
+
+
+def handover_track(rows, last=None, seed=None):
+    """The person to close in on: a plausible person row (REQ_MIN_RANGE_M or
+    farther) nearest the last tracked row (within HANDOVER_ASSOC_M), else on
+    the first lock nearest the caller's seed (within HANDOVER_SEED_M), else
+    the nearest plausible person.  None when nobody qualifies."""
+    cands = []
+    for r in rows or ():
+        if not is_plausible_person(r):
+            continue
+        x, y = _f(r, 'x'), _f(r, 'y')
+        if math.hypot(x, y) < REQ_MIN_RANGE_M:
+            continue
+        cands.append((x, y, r))
+    if not cands:
+        return None
+    if last is not None:
+        lx, ly = last
+        x, y, r = min(cands, key=lambda c: math.hypot(c[0] - lx, c[1] - ly))
+        return r if math.hypot(x - lx, y - ly) <= HANDOVER_ASSOC_M else None
+    if seed is not None:
+        sx, sy = seed
+        x, y, r = min(cands, key=lambda c: math.hypot(c[0] - sx, c[1] - sy))
+        return r if math.hypot(x - sx, y - sy) <= HANDOVER_SEED_M else None
+    return min(cands, key=lambda c: math.hypot(c[0], c[1]))[2]
+
+
+def handover_step(rng, err, centred, pulses, p_hi=None):
+    """'arrived' | 'turn' | 'forward' | 'max_travel' for a person at range
+    ``rng`` (m) and bearing ``err`` (rad, + = right).  ``p_hi`` = the worst
+    case one pulse may close (B8l-hf6: handover_p_hi of the pulses seen so
+    far; never below HANDOVER_P_HI_M)."""
+    hi = HANDOVER_P_HI_M if p_hi is None else max(HANDOVER_P_HI_M, p_hi)
+    if rng <= HANDOVER_ARRIVE_M:
+        return 'arrived' if abs(err) <= HANDOVER_TOL_RAD else 'turn'
+    if abs(err) > (HANDOVER_TURN_RAD if centred else HANDOVER_TOL_RAD):
+        return 'turn'
+    if pulses >= HANDOVER_MAX_PULSES:
+        return 'max_travel'
+    if rng - hi < HANDOVER_MIN_M:
+        return 'arrived'            # worst-case closest
+    return 'forward'
+
+
+def handover_corr_omega(err):
+    """Heading correction during a forward pulse (0 inside the tolerance)."""
+    if abs(err) <= HANDOVER_TOL_RAD:
+        return 0.0
+    w = HANDOVER_OMEGA_SIGN * HANDOVER_K_THETA * err
+    return max(-HANDOVER_OMEGA_CORR_MAX, min(HANDOVER_OMEGA_CORR_MAX, w))
+
+
+def handover_blocked(rows, person):
+    """A reason to stop: a non-person object low in the corridor nearer than
+    the person (rows inside HANDOVER_SELF_ZONE_M are the robot's own arm and
+    the held object)."""
+    p_rng = math.hypot(_f(person, 'x'), _f(person, 'y'))
+    for r in rows or ():
+        if not isinstance(r, dict) or str(r.get('label', '')).lower() == 'person':
+            continue
+        x, y, z, conf = _f(r, 'x'), _f(r, 'y'), _f(r, 'z'), _f(r, 'conf')
+        if None in (x, y, z) or conf is None:
+            continue
+        d = math.hypot(x, y)
+        if d < HANDOVER_SELF_ZONE_M:
+            continue
+        if (conf >= HANDOVER_OBST_MIN_CONF and z <= HANDOVER_OBST_Z_MAX
+                and abs(x) <= HANDOVER_OBST_CORRIDOR_M and d < p_rng - 0.05):
+            return '%s at %.2f m, between the robot and the person' % (
+                str(r.get('label') or '?'), d)
+    return None
