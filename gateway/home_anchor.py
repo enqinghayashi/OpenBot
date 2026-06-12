@@ -393,3 +393,102 @@ def handover_blocked(rows, person):
             return '%s at %.2f m, between the robot and the person' % (
                 str(r.get('label') or '?'), d)
     return None
+
+
+#: operator 10-17: "make sure robot dont overreach and walk way too
+#: close to person".  A pulse SEEN to close more than HANDOVER_P_HI_M
+#: (real travel unmeasured; they can step in) bumps the worst case for
+#: later pulses to this factor times it.
+HANDOVER_P_HI_GAIN = 1.25
+
+
+def handover_p_hi(max_drop):
+    """The worst case one pulse may close, from the largest range drop seen
+    across one forward pulse (never below HANDOVER_P_HI_M)."""
+    try:
+        d = float(max_drop)
+    except (TypeError, ValueError):
+        return HANDOVER_P_HI_M
+    if not math.isfinite(d):
+        return HANDOVER_P_HI_M
+    return max(HANDOVER_P_HI_M, HANDOVER_P_HI_GAIN * d)
+
+
+def handover_close_lost(rng, centred, pulses_since_seen):
+    """B8l-hf6: the dead-reckoned range to a person lost from view after
+    ``pulses_since_seen`` forward pulses from a centred sighting at ``rng``,
+    or None (a real loss: never centred, no pulse since, or still far)."""
+    if not centred or pulses_since_seen < 1 or rng is None or rng <= 0.0:
+        return None
+    est = rng - HANDOVER_P_NOM_M * pulses_since_seen
+    return est if est <= HANDOVER_CLOSE_LOST_M else None
+
+
+# ── step back before a navigate sweep (10-17) ──
+# operator: "if object is not in the scene nor detection before about to
+# call the navigate, step back 5 steps slowly ... this avoid collision
+# with nearby object if the robot is too close".  The brain makes the call
+# (target not in view); the gateway walks backward at the gait floor,
+# re-arming one auto-expiring writer command, for STEPBACK_M / STEPBACK_VX
+# seconds (timed: the gateway has no odometry loop).
+# OPENBOT_SEARCH_STEPBACK_M: unset = 0.50 m (5 steps of ~0.10 m),
+# '0' = off, cap 0.60 m.
+STEPBACK_ENV = 'OPENBOT_SEARCH_STEPBACK_M'
+STEPBACK_M = 0.50
+STEPBACK_MAX_M = 0.60
+STEPBACK_VX = 0.20           # = HANDOVER_VX
+STEPBACK_REARM_S = 0.5       # re-arm rate
+STEPBACK_CMD_S = 0.8         # dies after this (> REARM)
+STEPBACK_SETTLE_S = 1.0
+
+
+def stepback_distance(raw, req=None):
+    """Metres to step back.  The gateway switch wins: a valid value > 0 is
+    used as is, '0' (or any value <= 0) = off; unset or unreadable -> the
+    request's ``m`` when valid (> 0), else STEPBACK_M.  Capped at
+    STEPBACK_MAX_M."""
+    if raw is not None and str(raw).strip():
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            v = None
+        if v is not None and math.isfinite(v):
+            return 0.0 if v <= 0.0 else min(STEPBACK_MAX_M, v)
+    if req is not None:
+        try:
+            r = float(req)
+        except (TypeError, ValueError):
+            r = None
+        if r is not None and math.isfinite(r) and r > 0.0:
+            return min(STEPBACK_MAX_M, r)
+    return STEPBACK_M
+
+
+# ── turn it right of centre ──
+# Stuart 10-17 23:06 (fetch demo): the pick got refused 'self_collision'
+# (the bottle sat a few cm LEFT of the right arm's limit) and the model
+# asked the operator to move it.  So the brain asks the gateway to turn
+# LEFT in place (closed loop on the object's detection, the turn_around
+# law) until it is ``shift_m`` further right, then picks once.
+# OPENBOT_AIM_TURN=0 in the gateway terminal = refused.
+AIM_ENV = 'OPENBOT_AIM_TURN'
+AIM_MARGIN_M = 0.04          # past move_right_m
+AIM_TOL_RAD = 0.03           # done at target - this
+AIM_OVER_RAD = 0.20          # no overshoot
+AIM_MAX_SHIFT_M = 0.25       # too big to aim
+AIM_MAX_TURN_RAD = 0.70      # never past ~40 deg
+AIM_MAX_PULSES = 12
+AIM_ASSOC_M = 0.10           # range near the last
+AIM_BEARING_WIN_RAD = 1.0    # ... bearing too
+AIM_SEED_M = 0.25            # near brain row
+AIM_MIN_CONF = 0.25
+AIM_LOST_S = 2.0
+AIM_BUDGET_S = 12.0
+AIM_FINAL_SETTLE_S = 1.0
+
+
+AIM_K_THETA = 1.5            # = TURN_K_THETA
+AIM_OMEGA_MIN = 0.15         # = OMEGA_MIN
+AIM_OMEGA_MAX = 0.40         # = OMEGA_MAX
+
+
