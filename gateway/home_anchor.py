@@ -442,3 +442,23 @@ STEPBACK_CMD_S = 0.8         # dies after this (> REARM)
 STEPBACK_SETTLE_S = 1.0
 
 
+def stepback_distance(raw, req=None):
+    """Metres to step back.  The gateway switch wins: a valid value > 0 is
+    used as is, '0' (or any value <= 0) = off; unset or unreadable -> the
+    request's ``m`` when valid (> 0), else STEPBACK_M.  Capped at
+    STEPBACK_MAX_M."""
+    if raw is not None and str(raw).strip():
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            v = None
+        if v is not None and math.isfinite(v):
+            return 0.0 if v <= 0.0 else min(STEPBACK_MAX_M, v)
+    if req is not None:
+        try:
+            r = float(req)
+        except (TypeError, ValueError):
+            r = None
+        if r is not None and math.isfinite(r) and r > 0.0:
+            return min(STEPBACK_MAX_M, r)
+    return STEPBACK_M
