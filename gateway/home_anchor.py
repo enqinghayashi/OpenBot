@@ -274,3 +274,48 @@ class HomeAnchor(object):
                     continue
             kept.append(r)
         return kept, ignored
+
+
+# -- the handover creep-in (operator 10-17: "Centre + creep in") --
+# Stuart 10-17 18:34, back at the start: the person stood 0.68 m out and
+# off-centre; 'place into person' refused (reach residual 0.35 m) and
+# navigate('person') counted REACHED right away (walk gate 0.55 m), so
+# nothing closed the gap.  This turns until they're centred (the
+# turn_around law), then short forward pulses until in reach.
+HANDOVER_ENV = 'OPENBOT_HANDOVER_APPROACH'   # '0' = refused
+#: "in reach": the person row is at most this far out.  Reach law (brain
+#: tools.reach_residual, shoulder (0.10, 0.004, 0.248), arm 0.386 m):
+#: centred at 0.46 m leaves residual 0.086 <= PLACE_ON_MAX_RESIDUAL 0.10.
+HANDOVER_ARRIVE_M = 0.46
+#: pulse only when its worst case (HANDOVER_P_HI_M) still leaves them
+#: out here: above REQ_MIN_RANGE_M (0.35, own-arm rows).
+HANDOVER_MIN_M = 0.38
+HANDOVER_START_MAX_M = 0.80  # farther = navigate; 0.46 + 6 x 0.05 + margin
+HANDOVER_VX = 0.20           # = CREEP_VX (gait floor)
+HANDOVER_PULSE_S = 0.5       # = CREEP_PULSE_S
+HANDOVER_SETTLE_S = 0.6      # = CREEP_SETTLE_S
+HANDOVER_P_NOM_M = 0.05      # = CREEP_P_NOM_M
+HANDOVER_P_HI_M = 0.08       # = CREEP_P_HI_M
+HANDOVER_MAX_PULSES = 6      # <= ~0.30 m nominal
+HANDOVER_TOL_RAD = 0.09      # "centred": ~5 deg
+HANDOVER_TURN_RAD = 0.15     # else turn first
+HANDOVER_K_THETA = 1.5       # per-pulse correction
+HANDOVER_OMEGA_CORR_MAX = 0.15
+HANDOVER_OMEGA_SIGN = -1.0   # +x = RIGHT, +omega = LEFT
+HANDOVER_ASSOC_M = 0.35      # near the last row
+HANDOVER_SEED_M = 0.60       # near caller's row
+HANDOVER_LOST_S = 2.0
+HANDOVER_BUDGET_S = 15.0
+HANDOVER_FINAL_SETTLE_S = 1.0
+HANDOVER_OBST_MIN_CONF = 0.35  # = CREEP_OBST_MIN_CONF
+HANDOVER_OBST_CORRIDOR_M = 0.30
+HANDOVER_OBST_Z_MAX = 0.05
+HANDOVER_SELF_ZONE_M = 0.30
+HANDOVER_RESULTS_OK = ('arrived', 'close_lost')
+# first lock at 0.462 m, one pulse, then 'lost': the camera drops a person
+# this close.  Lost AFTER a forward pulse planned off a centred sighting,
+# dead-reckoned range at most this, counts as reached ('close_lost'):
+# open the hand right there.
+HANDOVER_CLOSE_LOST_M = 0.55
+
+
