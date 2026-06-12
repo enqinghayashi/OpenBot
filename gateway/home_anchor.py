@@ -364,3 +364,5 @@ def handover_step(rng, err, centred, pulses, p_hi=None):
     if rng - hi < HANDOVER_MIN_M:
         return 'arrived'            # worst-case closest
     return 'forward'
+
+
