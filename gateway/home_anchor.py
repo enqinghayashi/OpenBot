@@ -414,3 +414,11 @@ def handover_p_hi(max_drop):
     return max(HANDOVER_P_HI_M, HANDOVER_P_HI_GAIN * d)
 
 
+def handover_close_lost(rng, centred, pulses_since_seen):
+    """B8l-hf6: the dead-reckoned range to a person lost from view after
+    ``pulses_since_seen`` forward pulses from a centred sighting at ``rng``,
+    or None (a real loss: never centred, no pulse since, or still far)."""
+    if not centred or pulses_since_seen < 1 or rng is None or rng <= 0.0:
+        return None
+    est = rng - HANDOVER_P_NOM_M * pulses_since_seen
+    return est if est <= HANDOVER_CLOSE_LOST_M else None
