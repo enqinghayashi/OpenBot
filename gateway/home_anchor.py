@@ -208,3 +208,114 @@ class HomeAnchor(object):
             self._st = None
         return 'CLEARED home (%s): stopped before the pick, the fetch is abandoned' % why
 
+    def clear(self, why):
+        with self._lock:
+            st, self._st = self._st, None
+        if st is None:
+            return None
+        return 'CLEARED home (%s)' % why
+
+    def goal(self, now):
+        """The /walk_pose goal for the return, or None (no anchor)."""
+        with self._lock:
+            st = self._live(now)
+            if st is None:
+                return None
+            g = {'x': round(st['x'], 4), 'y': round(st['y'], 4),
+                 'yaw': round(st['yaw'], 4), 'label': 'home'}
+            if st['req'] is not None:
+                g['face_x'] = round(st['req'][0], 4)
+                g['face_y'] = round(st['req'][1], 4)
+            return g
+
+    def snapshot(self, pose, now):
+        """The anchor as a JSON-able dict (None = no anchor).  With a fresh
+        ``pose`` it also carries where home and the requester are NOW in the
+        body frame, and the radius a person must be within."""
+        with self._lock:
+            st = self._live(now)
+            if st is None:
+                return None
+            st = dict(st)
+        out = {'home': [round(st['x'], 3), round(st['y'], 3),
+                        round(math.degrees(st['yaw']), 1)],
+               'age_s': round(float(now) - st['t'], 1), 'src': st['src'],
+               'held': bool(st.get('held')),
+               'requester_seen': st['req'] is not None,
+               'requester_world': (None if st['req'] is None else
+                                   [round(st['req'][0], 3), round(st['req'][1], 3)]),
+               'radius_m': REQ_RADIUS_M if st['req'] is not None else REQ_RADIUS_NOREQ_M}
+        if pose is not None:
+            hx, hy = world_to_body(pose, st['x'], st['y'])
+            out['home_body'] = [round(hx, 3), round(hy, 3)]
+            out['robot_to_home_m'] = round(math.hypot(hx, hy), 3)
+            cx, cy = (world_to_body(pose, st['req'][0], st['req'][1])
+                      if st['req'] is not None else (hx, hy))
+            out['center_body'] = [round(cx, 3), round(cy, 3)]
+        return out
+
+    def filter_persons(self, rows, pose, now):
+        """(kept, ignored): person rows within the radius of the requester's
+        spot (or of home) -- the only people a handover may target.  Rows of
+        other labels pass through in ``kept``.  No anchor or no pose: every
+        row is kept (today's behaviour)."""
+        snap = self.snapshot(pose, now) if pose is not None else None
+        if snap is None or 'center_body' not in snap:
+            return list(rows or ()), []
+        cx, cy = snap['center_body']
+        rad = snap['radius_m']
+        kept, ignored = [], []
+        for r in rows or ():
+            if isinstance(r, dict) and str(r.get('label', '')).lower() == 'person':
+                x, y = _f(r, 'x'), _f(r, 'y')
+                if (x is None or y is None or math.hypot(x - cx, y - cy) > rad
+                        or math.hypot(x, y) < REQ_MIN_RANGE_M):
+                    ignored.append(r)
+                    continue
+            kept.append(r)
+        return kept, ignored
+
+
+# -- the handover creep-in (operator 10-17: "Centre + creep in") --
+# Stuart 10-17 18:34, back at the start: the person stood 0.68 m out and
+# off-centre; 'place into person' refused (reach residual 0.35 m) and
+# navigate('person') counted REACHED right away (walk gate 0.55 m), so
+# nothing closed the gap.  This turns until they're centred (the
+# turn_around law), then short forward pulses until in reach.
+HANDOVER_ENV = 'OPENBOT_HANDOVER_APPROACH'   # '0' = refused
+#: "in reach": the person row is at most this far out.  Reach law (brain
+#: tools.reach_residual, shoulder (0.10, 0.004, 0.248), arm 0.386 m):
+#: centred at 0.46 m leaves residual 0.086 <= PLACE_ON_MAX_RESIDUAL 0.10.
+HANDOVER_ARRIVE_M = 0.46
+#: pulse only when its worst case (HANDOVER_P_HI_M) still leaves them
+#: out here: above REQ_MIN_RANGE_M (0.35, own-arm rows).
+HANDOVER_MIN_M = 0.38
+HANDOVER_START_MAX_M = 0.80  # farther = navigate; 0.46 + 6 x 0.05 + margin
+HANDOVER_VX = 0.20           # = CREEP_VX (gait floor)
+HANDOVER_PULSE_S = 0.5       # = CREEP_PULSE_S
+HANDOVER_SETTLE_S = 0.6      # = CREEP_SETTLE_S
+HANDOVER_P_NOM_M = 0.05      # = CREEP_P_NOM_M
+HANDOVER_P_HI_M = 0.08       # = CREEP_P_HI_M
+HANDOVER_MAX_PULSES = 6      # <= ~0.30 m nominal
+HANDOVER_TOL_RAD = 0.09      # "centred": ~5 deg
+HANDOVER_TURN_RAD = 0.15     # else turn first
+HANDOVER_K_THETA = 1.5       # per-pulse correction
+HANDOVER_OMEGA_CORR_MAX = 0.15
+HANDOVER_OMEGA_SIGN = -1.0   # +x = RIGHT, +omega = LEFT
+HANDOVER_ASSOC_M = 0.35      # near the last row
+HANDOVER_SEED_M = 0.60       # near caller's row
+HANDOVER_LOST_S = 2.0
+HANDOVER_BUDGET_S = 15.0
+HANDOVER_FINAL_SETTLE_S = 1.0
+HANDOVER_OBST_MIN_CONF = 0.35  # = CREEP_OBST_MIN_CONF
+HANDOVER_OBST_CORRIDOR_M = 0.30
+HANDOVER_OBST_Z_MAX = 0.05
+HANDOVER_SELF_ZONE_M = 0.30
+HANDOVER_RESULTS_OK = ('arrived', 'close_lost')
+# first lock at 0.462 m, one pulse, then 'lost': the camera drops a person
+# this close.  Lost AFTER a forward pulse planned off a centred sighting,
+# dead-reckoned range at most this, counts as reached ('close_lost'):
+# open the hand right there.
+HANDOVER_CLOSE_LOST_M = 0.55
+
+
