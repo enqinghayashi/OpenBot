@@ -498,3 +498,5 @@ def aim_omega(err):
     AIM_OMEGA_MIN, at most AIM_OMEGA_MAX; +omega turns LEFT."""
     mag = max(AIM_OMEGA_MIN, min(AIM_OMEGA_MAX, AIM_K_THETA * abs(err)))
     return math.copysign(mag, HANDOVER_OMEGA_SIGN * err) if err else 0.0
+
+
