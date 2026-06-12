@@ -492,3 +492,48 @@ AIM_OMEGA_MIN = 0.15         # = OMEGA_MIN
 AIM_OMEGA_MAX = 0.40         # = OMEGA_MAX
 
 
+def aim_omega(err):
+    """Yaw rate toward the target bearing (err = bearing - target, rad):
+    no dead band (the band is AIM_TOL_RAD / AIM_OVER_RAD), at least
+    AIM_OMEGA_MIN, at most AIM_OMEGA_MAX; +omega turns LEFT."""
+    mag = max(AIM_OMEGA_MIN, min(AIM_OMEGA_MAX, AIM_K_THETA * abs(err)))
+    return math.copysign(mag, HANDOVER_OMEGA_SIGN * err) if err else 0.0
+
+
+def aim_on(environ):
+    return str(environ.get(AIM_ENV, '')).strip() != '0'
+
+
+def aim_done(err):
+    """The aim is done: bearing - target within [-AIM_TOL_RAD, AIM_OVER_RAD]
+    (short of the target by at most the tolerance, never overshot past the
+    band: an overshoot is turned back)."""
+    return -AIM_TOL_RAD <= err <= AIM_OVER_RAD
+
+
+def aim_target_bearing(x, y, shift_m):
+    """The bearing (rad, + = right) at which an object now at body (x, y)
+    sits ``shift_m`` further right after a turn in place, or None when no
+    small turn does it (too large a shift, or a turn beyond
+    AIM_MAX_TURN_RAD)."""
+    try:
+        x, y, s = float(x), float(y), float(shift_m)
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(v) for v in (x, y, s)) or y <= 0.0 or s <= 0.0:
+        return None
+    if s > AIM_MAX_SHIFT_M:
+        return None
+    r = math.hypot(x, y)
+    xt = x + s
+    if r <= 0.0 or xt >= 0.9 * r:
+        return None
+    b = math.asin(xt / r)
+    if b - math.atan2(x, y) > AIM_MAX_TURN_RAD:
+        return None
+    return b
+
+
+def _label_match(row_label, label):
+    rl = str(row_label or '').strip().lower()
+    return rl == label or rl.endswith(' ' + label)
