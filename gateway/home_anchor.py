@@ -504,3 +504,8 @@ def aim_on(environ):
     return str(environ.get(AIM_ENV, '')).strip() != '0'
 
 
+def aim_done(err):
+    """The aim is done: bearing - target within [-AIM_TOL_RAD, AIM_OVER_RAD]
+    (short of the target by at most the tolerance, never overshot past the
+    band: an overshoot is turned back)."""
+    return -AIM_TOL_RAD <= err <= AIM_OVER_RAD
