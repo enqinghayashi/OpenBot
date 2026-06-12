@@ -228,3 +228,29 @@ class HomeAnchor(object):
                 g['face_y'] = round(st['req'][1], 4)
             return g
 
+    def snapshot(self, pose, now):
+        """The anchor as a JSON-able dict (None = no anchor).  With a fresh
+        ``pose`` it also carries where home and the requester are NOW in the
+        body frame, and the radius a person must be within."""
+        with self._lock:
+            st = self._live(now)
+            if st is None:
+                return None
+            st = dict(st)
+        out = {'home': [round(st['x'], 3), round(st['y'], 3),
+                        round(math.degrees(st['yaw']), 1)],
+               'age_s': round(float(now) - st['t'], 1), 'src': st['src'],
+               'held': bool(st.get('held')),
+               'requester_seen': st['req'] is not None,
+               'requester_world': (None if st['req'] is None else
+                                   [round(st['req'][0], 3), round(st['req'][1], 3)]),
+               'radius_m': REQ_RADIUS_M if st['req'] is not None else REQ_RADIUS_NOREQ_M}
+        if pose is not None:
+            hx, hy = world_to_body(pose, st['x'], st['y'])
+            out['home_body'] = [round(hx, 3), round(hy, 3)]
+            out['robot_to_home_m'] = round(math.hypot(hx, hy), 3)
+            cx, cy = (world_to_body(pose, st['req'][0], st['req'][1])
+                      if st['req'] is not None else (hx, hy))
+            out['center_body'] = [round(cx, 3), round(cy, 3)]
+        return out
+
