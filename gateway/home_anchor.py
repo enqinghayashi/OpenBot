@@ -323,3 +323,27 @@ def handover_on(environ):
     return str(environ.get(HANDOVER_ENV, '1')).strip() != '0'
 
 
+def handover_track(rows, last=None, seed=None):
+    """The person to close in on: a plausible person row (REQ_MIN_RANGE_M or
+    farther) nearest the last tracked row (within HANDOVER_ASSOC_M), else on
+    the first lock nearest the caller's seed (within HANDOVER_SEED_M), else
+    the nearest plausible person.  None when nobody qualifies."""
+    cands = []
+    for r in rows or ():
+        if not is_plausible_person(r):
+            continue
+        x, y = _f(r, 'x'), _f(r, 'y')
+        if math.hypot(x, y) < REQ_MIN_RANGE_M:
+            continue
+        cands.append((x, y, r))
+    if not cands:
+        return None
+    if last is not None:
+        lx, ly = last
+        x, y, r = min(cands, key=lambda c: math.hypot(c[0] - lx, c[1] - ly))
+        return r if math.hypot(x - lx, y - ly) <= HANDOVER_ASSOC_M else None
+    if seed is not None:
+        sx, sy = seed
+        x, y, r = min(cands, key=lambda c: math.hypot(c[0] - sx, c[1] - sy))
+        return r if math.hypot(x - sx, y - sy) <= HANDOVER_SEED_M else None
+    return min(cands, key=lambda c: math.hypot(c[0], c[1]))[2]
