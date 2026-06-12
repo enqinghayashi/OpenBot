@@ -422,3 +422,23 @@ def handover_close_lost(rng, centred, pulses_since_seen):
         return None
     est = rng - HANDOVER_P_NOM_M * pulses_since_seen
     return est if est <= HANDOVER_CLOSE_LOST_M else None
+
+
+# ── step back before a navigate sweep (10-17) ──
+# operator: "if object is not in the scene nor detection before about to
+# call the navigate, step back 5 steps slowly ... this avoid collision
+# with nearby object if the robot is too close".  The brain makes the call
+# (target not in view); the gateway walks backward at the gait floor,
+# re-arming one auto-expiring writer command, for STEPBACK_M / STEPBACK_VX
+# seconds (timed: the gateway has no odometry loop).
+# OPENBOT_SEARCH_STEPBACK_M: unset = 0.50 m (5 steps of ~0.10 m),
+# '0' = off, cap 0.60 m.
+STEPBACK_ENV = 'OPENBOT_SEARCH_STEPBACK_M'
+STEPBACK_M = 0.50
+STEPBACK_MAX_M = 0.60
+STEPBACK_VX = 0.20           # = HANDOVER_VX
+STEPBACK_REARM_S = 0.5       # re-arm rate
+STEPBACK_CMD_S = 0.8         # dies after this (> REARM)
+STEPBACK_SETTLE_S = 1.0
+
+
