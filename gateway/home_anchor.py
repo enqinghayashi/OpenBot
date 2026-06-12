@@ -511,3 +511,24 @@ def aim_done(err):
     return -AIM_TOL_RAD <= err <= AIM_OVER_RAD
 
 
+def aim_target_bearing(x, y, shift_m):
+    """The bearing (rad, + = right) at which an object now at body (x, y)
+    sits ``shift_m`` further right after a turn in place, or None when no
+    small turn does it (too large a shift, or a turn beyond
+    AIM_MAX_TURN_RAD)."""
+    try:
+        x, y, s = float(x), float(y), float(shift_m)
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(v) for v in (x, y, s)) or y <= 0.0 or s <= 0.0:
+        return None
+    if s > AIM_MAX_SHIFT_M:
+        return None
+    r = math.hypot(x, y)
+    xt = x + s
+    if r <= 0.0 or xt >= 0.9 * r:
+        return None
+    b = math.asin(xt / r)
+    if b - math.atan2(x, y) > AIM_MAX_TURN_RAD:
+        return None
+    return b
