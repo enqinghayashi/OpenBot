@@ -539,3 +539,36 @@ def _label_match(row_label, label):
     return rl == label or rl.endswith(' ' + label)
 
 
+def aim_track(rows, label, last=None, seed=None):
+    """The row of ``label`` that is the object being aimed at: nearest to
+    ``last`` within AIM_ASSOC_M, else nearest to ``seed`` within AIM_SEED_M
+    (first lock), else None."""
+    label = str(label or '').strip().lower()
+    cands = []
+    for r in rows or ():
+        if not isinstance(r, dict) or not _label_match(r.get('label'), label):
+            continue
+        x, y, conf = _f(r, 'x'), _f(r, 'y'), _f(r, 'conf')
+        if None in (x, y) or (conf is not None and conf < AIM_MIN_CONF) or y <= 0.0:
+            continue
+        cands.append((x, y, r))
+    if not cands:
+        return None
+    if last is not None:
+        # turning in place keeps the range; the bearing shifts by
+        # whatever Stuart really turned, so associate on range, inside a
+        # bearing window no turn here can exceed.
+        r0, b0 = math.hypot(last[0], last[1]), math.atan2(last[0], last[1])
+        best = None
+        for x, y, r in cands:
+            dr = abs(math.hypot(x, y) - r0)
+            db = abs(math.atan2(x, y) - b0)
+            if dr <= AIM_ASSOC_M and db <= AIM_BEARING_WIN_RAD:
+                cost = dr + 0.1 * db
+                if best is None or cost < best[0]:
+                    best = (cost, r)
+        return best[1] if best else None
+    if seed is None:
+        return None
+    x, y, r = min(cands, key=lambda c: math.hypot(c[0] - seed[0], c[1] - seed[1]))
+    return r if math.hypot(x - seed[0], y - seed[1]) <= AIM_SEED_M else None
