@@ -259,3 +259,7 @@ def classify_refusal(label: str, result: dict, stale: bool) -> Tuple[str, str]:
         return "refuse", "ERROR:/place_target: '%s' not detected" % label
     return "refuse", \
         "ERROR:/place_target: %s (visible: %s)" % (reason, visible)
+
+
+# ── target ──
+
