@@ -205,3 +205,33 @@ def resolve(label: str, rows: List[dict], now: float) -> dict:
     return _impl("resolve_pick_target")(label, rows, now)
 
 
+def stale_only(label: str, rows: List[dict], now: float) -> bool:
+    """True when rows hold the label's stem but EVERY one is unusable.
+
+    An old-but-present detection and an absent one both reach the resolver as
+    ``status:'none'``.  Without this pre-check a stale scene masquerades as
+    'not detected' — which would point the operator at the camera when the
+    real problem is that nothing has been published for seconds.
+    """
+    stem = _impl("stem")
+    # a ref-shaped target ('bottle_3') must become a label BEFORE the stem
+    # compare, or no row matches, `seen` stays False, and a FROZEN scene
+    # reads as 'not detected' -- the exact misdiagnosis this pre-check
+    # exists to prevent.  See instance_labels.ref_to_label.
+    target = stem(_impl("ref_to_label")(label))
+    stale_s = _impl("PICK_STALE_S")
+    min_conf = _impl("PICK_MIN_CONF")
+    seen = False
+    for row in rows or ():
+        if stem(str(row.get("label") or "")) != target:
+            continue
+        seen = True
+        try:
+            t = float(row.get("t"))
+            conf = float(row.get("conf"))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(t) and math.isfinite(conf) \
+                and (now - t) <= stale_s and conf >= min_conf:
+            return False
+    return seen
