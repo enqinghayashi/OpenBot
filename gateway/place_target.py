@@ -198,3 +198,5 @@ def resolver_rows(dets: Any) -> List[dict]:
             "_src": det,
         })
     return rows
+
+
