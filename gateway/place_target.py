@@ -422,3 +422,31 @@ def side_from_reply(reply: str) -> Optional[str]:
 
 # ── phases ──
 
+class PhaseLog:
+    """Ordered phase rows whose elapsed times are MEASURED, never invented.
+
+    Each row's ``elapsed_s`` is the wall time since the previous row was
+    added — the only timing the gateway can actually observe.  The VERDICT
+    row carries the TOTAL, so the summary reads as the whole run.
+    """
+
+    def __init__(self, label: str):
+        self.label = label
+        self.side: Optional[str] = None
+        self.rows: List[dict] = []
+        self._t0: Optional[float] = None
+        self._t_last: Optional[float] = None
+
+    def start(self, now: float) -> None:
+        self._t0 = now
+        self._t_last = now
+
+    def add(self, phase: str, status: str, detail: str, now: float) -> None:
+        elapsed = 0.0 if self._t_last is None else max(0.0, now - self._t_last)
+        self._t_last = now
+        self.rows.append({"phase": phase, "status": status,
+                          "detail": detail, "elapsed_s": elapsed})
+
+    def total_s(self, now: float) -> float:
+        return 0.0 if self._t0 is None else max(0.0, now - self._t0)
+
