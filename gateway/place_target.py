@@ -108,3 +108,28 @@ def _load_instance_labels() -> Any:
                       % (", ".join(_INSTANCE_LABEL_MODULES), last_exc))
 
 
+def _drop_point_fallback(det: Any) -> Optional[dict]:
+    """Equivalent to ``brain.agent.tools._drop_point``.  See _load_drop_point.
+
+    This exists ONLY because the robot's ``brain/agent/tools.py`` predates the
+    coordinate-place work and does not define ``_drop_point``.  Deploying the
+    newer brain module would change what the BRAIN sends for a place — far
+    outside this lane's blast radius — so the fallback covers that layout.
+    ``tests/test_place_target_lane.py`` pins this byte-for-byte against the
+    real ``_drop_point`` wherever both exist, so the two cannot drift.
+    """
+    def _finite(value: Any) -> Optional[float]:
+        try:
+            coord = float(value)
+        except (TypeError, ValueError):
+            return None
+        return coord if math.isfinite(coord) else None
+
+    x = _finite(getattr(det, "x", None))
+    y = _finite(getattr(det, "y", None))
+    z = _finite(getattr(det, "z", None))
+    if x is None or y is None or z is None:
+        return None
+    height = _finite(getattr(det, "height_m", None))
+    lift = height / 2.0 if height is not None and height > 0.0 else 0.0
+    return {"x": x, "y": y, "z": z + lift + 0.02}
