@@ -275,3 +275,5 @@ def _as_source(row: dict) -> Any:
         return src
     return types.SimpleNamespace(**{k: row.get(k)
                                     for k in ("x", "y", "z", "height_m")})
+
+
