@@ -144,3 +144,21 @@ def _load_drop_point() -> Any:
     return _drop_point
 
 
+def _impl(name: str) -> Any:
+    """Lazily import one reused implementation, cached after first use.
+
+    Lazy on purpose: the gateway imports this module at boot, and a missing
+    ``skills/``/``brain/`` path must degrade to ONE honest error row — never
+    an ImportError that takes the whole node down.  (The caller guarantees
+    that: ``GatewayNode.place_target`` contains any failure and still emits a
+    table.)
+    """
+    if not _IMPL:
+        labels = _load_instance_labels()
+        _IMPL.update({"_drop_point": _load_drop_point(),
+                      "resolve_pick_target": labels.resolve_pick_target,
+                      "stem": labels.stem,
+                      "ref_to_label": labels.ref_to_label,
+                      "PICK_STALE_S": labels.PICK_STALE_S,
+                      "PICK_MIN_CONF": labels.PICK_MIN_CONF})
+    return _IMPL[name]
