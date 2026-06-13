@@ -133,3 +133,5 @@ def _drop_point_fallback(det: Any) -> Optional[dict]:
     height = _finite(getattr(det, "height_m", None))
     lift = height / 2.0 if height is not None and height > 0.0 else 0.0
     return {"x": x, "y": y, "z": z + lift + 0.02}
+
+
