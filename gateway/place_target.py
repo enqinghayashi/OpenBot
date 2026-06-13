@@ -235,3 +235,5 @@ def stale_only(label: str, rows: List[dict], now: float) -> bool:
                 and (now - t) <= stale_s and conf >= min_conf:
             return False
     return seen
+
+
