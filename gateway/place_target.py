@@ -162,3 +162,7 @@ def _impl(name: str) -> Any:
                       "PICK_STALE_S": labels.PICK_STALE_S,
                       "PICK_MIN_CONF": labels.PICK_MIN_CONF})
     return _IMPL[name]
+
+
+# ── resolve ──
+
