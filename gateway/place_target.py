@@ -359,3 +359,7 @@ def fmt_num(value: Any, spec: str = "%.2f") -> str:
     except (TypeError, ValueError):
         return "?"
     return "?" if not math.isfinite(number) else spec % number
+
+
+# ── outcome ──
+
