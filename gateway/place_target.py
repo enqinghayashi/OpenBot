@@ -359,3 +359,66 @@ def fmt_num(value: Any, spec: str = "%.2f") -> str:
     except (TypeError, ValueError):
         return "?"
     return "?" if not math.isfinite(number) else spec % number
+
+
+# ── outcome ──
+
+def classify_dispatch(reply: str, verdict: Optional[str]) -> Tuple[str, str]:
+    """(status, detail) for the ``execute`` row, from the SHIPPED reply grammar.
+
+    Reuses the repo's own definitive rule rather than inventing one: any
+    embedded ``ERROR:`` anywhere in the reply is a failure (brain/verifier.py
+    ``_classify_reply``, mirrored by ``GatewayNode._shape_reply``).  The
+    unheld-place refusal is split out because it is a POLICY refusal (the
+    command was well-formed and the gateway declined on evidence), not a
+    broken engine — an operator reads those two very differently.
+    """
+    text = str(reply or "")
+    if verdict is not None and verdict.startswith("VERDICT:error"):
+        return "error", text
+    if text.startswith("ERROR:nothing verified held"):
+        return "refuse", text
+    if text.startswith("ERROR") or "ERROR:" in text:
+        return "error", text
+    return "ok", text
+
+
+def verdict_row(verdict: Optional[str]) -> Tuple[str, str]:
+    """(status, detail) for the VERDICT row.
+
+    Success is claimed ONLY on an explicit ``VERDICT:success`` from the
+    verifier.  A missing verdict is an ERROR, never a silent pass — an
+    absent verifier must not read as a good place.
+    """
+    if not verdict:
+        return "error", "no verdict (verifier did not run)"
+    if verdict.startswith("VERDICT:success"):
+        return "success", verdict
+    if verdict.startswith("VERDICT:refused"):
+        return "refuse", verdict
+    return "error", verdict
+
+
+def side_from_reply(reply: str) -> Optional[str]:
+    """The released side, read off the SHIPPED place reply annotation.
+
+    ``_do_place`` owns the held-side law and appends
+    ``; prev_is_open=<side>:...`` — the only place the gateway states which
+    hand it released.  DISPLAY-ONLY: an unreadable annotation leaves the side
+    unknown rather than guessing at one (re-deriving the law here would create
+    the second, divergent copy this module exists to avoid).
+    """
+    text = str(reply or "")
+    marker = "prev_is_open="
+    idx = text.find(marker)
+    if idx < 0:
+        return None
+    rest = text[idx + len(marker):]
+    for side in ("right", "left"):
+        if rest.startswith(side + ":"):
+            return side
+    return None
+
+
+# ── phases ──
+
