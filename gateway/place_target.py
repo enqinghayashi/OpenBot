@@ -237,3 +237,25 @@ def stale_only(label: str, rows: List[dict], now: float) -> bool:
     return seen
 
 
+def classify_refusal(label: str, result: dict, stale: bool) -> Tuple[str, str]:
+    """(status, detail) for a resolver result that is not ``'single'``.
+
+    Every branch refuses — a failure to name the target must NEVER degrade to
+    a bare current-pose release, which would drop the payload at whatever pose
+    the arm happens to hold.
+    """
+    status = result.get("status")
+    reason = str(result.get("reason") or "")
+    visible = str(result.get("visible_text") or "")
+    if status == "bad_shape":
+        return "refuse", "ERROR:/place_target: %s" % reason
+    if status == "ambiguous":
+        return "refuse", \
+            "ERROR:/place_target: %s - name #N or side=" % reason
+    if stale:
+        return "refuse", ("ERROR:/place_target: '%s' not detected "
+                          "(no fresh detection; scene may be stale)" % label)
+    if not visible:
+        return "refuse", "ERROR:/place_target: '%s' not detected" % label
+    return "refuse", \
+        "ERROR:/place_target: %s (visible: %s)" % (reason, visible)
