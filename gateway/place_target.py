@@ -142,3 +142,64 @@ def _load_drop_point() -> Any:
     except ImportError:
         return _drop_point_fallback
     return _drop_point
+
+
+def _impl(name: str) -> Any:
+    """Lazily import one reused implementation, cached after first use.
+
+    Lazy on purpose: the gateway imports this module at boot, and a missing
+    ``skills/``/``brain/`` path must degrade to ONE honest error row — never
+    an ImportError that takes the whole node down.  (The caller guarantees
+    that: ``GatewayNode.place_target`` contains any failure and still emits a
+    table.)
+    """
+    if not _IMPL:
+        labels = _load_instance_labels()
+        _IMPL.update({"_drop_point": _load_drop_point(),
+                      "resolve_pick_target": labels.resolve_pick_target,
+                      "stem": labels.stem,
+                      "ref_to_label": labels.ref_to_label,
+                      "PICK_STALE_S": labels.PICK_STALE_S,
+                      "PICK_MIN_CONF": labels.PICK_MIN_CONF})
+    return _IMPL[name]
+
+
+# ── resolve ──
+
+def resolver_rows(dets: Any) -> List[dict]:
+    """Detection objects -> ``resolve_pick_target`` dicts.
+
+    THE FRESHNESS STAMP IS THE POINT.  ``resolve_pick_target`` drops every row
+    whose ``t``/``_t`` is absent, and the perception wire carries NO timestamp
+    — so feeding raw wire rows to the resolver returns ``status:'none'`` for
+    every label, forever, with a perfectly good object in frame.  Stamping
+    ``t`` from the gateway's own ``Detection.ts`` (set at ingest) is what makes
+    the resolver's staleness window real rather than permanently empty.
+
+    ``_src`` carries the original Detection so the drop-point geometry can run
+    on its native attribute object without a second, parallel representation.
+    """
+    rows: List[dict] = []
+    for det in dets or ():
+        label = getattr(det, "label", None)
+        if not isinstance(label, str):
+            continue
+        rows.append({
+            "label": label,
+            "conf": getattr(det, "conf", None),
+            "t": getattr(det, "ts", None),
+            "x": getattr(det, "x", None),
+            "y": getattr(det, "y", None),
+            "z": getattr(det, "z", None),
+            "height_m": getattr(det, "height_m", None),
+            "hue": getattr(det, "hue", None),
+            "color_name": getattr(det, "color_name", None),
+            "body_side": getattr(det, "body_side", None),
+            "_src": det,
+        })
+    return rows
+
+
+def resolve(label: str, rows: List[dict], now: float) -> dict:
+    """Resolve ``label`` against rows (the shipped pick-target grammar)."""
+    return _impl("resolve_pick_target")(label, rows, now)
