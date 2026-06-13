@@ -135,3 +135,10 @@ def _drop_point_fallback(det: Any) -> Optional[dict]:
     return {"x": x, "y": y, "z": z + lift + 0.02}
 
 
+def _load_drop_point() -> Any:
+    """The shared drop-point geometry, or the proven-equivalent fallback."""
+    try:
+        from brain.agent.tools import _drop_point  # noqa: PLC0415
+    except ImportError:
+        return _drop_point_fallback
+    return _drop_point
