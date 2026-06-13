@@ -346,3 +346,5 @@ def place_target_from_row(
                    % PLACE_CLEARANCE_M)
     detail += rim_marker
     return status, detail, [drop["x"], drop["y"], wrist_z]
+
+
