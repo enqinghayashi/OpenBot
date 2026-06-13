@@ -203,3 +203,159 @@ def resolver_rows(dets: Any) -> List[dict]:
 def resolve(label: str, rows: List[dict], now: float) -> dict:
     """Resolve ``label`` against rows (the shipped pick-target grammar)."""
     return _impl("resolve_pick_target")(label, rows, now)
+
+
+def stale_only(label: str, rows: List[dict], now: float) -> bool:
+    """True when rows hold the label's stem but EVERY one is unusable.
+
+    An old-but-present detection and an absent one both reach the resolver as
+    ``status:'none'``.  Without this pre-check a stale scene masquerades as
+    'not detected' — which would point the operator at the camera when the
+    real problem is that nothing has been published for seconds.
+    """
+    stem = _impl("stem")
+    # a ref-shaped target ('bottle_3') must become a label BEFORE the stem
+    # compare, or no row matches, `seen` stays False, and a FROZEN scene
+    # reads as 'not detected' -- the exact misdiagnosis this pre-check
+    # exists to prevent.  See instance_labels.ref_to_label.
+    target = stem(_impl("ref_to_label")(label))
+    stale_s = _impl("PICK_STALE_S")
+    min_conf = _impl("PICK_MIN_CONF")
+    seen = False
+    for row in rows or ():
+        if stem(str(row.get("label") or "")) != target:
+            continue
+        seen = True
+        try:
+            t = float(row.get("t"))
+            conf = float(row.get("conf"))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(t) and math.isfinite(conf) \
+                and (now - t) <= stale_s and conf >= min_conf:
+            return False
+    return seen
+
+
+def classify_refusal(label: str, result: dict, stale: bool) -> Tuple[str, str]:
+    """(status, detail) for a resolver result that is not ``'single'``.
+
+    Every branch refuses — a failure to name the target must NEVER degrade to
+    a bare current-pose release, which would drop the payload at whatever pose
+    the arm happens to hold.
+    """
+    status = result.get("status")
+    reason = str(result.get("reason") or "")
+    visible = str(result.get("visible_text") or "")
+    if status == "bad_shape":
+        return "refuse", "ERROR:/place_target: %s" % reason
+    if status == "ambiguous":
+        return "refuse", \
+            "ERROR:/place_target: %s - name #N or side=" % reason
+    if stale:
+        return "refuse", ("ERROR:/place_target: '%s' not detected "
+                          "(no fresh detection; scene may be stale)" % label)
+    if not visible:
+        return "refuse", "ERROR:/place_target: '%s' not detected" % label
+    return "refuse", \
+        "ERROR:/place_target: %s (visible: %s)" % (reason, visible)
+
+
+# ── target ──
+
+def _as_source(row: dict) -> Any:
+    """The attribute object ``_drop_point`` reads (Detection, or a shim).
+
+    ``_drop_point`` uses ``getattr``, so a plain dict would read as "no
+    coordinates" and refuse a perfectly good target.  The shim keeps the
+    module unit-testable with plain dicts without a second geometry path.
+    """
+    src = row.get("_src")
+    if src is not None:
+        return src
+    return types.SimpleNamespace(**{k: row.get(k)
+                                    for k in ("x", "y", "z", "height_m")})
+
+
+def place_target_from_row(
+        row: dict,
+        pc_rim: Optional[Callable[[dict], Optional[dict]]] = None,
+) -> Tuple[str, str, Optional[List[float]]]:
+    """(status, detail, ``[x, y, wrist_z]`` | None) for the resolved row.
+
+    The geometry itself is ``_drop_point`` — never re-derived here, so the
+    drop formula exists exactly once in the repo.  An inestimable height is a
+    WARNING, not a refusal (the caller asked to place on top of a target it
+    can see; the honest response is to release at the centroid + clearance and
+    say so), but an unusable POSITION is a refusal: without x/y/z there is no
+    target to place on at all.
+
+    ``pc_rim`` is the optional point-cloud rim hook (H-PT-1; default None).
+    The gateway passes a callable only when the rim fit is switched on.  It
+    is called with ``row`` once, and only AFTER the position check passed.  It
+    returns None or ``{"drop": {"x": .., "y": .., "z": ..}, ...}``; only
+    ``["drop"]["z"]`` is read, and only when it is a finite int/float (a bool,
+    a string, NaN or inf is rejected).  That z replaces the formula's drop z;
+    x and y stay the formula's.  A callable that raises counts as None.  With
+    the hook omitted, None, returning None, raising, or returning a rejected
+    shape, the returned 3-tuple (detail string included) is the one this
+    function returned before the hook existed.  When the rim z is applied the
+    detail ends with ``[pc rim z=... replaces formula z=...]``.
+    """
+    drop = _impl("_drop_point")(_as_source(row))
+    if drop is None:
+        return ("refuse",
+                "ERROR:/place_target: '%s' has no usable position "
+                "(x/y/z absent or non-finite)" % row.get("label"),
+                None)
+    rim_marker = ""
+    if pc_rim is not None:
+        try:
+            rim = pc_rim(row)
+            rim_drop = rim.get("drop") if isinstance(rim, dict) else None
+            rim_z = rim_drop.get("z") if isinstance(rim_drop, dict) else None
+            if (isinstance(rim_z, (int, float))
+                    and not isinstance(rim_z, bool)
+                    and math.isfinite(rim_z)):
+                rim_z = float(rim_z)
+            else:
+                rim_z = None
+        except Exception:  # hook raise = None, not fail
+            rim_z = None
+        if rim_z is not None:
+            rim_marker = ("  [pc rim z=%.3f replaces formula z=%.3f]"
+                          % (rim_z, drop["z"]))
+            drop = dict(drop, z=rim_z)
+    height = row.get("height_m")
+    lifted = False
+    try:
+        hf = float(height)
+        lifted = math.isfinite(hf) and hf > 0.0
+    except (TypeError, ValueError):
+        lifted = False
+    # drop['z'] = centroid z + lift + clearance, so subtracting the
+    # clearance gives the object top back without restating the formula.
+    top_z = drop["z"] - PLACE_CLEARANCE_M
+    wrist_z = drop["z"] + PLACE_WRIST_STANDOFF_M
+    detail = ("top_z=%.3f  wrist_z=%.3f (+%.3f standoff)"
+              % (top_z, wrist_z, PLACE_WRIST_STANDOFF_M))
+    status = "ok"
+    if not lifted:
+        status = "warn"
+        detail += ("  [height_m absent - lifting 0.00 (fallback z+%.2f)]"
+                   % PLACE_CLEARANCE_M)
+    detail += rim_marker
+    return status, detail, [drop["x"], drop["y"], wrist_z]
+
+
+def fmt_num(value: Any, spec: str = "%.2f") -> str:
+    """Format a numeric cell, or ``'?'`` when it is absent/non-numeric.
+
+    A confidence the perception lane never sent must read as unknown, never as
+    ``0.00`` — a fabricated zero looks like a measured one.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "?"
+    return "?" if not math.isfinite(number) else spec % number
