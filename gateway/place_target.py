@@ -166,3 +166,35 @@ def _impl(name: str) -> Any:
 
 # ── resolve ──
 
+def resolver_rows(dets: Any) -> List[dict]:
+    """Detection objects -> ``resolve_pick_target`` dicts.
+
+    THE FRESHNESS STAMP IS THE POINT.  ``resolve_pick_target`` drops every row
+    whose ``t``/``_t`` is absent, and the perception wire carries NO timestamp
+    — so feeding raw wire rows to the resolver returns ``status:'none'`` for
+    every label, forever, with a perfectly good object in frame.  Stamping
+    ``t`` from the gateway's own ``Detection.ts`` (set at ingest) is what makes
+    the resolver's staleness window real rather than permanently empty.
+
+    ``_src`` carries the original Detection so the drop-point geometry can run
+    on its native attribute object without a second, parallel representation.
+    """
+    rows: List[dict] = []
+    for det in dets or ():
+        label = getattr(det, "label", None)
+        if not isinstance(label, str):
+            continue
+        rows.append({
+            "label": label,
+            "conf": getattr(det, "conf", None),
+            "t": getattr(det, "ts", None),
+            "x": getattr(det, "x", None),
+            "y": getattr(det, "y", None),
+            "z": getattr(det, "z", None),
+            "height_m": getattr(det, "height_m", None),
+            "hue": getattr(det, "hue", None),
+            "color_name": getattr(det, "color_name", None),
+            "body_side": getattr(det, "body_side", None),
+            "_src": det,
+        })
+    return rows
