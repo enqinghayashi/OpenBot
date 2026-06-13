@@ -348,3 +348,14 @@ def place_target_from_row(
     return status, detail, [drop["x"], drop["y"], wrist_z]
 
 
+def fmt_num(value: Any, spec: str = "%.2f") -> str:
+    """Format a numeric cell, or ``'?'`` when it is absent/non-numeric.
+
+    A confidence the perception lane never sent must read as unknown, never as
+    ``0.00`` — a fabricated zero looks like a measured one.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "?"
+    return "?" if not math.isfinite(number) else spec % number
