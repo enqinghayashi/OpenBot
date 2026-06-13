@@ -263,3 +263,15 @@ def classify_refusal(label: str, result: dict, stale: bool) -> Tuple[str, str]:
 
 # ── target ──
 
+def _as_source(row: dict) -> Any:
+    """The attribute object ``_drop_point`` reads (Detection, or a shim).
+
+    ``_drop_point`` uses ``getattr``, so a plain dict would read as "no
+    coordinates" and refuse a perfectly good target.  The shim keeps the
+    module unit-testable with plain dicts without a second geometry path.
+    """
+    src = row.get("_src")
+    if src is not None:
+        return src
+    return types.SimpleNamespace(**{k: row.get(k)
+                                    for k in ("x", "y", "z", "height_m")})
