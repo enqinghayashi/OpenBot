@@ -96,3 +96,13 @@ _INSTANCE_LABEL_MODULES = ("skills.perception.instance_labels",   # repo layout
 _IMPL: Dict[str, Any] = {}
 
 
+def _load_instance_labels() -> Any:
+    """The shared label->instance resolver, from whichever layout is present."""
+    last_exc: Optional[Exception] = None
+    for name in _INSTANCE_LABEL_MODULES:
+        try:
+            return importlib.import_module(name)
+        except ImportError as exc:
+            last_exc = exc
+    raise ImportError("instance_labels not importable (tried %s): %s"
+                      % (", ".join(_INSTANCE_LABEL_MODULES), last_exc))
