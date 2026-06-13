@@ -203,3 +203,5 @@ def resolver_rows(dets: Any) -> List[dict]:
 def resolve(label: str, rows: List[dict], now: float) -> dict:
     """Resolve ``label`` against rows (the shipped pick-target grammar)."""
     return _impl("resolve_pick_target")(label, rows, now)
+
+
