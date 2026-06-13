@@ -277,3 +277,72 @@ def _as_source(row: dict) -> Any:
                                     for k in ("x", "y", "z", "height_m")})
 
 
+def place_target_from_row(
+        row: dict,
+        pc_rim: Optional[Callable[[dict], Optional[dict]]] = None,
+) -> Tuple[str, str, Optional[List[float]]]:
+    """(status, detail, ``[x, y, wrist_z]`` | None) for the resolved row.
+
+    The geometry itself is ``_drop_point`` — never re-derived here, so the
+    drop formula exists exactly once in the repo.  An inestimable height is a
+    WARNING, not a refusal (the caller asked to place on top of a target it
+    can see; the honest response is to release at the centroid + clearance and
+    say so), but an unusable POSITION is a refusal: without x/y/z there is no
+    target to place on at all.
+
+    ``pc_rim`` is the optional point-cloud rim hook (H-PT-1; default None).
+    The gateway passes a callable only when the rim fit is switched on.  It
+    is called with ``row`` once, and only AFTER the position check passed.  It
+    returns None or ``{"drop": {"x": .., "y": .., "z": ..}, ...}``; only
+    ``["drop"]["z"]`` is read, and only when it is a finite int/float (a bool,
+    a string, NaN or inf is rejected).  That z replaces the formula's drop z;
+    x and y stay the formula's.  A callable that raises counts as None.  With
+    the hook omitted, None, returning None, raising, or returning a rejected
+    shape, the returned 3-tuple (detail string included) is the one this
+    function returned before the hook existed.  When the rim z is applied the
+    detail ends with ``[pc rim z=... replaces formula z=...]``.
+    """
+    drop = _impl("_drop_point")(_as_source(row))
+    if drop is None:
+        return ("refuse",
+                "ERROR:/place_target: '%s' has no usable position "
+                "(x/y/z absent or non-finite)" % row.get("label"),
+                None)
+    rim_marker = ""
+    if pc_rim is not None:
+        try:
+            rim = pc_rim(row)
+            rim_drop = rim.get("drop") if isinstance(rim, dict) else None
+            rim_z = rim_drop.get("z") if isinstance(rim_drop, dict) else None
+            if (isinstance(rim_z, (int, float))
+                    and not isinstance(rim_z, bool)
+                    and math.isfinite(rim_z)):
+                rim_z = float(rim_z)
+            else:
+                rim_z = None
+        except Exception:  # hook raise = None, not fail
+            rim_z = None
+        if rim_z is not None:
+            rim_marker = ("  [pc rim z=%.3f replaces formula z=%.3f]"
+                          % (rim_z, drop["z"]))
+            drop = dict(drop, z=rim_z)
+    height = row.get("height_m")
+    lifted = False
+    try:
+        hf = float(height)
+        lifted = math.isfinite(hf) and hf > 0.0
+    except (TypeError, ValueError):
+        lifted = False
+    # drop['z'] = centroid z + lift + clearance, so subtracting the
+    # clearance gives the object top back without restating the formula.
+    top_z = drop["z"] - PLACE_CLEARANCE_M
+    wrist_z = drop["z"] + PLACE_WRIST_STANDOFF_M
+    detail = ("top_z=%.3f  wrist_z=%.3f (+%.3f standoff)"
+              % (top_z, wrist_z, PLACE_WRIST_STANDOFF_M))
+    status = "ok"
+    if not lifted:
+        status = "warn"
+        detail += ("  [height_m absent - lifting 0.00 (fallback z+%.2f)]"
+                   % PLACE_CLEARANCE_M)
+    detail += rim_marker
+    return status, detail, [drop["x"], drop["y"], wrist_z]
