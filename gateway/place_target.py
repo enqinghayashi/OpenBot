@@ -450,3 +450,11 @@ class PhaseLog:
     def total_s(self, now: float) -> float:
         return 0.0 if self._t0 is None else max(0.0, now - self._t0)
 
+    def finish(self, status: str, detail: str, now: float) -> float:
+        """Append the VERDICT row (elapsed = total) and return the total."""
+        total = self.total_s(now)
+        self.rows.append({"phase": "VERDICT", "status": status,
+                          "detail": detail, "elapsed_s": total})
+        self._t_last = now
+        return total
+
