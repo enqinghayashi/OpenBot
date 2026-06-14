@@ -207,3 +207,67 @@ def supported_kwargs(fn: Any, kwargs: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ============================================================ the client
+class _Slot(object):
+    """One waiter: its own Event plus the result that wakes it."""
+
+    __slots__ = ("event", "result")
+
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.result = None
+
+
+class PcClient(object):
+    """Publish a request to the consumer, wait (bounded) for its one result.
+
+    ``publish_arm(text)``  publishes one /pc_arm String (injected; may raise).
+    ``clock_wall()``       wall clock (injected; exposed as ``self.clock_wall``).
+    ``clock_mono()``       monotonic clock; the request deadline reads it.
+    ``writer_verb(line)``  the gateway's writer-socket call (``None`` = no
+                           pose source: :meth:`measured_pose` answers None).
+    ``pose_source()``      B8k: the latest MEASURED body pose from the odometry
+                           process (``/openbot/body_pose``), or None.  Used
+                           first when it is measured, complete and fresh
+                           (:data:`POSE_SOURCE_MAX_AGE_S`); the writer verb is
+                           the fallback.
+    ``decisive``           True only with ``pc_hold_check``: the lane may let
+                           a negative hold verdict downgrade its pick verdict.
+    ``log(message)``       optional ``callable(str)``; never allowed to raise
+                           into a caller.
+
+    ``t_reply_wall`` is set by the lane (the wall time of the engine reply) and
+    carried into a hold_check request.
+    """
+
+    def __init__(self, publish_arm: Callable[[str], Any],
+                 clock_wall: Callable[[], float],
+                 clock_mono: Callable[[], float],
+                 writer_verb: Optional[Callable[[str], str]] = None,
+                 decisive: bool = False,
+                 log: Optional[Callable[[str], Any]] = None,
+                 pose_source: Optional[Callable[[], Any]] = None) -> None:
+        if not callable(publish_arm):
+            raise TypeError("publish_arm must be callable")
+        self._publish_arm = publish_arm
+        self.clock_wall = clock_wall
+        self.clock_mono = clock_mono
+        self._writer_verb = writer_verb
+        self._pose_source = pose_source
+        self._log = log
+        self.decisive = bool(decisive)
+        self.t_reply_wall = None
+        self._lock = threading.Lock()
+        self._pending = {}          # rid -> _Slot
+        self._seq = 0
+        self._tag = uuid.uuid4().hex[:8]
+
+    # ------------------------------------------------------------ helpers
+    def _say(self, message: str) -> None:
+        log = self._log
+        if log is None:
+            return
+        try:
+            log(message)
+        except Exception:  # noqa: BLE001 - a log hook must never take out a caller
+            pass
+
