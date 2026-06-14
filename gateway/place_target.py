@@ -512,3 +512,5 @@ def render_table(log: PhaseLog) -> str:
         out.extend(block(name, status, chunks, elapsed))
     out.append(rule("└", "┴", "┘"))
     return "\n".join(out)
+
+
