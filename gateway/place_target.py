@@ -399,3 +399,22 @@ def verdict_row(verdict: Optional[str]) -> Tuple[str, str]:
     return "error", verdict
 
 
+def side_from_reply(reply: str) -> Optional[str]:
+    """The released side, read off the SHIPPED place reply annotation.
+
+    ``_do_place`` owns the held-side law and appends
+    ``; prev_is_open=<side>:...`` — the only place the gateway states which
+    hand it released.  DISPLAY-ONLY: an unreadable annotation leaves the side
+    unknown rather than guessing at one (re-deriving the law here would create
+    the second, divergent copy this module exists to avoid).
+    """
+    text = str(reply or "")
+    marker = "prev_is_open="
+    idx = text.find(marker)
+    if idx < 0:
+        return None
+    rest = text[idx + len(marker):]
+    for side in ("right", "left"):
+        if rest.startswith(side + ":"):
+            return side
+    return None
