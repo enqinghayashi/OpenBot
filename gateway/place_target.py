@@ -383,3 +383,17 @@ def classify_dispatch(reply: str, verdict: Optional[str]) -> Tuple[str, str]:
     return "ok", text
 
 
+def verdict_row(verdict: Optional[str]) -> Tuple[str, str]:
+    """(status, detail) for the VERDICT row.
+
+    Success is claimed ONLY on an explicit ``VERDICT:success`` from the
+    verifier.  A missing verdict is an ERROR, never a silent pass — an
+    absent verifier must not read as a good place.
+    """
+    if not verdict:
+        return "error", "no verdict (verifier did not run)"
+    if verdict.startswith("VERDICT:success"):
+        return "success", verdict
+    if verdict.startswith("VERDICT:refused"):
+        return "refuse", verdict
+    return "error", verdict
