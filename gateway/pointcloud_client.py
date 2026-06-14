@@ -103,3 +103,5 @@ def pose_check(pose: Any) -> Tuple[bool, str]:
         except (KeyError, TypeError, ValueError, OverflowError):
             return False, "pose_incomplete"
     return True, ""
+
+
