@@ -418,3 +418,7 @@ def side_from_reply(reply: str) -> Optional[str]:
         if rest.startswith(side + ":"):
             return side
     return None
+
+
+# ── phases ──
+
