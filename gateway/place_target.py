@@ -397,3 +397,5 @@ def verdict_row(verdict: Optional[str]) -> Tuple[str, str]:
     if verdict.startswith("VERDICT:refused"):
         return "refuse", verdict
     return "error", verdict
+
+
