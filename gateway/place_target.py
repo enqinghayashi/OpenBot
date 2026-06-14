@@ -463,3 +463,52 @@ class PhaseLog:
                 % (self.label, self.side or "?"))
 
 
+def render_table(log: PhaseLog) -> str:
+    """Render the phase table (box drawing, every column measured).
+
+    The ``detail`` cell is WORD-WRAPPED, never truncated.  A verifier verdict
+    is long, and a table that ran off the terminal would be as unreadable as
+    one that silently dropped the reason — wrapping keeps every character
+    visible at a readable width.
+    """
+    rows = []
+    for row in log.rows:
+        chunks = textwrap.wrap(str(row.get("detail", "")), DETAIL_WRAP) or [""]
+        rows.append((str(row.get("phase", "")), str(row.get("status", "")),
+                     chunks, "%.2f s" % float(row.get("elapsed_s") or 0.0)))
+
+    widths = [len(TABLE_HEADER[0]), len(TABLE_HEADER[1]), 0,
+              len(TABLE_HEADER[3])]
+    for name, status, chunks, elapsed in rows:
+        widths[0] = max(widths[0], len(name))
+        widths[1] = max(widths[1], len(status))
+        widths[3] = max(widths[3], len(elapsed))
+        for chunk in chunks:
+            widths[2] = max(widths[2], len(chunk))
+
+    def rule(left: str, mid: str, right: str) -> str:
+        return left + mid.join("─" * (w + 2) for w in widths) + right
+
+    def line(cell: List[str]) -> str:
+        parts = []
+        for i, text in enumerate(cell):
+            # elapsed right-aligned
+            body = text.rjust(widths[i]) if i == 3 else text.ljust(widths[i])
+            parts.append(" %s " % body)
+        return "│" + "│".join(parts) + "│"
+
+    def block(name: str, status: str, chunks: List[str],
+              elapsed: str) -> List[str]:
+        out = [line([name, status, chunks[0], elapsed])]
+        for chunk in chunks[1:]:
+            out.append(line(["", "", chunk, ""]))
+        return out
+
+    out = [log.header(), rule("┌", "┬", "┐"), line(list(TABLE_HEADER)),
+           rule("├", "┼", "┤")]
+    for i, (name, status, chunks, elapsed) in enumerate(rows):
+        if i == len(rows) - 1 and len(rows) > 1:
+            out.append(rule("├", "┼", "┤"))
+        out.extend(block(name, status, chunks, elapsed))
+    out.append(rule("└", "┴", "┘"))
+    return "\n".join(out)
