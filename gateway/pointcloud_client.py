@@ -123,3 +123,6 @@ def pose_equal(a: Any, b: Any) -> Tuple[bool, str]:
         if abs(float(a[k]) - float(b[k])) > POSE_ANG_TOL_RAD:
             return False, "pose_changed"
     return True, ""
+
+
+# ============================================================ replies (pure)
