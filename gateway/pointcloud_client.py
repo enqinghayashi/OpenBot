@@ -239,3 +239,26 @@ class PcClient(object):
     carried into a hold_check request.
     """
 
+    def __init__(self, publish_arm: Callable[[str], Any],
+                 clock_wall: Callable[[], float],
+                 clock_mono: Callable[[], float],
+                 writer_verb: Optional[Callable[[str], str]] = None,
+                 decisive: bool = False,
+                 log: Optional[Callable[[str], Any]] = None,
+                 pose_source: Optional[Callable[[], Any]] = None) -> None:
+        if not callable(publish_arm):
+            raise TypeError("publish_arm must be callable")
+        self._publish_arm = publish_arm
+        self.clock_wall = clock_wall
+        self.clock_mono = clock_mono
+        self._writer_verb = writer_verb
+        self._pose_source = pose_source
+        self._log = log
+        self.decisive = bool(decisive)
+        self.t_reply_wall = None
+        self._lock = threading.Lock()
+        self._pending = {}          # rid -> _Slot
+        self._seq = 0
+        self._tag = uuid.uuid4().hex[:8]
+
+    # ------------------------------------------------------------ helpers
