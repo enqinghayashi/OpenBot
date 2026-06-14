@@ -90,3 +90,16 @@ def _json_default(obj: Any) -> Any:
 
 
 # ============================================================ pose (pure)
+def pose_check(pose: Any) -> Tuple[bool, str]:
+    """Copy of ``pc_core.pose_check`` with ``POSE_REQUIRE_MEASURED`` True."""
+    if not isinstance(pose, dict):
+        return False, "no_pose"
+    if pose.get("src") != "measured":
+        return False, "pose_unmeasured"
+    for k in POSE_KEYS:
+        try:
+            if not math.isfinite(float(pose[k])):
+                return False, "pose_incomplete"
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return False, "pose_incomplete"
+    return True, ""
