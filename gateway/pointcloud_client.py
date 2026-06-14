@@ -123,3 +123,87 @@ def pose_equal(a: Any, b: Any) -> Tuple[bool, str]:
         if abs(float(a[k]) - float(b[k])) > POSE_ANG_TOL_RAD:
             return False, "pose_changed"
     return True, ""
+
+
+# ============================================================ replies (pure)
+def phase_of(reply: Any) -> str:
+    """The consumer's ``phase`` for an engine reply: tucked | cancelled | error.
+
+    ``tucked`` is claimed ONLY for a reply that starts with the word ``DONE``
+    and carries no cancel and no ``ERROR:`` token anywhere; every doubt reads
+    ``error`` (a false 'tucked' is the direction this must never err in).
+
+      * ``cancelled``: the reply starts with ``CANCELLED:`` or carries
+        ``cancelled_by_operator``.  The substring ``CANCELLED:`` ANYWHERE
+        counts too: the gateway has wrapped a cancelled engine reply as
+        ``DONE pick executed; ...; engine_reply=CANCELLED:<where>`` (brain/
+        verifier.py ``_task_was_cancelled``), a reply that LEADS with DONE.
+        The cancel check runs BEFORE the error check because a cancelled pick
+        reply leads with ``ERROR:cancelled_by_operator`` (gateway_node
+        ``_do_pick``).
+      * ``error``: the reply starts with ``ERROR``, carries an ``ERROR:``
+        token anywhere (the house rule of ``_shape_reply`` / the verifier's
+        ``_classify_reply``), is empty / not a string, or is anything else.
+    """
+    if not isinstance(reply, str):
+        return "error"
+    text = reply.strip()
+    if not text:
+        return "error"
+    if "CANCELLED:" in text or "cancelled_by_operator" in text:
+        return "cancelled"
+    if text.startswith("ERROR") or "ERROR:" in text:
+        return "error"
+    if _DONE_RE.match(text):
+        return "tucked"
+    return "error"
+
+
+def class_label(hint: Any) -> Optional[str]:
+    """The CLASS noun phrase the consumer can match, from a gateway-side label.
+
+    The consumer selects a row by ``pc_core.label_matches``: the LAST word of
+    the requested label must be one of the words of the row's class label
+    ('bottle', 'cell phone').  The brain's raw pick ``label`` is often the
+    scene-graph REF ('bottle_1', 'cell_phone_2': gateway_node G4 label-match
+    note, MEASURED run3/run4 voice_run.log), and a perception row may carry a
+    ``class#<n>`` rank suffix; neither matches a row word.  So a trailing
+    ``#<n>`` and a trailing ``_<n>`` are dropped and ``_`` is read as a space
+    (the same class-level reading ``gateway_node._b5_hint_class_keys`` applies
+    to the same hint); a plain class label passes through unchanged
+    (lower-cased).  ``None`` for anything that is not a non-empty string.
+    """
+    if not isinstance(hint, str):
+        return None
+    text = _RANK_SUFFIX_RE.sub("", hint.strip().lower())
+    text = _REF_SUFFIX_RE.sub("", text)
+    text = " ".join(text.replace("_", " ").split())
+    return text or None
+
+
+def supported_kwargs(fn: Any, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """The subset of ``kwargs`` that ``fn`` declares as parameters.
+
+    Everything when ``fn`` takes ``**kwargs``; NOTHING when its signature cannot
+    be read.  The gateway uses it to hand the optional point-cloud keywords
+    (``pc`` / ``pc_label`` to ``pick_sequence``, ``pc_rim`` to
+    ``place_target_from_row``) to a callee only when that callee DECLARES them:
+    ``gateway_node.py``, ``descent_lane.py`` and ``place_target.py`` are copied
+    to the robot one file at a time, so a switch turned on while one of them is
+    still the older file must degrade to the call that file always took, never
+    to a TypeError in the middle of a pick.  (The same reasoning as
+    ``gateway_node._lane_law``.)
+    """
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return {}
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return dict(kwargs)
+    keyword_kinds = (inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                     inspect.Parameter.KEYWORD_ONLY)
+    return dict((k, v) for k, v in kwargs.items()
+                if k in params and params[k].kind in keyword_kinds)
+
+
+# ============================================================ the client
