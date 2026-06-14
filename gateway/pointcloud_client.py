@@ -179,3 +179,5 @@ def class_label(hint: Any) -> Optional[str]:
     text = _REF_SUFFIX_RE.sub("", text)
     text = " ".join(text.replace("_", " ").split())
     return text or None
+
+
