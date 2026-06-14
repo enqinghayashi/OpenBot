@@ -271,3 +271,11 @@ class PcClient(object):
         except Exception:  # noqa: BLE001 - a log hook must never take out a caller
             pass
 
+    def new_rid(self, prefix: str) -> str:
+        """A unique, non-empty request id: ``<prefix>-<run tag>-<n>``."""
+        with self._lock:
+            self._seq += 1
+            seq = self._seq
+        head = str(prefix) if prefix else "pc"
+        return "%s-%s-%d" % (head, self._tag, seq)
+
