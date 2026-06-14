@@ -181,3 +181,26 @@ def class_label(hint: Any) -> Optional[str]:
     return text or None
 
 
+def supported_kwargs(fn: Any, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """The subset of ``kwargs`` that ``fn`` declares as parameters.
+
+    Everything when ``fn`` takes ``**kwargs``; NOTHING when its signature cannot
+    be read.  The gateway uses it to hand the optional point-cloud keywords
+    (``pc`` / ``pc_label`` to ``pick_sequence``, ``pc_rim`` to
+    ``place_target_from_row``) to a callee only when that callee DECLARES them:
+    ``gateway_node.py``, ``descent_lane.py`` and ``place_target.py`` are copied
+    to the robot one file at a time, so a switch turned on while one of them is
+    still the older file must degrade to the call that file always took, never
+    to a TypeError in the middle of a pick.  (The same reasoning as
+    ``gateway_node._lane_law``.)
+    """
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return {}
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return dict(kwargs)
+    keyword_kinds = (inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                     inspect.Parameter.KEYWORD_ONLY)
+    return dict((k, v) for k, v in kwargs.items()
+                if k in params and params[k].kind in keyword_kinds)
