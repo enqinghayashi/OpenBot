@@ -363,3 +363,21 @@ def fmt_num(value: Any, spec: str = "%.2f") -> str:
 
 # ── outcome ──
 
+def classify_dispatch(reply: str, verdict: Optional[str]) -> Tuple[str, str]:
+    """(status, detail) for the ``execute`` row, from the SHIPPED reply grammar.
+
+    Reuses the repo's own definitive rule rather than inventing one: any
+    embedded ``ERROR:`` anywhere in the reply is a failure (brain/verifier.py
+    ``_classify_reply``, mirrored by ``GatewayNode._shape_reply``).  The
+    unheld-place refusal is split out because it is a POLICY refusal (the
+    command was well-formed and the gateway declined on evidence), not a
+    broken engine — an operator reads those two very differently.
+    """
+    text = str(reply or "")
+    if verdict is not None and verdict.startswith("VERDICT:error"):
+        return "error", text
+    if text.startswith("ERROR:nothing verified held"):
+        return "refuse", text
+    if text.startswith("ERROR") or "ERROR:" in text:
+        return "error", text
+    return "ok", text
