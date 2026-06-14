@@ -437,3 +437,7 @@ class PhaseLog:
         self._t0: Optional[float] = None
         self._t_last: Optional[float] = None
 
+    def start(self, now: float) -> None:
+        self._t0 = now
+        self._t_last = now
+
