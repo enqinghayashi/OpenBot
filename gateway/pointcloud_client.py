@@ -207,3 +207,8 @@ def supported_kwargs(fn: Any, kwargs: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ============================================================ the client
+class _Slot(object):
+    """One waiter: its own Event plus the result that wakes it."""
+
+    __slots__ = ("event", "result")
+
