@@ -217,3 +217,25 @@ class _Slot(object):
         self.result = None
 
 
+class PcClient(object):
+    """Publish a request to the consumer, wait (bounded) for its one result.
+
+    ``publish_arm(text)``  publishes one /pc_arm String (injected; may raise).
+    ``clock_wall()``       wall clock (injected; exposed as ``self.clock_wall``).
+    ``clock_mono()``       monotonic clock; the request deadline reads it.
+    ``writer_verb(line)``  the gateway's writer-socket call (``None`` = no
+                           pose source: :meth:`measured_pose` answers None).
+    ``pose_source()``      B8k: the latest MEASURED body pose from the odometry
+                           process (``/openbot/body_pose``), or None.  Used
+                           first when it is measured, complete and fresh
+                           (:data:`POSE_SOURCE_MAX_AGE_S`); the writer verb is
+                           the fallback.
+    ``decisive``           True only with ``pc_hold_check``: the lane may let
+                           a negative hold verdict downgrade its pick verdict.
+    ``log(message)``       optional ``callable(str)``; never allowed to raise
+                           into a caller.
+
+    ``t_reply_wall`` is set by the lane (the wall time of the engine reply) and
+    carried into a hold_check request.
+    """
+
