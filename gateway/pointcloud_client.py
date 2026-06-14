@@ -279,3 +279,8 @@ class PcClient(object):
         head = str(prefix) if prefix else "pc"
         return "%s-%s-%d" % (head, self._tag, seq)
 
+    def pending_count(self) -> int:
+        with self._lock:
+            return len(self._pending)
+
+    # ------------------------------------------------------------ request
