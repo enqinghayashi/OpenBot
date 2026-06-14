@@ -81,3 +81,9 @@ _REF_SUFFIX_RE = re.compile(r"_\d+$")
 _RANK_SUFFIX_RE = re.compile(r"#\d+$")
 
 
+def _json_default(obj: Any) -> Any:
+    """numpy scalars / arrays -> plain python (stdlib only: duck-typed)."""
+    tolist = getattr(obj, "tolist", None)
+    if callable(tolist):
+        return tolist()
+    raise TypeError("not JSON serialisable: %s" % type(obj).__name__)
