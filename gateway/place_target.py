@@ -422,3 +422,11 @@ def side_from_reply(reply: str) -> Optional[str]:
 
 # ── phases ──
 
+class PhaseLog:
+    """Ordered phase rows whose elapsed times are MEASURED, never invented.
+
+    Each row's ``elapsed_s`` is the wall time since the previous row was
+    added — the only timing the gateway can actually observe.  The VERDICT
+    row carries the TOTAL, so the summary reads as the whole run.
+    """
+
