@@ -458,3 +458,6 @@ class PhaseLog:
         self._t_last = now
         return total
 
+    def header(self) -> str:
+        return ("PLACE  target=%s  side=%s"
+                % (self.label, self.side or "?"))
