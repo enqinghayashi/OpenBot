@@ -514,3 +514,20 @@ def render_table(log: PhaseLog) -> str:
     return "\n".join(out)
 
 
+def status_message(log: PhaseLog, phase: str, status: str, detail: str,
+                   elapsed_s: float, verdict: Optional[str] = None,
+                   table: Optional[str] = None) -> str:
+    """One ``/place_status`` payload (JSON object, one per phase)."""
+    payload: Dict[str, Any] = {
+        "target": log.label,
+        "side": log.side,
+        "phase": phase,
+        "status": status,
+        "detail": detail,
+        "elapsed_s": round(float(elapsed_s), 3),
+    }
+    if verdict is not None:
+        payload["verdict"] = verdict
+    if table is not None:
+        payload["table"] = table
+    return json.dumps(payload)
