@@ -461,3 +461,5 @@ class PhaseLog:
     def header(self) -> str:
         return ("PLACE  target=%s  side=%s"
                 % (self.label, self.side or "?"))
+
+
