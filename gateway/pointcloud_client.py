@@ -126,3 +126,34 @@ def pose_equal(a: Any, b: Any) -> Tuple[bool, str]:
 
 
 # ============================================================ replies (pure)
+def phase_of(reply: Any) -> str:
+    """The consumer's ``phase`` for an engine reply: tucked | cancelled | error.
+
+    ``tucked`` is claimed ONLY for a reply that starts with the word ``DONE``
+    and carries no cancel and no ``ERROR:`` token anywhere; every doubt reads
+    ``error`` (a false 'tucked' is the direction this must never err in).
+
+      * ``cancelled``: the reply starts with ``CANCELLED:`` or carries
+        ``cancelled_by_operator``.  The substring ``CANCELLED:`` ANYWHERE
+        counts too: the gateway has wrapped a cancelled engine reply as
+        ``DONE pick executed; ...; engine_reply=CANCELLED:<where>`` (brain/
+        verifier.py ``_task_was_cancelled``), a reply that LEADS with DONE.
+        The cancel check runs BEFORE the error check because a cancelled pick
+        reply leads with ``ERROR:cancelled_by_operator`` (gateway_node
+        ``_do_pick``).
+      * ``error``: the reply starts with ``ERROR``, carries an ``ERROR:``
+        token anywhere (the house rule of ``_shape_reply`` / the verifier's
+        ``_classify_reply``), is empty / not a string, or is anything else.
+    """
+    if not isinstance(reply, str):
+        return "error"
+    text = reply.strip()
+    if not text:
+        return "error"
+    if "CANCELLED:" in text or "cancelled_by_operator" in text:
+        return "cancelled"
+    if text.startswith("ERROR") or "ERROR:" in text:
+        return "error"
+    if _DONE_RE.match(text):
+        return "tucked"
+    return "error"
