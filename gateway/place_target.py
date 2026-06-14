@@ -430,3 +430,10 @@ class PhaseLog:
     row carries the TOTAL, so the summary reads as the whole run.
     """
 
+    def __init__(self, label: str):
+        self.label = label
+        self.side: Optional[str] = None
+        self.rows: List[dict] = []
+        self._t0: Optional[float] = None
+        self._t_last: Optional[float] = None
+
