@@ -262,3 +262,12 @@ class PcClient(object):
         self._tag = uuid.uuid4().hex[:8]
 
     # ------------------------------------------------------------ helpers
+    def _say(self, message: str) -> None:
+        log = self._log
+        if log is None:
+            return
+        try:
+            log(message)
+        except Exception:  # noqa: BLE001 - a log hook must never take out a caller
+            pass
+
