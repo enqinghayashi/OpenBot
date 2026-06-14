@@ -447,3 +447,6 @@ class PhaseLog:
         self.rows.append({"phase": phase, "status": status,
                           "detail": detail, "elapsed_s": elapsed})
 
+    def total_s(self, now: float) -> float:
+        return 0.0 if self._t0 is None else max(0.0, now - self._t0)
+
