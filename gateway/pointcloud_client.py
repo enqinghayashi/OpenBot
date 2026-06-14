@@ -212,3 +212,6 @@ class _Slot(object):
 
     __slots__ = ("event", "result")
 
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.result = None
