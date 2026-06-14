@@ -87,3 +87,6 @@ def _json_default(obj: Any) -> Any:
     if callable(tolist):
         return tolist()
     raise TypeError("not JSON serialisable: %s" % type(obj).__name__)
+
+
+# ============================================================ pose (pure)
