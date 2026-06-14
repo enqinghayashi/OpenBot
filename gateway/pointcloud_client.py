@@ -159,3 +159,23 @@ def phase_of(reply: Any) -> str:
     return "error"
 
 
+def class_label(hint: Any) -> Optional[str]:
+    """The CLASS noun phrase the consumer can match, from a gateway-side label.
+
+    The consumer selects a row by ``pc_core.label_matches``: the LAST word of
+    the requested label must be one of the words of the row's class label
+    ('bottle', 'cell phone').  The brain's raw pick ``label`` is often the
+    scene-graph REF ('bottle_1', 'cell_phone_2': gateway_node G4 label-match
+    note, MEASURED run3/run4 voice_run.log), and a perception row may carry a
+    ``class#<n>`` rank suffix; neither matches a row word.  So a trailing
+    ``#<n>`` and a trailing ``_<n>`` are dropped and ``_`` is read as a space
+    (the same class-level reading ``gateway_node._b5_hint_class_keys`` applies
+    to the same hint); a plain class label passes through unchanged
+    (lower-cased).  ``None`` for anything that is not a non-empty string.
+    """
+    if not isinstance(hint, str):
+        return None
+    text = _RANK_SUFFIX_RE.sub("", hint.strip().lower())
+    text = _REF_SUFFIX_RE.sub("", text)
+    text = " ".join(text.replace("_", " ").split())
+    return text or None
