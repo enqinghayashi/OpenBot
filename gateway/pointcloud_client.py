@@ -105,3 +105,21 @@ def pose_check(pose: Any) -> Tuple[bool, str]:
     return True, ""
 
 
+def pose_equal(a: Any, b: Any) -> Tuple[bool, str]:
+    """Same torso frame?  Copy of ``pc_core.pose_equal`` (default tolerances).
+
+    Both poses must be valid MEASURED vectors.  Returns ``(True, "")`` or
+    ``(False, reason)`` with reason one of ``no_pose``, ``pose_unmeasured``,
+    ``pose_incomplete``, ``pose_changed``.  The reason of ``a`` wins over the
+    reason of ``b`` (the same order as the core).
+    """
+    for p in (a, b):
+        ok, why = pose_check(p)
+        if not ok:
+            return False, why
+    if abs(float(a["torso_z"]) - float(b["torso_z"])) > POSE_Z_TOL_M:
+        return False, "pose_changed"
+    for k in ("pitch", "roll", "waist_pitch"):
+        if abs(float(a[k]) - float(b[k])) > POSE_ANG_TOL_RAD:
+            return False, "pose_changed"
+    return True, ""
