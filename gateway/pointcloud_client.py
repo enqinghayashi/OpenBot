@@ -462,3 +462,18 @@ def _is_finite_number(value: Any) -> bool:
         return False
 
 
+def _row_stamp(row: Dict[str, Any]) -> Optional[float]:
+    """The receive stamp of a resolver row, finite or None.
+
+    ``t`` is the key ``place_target.resolver_rows`` stamps from
+    ``Detection.ts``; ``_t`` and ``ts`` are the other two spellings in the repo
+    (``instance_labels._det_t`` / the Detection attribute).
+    """
+    for key in ("t", "_t", "ts"):
+        try:
+            value = float(row.get(key))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value):
+            return value
+    return None
