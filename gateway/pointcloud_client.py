@@ -479,3 +479,9 @@ def _row_stamp(row: Dict[str, Any]) -> Optional[float]:
     return None
 
 
+def _field(evidence: Dict[str, Any], result: Dict[str, Any], key: str) -> Any:
+    """``key`` from the envelope's ``evidence`` (where pc_core.fit_bowl puts
+    drop / delta_z / band / band_formula), else from the result itself."""
+    if key in evidence:
+        return evidence[key]
+    return result.get(key)
