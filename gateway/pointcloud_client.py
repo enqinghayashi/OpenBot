@@ -284,3 +284,73 @@ class PcClient(object):
             return len(self._pending)
 
     # ------------------------------------------------------------ request
+    def request(self, req: Dict[str, Any], deadline_s: float) -> Dict[str, Any]:
+        """Publish ``req`` and block THIS thread for its result, or the deadline.
+
+        Adds ``rid`` when missing.  The request goes out as given, except that
+        a string ``label`` is put through :func:`class_label` first (the wire
+        adapter: the consumer matches class nouns, the gateway holds the brain's
+        refs - 'bottle_1' goes out as 'bottle'; a plain class label is
+        unchanged, and the caller's dict is never modified).  The pending entry
+        is registered BEFORE the publish (a result that arrives synchronously
+        must find it) and removed on EVERY path.  Returns the consumer's
+        envelope dict, or ``{"status": "UNKNOWN", "reason": "deadline", "rid":
+        <rid>}`` when no matching result arrived in ``deadline_s`` seconds of
+        the monotonic clock (an extra real-time cap stops a frozen injected
+        clock from blocking forever), or ``{"status": "UNKNOWN", "reason":
+        "client_error: <Type>: <msg>"}`` (plus ``rid`` once known) when
+        anything inside raised.  NEVER raises.
+        """
+        rid = None
+        slot = None
+        try:
+            if not isinstance(req, dict):
+                raise TypeError("request must be a dict, got %s" % type(req).__name__)
+            wait_s = float(deadline_s)
+            if not math.isfinite(wait_s):
+                raise ValueError("deadline_s must be finite, got %r" % (deadline_s,))
+            wait_s = max(0.0, wait_s)
+            body = dict(req)
+            label = body.get("label")
+            if isinstance(label, str):
+                wire_label = class_label(label)
+                if wire_label is not None:
+                    body["label"] = wire_label
+            rid = body.get("rid")
+            if not isinstance(rid, str) or not rid:
+                rid = self.new_rid(str(body.get("task") or "pc"))
+                body["rid"] = rid
+            slot = _Slot()
+            with self._lock:
+                if rid in self._pending:
+                    slot = None         # not ours: finally mustn't drop
+                    raise ValueError("a request with rid %r is already pending" % rid)
+                self._pending[rid] = slot
+            self._publish_arm(json.dumps(body, default=_json_default))
+            t_end = self.clock_mono() + wait_s
+            real_end = time.monotonic() + wait_s
+            while not slot.event.is_set():
+                left = min(t_end - self.clock_mono(), real_end - time.monotonic())
+                if left <= 0.0:
+                    break
+                slot.event.wait(min(left, _WAIT_SLICE_S))
+            with self._lock:
+                result = slot.result
+            if result is not None:
+                return result
+            self._say("request rid=%s task=%s: no result in %.2fs (deadline)"
+                      % (rid, body.get("task"), wait_s))
+            return {"status": "UNKNOWN", "reason": "deadline", "rid": rid}
+        except Exception as exc:  # noqa: BLE001 - request NEVER raises, no matter what
+            self._say("request rid=%s failed: %s: %s" % (rid, type(exc).__name__, exc))
+            out = {"status": "UNKNOWN",
+                   "reason": "client_error: %s: %s" % (type(exc).__name__, exc)}
+            if isinstance(rid, str) and rid:
+                out["rid"] = rid
+            return out
+        finally:
+            if slot is not None and rid is not None:
+                with self._lock:
+                    if self._pending.get(rid) is slot:
+                        del self._pending[rid]
+
