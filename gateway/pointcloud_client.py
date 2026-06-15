@@ -443,3 +443,7 @@ class PcClient(object):
 
 
 # ============================================================ rim policy
+def _fmt(value: Any) -> str:
+    if isinstance(value, float):
+        return "%.4f" % value
+    return str(value)
