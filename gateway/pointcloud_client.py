@@ -460,3 +460,5 @@ def _is_finite_number(value: Any) -> bool:
         return math.isfinite(value)
     except OverflowError:       # too big for a float
         return False
+
+
