@@ -70,3 +70,53 @@ class StrictHolds(object):
         with self._lock:
             return self._holds.pop(hid, None) is not None
 
+    def close_all(self):
+        """Close every hold; returns how many were open."""
+        with self._lock:
+            n = len(self._holds)
+            self._holds.clear()
+        return n
+
+    def mark_done(self, hid):
+        """navigate: the verb returned; the hold now ends with the walk."""
+        with self._lock:
+            h = self._holds.get(hid)
+            if h is None:
+                return False
+            h['done'] = True
+            return True
+
+    def expire(self, walk_active):
+        """Close the holds past their cap, and the done navigate holds once
+        the walk is inactive.  Returns [(hid, owner, why)]."""
+        now = self._clock()
+        out = []
+        with self._lock:
+            for hid in sorted(self._holds):
+                h = self._holds[hid]
+                if now >= h['deadline']:
+                    out.append((hid, h['owner'], 'cap'))
+                elif h['done'] and not walk_active:
+                    out.append((hid, h['owner'], 'walk_inactive'))
+            for hid, _o, _w in out:
+                del self._holds[hid]
+        return out
+
+    def labels(self):
+        """The union of the open holds' labels (oldest hold first) plus
+        KEEP_LABELS, at most MAX_LABELS; () when no hold is open."""
+        with self._lock:
+            out = []
+            for hid in sorted(self._holds):
+                for lab in self._holds[hid]['labels']:
+                    if lab not in out:
+                        out.append(lab)
+        if not out:
+            return ()
+        keep = [k for k in KEEP_LABELS if k not in out]
+        out = out[:MAX_LABELS - len(keep)] + keep
+        return tuple(out)
+
+    def __len__(self):
+        with self._lock:
+            return len(self._holds)
