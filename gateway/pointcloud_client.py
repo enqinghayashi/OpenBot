@@ -377,3 +377,13 @@ class PcClient(object):
         except Exception:  # noqa: BLE001 - a result handler must never raise into rclpy
             return
 
+    def warm(self, ttl_s: float) -> None:
+        """Fire-and-forget pre-subscribe of the consumer (it answers nothing)."""
+        try:
+            self._publish_arm(json.dumps(
+                {"task": "warm", "rid": self.new_rid("warm"), "ttl_s": ttl_s},
+                default=_json_default))
+        except Exception as exc:  # noqa: BLE001 - warm doesn't raise either
+            self._say("warm failed: %s: %s" % (type(exc).__name__, exc))
+
+    # ------------------------------------------------------------ pose
