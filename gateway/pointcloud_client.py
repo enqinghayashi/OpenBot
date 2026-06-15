@@ -377,3 +377,86 @@ class PcClient(object):
         except Exception:  # noqa: BLE001 - a result handler must never raise into rclpy
             return
 
+    def warm(self, ttl_s: float) -> None:
+        """Fire-and-forget pre-subscribe of the consumer (it answers nothing)."""
+        try:
+            self._publish_arm(json.dumps(
+                {"task": "warm", "rid": self.new_rid("warm"), "ttl_s": ttl_s},
+                default=_json_default))
+        except Exception as exc:  # noqa: BLE001 - warm doesn't raise either
+            self._say("warm failed: %s: %s" % (type(exc).__name__, exc))
+
+    # ------------------------------------------------------------ pose
+    def _source_pose(self) -> Optional[Dict[str, Any]]:
+        """B8k: the odometry body pose when it is usable, else None.
+
+        Usable = a dict that passes :func:`pose_check` (src "measured", the
+        four POSE_KEYS finite) and carries a finite ``t`` no older than
+        :data:`POSE_SOURCE_MAX_AGE_S` and not ahead of the wall clock by more
+        than :data:`POSE_SOURCE_FUTURE_S`.  A copy is returned (the caller
+        may keep it).  Never raises."""
+        src = self._pose_source
+        if src is None:
+            return None
+        try:
+            pose = src()
+            if not isinstance(pose, dict) or not pose_check(pose)[0]:
+                return None
+            t = float(pose.get("t"))
+            age = float(self.clock_wall()) - t
+            if not math.isfinite(age) or age > POSE_SOURCE_MAX_AGE_S \
+                    or age < -POSE_SOURCE_FUTURE_S:
+                return None
+            return dict(pose)
+        except Exception:  # noqa: BLE001 - an unreadable pose counts as no pose
+            return None
+
+    def measured_pose(self) -> Optional[Dict[str, Any]]:
+        """The odometry body pose (B8k) when usable, else ONE ``pose`` verb on
+        the writer socket, else None.
+
+        ``None`` when there is no writer verb, the call raised, the reply is
+        not ONE JSON object, or the object does not carry ``src == "measured"``
+        (an ``ERROR:`` reply from a writer without H-WR-1 is the common case).
+        Blocks no longer than the writer verb call itself.  Never raises.
+        """
+        pose = self._source_pose()
+        if pose is not None:
+            return pose
+        verb = self._writer_verb
+        if verb is None:
+            return None
+        try:
+            line = verb("pose")
+            if not isinstance(line, str):
+                return None
+            pose = json.loads(line.strip())
+            if isinstance(pose, dict) and pose.get("src") == "measured":
+                return pose
+            return None
+        except Exception:  # noqa: BLE001 - if the pose won't read, it's no pose
+            return None
+
+    #: helpers exposed on the client
+    phase_of = staticmethod(phase_of)
+    pose_equal = staticmethod(pose_equal)
+
+
+# ============================================================ rim policy
+def _fmt(value: Any) -> str:
+    if isinstance(value, float):
+        return "%.4f" % value
+    return str(value)
+
+
+def _is_finite_number(value: Any) -> bool:
+    """A finite int / float, by the SAME predicate ``place_target_from_row``
+    applies to the rim z (an int / float that is not a bool and is finite).  A
+    z this client let through but that gate refused would fall back to the
+    formula WITHOUT a log line, so the two must not differ."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:       # too big for a float
+        return False
