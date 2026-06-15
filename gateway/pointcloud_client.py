@@ -354,3 +354,26 @@ class PcClient(object):
                     if self._pending.get(rid) is slot:
                         del self._pending[rid]
 
+    def on_result(self, text: Any) -> None:
+        """The /pc_result subscription callback (ROS thread).  Never raises.
+
+        Malformed JSON, a non-object value, a missing / non-string rid and a
+        rid nobody is waiting for are all ignored.  The FIRST result for a
+        pending rid wins; it wakes that waiter only.
+        """
+        try:
+            res = json.loads(text)
+            if not isinstance(res, dict):
+                return
+            rid = res.get("rid")
+            if not isinstance(rid, str) or not rid:
+                return
+            with self._lock:
+                slot = self._pending.get(rid)
+                if slot is None or slot.result is not None:
+                    return
+                slot.result = res
+                slot.event.set()
+        except Exception:  # noqa: BLE001 - a result handler must never raise into rclpy
+            return
+
