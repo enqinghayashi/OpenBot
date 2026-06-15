@@ -460,3 +460,142 @@ def _is_finite_number(value: Any) -> bool:
         return math.isfinite(value)
     except OverflowError:       # too big for a float
         return False
+
+
+def _row_stamp(row: Dict[str, Any]) -> Optional[float]:
+    """The receive stamp of a resolver row, finite or None.
+
+    ``t`` is the key ``place_target.resolver_rows`` stamps from
+    ``Detection.ts``; ``_t`` and ``ts`` are the other two spellings in the repo
+    (``instance_labels._det_t`` / the Detection attribute).
+    """
+    for key in ("t", "_t", "ts"):
+        try:
+            value = float(row.get(key))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value):
+            return value
+    return None
+
+
+def _field(evidence: Dict[str, Any], result: Dict[str, Any], key: str) -> Any:
+    """``key`` from the envelope's ``evidence`` (where pc_core.fit_bowl puts
+    drop / delta_z / band / band_formula), else from the result itself."""
+    if key in evidence:
+        return evidence[key]
+    return result.get(key)
+
+
+def _pose_ok(answer: Any) -> bool:
+    """A ``(bool, reason)`` pose_equal answer, strictly: the tuple itself is
+    always truthy, so only its first element may decide."""
+    if isinstance(answer, (tuple, list)):
+        answer = answer[0] if answer else False
+    return answer is True
+
+
+def rim_for(pc: Any, row: Dict[str, Any], apply_rim: bool,
+            now_wall: Callable[[], float],
+            log: Optional[Callable[[str], Any]] = None,
+            deadline_s: float = PLACE_RIM_DEADLINE_S,
+            ttl_s: float = PLACE_RIM_TTL_S,
+            max_row_age_s: float = PLACE_RIM_ROW_MAX_AGE_S) -> Optional[Dict[str, Any]]:
+    """H-PT-1: the point-cloud rim drop for a resolved place-target row, or None.
+
+    Sends ONE ``place_rim`` request (label, ref = the row's x/y, the pose now,
+    a short ttl) and logs ONE line::
+
+        pc place_rim <verdict> <reason> delta_z=<..> band=<..> degraded=<..>
+            applied=<0|1> why=<token>
+
+    Returns ``{"drop": {...}, "delta_z": .., "band": .., "band_formula": ..}``
+    ONLY when ALL of these hold; every other path (shadow mode, a deadline, an
+    UNKNOWN / ERROR status, a verdict other than RIM_FIT, a pose that changed
+    between the request and now, a stale row, a malformed drop, an exception)
+    returns None, and None means the caller keeps today's formula byte for
+    byte:
+
+      * ``apply_rim`` is True (``pc_place_rim``; False is SHADOW: log only);
+      * ``status == "OK"`` and ``verdict == "RIM_FIT"``;
+      * ``pc.pose_equal(result["pose"], <pose measured again now>)`` says True
+        (the torso frame is not world-fixed: a rim z is meaningful only in the
+        frame it was measured in);
+      * the row's label stamp (``t`` / ``_t`` / ``ts``) is at most
+        ``max_row_age_s`` old when the REQUEST is built.  The age is read there
+        and not after the wait on purpose: the wait alone takes about a
+        second (3 frames at <= 5 Hz), so an age read after it would fail a
+        1.0 s bound on most healthy fits.  What can change DURING the wait is
+        the body (covered by the pose-equality gate) and the bowl (covered by
+        the consumer's own centre gate against the row's x/y);
+      * ``drop`` carries a finite numeric ``z`` (an int / float that is not a bool).
+
+    The ``z`` in the returned drop is ALWAYS a finite ``float``: the caller
+    (``place_target_from_row``) accepts only a finite int / float and falls back
+    to the formula silently on anything else, so this function refuses (None,
+    with a ``why=bad_drop`` log line) rather than hand it a value it would drop.
+
+    Never raises.
+    """
+    def say(message: str) -> None:
+        if log is None:
+            return
+        try:
+            log(message)
+        except Exception:  # noqa: BLE001 - a logging hook can't be allowed to kill us
+            pass
+
+    try:
+        rid = None
+        try:
+            rid = pc.new_rid("pr")
+        except Exception:  # noqa: BLE001 - request() fills in a rid when it's missing
+            rid = None
+        ref_x, ref_y = float(row["x"]), float(row["y"])
+        if not (math.isfinite(ref_x) and math.isfinite(ref_y)):
+            raise ValueError("the row has no finite x/y to use as the ref")
+        req = {"task": "place_rim", "label": row.get("label"),
+               "ref": [ref_x, ref_y],
+               "pose": pc.measured_pose(), "ttl_s": ttl_s}
+        if rid:
+            req["rid"] = rid
+        stamp = _row_stamp(row)
+        row_age = None if stamp is None else float(now_wall()) - stamp
+        res = pc.request(req, deadline_s)
+        if not isinstance(res, dict):
+            say("pc place_rim UNKNOWN non_dict_result delta_z=None band=None "
+                "degraded=None applied=0 why=bad_result")
+            return None
+        ev = res.get("evidence") if isinstance(res.get("evidence"), dict) else {}
+        head = ("pc place_rim %s %s delta_z=%s band=%s degraded=%s"
+                % (res.get("verdict") or res.get("status"), res.get("reason"),
+                   _fmt(_field(ev, res, "delta_z")), _field(ev, res, "band"),
+                   res.get("degraded")))
+
+        drop = _field(ev, res, "drop")
+        why = None
+        if res.get("status") != "OK":
+            why = "status_%s" % res.get("status")
+        elif res.get("verdict") != "RIM_FIT":
+            why = "verdict_%s" % res.get("verdict")
+        elif apply_rim is not True:
+            why = "shadow"
+        elif not _pose_ok(pc.pose_equal(res.get("pose"), pc.measured_pose())):
+            why = "pose_changed"
+        elif row_age is None or not (-_FUTURE_STAMP_SLACK_S <= row_age <= max_row_age_s):
+            why = "stale_row"
+        elif not (isinstance(drop, dict) and _is_finite_number(drop.get("z"))):
+            why = "bad_drop"
+        if why is not None:
+            say("%s applied=0 why=%s" % (head, why))
+            return None
+        say("%s applied=1 why=ok" % head)
+        out_drop = dict(drop)
+        out_drop["z"] = float(drop["z"])     # finite float, gated above
+        return {"drop": out_drop, "delta_z": _field(ev, res, "delta_z"),
+                "band": _field(ev, res, "band"),
+                "band_formula": _field(ev, res, "band_formula")}
+    except Exception as exc:  # noqa: BLE001 - the rim hook never raises, full stop
+        say("pc place_rim failed: %s: %s applied=0 why=exception"
+            % (type(exc).__name__, exc))
+        return None
