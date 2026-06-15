@@ -120,3 +120,117 @@ class StrictHolds(object):
     def __len__(self):
         with self._lock:
             return len(self._holds)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# The CONTAINER LOCK plus the CREEP plan (pure, stdlib, py3.8).
+#
+# MEASURED (gateway.log:338-350, yolo.log:14710-14773): navigate('bin')
+# hit REACHED at 12:35:44.66 on track iid 158; the full vocabulary came
+# back (RESTORED 44.80) and the SAME track got re-labelled 'backpack'
+# (conf .73) at 46.05; the place hold {bin, person} at 46.39 then dropped
+# it (dropped=8: tracks drop when their label leaves the active set),
+# nothing scored >= .35 (the new-track floor), so it sat silent 3.1 s and
+# the place refused NOT_DETECTED -- while the tub never moved (x .026
+# y .578 z -.427, depth.log:22434).  So: keep the NAVIGATED container by
+# identity.  The walk's REACHED arms it on the row the walk stopped at;
+# packets follow that row by instance id ACROSS label changes (the
+# tracker associates class-agnostically), or re-acquire by geometry once
+# the id dies; only the creep may move it.
+# ════════════════════════════════════════════════════════════════════════════
+LOCK_ENV = 'OPENBOT_CONTAINER_LOCK'   # '0' = no lock
+CREEP_ENV = 'OPENBOT_CREEP'           # '0' = no creep
+CREEP_EDGE_ENV = 'OPENBOT_CREEP_EDGE_M'
+#: what we place INTO.  MIRROR of brain/agent/tools.py CONTAINER_CLASSES,
+#: kept in sync by tests/integration/gateway/test_gateway_container_lock.py
+CONTAINER_CLASSES = frozenset((
+    'bowl', 'bin', 'box', 'basket', 'bucket', 'tray', 'pot', 'pan',
+    'lunchbox', 'toolbox', 'backpack', 'handbag', 'suitcase'))
+LOCK_MAX_AGE_S = 300.0       # 120 s ran out mid-talk; the scene check is the row itself
+LOCK_FOLLOW_JUMP_M = 0.15    # planar jump = other object
+LOCK_FOLLOW_DZ_M = 0.20      # ... or z
+LOCK_REACQ_M = 0.10          # re-acquire once the id dies
+LOCK_REACQ_DZ_M = 0.12       # ... z too
+LOCK_ARM_EV_M = 0.08         # no-label-row gate
+LOCK_HIST_N = 20             # ~2 s at 10 Hz
+LOCK_HALF_MIN_M = 0.06
+LOCK_HALF_MAX_M = 0.35
+LOCK_HALF_DEFAULT_M = 0.10   # no extents
+LOCK_CUT_FRAC = 0.6          # under this = cut
+#: bottom image edge (MEASURED mount, W/lab/RECON_FULL_20261008.md:541): a
+#: point at torso height z only shows up at planar distance >= vis_edge(z).
+VIS_A, VIS_B, VIS_C = 0.3737, 0.46268, 0.0476
+VIS_MARGIN_M = 0.02          # a near rim this far above the cut still counts
+# ── creep (the gateway 'creep' verb; H constants unless tagged) ──
+CREEP_VX = 0.20              # m/s: walk_node VX_MIN 0.20 (gait floor), G17a 0.22
+CREEP_PULSE_S = 0.5          # writer expires it
+CREEP_SETTLE_S = 0.6         # gait settles + fresh packet (p95 0.25 s)
+CREEP_P_NOM_M = 0.05         # sim 0.047-0.053 m @ 0.20 x 0.5 s
+CREEP_P_HI_M = 0.08          # coast included; planning uses this
+CREEP_P_LO_M = 0.02          # under this = no progress
+CREEP_EDGE_DEFAULT_M = 0.25  # operator 2026-10-10: "creep ... to near edge 0.25"
+CREEP_EDGE_LO_M = 0.20
+CREEP_EDGE_HI_M = 0.40
+CREEP_EDGE_MIN_M = 0.20      # hard worst case: toe +0.186 m + 1.4 cm
+CREEP_MAX_PULSES = 5         # per creep, even after a re-plan
+CREEP_START_MAX_EDGE_M = 0.60  # farther = navigate first
+CREEP_FLOOR_BOT_Z = -0.55    # below = on floor
+CREEP_TABLE_MAX_M = 0.15     # container on a support: max travel, its
+                             # front edge isn't observed (H)
+CREEP_BUDGET_S = 9.0         # loop + FINAL_SETTLE + place <= 60 s bound
+CREEP_FINAL_SETTLE_S = 1.0   # after 'cmd_set off', before hold_rc (zeroes walking)
+CREEP_TICK_S = 0.1
+CREEP_OMEGA_MAX = 0.15       # rad/s clamp
+CREEP_TOL_RAD = 0.09         # = ALIGN_TOL_RAD
+CREEP_K_THETA = 1.5          # = K_THETA
+CREEP_OMEGA_SIGN = -1.0      # +x = right
+CREEP_PERSON_STOP_M = 0.70   # person near = stop
+CREEP_PERSON_MIN_CONF = 0.50 # = TURN_PERSON_MIN_CONF
+CREEP_PERSON_MIN_H_M = 0.30  # = TURN_PERSON_MIN_HEIGHT_M
+CREEP_OBST_MIN_CONF = 0.35
+CREEP_OBST_CORRIDOR_M = 0.30 # inside this |x|
+CREEP_OBST_Z_MAX = 0.05      # hands / held
+CREEP_SELF_ZONE_M = 0.30     # own arm rows
+CREEP_BUMP_M = 0.10          # moved away = bump
+CREEP_RESULTS_OK = ('arrived', 'planned', 'in_place')
+
+
+def env_on(name, environ=None):
+    """Unset / anything but '0' = ON (B8j switches default ON)."""
+    env = os.environ if environ is None else environ
+    return str(env.get(name, '1')).strip() != '0'
+
+
+def creep_edge_target(environ=None):
+    """OPENBOT_CREEP_EDGE_M (gateway terminal), clamped; default 0.25."""
+    env = os.environ if environ is None else environ
+    raw = env.get(CREEP_EDGE_ENV)
+    try:
+        v = float(raw) if raw is not None else CREEP_EDGE_DEFAULT_M
+    except (TypeError, ValueError):
+        v = CREEP_EDGE_DEFAULT_M
+    if not math.isfinite(v):
+        v = CREEP_EDGE_DEFAULT_M
+    return max(CREEP_EDGE_LO_M, min(CREEP_EDGE_HI_M, v))
+
+
+def creep_edge_floor(edge_t):
+    """The WORST-case floor of a creep toward ``edge_t`` (B8j repair 2, gate 2
+    finding 1): CREEP_EDGE_MIN_M at the default target and below, raised 1:1
+    with a target above it, so OPENBOT_CREEP_EDGE_M also moves the bound that
+    binds.  With the floor fixed at 0.20 m a larger target removed no pulse
+    from a walk end of 0.44 m or more (0.30 planned 3 pulses from 0.45, the
+    default plan); 0.35 now removes at least one pulse from every start of
+    0.30-0.60 m and keeps even 0.08 m per pulse at 0.30 m or more."""
+    try:
+        t = float(edge_t)
+    except (TypeError, ValueError):
+        return CREEP_EDGE_MIN_M
+    if not math.isfinite(t):
+        return CREEP_EDGE_MIN_M
+    return round(CREEP_EDGE_MIN_M + max(0.0, t - CREEP_EDGE_DEFAULT_M), 6)
+
+
+def vis_edge(z):
+    """Planar distance (m) of the bottom image edge at torso height ``z``."""
+    return VIS_A * (VIS_B - float(z)) + VIS_C
