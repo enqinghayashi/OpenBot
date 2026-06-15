@@ -234,3 +234,49 @@ def creep_edge_floor(edge_t):
 def vis_edge(z):
     """Planar distance (m) of the bottom image edge at torso height ``z``."""
     return VIS_A * (VIS_B - float(z)) + VIS_C
+
+
+def creep_plan(e0, edge_t, p_nom=CREEP_P_NOM_M, p_hi=CREEP_P_HI_M,
+               e_min=None, max_pulses=CREEP_MAX_PULSES):
+    """Pulses for a creep from near edge ``e0`` toward ``edge_t``: the most
+    pulses whose NOMINAL end stays at or beyond ``edge_t`` and whose WORST
+    case (p_hi per pulse) stays at or beyond ``e_min`` (None = that target's
+    floor, creep_edge_floor: 0.20 m at the default 0.25).  0 = no motion."""
+    try:
+        e0 = float(e0)
+    except (TypeError, ValueError):
+        return 0
+    if not math.isfinite(e0) or e0 <= edge_t:
+        return 0
+    if e_min is None:
+        e_min = creep_edge_floor(edge_t)
+    n_nom = int(math.floor((e0 - edge_t) / p_nom + 1e-9))
+    n_bound = int(math.floor((e0 - e_min) / p_hi + 1e-9))
+    return max(0, min(n_nom, n_bound, int(max_pulses)))
+
+
+def creep_table_pulses(p_nom=CREEP_P_NOM_M, cap=CREEP_TABLE_MAX_M):
+    """Pulses a container ON a support may take at nominal travel: the real
+    creep stops before a pulse that would pass ``cap`` (+5 mm), so the dry
+    plan ends where the real creep ends (B8j repair, gate 1)."""
+    return max(0, int(math.floor((cap + 0.005) / p_nom + 1e-9)))
+
+
+def _f(row, key):
+    try:
+        v = float(row.get(key))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return v if math.isfinite(v) else None
+
+
+def _iid(row):
+    v = row.get('instance_id') if isinstance(row, dict) else None
+    if isinstance(v, bool) or not isinstance(v, int) or v < 1:
+        return None
+    return v
+
+
+def _row_label(row):
+    lab = row.get('label') if isinstance(row, dict) else None
+    return lab.strip().lower() if isinstance(lab, str) else ''
