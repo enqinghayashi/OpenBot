@@ -487,3 +487,9 @@ def _field(evidence: Dict[str, Any], result: Dict[str, Any], key: str) -> Any:
     return result.get(key)
 
 
+def _pose_ok(answer: Any) -> bool:
+    """A ``(bool, reason)`` pose_equal answer, strictly: the tuple itself is
+    always truthy, so only its first element may decide."""
+    if isinstance(answer, (tuple, list)):
+        answer = answer[0] if answer else False
+    return answer is True
