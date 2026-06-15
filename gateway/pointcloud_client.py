@@ -411,3 +411,32 @@ class PcClient(object):
         except Exception:  # noqa: BLE001 - an unreadable pose counts as no pose
             return None
 
+    def measured_pose(self) -> Optional[Dict[str, Any]]:
+        """The odometry body pose (B8k) when usable, else ONE ``pose`` verb on
+        the writer socket, else None.
+
+        ``None`` when there is no writer verb, the call raised, the reply is
+        not ONE JSON object, or the object does not carry ``src == "measured"``
+        (an ``ERROR:`` reply from a writer without H-WR-1 is the common case).
+        Blocks no longer than the writer verb call itself.  Never raises.
+        """
+        pose = self._source_pose()
+        if pose is not None:
+            return pose
+        verb = self._writer_verb
+        if verb is None:
+            return None
+        try:
+            line = verb("pose")
+            if not isinstance(line, str):
+                return None
+            pose = json.loads(line.strip())
+            if isinstance(pose, dict) and pose.get("src") == "measured":
+                return pose
+            return None
+        except Exception:  # noqa: BLE001 - if the pose won't read, it's no pose
+            return None
+
+    #: helpers exposed on the client
+    phase_of = staticmethod(phase_of)
+    pose_equal = staticmethod(pose_equal)
