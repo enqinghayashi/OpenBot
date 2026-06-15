@@ -477,3 +477,5 @@ def _row_stamp(row: Dict[str, Any]) -> Optional[float]:
         if math.isfinite(value):
             return value
     return None
+
+
