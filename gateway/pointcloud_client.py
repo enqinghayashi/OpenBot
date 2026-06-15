@@ -387,3 +387,27 @@ class PcClient(object):
             self._say("warm failed: %s: %s" % (type(exc).__name__, exc))
 
     # ------------------------------------------------------------ pose
+    def _source_pose(self) -> Optional[Dict[str, Any]]:
+        """B8k: the odometry body pose when it is usable, else None.
+
+        Usable = a dict that passes :func:`pose_check` (src "measured", the
+        four POSE_KEYS finite) and carries a finite ``t`` no older than
+        :data:`POSE_SOURCE_MAX_AGE_S` and not ahead of the wall clock by more
+        than :data:`POSE_SOURCE_FUTURE_S`.  A copy is returned (the caller
+        may keep it).  Never raises."""
+        src = self._pose_source
+        if src is None:
+            return None
+        try:
+            pose = src()
+            if not isinstance(pose, dict) or not pose_check(pose)[0]:
+                return None
+            t = float(pose.get("t"))
+            age = float(self.clock_wall()) - t
+            if not math.isfinite(age) or age > POSE_SOURCE_MAX_AGE_S \
+                    or age < -POSE_SOURCE_FUTURE_S:
+                return None
+            return dict(pose)
+        except Exception:  # noqa: BLE001 - an unreadable pose counts as no pose
+            return None
+
