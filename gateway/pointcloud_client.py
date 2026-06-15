@@ -449,3 +449,14 @@ def _fmt(value: Any) -> str:
     return str(value)
 
 
+def _is_finite_number(value: Any) -> bool:
+    """A finite int / float, by the SAME predicate ``place_target_from_row``
+    applies to the rim z (an int / float that is not a bool and is finite).  A
+    z this client let through but that gate refused would fall back to the
+    formula WITHOUT a log line, so the two must not differ."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:       # too big for a float
+        return False
