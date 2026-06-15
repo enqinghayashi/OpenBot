@@ -440,3 +440,6 @@ class PcClient(object):
     #: helpers exposed on the client
     phase_of = staticmethod(phase_of)
     pose_equal = staticmethod(pose_equal)
+
+
+# ============================================================ rim policy
