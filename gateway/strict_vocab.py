@@ -102,3 +102,18 @@ class StrictHolds(object):
                 del self._holds[hid]
         return out
 
+    def labels(self):
+        """The union of the open holds' labels (oldest hold first) plus
+        KEEP_LABELS, at most MAX_LABELS; () when no hold is open."""
+        with self._lock:
+            out = []
+            for hid in sorted(self._holds):
+                for lab in self._holds[hid]['labels']:
+                    if lab not in out:
+                        out.append(lab)
+        if not out:
+            return ()
+        keep = [k for k in KEEP_LABELS if k not in out]
+        out = out[:MAX_LABELS - len(keep)] + keep
+        return tuple(out)
+
