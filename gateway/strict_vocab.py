@@ -416,3 +416,42 @@ class ContainerLock(object):
                 % (st['label'], st['iid'], st['det_label'], src, p[0], p[1],
                    p[2], self._near(st)))
 
+    def _absorb(self, st, r, p):
+        """Take one identity row's extents into the robust geometry.  A row
+        counts as FULL VIEW (it may change the size) only when its near rim,
+        judged with the size known so far, is above the image's bottom edge
+        and its extent has not collapsed below LOCK_CUT_FRAC of that size."""
+        for key, attr in (('w', 'width_m'), ('dd', 'depth_m'), ('h', 'height_m')):
+            v = _f(r, attr)
+            if v is not None and v > 0.0:
+                st[key] = v
+        half, top, bot, h = _row_geo(r, p[2])
+        rec = (half, top, bot, h)
+        st['any'] = (st['any'] + [rec])[-LOCK_HIST_N:]
+        if half is None:
+            return
+        ref = self._half(st) if st['geo'] else half
+        near = math.hypot(p[0], p[1]) - ref
+        if (near >= vis_edge(top) + VIS_MARGIN_M
+                and half >= LOCK_CUT_FRAC * ref):
+            st['geo'] = (st['geo'] + [rec])[-LOCK_HIST_N:]
+
+    @staticmethod
+    def _recs(st):
+        return st['geo'] or st['any']
+
+    def _half(self, st):
+        hs = [r[0] for r in self._recs(st) if r[0] is not None]
+        m = _median(hs)
+        if m is None:
+            return LOCK_HALF_DEFAULT_M
+        return max(LOCK_HALF_MIN_M, min(LOCK_HALF_MAX_M, m))
+
+    def _rim(self, st):
+        recs = self._recs(st)
+        return max([r[1] for r in recs]) if recs else st['z']
+
+    def _bot(self, st):
+        recs = self._recs(st)
+        return min([r[2] for r in recs]) if recs else st['z']
+
