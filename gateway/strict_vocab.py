@@ -51,3 +51,17 @@ class StrictHolds(object):
         self._ids = itertools.count(1)
         self._holds = {}          # hid -> hold dict
 
+    def open(self, owner, labels, max_s):
+        """Open a hold for ``labels`` (order kept, duplicates dropped);
+        returns its id (int >= 1)."""
+        labs = []
+        for lab in labels:
+            if isinstance(lab, str) and lab and lab not in labs:
+                labs.append(lab)
+        with self._lock:
+            hid = next(self._ids)
+            self._holds[hid] = {'owner': str(owner), 'labels': tuple(labs),
+                                'deadline': self._clock() + float(max_s),
+                                'done': False}
+        return hid
+
