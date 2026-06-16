@@ -201,3 +201,14 @@ def env_on(name, environ=None):
     return str(env.get(name, '1')).strip() != '0'
 
 
+def creep_edge_target(environ=None):
+    """OPENBOT_CREEP_EDGE_M (gateway terminal), clamped; default 0.25."""
+    env = os.environ if environ is None else environ
+    raw = env.get(CREEP_EDGE_ENV)
+    try:
+        v = float(raw) if raw is not None else CREEP_EDGE_DEFAULT_M
+    except (TypeError, ValueError):
+        v = CREEP_EDGE_DEFAULT_M
+    if not math.isfinite(v):
+        v = CREEP_EDGE_DEFAULT_M
+    return max(CREEP_EDGE_LO_M, min(CREEP_EDGE_HI_M, v))
