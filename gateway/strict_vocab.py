@@ -70,3 +70,10 @@ class StrictHolds(object):
         with self._lock:
             return self._holds.pop(hid, None) is not None
 
+    def close_all(self):
+        """Close every hold; returns how many were open."""
+        with self._lock:
+            n = len(self._holds)
+            self._holds.clear()
+        return n
+
