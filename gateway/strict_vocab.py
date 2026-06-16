@@ -117,3 +117,6 @@ class StrictHolds(object):
         out = out[:MAX_LABELS - len(keep)] + keep
         return tuple(out)
 
+    def __len__(self):
+        with self._lock:
+            return len(self._holds)
