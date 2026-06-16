@@ -234,3 +234,5 @@ def creep_edge_floor(edge_t):
 def vis_edge(z):
     """Planar distance (m) of the bottom image edge at torso height ``z``."""
     return VIS_A * (VIS_B - float(z)) + VIS_C
+
+
