@@ -65,3 +65,8 @@ class StrictHolds(object):
                                 'done': False}
         return hid
 
+    def close(self, hid):
+        """Close one hold; False when it was not open."""
+        with self._lock:
+            return self._holds.pop(hid, None) is not None
+
