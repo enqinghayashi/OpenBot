@@ -280,3 +280,50 @@ def _iid(row):
 def _row_label(row):
     lab = row.get('label') if isinstance(row, dict) else None
     return lab.strip().lower() if isinstance(lab, str) else ''
+
+
+def _xyz(row):
+    x, y, z = _f(row, 'x'), _f(row, 'y'), _f(row, 'z')
+    if x is None or y is None or z is None:
+        return None
+    return x, y, z
+
+
+def _planar(p, q):
+    return math.hypot(p[0] - q[0], p[1] - q[1])
+
+
+def _median(vals):
+    s = sorted(vals)
+    n = len(s)
+    if n == 0:
+        return None
+    return s[n // 2] if n % 2 else 0.5 * (s[n // 2 - 1] + s[n // 2])
+
+
+def _row_geo(row, z):
+    """(half, top, bottom, h) of one row; half None without extents."""
+    w, dd, h = _f(row, 'width_m'), _f(row, 'depth_m'), _f(row, 'height_m')
+    ext = [v for v in (w, dd) if v is not None and v > 0.0]
+    half = max(ext) / 2.0 if ext else None
+    if h is not None and h > 0.0:
+        return half, z + h / 2.0, z - h / 2.0, h
+    return half, z, z, 0.0
+
+
+class ContainerLock(object):
+    """The navigated container, kept by IDENTITY (B8j).  Thread-safe.
+
+    arm()     on the walk's REACHED for a container label: the row the walk
+              stopped at (label row nearest the stop-law evidence d_m/z_m, or
+              any row matching that evidence when the label already flipped;
+              with x_m/y_m a label row must match it within LOCK_ARM_EV_M too);
+    update()  every detections packet: the row with the lock's instance id,
+              WHATEVER its label (the tracker associates class-agnostically),
+              unless it jumped > LOCK_FOLLOW_JUMP_M; else the nearest row of any
+              label within LOCK_REACQ_M / LOCK_REACQ_DZ_M (geometry re-acquire);
+    set_pose() after a creep (the robot moved forward): its end pose;
+    clear()   any other robot motion, a new navigate, cancel, the age cap.
+    Geometry (half extent, rim, bottom) comes from rows taken while the near
+    rim was in view, so a container cut by the image edge keeps its size."""
+
