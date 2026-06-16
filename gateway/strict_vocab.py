@@ -42,3 +42,6 @@ REFILL_MAX_S = 2.5
 POLL_S = 0.05
 
 
+class StrictHolds(object):
+    """The open holds.  Thread-safe; ``clock`` is injectable (monotonic)."""
+
