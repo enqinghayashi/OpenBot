@@ -77,3 +77,12 @@ class StrictHolds(object):
             self._holds.clear()
         return n
 
+    def mark_done(self, hid):
+        """navigate: the verb returned; the hold now ends with the walk."""
+        with self._lock:
+            h = self._holds.get(hid)
+            if h is None:
+                return False
+            h['done'] = True
+            return True
+
