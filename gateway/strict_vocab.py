@@ -236,3 +236,20 @@ def vis_edge(z):
     return VIS_A * (VIS_B - float(z)) + VIS_C
 
 
+def creep_plan(e0, edge_t, p_nom=CREEP_P_NOM_M, p_hi=CREEP_P_HI_M,
+               e_min=None, max_pulses=CREEP_MAX_PULSES):
+    """Pulses for a creep from near edge ``e0`` toward ``edge_t``: the most
+    pulses whose NOMINAL end stays at or beyond ``edge_t`` and whose WORST
+    case (p_hi per pulse) stays at or beyond ``e_min`` (None = that target's
+    floor, creep_edge_floor: 0.20 m at the default 0.25).  0 = no motion."""
+    try:
+        e0 = float(e0)
+    except (TypeError, ValueError):
+        return 0
+    if not math.isfinite(e0) or e0 <= edge_t:
+        return 0
+    if e_min is None:
+        e_min = creep_edge_floor(edge_t)
+    n_nom = int(math.floor((e0 - edge_t) / p_nom + 1e-9))
+    n_bound = int(math.floor((e0 - e_min) / p_hi + 1e-9))
+    return max(0, min(n_nom, n_bound, int(max_pulses)))
