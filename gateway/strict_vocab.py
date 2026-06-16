@@ -45,3 +45,9 @@ POLL_S = 0.05
 class StrictHolds(object):
     """The open holds.  Thread-safe; ``clock`` is injectable (monotonic)."""
 
+    def __init__(self, clock=time.monotonic):
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._ids = itertools.count(1)
+        self._holds = {}          # hid -> hold dict
+
