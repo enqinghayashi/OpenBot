@@ -253,3 +253,5 @@ def creep_plan(e0, edge_t, p_nom=CREEP_P_NOM_M, p_hi=CREEP_P_HI_M,
     n_nom = int(math.floor((e0 - edge_t) / p_nom + 1e-9))
     n_bound = int(math.floor((e0 - e_min) / p_hi + 1e-9))
     return max(0, min(n_nom, n_bound, int(max_pulses)))
+
+
