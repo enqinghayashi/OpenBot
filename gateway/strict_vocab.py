@@ -214,3 +214,18 @@ def creep_edge_target(environ=None):
     return max(CREEP_EDGE_LO_M, min(CREEP_EDGE_HI_M, v))
 
 
+def creep_edge_floor(edge_t):
+    """The WORST-case floor of a creep toward ``edge_t`` (B8j repair 2, gate 2
+    finding 1): CREEP_EDGE_MIN_M at the default target and below, raised 1:1
+    with a target above it, so OPENBOT_CREEP_EDGE_M also moves the bound that
+    binds.  With the floor fixed at 0.20 m a larger target removed no pulse
+    from a walk end of 0.44 m or more (0.30 planned 3 pulses from 0.45, the
+    default plan); 0.35 now removes at least one pulse from every start of
+    0.30-0.60 m and keeps even 0.08 m per pulse at 0.30 m or more."""
+    try:
+        t = float(edge_t)
+    except (TypeError, ValueError):
+        return CREEP_EDGE_MIN_M
+    if not math.isfinite(t):
+        return CREEP_EDGE_MIN_M
+    return round(CREEP_EDGE_MIN_M + max(0.0, t - CREEP_EDGE_DEFAULT_M), 6)
