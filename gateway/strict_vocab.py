@@ -262,3 +262,9 @@ def creep_table_pulses(p_nom=CREEP_P_NOM_M, cap=CREEP_TABLE_MAX_M):
     return max(0, int(math.floor((cap + 0.005) / p_nom + 1e-9)))
 
 
+def _f(row, key):
+    try:
+        v = float(row.get(key))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return v if math.isfinite(v) else None
