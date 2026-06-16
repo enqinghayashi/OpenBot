@@ -255,3 +255,8 @@ def creep_plan(e0, edge_t, p_nom=CREEP_P_NOM_M, p_hi=CREEP_P_HI_M,
     return max(0, min(n_nom, n_bound, int(max_pulses)))
 
 
+def creep_table_pulses(p_nom=CREEP_P_NOM_M, cap=CREEP_TABLE_MAX_M):
+    """Pulses a container ON a support may take at nominal travel: the real
+    creep stops before a pulse that would pass ``cap`` (+5 mm), so the dry
+    plan ends where the real creep ends (B8j repair, gate 1)."""
+    return max(0, int(math.floor((cap + 0.005) / p_nom + 1e-9)))
