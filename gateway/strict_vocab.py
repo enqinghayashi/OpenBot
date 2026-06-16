@@ -195,3 +195,7 @@ CREEP_BUMP_M = 0.10          # moved away = bump
 CREEP_RESULTS_OK = ('arrived', 'planned', 'in_place')
 
 
+def env_on(name, environ=None):
+    """Unset / anything but '0' = ON (B8j switches default ON)."""
+    env = os.environ if environ is None else environ
+    return str(env.get(name, '1')).strip() != '0'
