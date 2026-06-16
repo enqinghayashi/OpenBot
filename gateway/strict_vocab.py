@@ -86,3 +86,19 @@ class StrictHolds(object):
             h['done'] = True
             return True
 
+    def expire(self, walk_active):
+        """Close the holds past their cap, and the done navigate holds once
+        the walk is inactive.  Returns [(hid, owner, why)]."""
+        now = self._clock()
+        out = []
+        with self._lock:
+            for hid in sorted(self._holds):
+                h = self._holds[hid]
+                if now >= h['deadline']:
+                    out.append((hid, h['owner'], 'cap'))
+                elif h['done'] and not walk_active:
+                    out.append((hid, h['owner'], 'walk_inactive'))
+            for hid, _o, _w in out:
+                del self._holds[hid]
+        return out
+
