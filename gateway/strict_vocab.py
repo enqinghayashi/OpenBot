@@ -335,3 +335,65 @@ class ContainerLock(object):
         with self._lock:
             return self._st is not None
 
+    def arm(self, label, rows, now, ev=None, src='reached'):
+        """Arm on the walk's target row.  Returns an 'ARMED ...' event string,
+        or None (no matching row: nothing is armed)."""
+        label = (label or '').strip().lower()
+        cands = []
+        for r in rows or ():
+            if isinstance(r, dict):
+                p = _xyz(r)
+                if p is not None:
+                    cands.append((r, p))
+        ev_d = _f(ev, 'd_m') if isinstance(ev, dict) else None
+        ev_z = _f(ev, 'z_m') if isinstance(ev, dict) else None
+        # REACHED evidence also carries the stop row's x_m / y_m
+        # (hunt_law.near_edge_law): on the plane that picks one row, where
+        # d_m alone just matches a ring around the robot.
+        ev_x = _f(ev, 'x_m') if isinstance(ev, dict) else None
+        ev_y = _f(ev, 'y_m') if isinstance(ev, dict) else None
+        if ev_d is None and ev_x is not None and ev_y is not None:
+            ev_d = math.hypot(ev_x, ev_y)
+
+        def ev_cost(p):
+            if ev_x is not None and ev_y is not None:
+                c = math.hypot(p[0] - ev_x, p[1] - ev_y)
+            else:
+                c = abs(math.hypot(p[0], p[1]) - ev_d)
+            if ev_z is not None:
+                c = max(c, abs(p[2] - ev_z))
+            return c
+        pick, how = None, None
+        lab = [(r, p) for r, p in cands if _row_label(r) == label]
+        if lab and ev_x is not None and ev_y is not None:
+            # with x_m / y_m, a label row must be the row the walk stopped
+            # at (same LOCK_ARM_EV_M): a same-label container elsewhere
+            # (0.83 m away in the probe) never arms -- the flipped one does.
+            lab = [(r, p) for r, p in lab if ev_cost(p) <= LOCK_ARM_EV_M]
+        if lab:
+            if ev_d is not None:
+                pick = min(lab, key=lambda rp: ev_cost(rp[1]))
+            else:
+                pick = min(lab, key=lambda rp: math.hypot(rp[1][0], rp[1][1]))
+            how = 'label'
+        elif ev_d is not None:
+            near = [(r, p) for r, p in cands if ev_cost(p) <= LOCK_ARM_EV_M]
+            if near:
+                pick = min(near, key=lambda rp: ev_cost(rp[1]))
+                how = 'evidence'
+        if pick is None:
+            return None
+        r, p = pick
+        st = {'label': label, 'iid': _iid(r), 'det_label': _row_label(r),
+              'conf': _f(r, 'conf'), 'x': p[0], 'y': p[1], 'z': p[2],
+              't_arm': float(now), 't_row': float(now), 'src': how,
+              'arm_src': src, 'travel': 0.0, 'reacq': 0, 'geo': [],
+              'any': [], 'jumped': None, 'jump_t': 0.0}
+        self._absorb(st, r, p)
+        with self._lock:
+            self._st = st
+        return ('ARMED %s#%s det=%s src=%s/%s x=%.3f y=%.3f z=%.3f near=%.3f '
+                'half=%.3f rim=%.3f' % (label, st['iid'], st['det_label'], src,
+                                        how, p[0], p[1], p[2], self._near(st),
+                                        self._half(st), self._rim(st)))
+
