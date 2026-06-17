@@ -451,3 +451,7 @@ class ContainerLock(object):
         recs = self._recs(st)
         return max([r[1] for r in recs]) if recs else st['z']
 
+    def _bot(self, st):
+        recs = self._recs(st)
+        return min([r[2] for r in recs]) if recs else st['z']
+
