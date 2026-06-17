@@ -447,3 +447,7 @@ class ContainerLock(object):
             return LOCK_HALF_DEFAULT_M
         return max(LOCK_HALF_MIN_M, min(LOCK_HALF_MAX_M, m))
 
+    def _rim(self, st):
+        recs = self._recs(st)
+        return max([r[1] for r in recs]) if recs else st['z']
+
