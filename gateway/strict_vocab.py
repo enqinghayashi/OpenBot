@@ -301,3 +301,11 @@ def _median(vals):
     return s[n // 2] if n % 2 else 0.5 * (s[n // 2 - 1] + s[n // 2])
 
 
+def _row_geo(row, z):
+    """(half, top, bottom, h) of one row; half None without extents."""
+    w, dd, h = _f(row, 'width_m'), _f(row, 'depth_m'), _f(row, 'height_m')
+    ext = [v for v in (w, dd) if v is not None and v > 0.0]
+    half = max(ext) / 2.0 if ext else None
+    if h is not None and h > 0.0:
+        return half, z + h / 2.0, z - h / 2.0, h
+    return half, z, z, 0.0
