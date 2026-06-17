@@ -547,3 +547,34 @@ class ContainerLock(object):
             return None
         return 'CLEARED %s#%s (%s)' % (st['label'], st['iid'], why)
 
+    def snapshot(self, now):
+        """The lock as a JSON-able dict, or None."""
+        with self._lock:
+            st = self._st
+            if st is None:
+                return None
+            half, rim, bot = self._half(st), self._rim(st), self._bot(st)
+            hs = [rec[3] for rec in self._recs(st) if rec[3] > 0.0]
+            return {
+                'label': st['label'], 'iid': st['iid'],
+                'det_label': st['det_label'],
+                'conf': (round(st['conf'], 3) if st['conf'] is not None
+                         else None),
+                'x': round(st['x'], 3), 'y': round(st['y'], 3),
+                'z': round(st['z'], 3),
+                'w': round(st.get('w', 2.0 * half), 3),
+                'dd': round(st.get('dd', st.get('w', 2.0 * half)), 3),
+                'h': round(max(hs) if hs else st.get('h', 0.0), 3),
+                'half': round(half, 3), 'rim_z': round(rim, 3),
+                'bot_z': round(bot, 3),
+                'near_m': round(math.hypot(st['x'], st['y']) - half, 3),
+                'row_age_s': round(max(0.0, float(now) - st['t_row']), 2),
+                'lock_age_s': round(max(0.0, float(now) - st['t_arm']), 2),
+                't_row': st['t_row'], 'src': st['src'],
+                'arm_src': st['arm_src'], 'travel_m': round(st['travel'], 3),
+                'reacquired': st['reacq'],
+                'geo_rows': len(st['geo']),
+                'jump_t': st['jump_t'],
+                'extent': bool(st.get('h', 0.0) > 0.0
+                               and (st.get('w', 0.0) > 0.0 or st.get('dd', 0.0) > 0.0)),
+            }
