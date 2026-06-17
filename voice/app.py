@@ -217,3 +217,24 @@ class UtteranceSlot:
     deliver, the chain worker / director worker wait.
     """
 
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._latest = ""
+        self._round_active = False
+        self._delivered: Optional[str] = None
+        self._event = threading.Event()
+
+    def latest(self) -> str:
+        with self._lock:
+            return self._latest
+
+    def begin_round(self) -> None:
+        with self._lock:
+            self._round_active = True
+            self._delivered = None
+            self._event.clear()
+
+    def end_round(self) -> None:
+        with self._lock:
+            self._round_active = False
+
