@@ -327,3 +327,7 @@ class ContainerLock(object):
     Geometry (half extent, rim, bottom) comes from rows taken while the near
     rim was in view, so a container cut by the image edge keeps its size."""
 
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._st = None
+
