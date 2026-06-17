@@ -379,3 +379,40 @@ class OfflineQuestionBackend:
 
         return ok(str(answer).strip())
 
+    def notify_user(self, args: dict) -> dict:
+        if self.speak is not None:
+            text = str(args.get("text") or args.get("message") or "")
+            if text:
+                self.speak(text)
+                from brain.agent.tools import ok
+
+                return ok("spoken notice")
+        return self._backend.notify_user(args)
+
+    # -- everything else goes to the wrapped backend -----------------------
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._backend, name)
+
+
+# --------------------------------------------- all the little audio helpers
+
+class PlayingLevel:
+    """Current playback loudness for the echo guard (thread-safe).
+
+    Set to the peak of the pcm handed to the sink; expires ~0.5 s after
+    the audio would have finished, so a freshly-finished playback stops
+    suppressing the mic.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._peak = 0.0
+        self._expires = 0.0
+
+    def peak(self) -> float:
+        with self._lock:
+            if time.monotonic() > self._expires:
+                return 0.0
+            return self._peak
+
