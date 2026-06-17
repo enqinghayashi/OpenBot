@@ -458,3 +458,74 @@ class ContainerLock(object):
     def _near(self, st):
         return math.hypot(st['x'], st['y']) - self._half(st)
 
+    def update(self, rows, now):
+        """Follow the container in one packet.  Returns a list of event
+        strings (FOLLOW / REACQUIRED / JUMP / CLEARED) for the log."""
+        out = []
+        with self._lock:
+            st = self._st
+            if st is None:
+                return out
+            if float(now) - st['t_arm'] > LOCK_MAX_AGE_S:
+                self._st = None
+                out.append('CLEARED %s#%s (max_age %.0fs)'
+                           % (st['label'], st['iid'], LOCK_MAX_AGE_S))
+                return out
+            pose = (st['x'], st['y'], st['z'])
+            pick, kind = None, None
+            if st['iid'] is not None:
+                for r in rows or ():
+                    if isinstance(r, dict) and _iid(r) == st['iid']:
+                        p = _xyz(r)
+                        if p is None:
+                            continue
+                        if (_planar(p, pose) <= LOCK_FOLLOW_JUMP_M
+                                and abs(p[2] - pose[2]) <= LOCK_FOLLOW_DZ_M):
+                            pick, kind = (r, p), 'iid'
+                        else:
+                            st['jump_t'] = float(now)    # creep stops
+                            if st['jumped'] != round(p[0], 2):
+                                st['jumped'] = round(p[0], 2)
+                                out.append('JUMP %s#%s det=%s moved %.3f m: not '
+                                           'followed' % (st['label'], st['iid'],
+                                                         _row_label(r),
+                                                         _planar(p, pose)))
+                        break
+            if pick is None:
+                near = []
+                for r in rows or ():
+                    if not isinstance(r, dict):
+                        continue
+                    p = _xyz(r)
+                    if p is None or (st['iid'] is not None
+                                     and _iid(r) == st['iid']):
+                        continue
+                    d = _planar(p, pose)
+                    if d <= LOCK_REACQ_M and abs(p[2] - pose[2]) <= LOCK_REACQ_DZ_M:
+                        near.append((d, r, p))
+                if near:
+                    d, r, p = min(near, key=lambda t: t[0])
+                    pick, kind = (r, p), 'geometry'
+                    if _iid(r) != st['iid']:
+                        out.append('REACQUIRED %s#%s (was #%s) det=%s dist=%.3f'
+                                   % (st['label'], _iid(r), st['iid'],
+                                      _row_label(r), d))
+                        st['iid'] = _iid(r)
+                        st['reacq'] += 1
+            if pick is None:
+                return out
+            r, p = pick
+            det = _row_label(r)
+            if kind == 'iid' and det != st['det_label']:
+                out.append('FOLLOW %s#%s det %s->%s conf=%s x=%.3f y=%.3f'
+                           % (st['label'], st['iid'], st['det_label'], det,
+                              '%.2f' % _f(r, 'conf') if _f(r, 'conf') is not None
+                              else '-', p[0], p[1]))
+            st['det_label'] = det
+            st['conf'] = _f(r, 'conf')
+            st['x'], st['y'], st['z'] = p
+            st['t_row'] = float(now)
+            st['src'] = kind
+            self._absorb(st, r, p)
+        return out
+
