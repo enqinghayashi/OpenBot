@@ -539,3 +539,11 @@ class ContainerLock(object):
                 st['travel'] += float(travel)
                 st['src'] = src
 
+    def clear(self, why):
+        """Drop the lock; returns a 'CLEARED ...' event or None (none was armed)."""
+        with self._lock:
+            st, self._st = self._st, None
+        if st is None:
+            return None
+        return 'CLEARED %s#%s (%s)' % (st['label'], st['iid'], why)
+
