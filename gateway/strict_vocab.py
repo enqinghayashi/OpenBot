@@ -529,3 +529,13 @@ class ContainerLock(object):
             self._absorb(st, r, p)
         return out
 
+    def set_pose(self, x, y, z, travel, src='creep'):
+        """The creep's final estimate of the container (the robot moved
+        FORWARD ``travel`` m): later queries see the moved pose."""
+        with self._lock:
+            st = self._st
+            if st is not None:
+                st['x'], st['y'], st['z'] = float(x), float(y), float(z)
+                st['travel'] += float(travel)
+                st['src'] = src
+
