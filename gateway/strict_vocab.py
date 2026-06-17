@@ -331,3 +331,7 @@ class ContainerLock(object):
         self._lock = threading.Lock()
         self._st = None
 
+    def armed(self):
+        with self._lock:
+            return self._st is not None
+
