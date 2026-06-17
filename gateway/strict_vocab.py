@@ -440,3 +440,10 @@ class ContainerLock(object):
     def _recs(st):
         return st['geo'] or st['any']
 
+    def _half(self, st):
+        hs = [r[0] for r in self._recs(st) if r[0] is not None]
+        m = _median(hs)
+        if m is None:
+            return LOCK_HALF_DEFAULT_M
+        return max(LOCK_HALF_MIN_M, min(LOCK_HALF_MAX_M, m))
+
