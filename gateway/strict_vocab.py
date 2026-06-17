@@ -397,3 +397,22 @@ class ContainerLock(object):
                                         how, p[0], p[1], p[2], self._near(st),
                                         self._half(st), self._rim(st)))
 
+    def arm_pose(self, label, iid, x, y, z, w, dd, h, now, src='spec'):
+        """Arm from a caller's container record (the creep without a navigate)."""
+        row = {'label': label, 'x': x, 'y': y, 'z': z, 'width_m': w,
+               'depth_m': dd, 'height_m': h, 'instance_id': iid}
+        p = _xyz(row)
+        if p is None:
+            return None
+        st = {'label': (label or '').strip().lower(), 'iid': _iid(row),
+              'det_label': (label or '').strip().lower(), 'conf': None,
+              'x': p[0], 'y': p[1], 'z': p[2], 't_arm': float(now),
+              't_row': float(now), 'src': src, 'arm_src': src, 'travel': 0.0,
+              'reacq': 0, 'geo': [], 'any': [], 'jumped': None, 'jump_t': 0.0}
+        self._absorb(st, row, p)
+        with self._lock:
+            self._st = st
+        return ('ARMED %s#%s det=%s src=%s x=%.3f y=%.3f z=%.3f near=%.3f'
+                % (st['label'], st['iid'], st['det_label'], src, p[0], p[1],
+                   p[2], self._near(st)))
+
