@@ -282,3 +282,8 @@ def _row_label(row):
     return lab.strip().lower() if isinstance(lab, str) else ''
 
 
+def _xyz(row):
+    x, y, z = _f(row, 'x'), _f(row, 'y'), _f(row, 'z')
+    if x is None or y is None or z is None:
+        return None
+    return x, y, z
