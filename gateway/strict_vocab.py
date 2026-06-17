@@ -280,3 +280,5 @@ def _iid(row):
 def _row_label(row):
     lab = row.get('label') if isinstance(row, dict) else None
     return lab.strip().lower() if isinstance(lab, str) else ''
+
+
