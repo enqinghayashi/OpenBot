@@ -309,3 +309,5 @@ def _row_geo(row, z):
     if h is not None and h > 0.0:
         return half, z + h / 2.0, z - h / 2.0, h
     return half, z, z, 0.0
+
+
