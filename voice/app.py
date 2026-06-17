@@ -321,3 +321,61 @@ def make_voice_confirm(
         return bool(CONFIRM_YES_RE.search(answer_l))
 
     return confirm
+
+
+# ------------------------------------------ the offline question-speak path
+
+class OfflineQuestionBackend:
+    """Offline-lane backend wrapper that SPEAKS user-facing questions and
+    captures the spoken answer — the offline counterpart of the session's
+    L9 two-phase intercept (plan §4).  Every other verb (observe, pick,
+    place, ...) delegates to the wrapped gateway backend.
+
+    ``speak``/``capture`` are app-installed (play_pcm + the
+    UtteranceSlot round).  When they are None (the cloud lane, where the
+    session's L9 intercept owns query_user), query_user/notify_user
+    delegate to the wrapped backend's own channel.  The regex brain's
+    decision tree has no query lane today, so this is defensive wiring
+    for the tool path — the spoken shape is the voice-lane convention.
+    """
+
+    def __init__(
+        self,
+        backend: Any,
+        speak: Optional[Callable[[str], None]] = None,
+        capture: Optional[Callable[[float], Optional[str]]] = None,
+        answer_timeout_s: float = QUESTION_ROUND_TIMEOUT_S,
+    ) -> None:
+        if backend is None:
+            raise ValueError("OfflineQuestionBackend requires a backend")
+        self._backend = backend
+        self.speak = speak
+        self.capture = capture
+        self.answer_timeout_s = answer_timeout_s
+
+    def set_voice(
+        self,
+        speak: Callable[[str], None],
+        capture: Callable[[float], Optional[str]],
+    ) -> None:
+        """Install the spoken question path (the offline runner does this
+        once the audio lane exists)."""
+        self.speak = speak
+        self.capture = capture
+
+    def query_user(self, args: dict) -> dict:
+        if self.speak is None or self.capture is None:
+            return self._backend.query_user(args)
+        question = str(args.get("question") or "")
+        self.speak(question or "(no question text)")
+        answer = self.capture(self.answer_timeout_s)
+        if answer is None or not str(answer).strip():
+            from brain.agent.tools import fail
+
+            return fail(
+                "no spoken answer within {:.0f}s".format(self.answer_timeout_s)
+            )
+        from brain.agent.tools import ok
+
+        return ok(str(answer).strip())
+
