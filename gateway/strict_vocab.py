@@ -311,3 +311,19 @@ def _row_geo(row, z):
     return half, z, z, 0.0
 
 
+class ContainerLock(object):
+    """The navigated container, kept by IDENTITY (B8j).  Thread-safe.
+
+    arm()     on the walk's REACHED for a container label: the row the walk
+              stopped at (label row nearest the stop-law evidence d_m/z_m, or
+              any row matching that evidence when the label already flipped;
+              with x_m/y_m a label row must match it within LOCK_ARM_EV_M too);
+    update()  every detections packet: the row with the lock's instance id,
+              WHATEVER its label (the tracker associates class-agnostically),
+              unless it jumped > LOCK_FOLLOW_JUMP_M; else the nearest row of any
+              label within LOCK_REACQ_M / LOCK_REACQ_DZ_M (geometry re-acquire);
+    set_pose() after a creep (the robot moved forward): its end pose;
+    clear()   any other robot motion, a new navigate, cancel, the age cap.
+    Geometry (half extent, rim, bottom) comes from rows taken while the near
+    rim was in view, so a container cut by the image edge keeps its size."""
+
