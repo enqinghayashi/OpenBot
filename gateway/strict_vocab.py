@@ -436,3 +436,7 @@ class ContainerLock(object):
                 and half >= LOCK_CUT_FRAC * ref):
             st['geo'] = (st['geo'] + [rec])[-LOCK_HIST_N:]
 
+    @staticmethod
+    def _recs(st):
+        return st['geo'] or st['any']
+
