@@ -293,3 +293,9 @@ def _planar(p, q):
     return math.hypot(p[0] - q[0], p[1] - q[1])
 
 
+def _median(vals):
+    s = sorted(vals)
+    n = len(s)
+    if n == 0:
+        return None
+    return s[n // 2] if n % 2 else 0.5 * (s[n // 2 - 1] + s[n // 2])
