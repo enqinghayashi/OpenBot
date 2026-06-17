@@ -416,3 +416,127 @@ class PlayingLevel:
                 return 0.0
             return self._peak
 
+    def set_playing(self, pcm: bytes) -> None:
+        with self._lock:
+            self._peak = float(_peak_of_pcm16(pcm))
+            self._expires = time.monotonic() + len(pcm) / 32000.0 + 0.5
+
+
+def _peak_of_pcm16(pcm: bytes) -> float:
+    """Max |int16| of the buffer (sampled every 8th sample — a playback
+    loudness estimate, not an analysis)."""
+    n = len(pcm) // 2
+    if n <= 0:
+        return 0.0
+    samples = array.array("h")
+    samples.frombytes(pcm[: n * 2])
+    peak = 0
+    for i in range(0, n, 8):
+        v = samples[i]
+        if v < 0:
+            v = -v
+        if v > peak:
+            peak = v
+    return float(peak)
+
+
+def _resample_pcm16(src: bytes, src_rate: int, dst_rate: int) -> bytes:
+    """Linear-interpolation resample for 16-bit mono PCM (pure stdlib).
+
+    Used for 16 kHz mic -> 24 kHz realtime wire and 22050 Hz piper ->
+    16 kHz G1 sink.  Linear interpolation is the documented seam — the
+    realtime ratio is exact (2:3) and the piper down-conversion is a
+    clean band-limited source (speech), both well within its error bar.
+    """
+    if src_rate == dst_rate or not src:
+        return src
+    n = len(src) // 2
+    samples = array.array("h")
+    samples.frombytes(src[: n * 2])
+    out_n = int(n * dst_rate / src_rate)
+    out = array.array("h")
+    step = src_rate / dst_rate  # source samples per output sample
+    for i in range(out_n):
+        pos = i * step
+        lo = int(pos)
+        frac = pos - lo
+        hi = lo + 1 if lo + 1 < n else lo
+        out.append(int(samples[lo] * (1.0 - frac) + samples[hi] * frac))
+    return out.tobytes()
+
+
+# ---------------------------------------------------------- argparse setup
+
+def parse_args(argv: List[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="openbot-voice",
+        description=(
+            "OpenBot v4 voice app / director: builds the lane the loaded "
+            "config's brain.lane demands (realtime WebSocket cloud lane, "
+            "transcript REST cloud lane or offline regex lane) and runs "
+            "the full session stack."
+        ),
+    )
+    parser.add_argument(
+        "--config",
+        default=CONFIG_DEFAULT,
+        help="config file (default: %(default)s, from the repo root)",
+    )
+    parser.add_argument(
+        "--profile",
+        default=None,
+        choices=("laptop", "cloud", "voice", "offline"),
+        help="config profile merged on top of --config (default: the "
+        "config's own profile)",
+    )
+    parser.add_argument(
+        "--audio",
+        choices=("g1", "laptop", "mock"),
+        default=DEFAULT_AUDIO,
+        help="audio transport: g1 = robot multicast mic + PlayStream "
+        "speaker; laptop = sounddevice; mock = MockMic + MockSink + "
+        "scripted turns (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--directed-mode",
+        action="store_true",
+        help="KWS wake/sleep words gate input; without it the energy "
+        "gate alone drives sessions",
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="run one turn (offline: one utterance answered; realtime: "
+        "one turn_complete) then exit",
+    )
+    parser.add_argument(
+        "--script",
+        default=None,
+        metavar="FILE",
+        help="mock-script JSON ({kws: [...], transcripts: [...]}) "
+        "overriding the default scripted turns (--audio mock only)",
+    )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+        help="log level (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--allow-mock-body",
+        action="store_true",
+        help="acknowledge a SIMULATED body (gateway.transport 'mock'): "
+        "pick/place/open/close report success WITHOUT the robot moving. "
+        "Required to boot a mock body with a live mic, so a box operator "
+        "can never get scripted 'DONE' replies by accident",
+    )
+    parser.add_argument(
+        "--skip-gateway-probe",
+        action="store_true",
+        help="skip the boot-time TCP probe of the real gateway; the app "
+        "will start even with the gateway down (and be blind until it is up)",
+    )
+    parser.add_argument(
+        "--version", action="version", version="openbot-voice (OpenBot v4 L2)"
+    )
+    return parser.parse_args(argv)
