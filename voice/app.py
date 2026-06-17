@@ -238,3 +238,86 @@ class UtteranceSlot:
         with self._lock:
             self._round_active = False
 
+    def deliver(self, text: str) -> bool:
+        """Record the utterance text; True when a waiting round consumed
+        it as its answer (the caller then must NOT route it anywhere
+        else — the round's wait_answer returns it)."""
+        with self._lock:
+            self._latest = str(text or "")
+            if self._round_active and self._delivered is None:
+                self._delivered = self._latest
+                self._event.set()
+                return True
+            return False
+
+    @property
+    def round_active(self) -> bool:
+        with self._lock:
+            return self._round_active
+
+    def wait_answer(self, timeout_s: float) -> Optional[str]:
+        self._event.wait(timeout_s)
+        with self._lock:
+            answer = self._delivered
+            self._round_active = False
+            return answer
+
+
+def make_round_capture(slot: UtteranceSlot) -> Callable[[float], Optional[str]]:
+    """A capture callable for the offline question lane: one spoken
+    answer via the shared slot (never concurrent with a confirm round —
+    the executor runs one tool at a time)."""
+
+    def capture(timeout_s: float) -> Optional[str]:
+        slot.begin_round()
+        try:
+            return slot.wait_answer(timeout_s)
+        finally:
+            slot.end_round()
+
+    return capture
+
+
+def make_voice_confirm(
+    slot: UtteranceSlot,
+    speak: Callable[[str], None],
+    round_timeout_s: float = CONFIRM_ROUND_TIMEOUT_S,
+) -> Callable[[Any], bool]:
+    """The hooks.py confirm gate: ``confirm(context) -> bool`` — True =
+    motion proceeds.
+
+    Law (plan §4): the CURRENT transcript decides by affine/negative
+    regex (OUR strings); ambiguous -> ONE short spoken-confirm round
+    blocked on the NEXT captured utterance while mic/KWS stay live; the
+    round is bounded and a timeout / negative / still-ambiguous answer
+    DENIES (a gate that never moves without explicit spoken consent).
+    The spoken question rides the app's local TTS->sink path — the model
+    is not involved, so no response accounting is touched, and the
+    answer is consumed by the gate (in the cloud lane it arrives as a
+    dropped_utterance — never replayed into the conversation).
+    """
+
+    def confirm(context: Any) -> bool:  # noqa: ARG001 — hooks contract
+        transcript = (slot.latest() or "").strip().lower()
+        if CONFIRM_NO_RE.search(transcript):
+            return False
+        if CONFIRM_YES_RE.search(transcript):
+            return True
+        # ambiguous: one spoken round; a missing speak path denies, never a
+        # silent yes
+        if speak is None:
+            return False
+        slot.begin_round()
+        try:
+            speak(CONFIRM_QUESTION)
+            answer = slot.wait_answer(round_timeout_s)
+        finally:
+            slot.end_round()
+        if not answer or not answer.strip():
+            return False  # timeout: deny
+        answer_l = answer.strip().lower()
+        if CONFIRM_NO_RE.search(answer_l):
+            return False
+        return bool(CONFIRM_YES_RE.search(answer_l))
+
+    return confirm
