@@ -455,3 +455,6 @@ class ContainerLock(object):
         recs = self._recs(st)
         return min([r[2] for r in recs]) if recs else st['z']
 
+    def _near(self, st):
+        return math.hypot(st['x'], st['y']) - self._half(st)
+
