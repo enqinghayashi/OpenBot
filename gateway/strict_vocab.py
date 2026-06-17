@@ -289,3 +289,5 @@ def _xyz(row):
     return x, y, z
 
 
+def _planar(p, q):
+    return math.hypot(p[0] - q[0], p[1] - q[1])
