@@ -438,3 +438,5 @@ def _peak_of_pcm16(pcm: bytes) -> float:
         if v > peak:
             peak = v
     return float(peak)
+
+
