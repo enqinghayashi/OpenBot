@@ -276,3 +276,5 @@ def make_round_capture(slot: UtteranceSlot) -> Callable[[float], Optional[str]]:
             slot.end_round()
 
     return capture
+
+
