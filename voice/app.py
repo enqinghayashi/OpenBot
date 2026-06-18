@@ -250,3 +250,8 @@ class UtteranceSlot:
                 return True
             return False
 
+    @property
+    def round_active(self) -> bool:
+        with self._lock:
+            return self._round_active
+
