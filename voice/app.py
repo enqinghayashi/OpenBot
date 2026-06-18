@@ -339,3 +339,17 @@ class OfflineQuestionBackend:
     for the tool path — the spoken shape is the voice-lane convention.
     """
 
+    def __init__(
+        self,
+        backend: Any,
+        speak: Optional[Callable[[str], None]] = None,
+        capture: Optional[Callable[[float], Optional[str]]] = None,
+        answer_timeout_s: float = QUESTION_ROUND_TIMEOUT_S,
+    ) -> None:
+        if backend is None:
+            raise ValueError("OfflineQuestionBackend requires a backend")
+        self._backend = backend
+        self.speak = speak
+        self.capture = capture
+        self.answer_timeout_s = answer_timeout_s
+
