@@ -391,3 +391,5 @@ class OfflineQuestionBackend:
 
     # -- everything else goes to the wrapped backend -----------------------
 
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._backend, name)
