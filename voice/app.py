@@ -440,3 +440,26 @@ def _peak_of_pcm16(pcm: bytes) -> float:
     return float(peak)
 
 
+def _resample_pcm16(src: bytes, src_rate: int, dst_rate: int) -> bytes:
+    """Linear-interpolation resample for 16-bit mono PCM (pure stdlib).
+
+    Used for 16 kHz mic -> 24 kHz realtime wire and 22050 Hz piper ->
+    16 kHz G1 sink.  Linear interpolation is the documented seam — the
+    realtime ratio is exact (2:3) and the piper down-conversion is a
+    clean band-limited source (speech), both well within its error bar.
+    """
+    if src_rate == dst_rate or not src:
+        return src
+    n = len(src) // 2
+    samples = array.array("h")
+    samples.frombytes(src[: n * 2])
+    out_n = int(n * dst_rate / src_rate)
+    out = array.array("h")
+    step = src_rate / dst_rate  # source samples per output sample
+    for i in range(out_n):
+        pos = i * step
+        lo = int(pos)
+        frac = pos - lo
+        hi = lo + 1 if lo + 1 < n else lo
+        out.append(int(samples[lo] * (1.0 - frac) + samples[hi] * frac))
+    return out.tobytes()
