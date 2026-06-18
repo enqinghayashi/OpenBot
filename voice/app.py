@@ -410,3 +410,9 @@ class PlayingLevel:
         self._peak = 0.0
         self._expires = 0.0
 
+    def peak(self) -> float:
+        with self._lock:
+            if time.monotonic() > self._expires:
+                return 0.0
+            return self._peak
+
