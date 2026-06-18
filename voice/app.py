@@ -467,3 +467,76 @@ def _resample_pcm16(src: bytes, src_rate: int, dst_rate: int) -> bytes:
 
 # ---------------------------------------------------------- argparse setup
 
+def parse_args(argv: List[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="openbot-voice",
+        description=(
+            "OpenBot v4 voice app / director: builds the lane the loaded "
+            "config's brain.lane demands (realtime WebSocket cloud lane, "
+            "transcript REST cloud lane or offline regex lane) and runs "
+            "the full session stack."
+        ),
+    )
+    parser.add_argument(
+        "--config",
+        default=CONFIG_DEFAULT,
+        help="config file (default: %(default)s, from the repo root)",
+    )
+    parser.add_argument(
+        "--profile",
+        default=None,
+        choices=("laptop", "cloud", "voice", "offline"),
+        help="config profile merged on top of --config (default: the "
+        "config's own profile)",
+    )
+    parser.add_argument(
+        "--audio",
+        choices=("g1", "laptop", "mock"),
+        default=DEFAULT_AUDIO,
+        help="audio transport: g1 = robot multicast mic + PlayStream "
+        "speaker; laptop = sounddevice; mock = MockMic + MockSink + "
+        "scripted turns (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--directed-mode",
+        action="store_true",
+        help="KWS wake/sleep words gate input; without it the energy "
+        "gate alone drives sessions",
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="run one turn (offline: one utterance answered; realtime: "
+        "one turn_complete) then exit",
+    )
+    parser.add_argument(
+        "--script",
+        default=None,
+        metavar="FILE",
+        help="mock-script JSON ({kws: [...], transcripts: [...]}) "
+        "overriding the default scripted turns (--audio mock only)",
+    )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+        help="log level (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--allow-mock-body",
+        action="store_true",
+        help="acknowledge a SIMULATED body (gateway.transport 'mock'): "
+        "pick/place/open/close report success WITHOUT the robot moving. "
+        "Required to boot a mock body with a live mic, so a box operator "
+        "can never get scripted 'DONE' replies by accident",
+    )
+    parser.add_argument(
+        "--skip-gateway-probe",
+        action="store_true",
+        help="skip the boot-time TCP probe of the real gateway; the app "
+        "will start even with the gateway down (and be blind until it is up)",
+    )
+    parser.add_argument(
+        "--version", action="version", version="openbot-voice (OpenBot v4 L2)"
+    )
+    return parser.parse_args(argv)
