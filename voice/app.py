@@ -834,3 +834,48 @@ class MockWhisper:
             return ""
         self.calls += 1
         return self.script.pop(0)
+
+
+class MockPiper:
+    """Scripted piper TTS: short zero-peak PCM (silence — the echo guard
+    stands down, so scripted answers are never suppressed)."""
+
+    def __init__(self, seconds: float = 0.1, output_rate: int = 22050) -> None:
+        self.seconds = seconds
+        self.output_rate = output_rate
+        self.calls = 0
+
+    def __call__(self, text: str) -> Tuple[bytes, int]:  # noqa: ARG001
+        self.calls += 1
+        n = max(1, int(self.seconds * self.output_rate))
+        return (b"\x00\x00" * n, self.output_rate)
+
+
+def _load_mock_script(path: Optional[str]) -> Dict[str, Any]:
+    """The mock script (--script FILE, else the default).  Validates the
+    shape: kws = per-utterance KWS answers, transcripts = whisper
+    transcripts (one per non-wake/sleep utterance, in order), gap_s =
+    extra quiet seconds between turns (optional, >= 0).  gap_s paces a
+    test battery: a real answer's latency (measured 3-12 s) can exceed
+    the default cadence (~4.7 s), and a tone landing mid-answer is a
+    genuine barge-in the battery must never induce."""
+    if path is None:
+        return json.loads(json.dumps(DEFAULT_MOCK_SCRIPT))  # deep copy, don't share it
+    with open(path, "r", encoding="utf-8") as fh:
+        raw = json.load(fh)
+    if not isinstance(raw, dict):
+        raise ValueError("mock script must be a JSON object")
+    kws = raw.get("kws", [])
+    transcripts = raw.get("transcripts", [])
+    if not isinstance(kws, list) or not isinstance(transcripts, list):
+        raise ValueError("mock script kws/transcripts must be JSON lists")
+    gap_s = raw.get("gap_s", 0.0)
+    if type(gap_s) is not float and type(gap_s) is not int:
+        raise ValueError("mock script gap_s must be a number (seconds)")
+    if not 0.0 <= gap_s <= 3600.0:
+        raise ValueError("mock script gap_s out of range: {}".format(gap_s))
+    return {
+        "kws": list(kws),
+        "transcripts": [str(t) for t in transcripts],
+        "gap_s": float(gap_s),
+    }
