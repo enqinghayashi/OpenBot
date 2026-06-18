@@ -420,3 +420,5 @@ class PlayingLevel:
         with self._lock:
             self._peak = float(_peak_of_pcm16(pcm))
             self._expires = time.monotonic() + len(pcm) / 32000.0 + 0.5
+
+
