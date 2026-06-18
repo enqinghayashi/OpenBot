@@ -540,3 +540,5 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
         "--version", action="version", version="openbot-voice (OpenBot v4 L2)"
     )
     return parser.parse_args(argv)
+
+
