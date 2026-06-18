@@ -204,3 +204,16 @@ MOCK_WARMUP_CHUNKS = 10
 
 # ----------------------------------------------------- the utterance slot
 
+class UtteranceSlot:
+    """Thread-safe handshake for voice_confirm + the offline question lane.
+
+    The capture path calls :meth:`deliver` with every captured utterance
+    TEXT: ``latest()`` always tracks the most recent transcript (the
+    "current transcript" the regex law reads), and a text delivered
+    while a round is active IS the round's answer.  A round calls
+    :meth:`begin_round` before speaking and :meth:`wait_answer` after;
+    the round is consumed exactly once and a timeout returns None.
+    Thread-safe: the pump thread and the session loop thread both
+    deliver, the chain worker / director worker wait.
+    """
+
