@@ -416,3 +416,7 @@ class PlayingLevel:
                 return 0.0
             return self._peak
 
+    def set_playing(self, pcm: bytes) -> None:
+        with self._lock:
+            self._peak = float(_peak_of_pcm16(pcm))
+            self._expires = time.monotonic() + len(pcm) / 32000.0 + 0.5
