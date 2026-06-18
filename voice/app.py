@@ -463,3 +463,7 @@ def _resample_pcm16(src: bytes, src_rate: int, dst_rate: int) -> bytes:
         hi = lo + 1 if lo + 1 < n else lo
         out.append(int(samples[lo] * (1.0 - frac) + samples[hi] * frac))
     return out.tobytes()
+
+
+# ---------------------------------------------------------- argparse setup
+
