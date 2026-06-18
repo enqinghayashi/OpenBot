@@ -325,3 +325,17 @@ def make_voice_confirm(
 
 # ------------------------------------------ the offline question-speak path
 
+class OfflineQuestionBackend:
+    """Offline-lane backend wrapper that SPEAKS user-facing questions and
+    captures the spoken answer — the offline counterpart of the session's
+    L9 two-phase intercept (plan §4).  Every other verb (observe, pick,
+    place, ...) delegates to the wrapped gateway backend.
+
+    ``speak``/``capture`` are app-installed (play_pcm + the
+    UtteranceSlot round).  When they are None (the cloud lane, where the
+    session's L9 intercept owns query_user), query_user/notify_user
+    delegate to the wrapped backend's own channel.  The regex brain's
+    decision tree has no query lane today, so this is defensive wiring
+    for the tool path — the spoken shape is the voice-lane convention.
+    """
+
