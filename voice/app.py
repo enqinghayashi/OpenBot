@@ -808,3 +808,29 @@ def _build_offline_cascade(stack: Dict[str, Any], cfg: Any) -> None:
     )
     stack["brain"] = brain
     stack["chain"] = chain
+
+
+def _reset_utterance_budget(executor: Any) -> None:
+    """Per-utterance budget reset (mirrors G1Agent.run()'s fresh
+    executor): a voice session is a stream of utterances, each with its
+    own failure budget."""
+    executor._failure_budget_left = executor.failure_budget
+    executor._terminal_text = None
+
+
+# ---------------------------------------------------- mock bits and pieces
+
+class MockWhisper:
+    """Scripted whisper submit: one transcript per call, in order; '' when
+    the script is exhausted (the chain speaks the canned decline, L2)."""
+
+    def __init__(self, script: Optional[List[str]] = None) -> None:
+        self.script = [str(s) for s in (script or [])]
+        self.calls = 0
+
+    def __call__(self, pcm16: bytes) -> str:  # noqa: ARG001 — scripted
+        if not self.script:
+            self.calls += 1
+            return ""
+        self.calls += 1
+        return self.script.pop(0)
