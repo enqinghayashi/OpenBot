@@ -255,3 +255,9 @@ class UtteranceSlot:
         with self._lock:
             return self._round_active
 
+    def wait_answer(self, timeout_s: float) -> Optional[str]:
+        self._event.wait(timeout_s)
+        with self._lock:
+            answer = self._delivered
+            self._round_active = False
+            return answer
