@@ -263,3 +263,16 @@ class UtteranceSlot:
             return answer
 
 
+def make_round_capture(slot: UtteranceSlot) -> Callable[[float], Optional[str]]:
+    """A capture callable for the offline question lane: one spoken
+    answer via the shared slot (never concurrent with a confirm round —
+    the executor runs one tool at a time)."""
+
+    def capture(timeout_s: float) -> Optional[str]:
+        slot.begin_round()
+        try:
+            return slot.wait_answer(timeout_s)
+        finally:
+            slot.end_round()
+
+    return capture
