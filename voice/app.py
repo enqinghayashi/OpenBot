@@ -405,3 +405,8 @@ class PlayingLevel:
     suppressing the mic.
     """
 
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._peak = 0.0
+        self._expires = 0.0
+
