@@ -540,3 +540,271 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
         "--version", action="version", version="openbot-voice (OpenBot v4 L2)"
     )
     return parser.parse_args(argv)
+
+
+def _setup_logging(args: argparse.Namespace) -> None:
+    logging.basicConfig(
+        level=getattr(logging, args.log_level.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+
+# ------------------------------------------------- building the brain stack
+
+def _guarded_observe(backend: Any) -> Any:
+    """ObservationSupplier for the hooks (never raises; None = no
+    source)."""
+    if backend is None:
+        return None
+    try:
+        return backend.observe()
+    except Exception:  # noqa: BLE001 — a gateway hiccup is no source
+        return None
+
+
+def _freshness_s(cfg: Any, embodiment: Any) -> float:
+    """detection_freshness_s with the config.yaml parity convention:
+    the embodiment's perception.freshness_s is the fallback authority
+    (G1Agent.from_config does the same)."""
+    seg = cfg.get("agent") or {}
+    if isinstance(seg, dict) and seg.get("detection_freshness_s"):
+        return float(seg["detection_freshness_s"])
+    perception = getattr(embodiment, "perception", None)
+    if perception is not None:
+        return float(getattr(perception, "freshness_s", 10.0))
+    return 10.0
+
+
+def build_brain_stack(cfg: Any) -> Dict[str, Any]:
+    """Build the shared brain stack (BOTH lanes) exactly the way
+    G1Agent.from_config does:
+
+        embodiment = EmbodimentConfig.from_section(cfg['embodiment'])
+        backend    = gateway.brain_client.backend_from_config(cfg)
+        registry   = ToolRegistry(backend=backend, embodiment=embodiment)
+        scene_graph= SceneGraph(conf_floor=embodiment.perception.det_conf_floor)
+        hooks      = default_hooks(observation_source=guarded observe,
+                                   confirm=voice_confirm, envelope=embodiment,
+                                   freshness_s=...)
+        executor   = ToolExecutor(registry=registry.snapshot(), hooks=hooks,
+                                   scene_graph=..., backend=...,
+                                   embodiment=..., failure_budget=...)
+
+    plus the voice lane's per-utterance budget reset (mirrors the fresh
+    executor per run() that G1Agent uses — a voice session is a stream
+    of utterances, each with its own budget).
+
+    Returns a dict stack with: backend (the gateway backend, wrapped by
+    question_backend), registry, scene_graph, hooks, executor, slot,
+    confirm, question_backend, and — for the cloud lanes (realtime /
+    transcript) — session (RealtimeBackend / TranscriptBackend); for
+    the offline lane — brain and chain.  Pure: no I/O, no sockets, no
+    box access.  Failure raises ConfigError/ValueError — main() turns
+    it into rc != 0 + loud stderr.
+    """
+    from brain.agent.optional_tools import switch_on
+    from brain.agent.tool_executor import ToolExecutor
+    from brain.agent.tools import ToolRegistry
+    from brain.config_loader import EmbodimentConfig
+    from brain.hooks import default_hooks
+    from brain.scene_graph import SceneGraph
+    from gateway.brain_client import backend_from_config
+
+    lane = cfg.brain.lane
+    if lane not in ("realtime", "transcript", "offline"):
+        raise ValueError(
+            "config error: voice app supports brain.lane 'realtime' "
+            "(cloud Realtime WebSocket), 'transcript' (REST "
+            "chat-completions) or 'offline' (regex brain, no network), "
+            "got {!r}".format(lane)
+        )
+
+    # -- mirror the G1Agent.from_config brain stack; every lane reads the
+    # optional_tools switches
+    embodiment = EmbodimentConfig.from_section(cfg.get("embodiment"))
+    backend = backend_from_config(cfg)  # gateway.transport selects mock or real
+    registry = ToolRegistry(backend=backend, embodiment=embodiment,
+                            switches=cfg.get("optional_tools"))
+    # detection-confidence floor: this lane builds its own graph, so plumb
+    # it in here or low-confidence detections count as referents
+    scene_graph = SceneGraph(
+        conf_floor=embodiment.perception.det_conf_floor,
+        # missing means off: bind to the freshest detection
+        target_disambiguation=switch_on(cfg.get("optional_tools"),
+                                        "target_disambiguation"),
+    )
+    # scene_brief/resolve_ref look the graph up at call time, so this late
+    # wiring is enough; the same seam G1Agent.from_config uses
+    registry.attach(scene_graph=scene_graph)
+
+    slot = UtteranceSlot()
+    # the runner installs the spoken path later, once the audio lane exists;
+    # without it the confirm gate denies
+    _speak_ref: List[Optional[Callable[[str], None]]] = [None]
+
+    def _confirm_speak(text: str) -> None:
+        fn = _speak_ref[0]
+        if fn is not None:
+            try:
+                fn(text)
+            except Exception:  # noqa: BLE001 — a dead TTS denies, never crashes
+                log.exception("confirm round could not speak: %s", text)
+
+    confirm = make_voice_confirm(slot, _confirm_speak)
+    # confirm switch: brain.confirm_motion false removes the spoken round
+    # it is a hooks/brain concern, so it lives in the 'brain' section;
+    # absent means true, so a config that omits it keeps the pause
+    _brain_seg = cfg.get("brain") or {}
+    _require_confirm = True
+    if isinstance(_brain_seg, dict) and "confirm_motion" in _brain_seg:
+        _require_confirm = bool(_brain_seg.get("confirm_motion"))
+    if not _require_confirm:
+        log.info(
+            "confirm gate DISABLED by config (brain.confirm_motion: false) — "
+            "motion tools will execute without asking; the hook records each "
+            "one as APPROVED UNASKED (no human confirmed)"
+        )
+    hooks = default_hooks(
+        observation_source=lambda: _guarded_observe(backend),
+        confirm=confirm,
+        envelope=embodiment,
+        freshness_s=_freshness_s(cfg, embodiment),
+        require_confirm=_require_confirm,
+        # missing means off: pass the hint verbatim
+        hint_charset_refusal=switch_on(cfg.get("optional_tools"),
+                                       "hint_charset_refusal"),
+    )
+    seg = cfg.get("agent") or {}
+    failure_budget = (
+        int(seg["failure_budget"]) if isinstance(seg, dict) and seg.get("failure_budget") else 3
+    )
+    executor = ToolExecutor(
+        registry=registry.snapshot(),
+        hooks=hooks,
+        scene_graph=scene_graph,
+        backend=backend,
+        embodiment=embodiment,
+        failure_budget=failure_budget,
+    )
+
+    # -- the question-speak path wraps the same backend -------------------
+    question_backend = OfflineQuestionBackend(backend)
+    registry.attach(backend=question_backend)
+    executor.backend = question_backend  # observe and friends go through here
+
+    stack: Dict[str, Any] = {
+        "lane": lane,
+        "embodiment": embodiment,
+        "registry": registry,
+        "scene_graph": scene_graph,
+        "hooks": hooks,
+        "executor": executor,
+        "backend": question_backend,
+        # raw gateway backend, not the wrapper: the camera seam needs
+        # .capture_image(), which lives on the gateway client and is wired
+        # in by _attach_frame_hook
+        "gateway_backend": backend,
+        "slot": slot,
+        "confirm": confirm,
+        "question_backend": question_backend,
+        "speak_ref": _speak_ref,
+    }
+
+    if lane == "realtime":
+        # -- wiring up the cloud lane ---------------------------------------
+        from voice.adapters import flatten_specs
+        from voice.realtime import RealtimeClient
+        from voice.session import RealtimeBackend
+
+        api_key = os.environ.get(cfg.realtime.api_key_env, "")
+        if not api_key:
+            raise ValueError(
+                "config error: realtime lane needs the env var {!r} set "
+                "(the API key is never in config files); pass --profile "
+                "offline for the no-network lane".format(cfg.realtime.api_key_env)
+            )
+        client = RealtimeClient(
+            base_url=cfg.realtime.base_url,
+            model=cfg.realtime.model,
+            api_key=api_key,
+            tools=flatten_specs(registry.get_specs()),
+            # the model's own identity, sent as session.update instructions;
+            # "" means absent
+            instructions=str(cfg.realtime.instructions),
+            session_updated_timeout_s=float(cfg.realtime.connect_timeout_s),
+            session_cap_s=float(cfg.realtime.session_cap_min * 60.0),
+        )
+        stack["session"] = RealtimeBackend(client)
+
+    if lane == "transcript":
+        # -- wiring the REST chat-completions lane ----------------------------
+        # same BrainBackend surface the realtime lane drives; the api key is
+        # read from the env var named by cfg.rest.api_key_env, never the file
+        # tools: nested registry specs, never tools=[] (a malformed spec fails
+        # loudly); STT/TTS mirror the offline cascade boundaries, and piper is
+        # an absolute binary path rather than a PATH lookup
+        from brain.agent.llm_cloud import CloudLLMClient
+        from voice.cascade import PiperTTS, WhisperSubmit
+        from voice.transcript import TranscriptBackend
+
+        api_key = os.environ.get(cfg.rest.api_key_env, "")
+        if not api_key:
+            raise ValueError(
+                "config error: transcript lane needs the env var {!r} set "
+                "(the API key is never in config files); pass --profile "
+                "offline for the no-network lane".format(cfg.rest.api_key_env)
+            )
+        client = CloudLLMClient(
+            base_url=cfg.rest.base_url,
+            model=cfg.rest.model,
+            api_key_env=cfg.rest.api_key_env,
+            tool_mode=cfg.rest.tool_mode,
+            timeout_s=float(cfg.rest.timeout_s),
+            prose_fallback=bool(cfg.rest.prose_fallback),
+            max_tokens=int(cfg.rest.max_tokens),
+        )
+        stack["session"] = TranscriptBackend(
+            client,
+            tools=registry.get_specs(),
+            submit=WhisperSubmit(
+                url=cfg.voice.whisper_url, model=cfg.voice.whisper_model
+            ),
+            tts=PiperTTS(
+                bin_path=cfg.voice.piper_bin, voice=cfg.voice.piper_voice
+            ),
+        )
+
+    # -- the offline cascade, needed by every lane ---------------------------
+    # the director owns lane authority: the cascade runs while it says
+    # OFFLINE_CASCADE, configured or reached on a hard failure; construction
+    # is lazy (no socket, no process)
+    _build_offline_cascade(stack, cfg)
+    return stack
+
+
+def _build_offline_cascade(stack: Dict[str, Any], cfg: Any) -> None:
+    """Build the offline cascade (brain + chain) on the SHARED brain
+    stack and store it as stack['brain'] / stack['chain'].
+
+    Built for BOTH lanes: the Director runs the cascade whenever it says
+    OFFLINE_CASCADE, whether the process was configured offline or the
+    realtime lane fell back.  Pure — WhisperSubmit/PiperTTS construct
+    lazily and perform no I/O here (the mock audio lane swaps both
+    boundaries later, keeping the cascade/brain/executor/gateway real)."""
+    from brain.agent.offline_brain import OfflineBrain, STOP_TALKING_RE
+    from voice.cascade import OfflineChain, PiperTTS, WhisperSubmit
+
+    brain = OfflineBrain(
+        executor=stack["executor"],
+        embodiment=stack["embodiment"],
+        name=cfg.voice.name,  # the VoiceConfig name
+    )
+    chain = OfflineChain(
+        brain=brain,
+        submit=WhisperSubmit(url=cfg.voice.whisper_url, model=cfg.voice.whisper_model),
+        tts=PiperTTS(bin_path=cfg.voice.piper_bin, voice=cfg.voice.piper_voice),
+        # the confirm round must fit inside the brain stage's bound
+        brain_timeout_s=BRAIN_TIMEOUT_S + CONFIRM_ROUND_TIMEOUT_S,
+    )
+    stack["brain"] = brain
+    stack["chain"] = chain
