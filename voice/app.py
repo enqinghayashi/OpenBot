@@ -363,3 +363,19 @@ class OfflineQuestionBackend:
         self.speak = speak
         self.capture = capture
 
+    def query_user(self, args: dict) -> dict:
+        if self.speak is None or self.capture is None:
+            return self._backend.query_user(args)
+        question = str(args.get("question") or "")
+        self.speak(question or "(no question text)")
+        answer = self.capture(self.answer_timeout_s)
+        if answer is None or not str(answer).strip():
+            from brain.agent.tools import fail
+
+            return fail(
+                "no spoken answer within {:.0f}s".format(self.answer_timeout_s)
+            )
+        from brain.agent.tools import ok
+
+        return ok(str(answer).strip())
+
