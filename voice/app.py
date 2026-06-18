@@ -379,3 +379,15 @@ class OfflineQuestionBackend:
 
         return ok(str(answer).strip())
 
+    def notify_user(self, args: dict) -> dict:
+        if self.speak is not None:
+            text = str(args.get("text") or args.get("message") or "")
+            if text:
+                self.speak(text)
+                from brain.agent.tools import ok
+
+                return ok("spoken notice")
+        return self._backend.notify_user(args)
+
+    # -- everything else goes to the wrapped backend -----------------------
+
