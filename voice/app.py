@@ -261,3 +261,5 @@ class UtteranceSlot:
             answer = self._delivered
             self._round_active = False
             return answer
+
+
