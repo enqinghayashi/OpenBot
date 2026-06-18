@@ -1114,3 +1114,57 @@ class Runner:
             log.error("MIC STALL %.0fs: no 5555 frames (Explore app voice "
                       "method = WAKE UP MODE? robot powered?)", age)
 
+    def set_error(self, message: str) -> None:
+        """Loud app-level failure: error log + transcript event + the
+        error_flag/stop gates (the bounded --once abort path)."""
+        log.error("%s", message)
+        self.record({"event": "mic_stall", "error": message})
+        self.error_flag = True
+        self.stop.set()
+
+    # -- the play and speak path -----------------------------------------------
+
+    def play_pcm(self, pcm: bytes, rate: int) -> None:
+        """The ONE play path: playing-level tracking (echo guard) +
+        piper 22050 Hz -> G1 16 kHz contract resample + sink, all under
+        the play lock (the pump's whisper decline can race the chain
+        worker's reply)."""
+        if not pcm:
+            return
+        with self.play_lock:
+            self.level.set_playing(pcm)
+            pcm16 = _resample_pcm16(pcm, int(rate), G1_SAMPLE_RATE)
+            try:
+                self.sink.play(pcm16)
+            except Exception:  # noqa: BLE001 — a dead speaker must not kill
+                log.exception("sink.play failed")
+                self.error_flag = True
+
+    def is_muted(self) -> bool:
+        """True while the stop-talking mute window is open: the pump
+        drops completed utterances SILENTLY (no whisper, no speech — the
+        small-noise decline loop cannot re-raise the prompt)."""
+        return time.monotonic() < self._muted_until
+
+    def is_listening(self) -> bool:
+        """True while the listen LATCH is ON: the lane takes input.
+
+        The latch has NO expiry (operator directive 2026-09-20) — once
+        'hey stewart' latches it on, the lane STAYS awake, and once
+        'turn off' latches it off it STAYS asleep, until the other
+        command.  Read by both pumps' wake gate."""
+        return self._listening
+
+    def open_listen_window(self, seconds: Optional[float] = None) -> None:
+        """Wake: latch the lane ON (no expiry) and clear the stop-talking
+        mute — an explicit summon is the user asking to talk.
+
+        ``seconds`` is accepted and IGNORED: it is the vestige of the
+        retired ``LISTEN_WINDOW_S`` deadline, kept in the signature so
+        every existing call site works unchanged.  A caller that passes
+        one gets a debug line, never a silent behaviour change."""
+        if seconds is not None:
+            log.debug("open_listen_window: ignoring seconds=%r (latch)", seconds)
+        self._listening = True
+        self._muted_until = 0.0
+
