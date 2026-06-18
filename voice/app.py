@@ -422,3 +422,19 @@ class PlayingLevel:
             self._expires = time.monotonic() + len(pcm) / 32000.0 + 0.5
 
 
+def _peak_of_pcm16(pcm: bytes) -> float:
+    """Max |int16| of the buffer (sampled every 8th sample — a playback
+    loudness estimate, not an analysis)."""
+    n = len(pcm) // 2
+    if n <= 0:
+        return 0.0
+    samples = array.array("h")
+    samples.frombytes(pcm[: n * 2])
+    peak = 0
+    for i in range(0, n, 8):
+        v = samples[i]
+        if v < 0:
+            v = -v
+        if v > peak:
+            peak = v
+    return float(peak)
