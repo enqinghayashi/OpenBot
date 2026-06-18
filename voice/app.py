@@ -353,3 +353,13 @@ class OfflineQuestionBackend:
         self.capture = capture
         self.answer_timeout_s = answer_timeout_s
 
+    def set_voice(
+        self,
+        speak: Callable[[str], None],
+        capture: Callable[[float], Optional[str]],
+    ) -> None:
+        """Install the spoken question path (the offline runner does this
+        once the audio lane exists)."""
+        self.speak = speak
+        self.capture = capture
+
