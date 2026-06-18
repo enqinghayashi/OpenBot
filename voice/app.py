@@ -879,3 +879,76 @@ def _load_mock_script(path: Optional[str]) -> Dict[str, Any]:
         "transcripts": [str(t) for t in transcripts],
         "gap_s": float(gap_s),
     }
+
+
+def _mock_loud_frames(voice: Any) -> List[bytes]:
+    """Loud 440 Hz tone frames (one turn's worth) for the mock script —
+    the energy gate needs a peak above min_peak to open."""
+    from voice.mic import MockMic
+
+    mic = MockMic.sine(
+        seconds=MOCK_LOUD_S,
+        frequency=MOCK_TONE_HZ,
+        amplitude=MOCK_TONE_AMP,
+        sample_rate=int(getattr(voice, "sample_rate", G1_SAMPLE_RATE)),
+        frame_bytes=G1_FRAME_BYTES,
+    )
+    return list(mic.iter_frames())
+
+
+def _make_mock_frames(
+    script: Dict[str, List[Any]], directed: bool, voice: Any
+) -> List[bytes]:
+    """Scripted G1-cadence frames: one energy-gated utterance per turn.
+
+    Each turn = loud tone frames (open the gate) + quiet chunks
+    (hangover closes it -> the utterance emits) + quiet chunks covering
+    the gate's wall-clock cooldown, so the next turn's tone starts past
+    the cooldown, + the script's gap_s quiet chunks (outpacing the
+    wire's answer latency: a tone landing while a real answer is still
+    rendering is a genuine barge-in — a battery must run slow, never
+    fast).  The pump paces itself at the real cadence (mock only)."""
+    turns = len(script["kws"]) if directed else len(script["transcripts"])
+    frame_bytes = int(getattr(voice, "sample_rate", G1_SAMPLE_RATE) * 2 * 0.16)
+    frame_bytes = max(1, frame_bytes)
+    samples_per_frame = frame_bytes // 2
+    frame_s = samples_per_frame / float(
+        getattr(voice, "sample_rate", G1_SAMPLE_RATE)
+    )
+    bytes_per_s = samples_per_frame * 2 / frame_s
+    hangover_chunks = (
+        int(getattr(voice, "energy_hangover_s", 0.9) * bytes_per_s)
+        // frame_bytes
+        + 1
+    )
+    cooldown_chunks = max(
+        1, int(getattr(voice, "energy_cooldown_s", 3.0) / frame_s) + 1
+    )
+    gap_chunks = max(0, int(round(float(script.get("gap_s", 0.0)) / frame_s)))
+    quiet = b"\x00\x00" * samples_per_frame
+    loud = _mock_loud_frames(voice)
+    loud_per_turn = min(len(loud), max(1, int(round(MOCK_LOUD_S / frame_s))))
+    out: List[bytes] = []
+    # boot warm-up: quiet chunks, not loud, so the gate's noise floor stays
+    # near 0 and min_peak wins; a loud first chunk would become the floor and
+    # lift the threshold above the utterance
+    out.extend([quiet] * MOCK_WARMUP_CHUNKS)
+    for _ in range(max(1, turns)):
+        turn = [quiet] * loud_per_turn
+        turn.extend([quiet] * hangover_chunks)
+        turn.extend([quiet] * cooldown_chunks)
+        turn.extend([quiet] * gap_chunks)
+        for i in range(loud_per_turn):
+            turn[i] = loud[i % len(loud)]
+        out.extend(turn)
+    return out
+
+
+# -------------------------------------------------------------- the runner
+
+class Runner:
+    """The running app: audio lane + transcript record + play path.
+
+    Built AFTER the brain stack, so a config/backend failure never
+    constructs a mic/speaker (no box state changes on failure)."""
+
