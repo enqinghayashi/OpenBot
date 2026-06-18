@@ -397,3 +397,11 @@ class OfflineQuestionBackend:
 
 # --------------------------------------------- all the little audio helpers
 
+class PlayingLevel:
+    """Current playback loudness for the echo guard (thread-safe).
+
+    Set to the peak of the pcm handed to the sink; expires ~0.5 s after
+    the audio would have finished, so a freshly-finished playback stops
+    suppressing the mic.
+    """
+
