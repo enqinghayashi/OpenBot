@@ -238,3 +238,15 @@ class UtteranceSlot:
         with self._lock:
             self._round_active = False
 
+    def deliver(self, text: str) -> bool:
+        """Record the utterance text; True when a waiting round consumed
+        it as its answer (the caller then must NOT route it anywhere
+        else — the round's wait_answer returns it)."""
+        with self._lock:
+            self._latest = str(text or "")
+            if self._round_active and self._delivered is None:
+                self._delivered = self._latest
+                self._event.set()
+                return True
+            return False
+
