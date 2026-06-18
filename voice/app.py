@@ -224,3 +224,7 @@ class UtteranceSlot:
         self._delivered: Optional[str] = None
         self._event = threading.Event()
 
+    def latest(self) -> str:
+        with self._lock:
+            return self._latest
+
