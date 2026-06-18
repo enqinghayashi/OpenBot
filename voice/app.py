@@ -952,3 +952,165 @@ class Runner:
     Built AFTER the brain stack, so a config/backend failure never
     constructs a mic/speaker (no box state changes on failure)."""
 
+    def __init__(
+        self,
+        cfg: Any,
+        args: argparse.Namespace,
+        stack: Dict[str, Any],
+        script: Optional[Dict[str, List[Any]]] = None,
+    ) -> None:
+        self.cfg = cfg
+        self.args = args
+        self.stack = stack
+        self.script = script
+        self.transcript: List[Dict[str, Any]] = []
+        self.error_flag = False
+        self.stop = threading.Event()
+        self.play_lock = threading.Lock()
+        self.level = PlayingLevel()
+        # mic-liveness watchdog state: _last_frame_t is stamped per frame, so
+        # a frame age past _stall_limit_s means a dead stream; _last_warn_t
+        # 0.0 means never warned, later throttled to MIC_STALL_WARN_EVERY_S
+        self._last_frame_t = time.monotonic()
+        self._last_warn_t = 0.0
+        self._stall_limit_s = MIC_STALL_LIMIT_S
+        #: mute window end (monotonic); the pump drops frames while the clock is below it
+        self._muted_until = 0.0
+        #: the listen latch: input only while true
+        #: a wake phrase latches it on with no expiry and 'turn off' latches
+        #: it off until the next summon; boot state off, quiet until summoned
+        self._listening = False
+        self.mic: Any = None
+        self.sink: Any = None
+        self.kws: Any = None
+        #: local stop spotter (realtime only; None = off)
+        self.stop_spotter: Any = None
+        self._build_audio()
+
+    # -- setting up the audio lane -------------------------------------------
+
+    def _build_audio(self) -> None:
+        cfg = self.cfg
+        args = self.args
+        voice = cfg.voice
+        self.directed = bool(args.directed_mode)
+
+        if args.audio == "mock":
+            from voice.keyword_spotting import MockKws
+            from voice.mic import MockMic
+            from voice.speaker import MockSink
+
+            assert self.script is not None, "mock runner needs a script"
+            self.sink = MockSink()
+            frames = _make_mock_frames(self.script, self.directed, voice)
+            self.mic = MockMic(frames, frame_bytes=G1_FRAME_BYTES)
+            # the wake phrases come from the config's list, the sleep list
+            # stays the module default; the pump reads kws.phrases and
+            # kws.sleep_phrases on every lane
+            self.kws = MockKws(
+                script=self.script["kws"],
+                phrases=list(getattr(voice, "wake_phrases", None) or ()),
+            )
+            chain = self.stack.get("chain")
+            if chain is not None:
+                # swap only ASR/TTS; cascade, brain, executor, hooks and
+                # gateway stay real
+                chain.submit = MockWhisper(self.script["transcripts"])
+                chain.tts = MockPiper()
+                chain.sink = self.sink  # the LED signal has no effect in mock mode
+            from voice.transcript import TranscriptBackend
+            backend = self.stack.get("session")
+            if isinstance(backend, TranscriptBackend):
+                # the transcript lane keeps real boundaries, but under
+                # --audio mock it gets the same mocks: never a live whisper
+                # endpoint or a real piper binary
+                backend._submit = MockWhisper(self.script["transcripts"])
+                backend._tts = MockPiper()
+            self.mock = True
+        elif args.audio == "laptop":
+            from voice.mic import SounddeviceMic
+            from voice.speaker import SounddeviceSink
+
+            self.sink = SounddeviceSink(sample_rate=G1_SAMPLE_RATE)
+            self.mic = SounddeviceMic(sample_rate=G1_SAMPLE_RATE)
+            self._maybe_real_kws(voice)
+            self.mock = False
+        else:  # g1: robot multicast mic + PlayStream speaker
+            from voice.mic import G1Mic
+            from voice.speaker import G1Speaker
+
+            self.sink = G1Speaker(
+                app_name=voice.speaker_app_name,
+                sample_rate=G1_SAMPLE_RATE,
+                cap_bytes=int(voice.speaker_cap_bytes),
+            )
+            self.mic = G1Mic(
+                group=voice.multicast_group,
+                port=int(voice.multicast_port),
+            )
+            self._maybe_real_kws(voice)
+            self.mock = False
+
+        self.energy = self._build_energy_gate(voice)
+        from voice.echo_guard import EchoGuard
+
+        self.echo = EchoGuard(coupling=float(voice.echo_coupling))
+
+    def _maybe_real_kws(self, voice: Any) -> None:
+        # always built for a real audio lane: the wake gate is the summon
+        # contract, not a --directed-mode option; consuming the wake utterance
+        # instead would drop the summon and go deaf on a false 'sleep'
+        from voice.keyword_spotting import StewardKws
+
+        self.kws = StewardKws(
+            model_dir=str(voice.kws_model_dir),
+            phrases=list(voice.wake_phrases),
+            cooldown_s=float(voice.kws_cooldown_s),
+        )
+
+    @staticmethod
+    def _build_energy_gate(voice: Any) -> Any:
+        from voice.energy_gate import EnergyGate
+
+        return EnergyGate(
+            sample_rate=int(voice.sample_rate),
+            min_peak=int(voice.energy_min_peak),
+            floor_factor=float(voice.energy_floor_factor),
+            prefix_ms=int(voice.energy_prefix_s * 1000.0),
+            hangover_ms=int(voice.energy_hangover_s * 1000.0),
+            cooldown_s=float(voice.energy_cooldown_s),
+        )
+
+    # -- watching the mic for a dead stream ------------------------------------
+
+    def _mic_watchdog(self) -> None:
+        """Dead stream must never look like silence (Fix B).
+
+        The pumps stamp :attr:`_last_frame_t` on every frame; when no
+        frame arrived for ``_stall_limit_s`` the stream is dead (the
+        Explore-app voice method toggled off, the robot powered down) —
+        G1Mic then parks in its 2 s recv timeout forever, which a
+        silent-app idle must never pass as a quiet room.  Non-once:
+        loud ERROR every MIC_STALL_WARN_EVERY_S — multicast membership
+        persists, so toggling the setting back ON recovers mid-run
+        without a restart.  --once: bounded abort (rc=1) via the
+        error_flag/stop gates, exactly like a pump failure.  Mock audio
+        is exempt: a scripted pump ends by design and must never look
+        stalled.
+        """
+        if self.args.audio == "mock":
+            return
+        age = time.monotonic() - self._last_frame_t
+        if age <= self._stall_limit_s:
+            return
+        if self.args.once:
+            self.set_error(
+                "mic stall {:.0f}s: no 5555 frames (Explore app 'Voice "
+                "interaction method' OFF or the robot not powered)".format(age)
+            )
+            return
+        if time.monotonic() - self._last_warn_t >= MIC_STALL_WARN_EVERY_S:
+            self._last_warn_t = time.monotonic()
+            log.error("MIC STALL %.0fs: no 5555 frames (Explore app voice "
+                      "method = WAKE UP MODE? robot powered?)", age)
+
