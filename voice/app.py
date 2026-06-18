@@ -228,3 +228,9 @@ class UtteranceSlot:
         with self._lock:
             return self._latest
 
+    def begin_round(self) -> None:
+        with self._lock:
+            self._round_active = True
+            self._delivered = None
+            self._event.clear()
+
