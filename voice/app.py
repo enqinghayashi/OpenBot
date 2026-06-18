@@ -321,3 +321,7 @@ def make_voice_confirm(
         return bool(CONFIRM_YES_RE.search(answer_l))
 
     return confirm
+
+
+# ------------------------------------------ the offline question-speak path
+
