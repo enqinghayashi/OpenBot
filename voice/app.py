@@ -547,3 +547,7 @@ def _setup_logging(args: argparse.Namespace) -> None:
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+
+
+# ------------------------------------------------- building the brain stack
+
