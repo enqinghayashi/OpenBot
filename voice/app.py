@@ -849,3 +849,5 @@ class MockPiper:
         self.calls += 1
         n = max(1, int(self.seconds * self.output_rate))
         return (b"\x00\x00" * n, self.output_rate)
+
+
