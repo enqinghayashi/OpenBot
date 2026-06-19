@@ -879,3 +879,5 @@ def _load_mock_script(path: Optional[str]) -> Dict[str, Any]:
         "transcripts": [str(t) for t in transcripts],
         "gap_s": float(gap_s),
     }
+
+
