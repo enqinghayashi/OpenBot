@@ -1168,3 +1168,80 @@ class Runner:
         self._listening = True
         self._muted_until = 0.0
 
+    def close_listen_window(self) -> None:
+        """'turn off': latch the lane OFF until the next summon, and cut
+        current speech NOW (operator: *"turn off turns it off so it
+        stopped talking"*).
+
+        This IS a state that sticks — deliberately, and it is the whole
+        point of the operator's contract (*"only 'hello stuwart' wakes
+        it up again without no window limitation"*).  Recovery is the
+        wake phrase, which the KWS hears even while latched off (the
+        wake path runs BEFORE the pump's listen gate)."""
+        self._listening = False
+        # mute_s=0.0: cut the sink with no mute window; the latch is the real
+        # off switch, and a 20 s mute on top would keep the lane deaf
+        self.stop_talking(0.0)
+
+    def stop_talking(self, mute_s: float = STOP_TALKING_MUTE_S) -> None:
+        """The 'stop talking' command's effect: cut current speech NOW
+        (the sink discards its paced queue and ends the stream), open
+        the echo guard's playing window, and mute the pump for
+        ``mute_s``.  Safe to call from the pump thread (play_lock is the
+        speaker path's own — sink.stop is the G1Speaker's own lock)."""
+        self.level.set_playing(b"")
+        try:
+            self.sink.stop()
+        except Exception:  # noqa: BLE001 — a dead speaker must never break the mute
+            log.exception("sink.stop failed")
+        self._muted_until = time.monotonic() + mute_s
+
+    def wait_speech_drained(self, timeout_s: float) -> bool:
+        """Block until the sink has PLAYED everything queued, bounded.
+
+        Exists so 'turn off' can be audible: its acknowledgement would
+        otherwise be discarded a few milliseconds after being queued by
+        ``close_listen_window`` -> ``stop_talking(0.0)``.
+
+        Only the G1 sink exposes a drain (speaker.py:327).  The laptop
+        and mock sinks are synchronous — their ``play`` returns once the
+        audio is out — so a missing method means there is nothing left
+        to wait for, NOT a failure.  Returns True when the queue is
+        empty (or unknowable), False only on a real timeout/error; the
+        caller must treat both the same way, because the latch is the
+        contract and the ack is a courtesy.
+        """
+        drain = getattr(self.sink, "wait_until_drained", None)
+        if drain is None:
+            return True
+        try:
+            return bool(drain(timeout_s))
+        except Exception:  # noqa: BLE001 — a dead sink must not block the latch
+            log.exception("wait_until_drained failed")
+            return False
+
+    def speak(self, text: str) -> None:
+        """The confirm/question spoken path (local TTS -> sink; the model
+        is never involved).  Every spoken line lands in the transcript."""
+        self.record({"event": "spoken", "text": str(text)})
+        self.note_spoken(text)
+        tts = self._tts()
+        try:
+            pcm, rate = tts(text)
+        except Exception:  # noqa: BLE001 — a dead TTS denies, never crashes
+            log.exception("tts failed for %r", text)
+            return
+        self.play_pcm(pcm, rate)
+
+    def note_spoken(self, text: Any) -> None:
+        """B8j-hf19: tell the stop spotter what the robot is about to say
+        (its own 'stopped' / 'cancelled' must never read as the operator's
+        stop).  Never raises."""
+        sp = self.stop_spotter
+        if sp is None or not text:
+            return
+        try:
+            sp.note_spoken(str(text))
+        except Exception:  # noqa: BLE001
+            log.exception("stop spotter note_spoken failed")
+
