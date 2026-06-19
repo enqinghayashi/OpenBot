@@ -816,3 +816,7 @@ def _reset_utterance_budget(executor: Any) -> None:
     own failure budget."""
     executor._failure_budget_left = executor.failure_budget
     executor._terminal_text = None
+
+
+# ---------------------------------------------------- mock bits and pieces
+
