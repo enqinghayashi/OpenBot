@@ -840,3 +840,8 @@ class MockPiper:
     """Scripted piper TTS: short zero-peak PCM (silence — the echo guard
     stands down, so scripted answers are never suppressed)."""
 
+    def __init__(self, seconds: float = 0.1, output_rate: int = 22050) -> None:
+        self.seconds = seconds
+        self.output_rate = output_rate
+        self.calls = 0
+
