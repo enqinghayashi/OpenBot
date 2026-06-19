@@ -894,3 +894,5 @@ def _mock_loud_frames(voice: Any) -> List[bytes]:
         frame_bytes=G1_FRAME_BYTES,
     )
     return list(mic.iter_frames())
+
+
