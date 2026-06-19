@@ -1366,3 +1366,160 @@ def _wake_name_from_phrases(phrases: Optional[List[str]]) -> Optional[str]:
         if m:
             return m.group(1)
     return None
+
+
+def _wake_names_from_phrases(phrases: Optional[List[str]]) -> List[str]:
+    """EVERY embodied name the wake phrases carry, in first-seen order.
+
+    A phrase set can hold more than one SPELLING of the name — the
+    shipped 'stewart' plus the operator's 'stuwart' (directive
+    2026-09-20) — and the wake-leak trim must strip whichever spelling
+    the recogniser actually produced.
+
+    ``_wake_name_from_phrases`` returns only the FIRST, which is correct
+    for a single-spelling set but leaves every other spelling glued to
+    the command: 'hello stuwart' would trim to 'stuwart' instead of '',
+    so the bare summon would reach the brain as the command 'stuwart',
+    match no lane, and be answered with the decline — the robot
+    answering its own wake word, which is the exact failure this trim
+    exists to prevent.
+    """
+    names: List[str] = []
+    for p in phrases or ():
+        m = re.match(r"^(?:hey|hi|hello)\s+(\S+)$", p, re.IGNORECASE)
+        if m:
+            name = m.group(1)
+            if name not in names:
+                names.append(name)
+    # longest first: a shorter spelling that prefixes a longer one must not
+    # win the alternation
+    return sorted(names, key=len, reverse=True)
+
+
+def make_wake_leak_re(name: Any) -> "re.Pattern[str]":
+    """Build the leading wake-leak regex for the given embodied name(s).
+
+    ``name`` is optional: whisper often drops the name of the wake
+    phrase — 'Hey, steal it!' is the wake 'hey stewart' plus the command
+    'steal it!' — so the head alone must strip.  Punctuation after the
+    head/name is tolerated (whisper closes vocatives with commas and
+    periods: 'Hello, Stewart.').
+
+    ``name`` may be a single string, a LIST of accepted spellings (see
+    ``_wake_names_from_phrases``), or None for a head-only pattern.  The
+    string and None forms are unchanged — the list form only widens the
+    alternation.
+    """
+    if name is None:
+        names: List[str] = []
+    elif isinstance(name, str):
+        names = [name]
+    else:
+        names = [n for n in name if n]
+    name_part = (
+        "(?:" + "|".join(re.escape(n) for n in names) + ")" if names else ""
+    )
+    return re.compile(
+        # whisper closes vocatives with any punctuation ('Hello, Stewart!'),
+        # so the class is [,.!?] on both slots; a comma-period class would
+        # leave the '!' glued to the head
+        rf"^(?:hey|hi|hello)[,.!?]?\s*(?:{name_part})?[,.!?]?\s*",
+        re.IGNORECASE,
+    )
+
+
+def trim_wake_leak(text: str, wake_re: "re.Pattern[str]") -> str:
+    """Strip ONE leading wake/vocative from an asr transcript.
+
+    Only text that STARTS 'hey/hi/hello' is touched; a name-head without
+    a greeting ('stewart, ...') passes through — that form is layer 1
+    (the brain's name-pinned strip).
+    """
+    m = wake_re.match(text)
+    return text[m.end():] if m else text
+
+
+def _build_stop_spotter(runner: "Runner", session: Any,
+                        fire_stop: Callable[[str], None], audio_mode: str) -> Any:
+    """B8j-hf19: build + start the local stop spotter, or return None.
+
+    Shares the wake word's Vosk model (one model in memory).  Off for mock
+    audio, without a real wake-word engine, or with OPENBOT_STOP_SPOTTER=0.
+    Its actions are the existing ones: the motion stop is ``fire_stop`` (the
+    same gateway stop the spoken route sends), 'stop talking' is
+    ``runner.stop_talking``, and every hit first cuts the speech and drops
+    the rest of the reply (``session.stop_playback_now``)."""
+    from voice.stop_spotter import StopSpotter, make_vosk_recognizer, spotter_mode
+
+    mode = spotter_mode()
+    kws = runner.kws
+    if mode == "off":
+        log.info("stop spotter: OFF (OPENBOT_STOP_SPOTTER=0)")
+        return None
+    if audio_mode == "mock" or kws is None or not hasattr(kws, "_ensure_engine"):
+        log.info("stop spotter: not built (no real wake-word engine to share)")
+        return None
+
+    def factory() -> Any:
+        kws._ensure_engine()
+        return make_vosk_recognizer(kws._model, G1_SAMPLE_RATE)
+
+    def cut(text: str) -> None:  # noqa: ARG001
+        runner.stop_talking(0.0)          # cut the sink, no mute window
+        if session is not None and hasattr(session, "stop_playback_now"):
+            session.stop_playback_now()
+
+    def stop(text: str) -> None:
+        cut(text)
+        fire_stop(text)
+
+    def stop_talking(text: str) -> None:
+        cut(text)
+        runner.stop_talking()
+        runner.record({"event": "stop_talking", "text": text, "via": "stop_spotter"})
+
+    def speaking() -> bool:
+        probe = getattr(runner.sink, "is_speaking", None)
+        if probe is not None:
+            try:
+                if probe():
+                    return True
+            except Exception:  # noqa: BLE001
+                pass
+        return runner.level.peak() > 0.0
+
+    spotter = StopSpotter(factory, cut, stop, stop_talking, speaking,
+                          mode=mode, record=runner.record)
+    runner.stop_spotter = spotter
+    if session is not None:
+        session.on_event("spoken", lambda _n, p: runner.note_spoken(
+            (p or {}).get("text") or (p or {}).get("transcript") or ""))
+    spotter.start()
+    log.info("stop spotter: ON (mode=%s, words=%s)", mode, "/".join(
+        __import__("voice.stop_spotter", fromlist=["STOP_WORDS"]).STOP_WORDS))
+    return spotter
+
+
+def _start_arrival_announcer(runner: "Runner") -> None:
+    """Start the arrival-announce listener thread when the config opts in.
+
+    Reads the gate DEFENSIVELY: cfg.voice.arrival_announce (bool, a
+    config_loader sibling lands it with code default False) may not exist
+    yet — getattr defaults keep app.py safe before that edit lands.
+    Returns None (a no-op) when the flag is off/missing; otherwise starts
+    ONE daemon thread whose body reads arrival lines off the coordinator's
+    AF_UNIX relay and speaks each one through runner.speak (thread-safe
+    under play_lock; the "spoken" transcript entry it records is the
+    desired audit trail).  When the relay is down the thread just retries
+    its connect until runner.stop is set — safe on either lane.
+    """
+    voice_cfg = getattr(runner.cfg, "voice", None)
+    if not bool(getattr(voice_cfg, "arrival_announce", False)):
+        return None
+    threading.Thread(
+        target=arrival_announce.arrival_listener,
+        args=(arrival_announce.SOCKET_PATH, runner.speak, runner.stop),
+        daemon=True,
+        name="arrival-announcer",
+    ).start()
+    return None
