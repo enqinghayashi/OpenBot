@@ -1245,3 +1245,83 @@ class Runner:
         except Exception:  # noqa: BLE001
             log.exception("stop spotter note_spoken failed")
 
+    def _tts(self) -> Callable[[str], Tuple[bytes, int]]:
+        chain = self.stack.get("chain")
+        if chain is not None:
+            return chain.tts  # offline lane's TTS (real or mock)
+        from voice.cascade import PiperTTS
+
+        return PiperTTS(
+            bin_path=str(self.cfg.voice.piper_bin),
+            voice=str(self.cfg.voice.piper_voice),
+        )
+
+    # -- who plays the cloud reply audio ----------------------------------------
+
+    def _on_audio_delta(self, name: str, payload: dict) -> None:  # noqa: ARG001
+        """The session's ``audio`` events, played (Fix A).
+
+        Both cloud lanes release reply audio as session ``audio`` events
+        — base64 PCM16 24 kHz chunks (session.py:1426/1443: the realtime
+        wire's response.output_audio.delta AND the transcript lane's
+        piper re-emit, transcript.py _speak).  Nothing consumed them, so
+        a cloud reply was never played and PlayingLevel never armed —
+        the silent-robot defect.  Playing here funnels through the ONE
+        play path (:meth:`play_pcm` — it sets PlayingLevel BEFORE
+        sink.play, so EchoGuard admits nothing the robot is saying) with
+        the same resampler/rate the chain-worker reply uses (1222/1595);
+        the session already holds the 0.6 s lead + 60 s cap (L6), so
+        every delta is real reply audio.
+        """
+        raw = str(payload.get("delta") or payload.get("data") or "")
+        if not raw:
+            return
+        try:
+            pcm24 = base64.b64decode(raw)
+        except Exception:  # noqa: BLE001 — a bad chunk must not kill the lane
+            log.error("audio: bad delta (base64) %d bytes", len(raw))
+            return
+        self.play_pcm(pcm24, 24000)
+
+    def _on_spoken_text(self, name: str, payload: dict) -> None:  # noqa: ARG001
+        """Cloud-lane text ledger (audio_transcript): the reply text the
+        model is speaking lands in the transcript record like the local
+        speak path's ``spoken`` entries — one entry per FINAL spoken
+        event (session.py:1450 fires partial deltas with final=False;
+        :1458 the final transcript).  No audio duty."""
+        if not payload.get("final"):
+            return
+        text = str(payload.get("text") or payload.get("transcript") or "")
+        if not text:
+            return
+        self.record({"event": "spoken", "text": text})
+        log.info("cloud spoken: %r", text)
+
+    # -- whisper and transcript handling -----------------------------------------
+
+    def whisper(self, utt: bytes) -> str:
+        """Transcribe one utterance (the pump owns the whisper stage;
+        the chain receives TEXT via handle_utterance).
+
+        Returns the transcript ('' = nothing heard).  A whisper FAILURE
+        is recorded as a whisper_error event; the PUMP speaks the cascade
+        WHISPER_DECLINE for both the failure and the empty transcript (L2
+        — the app owns the whisper stage, so the decline the chain would
+        have spoken is the app's to speak; never a silent skip)."""
+        chain = self.stack.get("chain")
+        submit = chain.submit if chain is not None else None
+        if submit is None:
+            return ""
+        try:
+            return str(submit(utt) or "")
+        except Exception as exc:  # noqa: BLE001 — a whisper failure is a decline
+            log.warning("whisper failed: %s", exc)
+            self.record({"event": "whisper_error", "error": str(exc)})
+            return ""
+
+    def _speak_decline(self) -> None:
+        from voice.cascade import WHISPER_DECLINE
+
+        self.speak(WHISPER_DECLINE)
+        self.record({"event": "whisper_decline", "reply": WHISPER_DECLINE})
+
