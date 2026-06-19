@@ -560,3 +560,5 @@ def _guarded_observe(backend: Any) -> Any:
         return backend.observe()
     except Exception:  # noqa: BLE001 — a gateway hiccup is no source
         return None
+
+
