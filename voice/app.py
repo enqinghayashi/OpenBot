@@ -551,3 +551,12 @@ def _setup_logging(args: argparse.Namespace) -> None:
 
 # ------------------------------------------------- building the brain stack
 
+def _guarded_observe(backend: Any) -> Any:
+    """ObservationSupplier for the hooks (never raises; None = no
+    source)."""
+    if backend is None:
+        return None
+    try:
+        return backend.observe()
+    except Exception:  # noqa: BLE001 — a gateway hiccup is no source
+        return None
