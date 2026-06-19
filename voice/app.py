@@ -562,3 +562,14 @@ def _guarded_observe(backend: Any) -> Any:
         return None
 
 
+def _freshness_s(cfg: Any, embodiment: Any) -> float:
+    """detection_freshness_s with the config.yaml parity convention:
+    the embodiment's perception.freshness_s is the fallback authority
+    (G1Agent.from_config does the same)."""
+    seg = cfg.get("agent") or {}
+    if isinstance(seg, dict) and seg.get("detection_freshness_s"):
+        return float(seg["detection_freshness_s"])
+    perception = getattr(embodiment, "perception", None)
+    if perception is not None:
+        return float(getattr(perception, "freshness_s", 10.0))
+    return 10.0
