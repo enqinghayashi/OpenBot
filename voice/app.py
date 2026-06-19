@@ -836,3 +836,7 @@ class MockWhisper:
         return self.script.pop(0)
 
 
+class MockPiper:
+    """Scripted piper TTS: short zero-peak PCM (silence — the echo guard
+    stands down, so scripted answers are never suppressed)."""
+
