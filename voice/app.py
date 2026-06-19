@@ -782,3 +782,29 @@ def build_brain_stack(cfg: Any) -> Dict[str, Any]:
     return stack
 
 
+def _build_offline_cascade(stack: Dict[str, Any], cfg: Any) -> None:
+    """Build the offline cascade (brain + chain) on the SHARED brain
+    stack and store it as stack['brain'] / stack['chain'].
+
+    Built for BOTH lanes: the Director runs the cascade whenever it says
+    OFFLINE_CASCADE, whether the process was configured offline or the
+    realtime lane fell back.  Pure — WhisperSubmit/PiperTTS construct
+    lazily and perform no I/O here (the mock audio lane swaps both
+    boundaries later, keeping the cascade/brain/executor/gateway real)."""
+    from brain.agent.offline_brain import OfflineBrain, STOP_TALKING_RE
+    from voice.cascade import OfflineChain, PiperTTS, WhisperSubmit
+
+    brain = OfflineBrain(
+        executor=stack["executor"],
+        embodiment=stack["embodiment"],
+        name=cfg.voice.name,  # the VoiceConfig name
+    )
+    chain = OfflineChain(
+        brain=brain,
+        submit=WhisperSubmit(url=cfg.voice.whisper_url, model=cfg.voice.whisper_model),
+        tts=PiperTTS(bin_path=cfg.voice.piper_bin, voice=cfg.voice.piper_voice),
+        # the confirm round must fit inside the brain stage's bound
+        brain_timeout_s=BRAIN_TIMEOUT_S + CONFIRM_ROUND_TIMEOUT_S,
+    )
+    stack["brain"] = brain
+    stack["chain"] = chain
