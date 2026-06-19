@@ -828,3 +828,9 @@ class MockWhisper:
         self.script = [str(s) for s in (script or [])]
         self.calls = 0
 
+    def __call__(self, pcm16: bytes) -> str:  # noqa: ARG001 — scripted
+        if not self.script:
+            self.calls += 1
+            return ""
+        self.calls += 1
+        return self.script.pop(0)
