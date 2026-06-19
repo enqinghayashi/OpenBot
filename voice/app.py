@@ -780,3 +780,5 @@ def build_brain_stack(cfg: Any) -> Dict[str, Any]:
     # is lazy (no socket, no process)
     _build_offline_cascade(stack, cfg)
     return stack
+
+
