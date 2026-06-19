@@ -820,3 +820,7 @@ def _reset_utterance_budget(executor: Any) -> None:
 
 # ---------------------------------------------------- mock bits and pieces
 
+class MockWhisper:
+    """Scripted whisper submit: one transcript per call, in order; '' when
+    the script is exhausted (the chain speaks the canned decline, L2)."""
+
