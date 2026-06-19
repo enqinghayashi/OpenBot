@@ -845,3 +845,7 @@ class MockPiper:
         self.output_rate = output_rate
         self.calls = 0
 
+    def __call__(self, text: str) -> Tuple[bytes, int]:  # noqa: ARG001
+        self.calls += 1
+        n = max(1, int(self.seconds * self.output_rate))
+        return (b"\x00\x00" * n, self.output_rate)
