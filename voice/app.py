@@ -881,3 +881,16 @@ def _load_mock_script(path: Optional[str]) -> Dict[str, Any]:
     }
 
 
+def _mock_loud_frames(voice: Any) -> List[bytes]:
+    """Loud 440 Hz tone frames (one turn's worth) for the mock script —
+    the energy gate needs a peak above min_peak to open."""
+    from voice.mic import MockMic
+
+    mic = MockMic.sine(
+        seconds=MOCK_LOUD_S,
+        frequency=MOCK_TONE_HZ,
+        amplitude=MOCK_TONE_AMP,
+        sample_rate=int(getattr(voice, "sample_rate", G1_SAMPLE_RATE)),
+        frame_bytes=G1_FRAME_BYTES,
+    )
+    return list(mic.iter_frames())
