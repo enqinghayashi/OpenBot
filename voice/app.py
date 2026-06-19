@@ -573,3 +573,5 @@ def _freshness_s(cfg: Any, embodiment: Any) -> float:
     if perception is not None:
         return float(getattr(perception, "freshness_s", 10.0))
     return 10.0
+
+
