@@ -834,3 +834,5 @@ class MockWhisper:
             return ""
         self.calls += 1
         return self.script.pop(0)
+
+
