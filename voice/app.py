@@ -824,3 +824,7 @@ class MockWhisper:
     """Scripted whisper submit: one transcript per call, in order; '' when
     the script is exhausted (the chain speaks the canned decline, L2)."""
 
+    def __init__(self, script: Optional[List[str]] = None) -> None:
+        self.script = [str(s) for s in (script or [])]
+        self.calls = 0
+
