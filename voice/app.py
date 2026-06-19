@@ -1325,3 +1325,44 @@ class Runner:
         self.speak(WHISPER_DECLINE)
         self.record({"event": "whisper_decline", "reply": WHISPER_DECLINE})
 
+    def record(self, entry: Dict[str, Any]) -> None:
+        self.transcript.append(entry)
+
+    # -- capturing an answer ---------------------------------------------------
+
+    def capture(self, timeout_s: float) -> Optional[str]:
+        return make_round_capture(self.stack["slot"])(timeout_s)
+
+    def install_voice(self) -> None:
+        """Wire the spoken paths the stack deferred: the confirm round's
+        speak + the question lane's speak/capture.  Installed for BOTH
+        lanes: the session's L9 intercept owns query_user while the
+        realtime lane is live (the brain stack is not in use), and the
+        cascade — which the director may run in either process — needs
+        the spoken question path whenever it is the active lane."""
+        self.stack["speak_ref"][0] = self.speak
+        self.stack["question_backend"].set_voice(self.speak, self.capture)
+
+
+# -------------------------------------------------------- the offline runner
+
+# the KWS window and the ASR window are the same audio, so whisper returns
+# the wake phrase at the head of the transcript; a captured vocative would
+# defeat the offline grammar's fixed-phrase match, so one leading vocative
+# is trimmed here before the chain
+# the name is optional because those phonemes get mangled, and a bare summon
+# trims to '' and drops silently: never answer your own wake word
+
+
+def _wake_name_from_phrases(phrases: Optional[List[str]]) -> Optional[str]:
+    """The embodied name from the first '<greeting> <name>' wake phrase.
+
+    The KWS engine's own phrase list is the authority (voice.kws
+    StewardKws).  Returns None for a phrase set no greeting head starts
+    (a 'sleep'-only set), so the trim degrades to head-only stripping.
+    """
+    for p in phrases or ():
+        m = re.match(r"^(?:hey|hi|hello)\s+(\S+)$", p, re.IGNORECASE)
+        if m:
+            return m.group(1)
+    return None
