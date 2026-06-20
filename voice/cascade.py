@@ -235,3 +235,36 @@ class ChainOutcome:
     sample_rate: int
     source: str
     brain_outcome: Optional[OfflineOutcome] = None
+
+
+# ---------------------------------------------------------------------------
+# submit boundary
+# ---------------------------------------------------------------------------
+
+
+def _wav_bytes(pcm16: bytes, sample_rate: int) -> bytes:
+    """A complete PCM16 mono WAV (44-byte RIFF header + samples) — the
+    shape the whisper.cpp /inference ``file`` field expects; the server
+    infers the format from the header."""
+    data_len = len(pcm16)
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF", 36 + data_len, b"WAVE",
+        b"fmt ", 16, 1, 1, sample_rate, sample_rate * 2, 2, 16,
+        b"data", data_len,
+    )
+    return header + pcm16
+
+
+def _silence_wav(sample_rate: int) -> bytes:
+    """A ~0.1 s silence WAV — the tiny probe payload (any HTTP status
+    means 'server up'; transport errors mean 'not up')."""
+    samples = max(1600, sample_rate // 10)
+    return _wav_bytes(b"\x00\x00" * samples, sample_rate)
+
+
+def _decode_payload(payload: bytes) -> Any:
+    try:
+        return json.loads(payload.decode("utf-8", "replace"))
+    except ValueError as exc:
+        raise WhisperError("whisper /inference returned non-JSON: {}".format(exc))
