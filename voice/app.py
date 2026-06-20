@@ -1233,3 +1233,15 @@ class Runner:
             return
         self.play_pcm(pcm, rate)
 
+    def note_spoken(self, text: Any) -> None:
+        """B8j-hf19: tell the stop spotter what the robot is about to say
+        (its own 'stopped' / 'cancelled' must never read as the operator's
+        stop).  Never raises."""
+        sp = self.stop_spotter
+        if sp is None or not text:
+            return
+        try:
+            sp.note_spoken(str(text))
+        except Exception:  # noqa: BLE001
+            log.exception("stop spotter note_spoken failed")
+
