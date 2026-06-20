@@ -1056,3 +1056,15 @@ class Runner:
 
         self.echo = EchoGuard(coupling=float(voice.echo_coupling))
 
+    def _maybe_real_kws(self, voice: Any) -> None:
+        # always built for a real audio lane: the wake gate is the summon
+        # contract, not a --directed-mode option; consuming the wake utterance
+        # instead would drop the summon and go deaf on a false 'sleep'
+        from voice.keyword_spotting import StewardKws
+
+        self.kws = StewardKws(
+            model_dir=str(voice.kws_model_dir),
+            phrases=list(voice.wake_phrases),
+            cooldown_s=float(voice.kws_cooldown_s),
+        )
+
