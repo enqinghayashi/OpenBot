@@ -1196,3 +1196,27 @@ class Runner:
             log.exception("sink.stop failed")
         self._muted_until = time.monotonic() + mute_s
 
+    def wait_speech_drained(self, timeout_s: float) -> bool:
+        """Block until the sink has PLAYED everything queued, bounded.
+
+        Exists so 'turn off' can be audible: its acknowledgement would
+        otherwise be discarded a few milliseconds after being queued by
+        ``close_listen_window`` -> ``stop_talking(0.0)``.
+
+        Only the G1 sink exposes a drain (speaker.py:327).  The laptop
+        and mock sinks are synchronous — their ``play`` returns once the
+        audio is out — so a missing method means there is nothing left
+        to wait for, NOT a failure.  Returns True when the queue is
+        empty (or unknowable), False only on a real timeout/error; the
+        caller must treat both the same way, because the latch is the
+        contract and the ack is a courtesy.
+        """
+        drain = getattr(self.sink, "wait_until_drained", None)
+        if drain is None:
+            return True
+        try:
+            return bool(drain(timeout_s))
+        except Exception:  # noqa: BLE001 — a dead sink must not block the latch
+            log.exception("wait_until_drained failed")
+            return False
+
