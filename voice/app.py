@@ -1146,3 +1146,12 @@ class Runner:
         small-noise decline loop cannot re-raise the prompt)."""
         return time.monotonic() < self._muted_until
 
+    def is_listening(self) -> bool:
+        """True while the listen LATCH is ON: the lane takes input.
+
+        The latch has NO expiry (operator directive 2026-09-20) — once
+        'hey stewart' latches it on, the lane STAYS awake, and once
+        'turn off' latches it off it STAYS asleep, until the other
+        command.  Read by both pumps' wake gate."""
+        return self._listening
+
