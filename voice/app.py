@@ -1342,3 +1342,15 @@ class Runner:
         the spoken question path whenever it is the active lane."""
         self.stack["speak_ref"][0] = self.speak
         self.stack["question_backend"].set_voice(self.speak, self.capture)
+
+
+# -------------------------------------------------------- the offline runner
+
+# the KWS window and the ASR window are the same audio, so whisper returns
+# the wake phrase at the head of the transcript; a captured vocative would
+# defeat the offline grammar's fixed-phrase match, so one leading vocative
+# is trimmed here before the chain
+# the name is optional because those phonemes get mangled, and a bare summon
+# trims to '' and drops silently: never answer your own wake word
+
+
