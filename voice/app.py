@@ -1325,3 +1325,8 @@ class Runner:
         self.speak(WHISPER_DECLINE)
         self.record({"event": "whisper_decline", "reply": WHISPER_DECLINE})
 
+    def record(self, entry: Dict[str, Any]) -> None:
+        self.transcript.append(entry)
+
+    # -- capturing an answer ---------------------------------------------------
+
