@@ -1114,3 +1114,13 @@ class Runner:
             log.error("MIC STALL %.0fs: no 5555 frames (Explore app voice "
                       "method = WAKE UP MODE? robot powered?)", age)
 
+    def set_error(self, message: str) -> None:
+        """Loud app-level failure: error log + transcript event + the
+        error_flag/stop gates (the bounded --once abort path)."""
+        log.error("%s", message)
+        self.record({"event": "mic_stall", "error": message})
+        self.error_flag = True
+        self.stop.set()
+
+    # -- the play and speak path -----------------------------------------------
+
