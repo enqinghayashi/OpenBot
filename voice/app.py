@@ -2573,3 +2573,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         log.exception("voice app failed: %s", exc)
         _die("voice app failed: {}".format(exc))
         return 1
+
+
+if __name__ == "__main__":
+    # the sys.path root insert lives at the top of the module, not here: it
+    # must run before the first absolute import, or the app cannot boot
+    sys.exit(main())
