@@ -946,3 +946,9 @@ def _make_mock_frames(
 
 # -------------------------------------------------------------- the runner
 
+class Runner:
+    """The running app: audio lane + transcript record + play path.
+
+    Built AFTER the brain stack, so a config/backend failure never
+    constructs a mic/speaker (no box state changes on failure)."""
+
