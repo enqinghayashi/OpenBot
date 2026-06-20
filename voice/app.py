@@ -1523,3 +1523,400 @@ def _start_arrival_announcer(runner: "Runner") -> None:
         name="arrival-announcer",
     ).start()
     return None
+
+
+def _run_offline(
+    cfg: Any,
+    args: argparse.Namespace,
+    stack: Dict[str, Any],
+    script: Optional[Dict[str, List[Any]]] = None,
+) -> int:
+    from brain.agent.offline_brain import STOP_TALKING_RE, TURN_OFF_RE
+    from voice.cascade import OfflineChainError
+    from voice.director import OFFLINE_CASCADE, Director
+
+    chain = stack["chain"]
+    runner = Runner(cfg, args, stack, script)
+    runner.install_voice()
+    mic = runner.mic
+    energy = runner.energy
+    echo = runner.echo
+    kws = runner.kws
+    wake_leak_re = make_wake_leak_re(
+        # every spelling, not just the first: the config can carry more than
+        # one, and first-only would leave the other stuck on the command
+        _wake_names_from_phrases(getattr(kws, "phrases", None))
+    )
+    slot = stack["slot"]
+    work_q: "queue.Queue[Any]" = queue.Queue()
+    frame_s = G1_FRAME_BYTES / 2 / float(cfg.voice.sample_rate)
+    once_done = threading.Event()
+
+    # -- the director, the only lane authority
+    # 'offline' starts at OFFLINE_CASCADE and stays: no lane signal or tick
+    # reaches this process and both exits need a tick, so no transition can
+    # fire and the cascade runs the whole time
+    chain_busy = False  # turn boundary (a reply is in flight)
+    chain_lock = threading.Lock()
+
+    def _boundary_open() -> bool:
+        with chain_lock:
+            return not chain_busy
+
+    director = Director(
+        backend=None,
+        # no wire here, nothing to probe
+        probe=lambda: False,
+        # announcements via the app's speak path, not the brain
+        speak=runner.speak,
+        # nothing to reset: no session, no transitions
+        reset=lambda: None,
+        boundary_source=_boundary_open,
+        cfg={"lane": "offline"},
+    )
+
+    def _feed_director(name: str, payload: Optional[Dict[str, Any]] = None) -> None:
+        try:
+            director.on_event(name, payload)
+        except Exception:  # noqa: BLE001 — one bad event must not kill the lane
+            log.exception("director event %r failed", name)
+
+    def chain_worker() -> None:
+        nonlocal chain_busy
+        while not runner.stop.is_set():
+            try:
+                text = work_q.get(timeout=0.2)
+            except Exception:  # noqa: BLE001 — empty after timeout
+                continue
+            if text is None:
+                break
+            with chain_lock:
+                chain_busy = True
+            _feed_director("gate_changed", {"open": False})  # the turn is opening
+            try:
+                _reset_utterance_budget(stack["executor"])
+                outcome = chain.handle_utterance(text)
+            except OfflineChainError as exc:
+                log.error("offline chain failed (stage=%s): %s", exc.stage, exc)
+                runner.record(
+                    {"event": "chain_error", "stage": exc.stage, "error": str(exc)}
+                )
+            except Exception:  # noqa: BLE001 — one bad utterance must not kill
+                log.exception("offline chain failed for %r", text)
+                runner.record({"event": "chain_error", "error": "unexpected"})
+            else:
+                _pcm = outcome.pcm or b""
+                log.info(
+                    "brain reply: source=%s text=%r pcm=%dB",
+                    outcome.source,
+                    (outcome.reply_text or "")[:120],
+                    len(_pcm),
+                )
+                runner.record(
+                    {
+                        "event": "reply",
+                        "text": outcome.reply_text,
+                        "source": outcome.source,
+                        "pcm_bytes": len(_pcm),
+                    }
+                )
+                runner.play_pcm(_pcm, outcome.sample_rate)
+                log.info(
+                    "playback queued: %d ms (%d Hz)",
+                    len(_pcm) * 1000 // 2 // (outcome.sample_rate or 16000),
+                    outcome.sample_rate or 16000,
+                )
+            with chain_lock:
+                chain_busy = False
+            _feed_director("turn_complete", {"lane": "offline"})  # boundary open again
+            if args.once:
+                once_done.set()  # turn done, answered or refused
+
+    def pump_worker() -> None:
+        try:
+            for frame in mic.iter_frames():
+                if runner.stop.is_set():
+                    break
+                # stamp the mic-liveness clock (mock too; the watchdog
+                # skips mock audio anyway)
+                runner._last_frame_t = time.monotonic()
+                if args.audio == "mock":
+                    time.sleep(frame_s)  # pace the script at the G1 cadence
+                if not echo.admit(frame, runner.level.peak()):
+                    continue
+                utt = energy.feed(frame)
+                if not utt:
+                    continue
+                # the wake gate: input only while the latch is on
+                # a wake match latches it on and the utterance keeps going; a
+                # sleep match latches it off and is consumed
+                # no expiry, and the wake path runs before the gate, so the
+                # summon is always heard even on a lane left listening
+                if kws is not None:
+                    try:
+                        phrase = kws.feed(utt)
+                    except Exception as exc:  # noqa: BLE001 — a dead KWS stops the lane
+                        log.error("kws failed: %s", exc)
+                        runner.error_flag = True
+                        runner.stop.set()
+                        return
+                    if phrase is not None:
+                        if phrase in kws.sleep_phrases:
+                            if slot.round_active:
+                                # a sleep phrase can be the confirm answer
+                                # itself; closing the window here would swallow
+                                # it and time the round out, so an active round
+                                # owns the next utterance
+                                log.info(
+                                    "kws: sleep (%r) while confirm/query "
+                                    "round active — forwarding as the answer",
+                                    phrase,
+                                )
+                                runner.record(
+                                    {
+                                        "event": "kws",
+                                        "action": "sleep_during_round",
+                                        "phrase": phrase,
+                                    }
+                                )
+                            else:
+                                runner.close_listen_window()
+                                log.info("kws: sleep (%r)", phrase)
+                                runner.record(
+                                    {"event": "kws", "action": "sleep", "phrase": phrase}
+                                )
+                                continue
+                        if phrase in kws.phrases:
+                            was_awake = runner.is_listening()
+                            runner.open_listen_window()
+                            log.info("kws: wake (%r)", phrase)
+                            runner.record(
+                                {"event": "kws", "action": "wake", "phrase": phrase}
+                            )
+                            # the summon is consumed, never whispered: the wake
+                            # utterance is the same audio, so falling through
+                            # would feed whisper's guess to the brain as a
+                            # command and the wake-leak trim cannot catch it;
+                            # greet instead
+                            if slot.round_active:
+                                # an active round owns that next utterance (the
+                                # same law as the sleep branch); fall through so
+                                # the answer reaches the slot
+                                pass
+                            else:
+                                if not was_awake:
+                                    # greet only on off -> on: a second 'hey
+                                    # stewart' is a nudge, not a fresh arrival
+                                    runner.speak(WAKE_GREETING)
+                                continue
+                    if not runner.is_listening() and not slot.round_active:
+                        continue  # asleep: only a summon gets through
+                if runner.is_muted():
+                    # mute window: drop the utterance silently (no whisper,
+                    # no decline, no speech) so the prompt loop cannot
+                    # re-raise; answering resumes after the window
+                    log.debug("muted: dropping completed utterance")
+                    continue
+                if director.state != OFFLINE_CASCADE:
+                    # no cascade because the director left the offline lane;
+                    # that cannot happen here, since no lane signal or tick is
+                    # ever fed, so the state stays pinned
+                    log.debug(
+                        "director state %s — the cascade lane does not run",
+                        director.state,
+                    )
+                    continue
+                text = runner.whisper(utt)
+                log.info("asr: %r", text)
+                # leading wake-leak trim: the ASR window is the KWS window, so
+                # the wake phrase leads the transcript and the grammar must
+                # never inherit it; a bare summon trims to '' and drops
+                # silently rather than answering its own wake word
+                trimmed = trim_wake_leak(text, wake_leak_re)
+                if trimmed != text:
+                    log.debug("wake-leak trimmed: %r -> %r", text, trimmed)
+                if text.strip() and not trimmed.strip():
+                    log.info("summon-only: bare wake phrase, silent")
+                    continue
+                text = trimmed
+                if TURN_OFF_RE.search(text):
+                    # 'turn off': latch off (only a summon reopens) and cut
+                    # speech now, checked before stop-talking because the
+                    # families overlap ('shut down' vs 'shut up') and before
+                    # slot delivery so a pending round times out instead
+                    log.info(
+                        "turn-off: acknowledging, then latching OFF (%r)",
+                        text[:80],
+                    )
+                    runner.record({"event": "turn_off", "text": text})
+                    # ack first, latch second, wait in between: flipping these
+                    # two discards the ack and nothing is heard
+                    runner.speak(TURN_OFF_ACK)
+                    runner.wait_speech_drained(TURN_OFF_ACK_TIMEOUT_S)
+                    runner.close_listen_window()
+                    continue
+                if STOP_TALKING_RE.search(text):
+                    # 'stop talking': cut speech now and mute the pump; nothing
+                    # is routed to the chain and there is no decline, else the
+                    # prompt comes right back
+                    log.info("stop-talking: cutting speech + muting 20 s (%r)", text[:80])
+                    runner.stop_talking()
+                    runner.record({"event": "stop_talking", "text": text})
+                    continue
+                if not text.strip():
+                    # empty transcript: speak the decline, never skip silently;
+                    # the app owns the whisper stage, so the decline is its to
+                    # speak
+                    log.info("empty transcript -> speaking decline")
+                    runner._speak_decline()
+                    continue
+                runner.record({"event": "utterance", "text": text})
+                if slot.deliver(text):
+                    # a round is waiting: this utterance is the answer, never
+                    # a command for the chain
+                    runner.record({"event": "answer", "text": text})
+                    continue
+                work_q.put(text)
+                if args.once:
+                    # one utterance answered: stop after the reply
+                    once_done.wait()
+                    runner.stop.set()
+        except Exception:  # noqa: BLE001 — a dead mic ends the lane loudly
+            log.exception("mic pump failed")
+            runner.error_flag = True
+            runner.stop.set()
+        finally:
+            runner.stop.set()  # script ran out / the lane died
+
+    worker = threading.Thread(target=chain_worker, daemon=True, name="offline-chain")
+    pump = threading.Thread(target=pump_worker, daemon=True, name="mic-pump")
+    worker.start()
+    pump.start()
+    # arrival announcements, opt-in via cfg.voice.arrival_announce
+    _start_arrival_announcer(runner)
+
+    try:
+        while not runner.stop.is_set():
+            # watchdog on the idle tick: a parked mic yields
+            # nothing, so only this loop can spot the frame age
+            runner._mic_watchdog()
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        runner.stop.set()
+        log.info("interrupted — closing cleanly")
+    worker.join(timeout=2.0)
+    try:
+        runner.mic.close()
+        runner.sink.close()
+    except Exception:  # noqa: BLE001 — teardown must not raise
+        log.exception("audio close failed")
+    rc = 1 if runner.error_flag else 0
+    if rc == 0 and args.once and not once_done.is_set():
+        # same false-success gate as the realtime runner:
+        # a --once that completed no turn is a failure
+        _die("--once completed no turn: the offline lane never answered "
+             "(0 events). Exit code 1 so a smoke run cannot score a dead "
+             "lane as success.")
+        rc = 1
+    if args.audio == "mock":
+        _print_transcript(runner.transcript)
+    return rc
+
+
+def _print_transcript(transcript: List[Dict[str, Any]]) -> None:
+    """The mock run's transcript report (stdout — the bake-off / verify
+    consumer reads it)."""
+    print("TRANSCRIPT ({} events):".format(len(transcript)))
+    for entry in transcript:
+        event = entry.get("event", "?")
+        if event == "utterance":
+            print("  utterance: {!r}".format(entry.get("text")))
+        elif event == "answer":
+            print("  confirm/query answer: {!r}".format(entry.get("text")))
+        elif event == "reply":
+            print("  reply ({0}): {1!r}".format(entry.get("source"), entry.get("text")))
+        elif event == "kws":
+            print("  kws {0}: {1!r}".format(entry.get("action"), entry.get("phrase")))
+        elif event == "spoken":
+            print("  spoken: {!r}".format(entry.get("text")))
+        elif event == "whisper_decline":
+            print("  whisper decline: {!r}".format(entry.get("reply")))
+        elif event == "whisper_error":
+            print("  whisper error: {!r}".format(entry.get("error")))
+        elif event == "chain_error":
+            print(
+                "  chain error (stage={0}): {1!r}".format(
+                    entry.get("stage"), entry.get("error")
+                )
+            )
+        else:
+            print("  {0}: {1!r}".format(event, entry))
+
+
+# -------------------------------------------------------- the realtime runner
+
+def _attach_frame_hook(session: Any, stack: Dict[str, Any], cfg: Any) -> bool:
+    """L10: wire the gateway camera into the session's per-turn frame seam.
+
+    THE SEAM EXISTED ON BOTH SIDES AND WAS NEVER CONNECTED (found 2026-09-02).
+    ``VoiceSession.set_frame_hook`` (voice/session.py:740) and the gateway's
+    ``capture_image()`` (gateway/brain_client.py:286) both shipped, both were
+    tested — but the ONLY caller of either was ``tests/``, which does not
+    ship.  So on the box ``session._frame_hook`` was always None, every
+    decision turn took the ``envelope is None`` branch, and the model was
+    told "no frame source" on EVERY turn regardless of camera health.  The
+    configs advertise ``vision.enabled: true`` (config.voice.yaml:84,
+    config.cloud.yaml:89, config.offline.yaml:47) and the gateway really does
+    serve the frame, so the operator had a vision-capable robot that answered
+    "I can't see anything" forever.
+
+    This is a PASS-THROUGH by design — every honesty rule already lives at
+    one end or the other, and re-implementing any of them here would be a
+    place for them to drift:
+
+    * ``capture_image()`` returns None for a dead socket, an ok:false
+      envelope, or malformed JSON — never a guess (its docstring is the
+      contract: None = no camera / no usable frame).
+    * The gateway stamps ``fresh`` itself against ``vision.max_age_s``, and
+      ``_prepare_frame_for_turn`` attaches the image ONLY when
+      ``fresh is True`` and ``jpeg_b64`` is present, otherwise telling the
+      model it is blind.  A stale frame is therefore never passed off as live.
+    * ``vision.min_interval_s`` is the GATEWAY's encode throttle
+      (gateway_node.py:126), applied server-side on the camera worker.  The
+      session already calls this hook at most once per decision turn
+      (``_frame_attached_this_turn``), so throttling again here would only
+      add a second, divergent clock.
+
+    Returns True when the hook was attached, False when the camera lane is
+    off or unavailable — the caller logs which, so "no frame" is always
+    attributable to a named cause rather than silence.
+    """
+    vision = getattr(cfg, "vision", None)
+    if not bool(getattr(vision, "enabled", False) if vision is not None else False):
+        log.info("camera lane OFF (vision.enabled is not true) — the model is "
+                 "told it is blind on every turn, by configuration")
+        return False
+
+    backend = stack.get("gateway_backend")
+    capture = getattr(backend, "capture_image", None)
+    if not callable(capture):
+        # the mock backend has capture_image too (it returns None honestly),
+        # so a missing verb means an older backend
+        log.warning("camera lane ON in config but backend %s has no "
+                    "capture_image() — the model stays blind",
+                    type(backend).__name__)
+        return False
+
+    def _frame_hook() -> Optional[Dict[str, Any]]:
+        """One gateway 'image' roundtrip per decision turn, or None."""
+        try:
+            return capture()
+        except Exception:  # noqa: BLE001 — a dead camera must not kill the turn
+            log.exception("camera capture failed — this turn is imageless")
+            return None
+
+    session.set_frame_hook(_frame_hook)
+    log.info("camera lane ON — gateway 'image' verb wired to the session "
+             "frame seam (topic %s, max_age %.1fs)",
+             getattr(vision, "topic", "?"), getattr(vision, "max_age_s", -1.0))
+    return True
