@@ -1299,3 +1299,23 @@ class Runner:
 
     # -- whisper and transcript handling -----------------------------------------
 
+    def whisper(self, utt: bytes) -> str:
+        """Transcribe one utterance (the pump owns the whisper stage;
+        the chain receives TEXT via handle_utterance).
+
+        Returns the transcript ('' = nothing heard).  A whisper FAILURE
+        is recorded as a whisper_error event; the PUMP speaks the cascade
+        WHISPER_DECLINE for both the failure and the empty transcript (L2
+        — the app owns the whisper stage, so the decline the chain would
+        have spoken is the app's to speak; never a silent skip)."""
+        chain = self.stack.get("chain")
+        submit = chain.submit if chain is not None else None
+        if submit is None:
+            return ""
+        try:
+            return str(submit(utt) or "")
+        except Exception as exc:  # noqa: BLE001 — a whisper failure is a decline
+            log.warning("whisper failed: %s", exc)
+            self.record({"event": "whisper_error", "error": str(exc)})
+            return ""
+
