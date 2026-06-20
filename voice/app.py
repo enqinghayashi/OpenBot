@@ -1068,3 +1068,18 @@ class Runner:
             cooldown_s=float(voice.kws_cooldown_s),
         )
 
+    @staticmethod
+    def _build_energy_gate(voice: Any) -> Any:
+        from voice.energy_gate import EnergyGate
+
+        return EnergyGate(
+            sample_rate=int(voice.sample_rate),
+            min_peak=int(voice.energy_min_peak),
+            floor_factor=float(voice.energy_floor_factor),
+            prefix_ms=int(voice.energy_prefix_s * 1000.0),
+            hangover_ms=int(voice.energy_hangover_s * 1000.0),
+            cooldown_s=float(voice.energy_cooldown_s),
+        )
+
+    # -- watching the mic for a dead stream ------------------------------------
+
