@@ -1330,3 +1330,6 @@ class Runner:
 
     # -- capturing an answer ---------------------------------------------------
 
+    def capture(self, timeout_s: float) -> Optional[str]:
+        return make_round_capture(self.stack["slot"])(timeout_s)
+
