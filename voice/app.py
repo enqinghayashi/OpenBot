@@ -1155,3 +1155,16 @@ class Runner:
         command.  Read by both pumps' wake gate."""
         return self._listening
 
+    def open_listen_window(self, seconds: Optional[float] = None) -> None:
+        """Wake: latch the lane ON (no expiry) and clear the stop-talking
+        mute — an explicit summon is the user asking to talk.
+
+        ``seconds`` is accepted and IGNORED: it is the vestige of the
+        retired ``LISTEN_WINDOW_S`` deadline, kept in the signature so
+        every existing call site works unchanged.  A caller that passes
+        one gets a debug line, never a silent behaviour change."""
+        if seconds is not None:
+            log.debug("open_listen_window: ignoring seconds=%r (latch)", seconds)
+        self._listening = True
+        self._muted_until = 0.0
+
