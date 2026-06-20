@@ -952,3 +952,40 @@ class Runner:
     Built AFTER the brain stack, so a config/backend failure never
     constructs a mic/speaker (no box state changes on failure)."""
 
+    def __init__(
+        self,
+        cfg: Any,
+        args: argparse.Namespace,
+        stack: Dict[str, Any],
+        script: Optional[Dict[str, List[Any]]] = None,
+    ) -> None:
+        self.cfg = cfg
+        self.args = args
+        self.stack = stack
+        self.script = script
+        self.transcript: List[Dict[str, Any]] = []
+        self.error_flag = False
+        self.stop = threading.Event()
+        self.play_lock = threading.Lock()
+        self.level = PlayingLevel()
+        # mic-liveness watchdog state: _last_frame_t is stamped per frame, so
+        # a frame age past _stall_limit_s means a dead stream; _last_warn_t
+        # 0.0 means never warned, later throttled to MIC_STALL_WARN_EVERY_S
+        self._last_frame_t = time.monotonic()
+        self._last_warn_t = 0.0
+        self._stall_limit_s = MIC_STALL_LIMIT_S
+        #: mute window end (monotonic); the pump drops frames while the clock is below it
+        self._muted_until = 0.0
+        #: the listen latch: input only while true
+        #: a wake phrase latches it on with no expiry and 'turn off' latches
+        #: it off until the next summon; boot state off, quiet until summoned
+        self._listening = False
+        self.mic: Any = None
+        self.sink: Any = None
+        self.kws: Any = None
+        #: local stop spotter (realtime only; None = off)
+        self.stop_spotter: Any = None
+        self._build_audio()
+
+    # -- setting up the audio lane -------------------------------------------
+
