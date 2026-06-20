@@ -1220,3 +1220,16 @@ class Runner:
             log.exception("wait_until_drained failed")
             return False
 
+    def speak(self, text: str) -> None:
+        """The confirm/question spoken path (local TTS -> sink; the model
+        is never involved).  Every spoken line lands in the transcript."""
+        self.record({"event": "spoken", "text": str(text)})
+        self.note_spoken(text)
+        tts = self._tts()
+        try:
+            pcm, rate = tts(text)
+        except Exception:  # noqa: BLE001 — a dead TTS denies, never crashes
+            log.exception("tts failed for %r", text)
+            return
+        self.play_pcm(pcm, rate)
+
