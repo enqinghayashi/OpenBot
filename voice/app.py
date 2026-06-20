@@ -1168,3 +1168,18 @@ class Runner:
         self._listening = True
         self._muted_until = 0.0
 
+    def close_listen_window(self) -> None:
+        """'turn off': latch the lane OFF until the next summon, and cut
+        current speech NOW (operator: *"turn off turns it off so it
+        stopped talking"*).
+
+        This IS a state that sticks — deliberately, and it is the whole
+        point of the operator's contract (*"only 'hello stuwart' wakes
+        it up again without no window limitation"*).  Recovery is the
+        wake phrase, which the KWS hears even while latched off (the
+        wake path runs BEFORE the pump's listen gate)."""
+        self._listening = False
+        # mute_s=0.0: cut the sink with no mute window; the latch is the real
+        # off switch, and a 20 s mute on top would keep the lane deaf
+        self.stop_talking(0.0)
+
