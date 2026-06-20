@@ -1283,3 +1283,19 @@ class Runner:
             return
         self.play_pcm(pcm24, 24000)
 
+    def _on_spoken_text(self, name: str, payload: dict) -> None:  # noqa: ARG001
+        """Cloud-lane text ledger (audio_transcript): the reply text the
+        model is speaking lands in the transcript record like the local
+        speak path's ``spoken`` entries — one entry per FINAL spoken
+        event (session.py:1450 fires partial deltas with final=False;
+        :1458 the final transcript).  No audio duty."""
+        if not payload.get("final"):
+            return
+        text = str(payload.get("text") or payload.get("transcript") or "")
+        if not text:
+            return
+        self.record({"event": "spoken", "text": text})
+        log.info("cloud spoken: %r", text)
+
+    # -- whisper and transcript handling -----------------------------------------
+
