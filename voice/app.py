@@ -989,3 +989,70 @@ class Runner:
 
     # -- setting up the audio lane -------------------------------------------
 
+    def _build_audio(self) -> None:
+        cfg = self.cfg
+        args = self.args
+        voice = cfg.voice
+        self.directed = bool(args.directed_mode)
+
+        if args.audio == "mock":
+            from voice.keyword_spotting import MockKws
+            from voice.mic import MockMic
+            from voice.speaker import MockSink
+
+            assert self.script is not None, "mock runner needs a script"
+            self.sink = MockSink()
+            frames = _make_mock_frames(self.script, self.directed, voice)
+            self.mic = MockMic(frames, frame_bytes=G1_FRAME_BYTES)
+            # the wake phrases come from the config's list, the sleep list
+            # stays the module default; the pump reads kws.phrases and
+            # kws.sleep_phrases on every lane
+            self.kws = MockKws(
+                script=self.script["kws"],
+                phrases=list(getattr(voice, "wake_phrases", None) or ()),
+            )
+            chain = self.stack.get("chain")
+            if chain is not None:
+                # swap only ASR/TTS; cascade, brain, executor, hooks and
+                # gateway stay real
+                chain.submit = MockWhisper(self.script["transcripts"])
+                chain.tts = MockPiper()
+                chain.sink = self.sink  # the LED signal has no effect in mock mode
+            from voice.transcript import TranscriptBackend
+            backend = self.stack.get("session")
+            if isinstance(backend, TranscriptBackend):
+                # the transcript lane keeps real boundaries, but under
+                # --audio mock it gets the same mocks: never a live whisper
+                # endpoint or a real piper binary
+                backend._submit = MockWhisper(self.script["transcripts"])
+                backend._tts = MockPiper()
+            self.mock = True
+        elif args.audio == "laptop":
+            from voice.mic import SounddeviceMic
+            from voice.speaker import SounddeviceSink
+
+            self.sink = SounddeviceSink(sample_rate=G1_SAMPLE_RATE)
+            self.mic = SounddeviceMic(sample_rate=G1_SAMPLE_RATE)
+            self._maybe_real_kws(voice)
+            self.mock = False
+        else:  # g1: robot multicast mic + PlayStream speaker
+            from voice.mic import G1Mic
+            from voice.speaker import G1Speaker
+
+            self.sink = G1Speaker(
+                app_name=voice.speaker_app_name,
+                sample_rate=G1_SAMPLE_RATE,
+                cap_bytes=int(voice.speaker_cap_bytes),
+            )
+            self.mic = G1Mic(
+                group=voice.multicast_group,
+                port=int(voice.multicast_port),
+            )
+            self._maybe_real_kws(voice)
+            self.mock = False
+
+        self.energy = self._build_energy_gate(voice)
+        from voice.echo_guard import EchoGuard
+
+        self.echo = EchoGuard(coupling=float(voice.echo_coupling))
+
