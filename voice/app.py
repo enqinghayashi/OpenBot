@@ -1354,3 +1354,15 @@ class Runner:
 # trims to '' and drops silently: never answer your own wake word
 
 
+def _wake_name_from_phrases(phrases: Optional[List[str]]) -> Optional[str]:
+    """The embodied name from the first '<greeting> <name>' wake phrase.
+
+    The KWS engine's own phrase list is the authority (voice.kws
+    StewardKws).  Returns None for a phrase set no greeting head starts
+    (a 'sleep'-only set), so the trim degrades to head-only stripping.
+    """
+    for p in phrases or ():
+        m = re.match(r"^(?:hey|hi|hello)\s+(\S+)$", p, re.IGNORECASE)
+        if m:
+            return m.group(1)
+    return None
