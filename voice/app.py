@@ -1140,3 +1140,9 @@ class Runner:
                 log.exception("sink.play failed")
                 self.error_flag = True
 
+    def is_muted(self) -> bool:
+        """True while the stop-talking mute window is open: the pump
+        drops completed utterances SILENTLY (no whisper, no speech — the
+        small-noise decline loop cannot re-raise the prompt)."""
+        return time.monotonic() < self._muted_until
+
