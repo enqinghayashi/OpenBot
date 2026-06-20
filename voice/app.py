@@ -1319,3 +1319,9 @@ class Runner:
             self.record({"event": "whisper_error", "error": str(exc)})
             return ""
 
+    def _speak_decline(self) -> None:
+        from voice.cascade import WHISPER_DECLINE
+
+        self.speak(WHISPER_DECLINE)
+        self.record({"event": "whisper_decline", "reply": WHISPER_DECLINE})
+
