@@ -1183,3 +1183,16 @@ class Runner:
         # off switch, and a 20 s mute on top would keep the lane deaf
         self.stop_talking(0.0)
 
+    def stop_talking(self, mute_s: float = STOP_TALKING_MUTE_S) -> None:
+        """The 'stop talking' command's effect: cut current speech NOW
+        (the sink discards its paced queue and ends the stream), open
+        the echo guard's playing window, and mute the pump for
+        ``mute_s``.  Safe to call from the pump thread (play_lock is the
+        speaker path's own — sink.stop is the G1Speaker's own lock)."""
+        self.level.set_playing(b"")
+        try:
+            self.sink.stop()
+        except Exception:  # noqa: BLE001 — a dead speaker must never break the mute
+            log.exception("sink.stop failed")
+        self._muted_until = time.monotonic() + mute_s
+
