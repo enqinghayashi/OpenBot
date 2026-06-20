@@ -268,3 +268,168 @@ def _decode_payload(payload: bytes) -> Any:
         return json.loads(payload.decode("utf-8", "replace"))
     except ValueError as exc:
         raise WhisperError("whisper /inference returned non-JSON: {}".format(exc))
+
+
+class WhisperSubmit:
+    """whisper.cpp ASR submit callable (the chain's default ``submit``).
+
+    Keeps a whisper.cpp server answering on ``url``: lazily Popen'd on
+    first use, or reused when one is already answering (probed first —
+    an operator/deploy-kit-started server is never shadowed by a second
+    process).  ``submit(pcm16)`` POSTs the utterance as a WAV and
+    returns the transcript ('' = nothing heard).  All of this is lazy —
+    the constructor performs no I/O and whisper.cpp is never imported.
+
+    Construction is lazy and idempotent exactly like StewardKws' engine
+    build (voice/kws.py pattern); failures raise WhisperError, which the
+    chain turns into the spoken decline (L2).
+    """
+
+    def __init__(
+        self,
+        url: str = WHISPER_URL,
+        model: str = "tiny.en-q5_1",  # 2026-09-04 pick, measured 1.52 s
+        model_path: Optional[str] = None,
+        bin_path: str = "whisper-server",
+        sample_rate: int = 16000,
+        launch_timeout_s: float = WHISPER_LAUNCH_TIMEOUT_S,
+        submit_timeout_s: float = WHISPER_SUBMIT_TIMEOUT_S,
+    ) -> None:
+        """Pure state capture — NO I/O here (the constructor I/O-free
+        invariant, pinned by test_constructor_defaults_and_boundaries):
+        probing, ``model_path``/``bin_path`` resolution and the Popen all
+        happen lazily on the first ``submit``, never in ``__init__``.
+
+        ``url``: the whisper.cpp /inference endpoint to keep answering
+        (probed before any launch; an operator-started server is reused).
+        ``model``: the model name used to build the layout fallback
+        ``voice/models/ggml-<model>.bin``.  ``model_path``: explicit
+        model file — wins when given; ``None`` falls back at LAUNCH time
+        to that layout file ONLY when it exists.  ``bin_path``: the
+        whisper-server binary, resolved at LAUNCH time — a path
+        containing a separator is used as-is; a BARE name first tries the
+        cwd-relative deploy layout ``voice/models/<bin_path>`` when that
+        file exists AND is executable, falling back to the bare name (on
+        PATH) only when it does not.  ``sample_rate``: the PCM16 rate of
+        submitted utterances.  ``launch_timeout_s`` / ``submit_timeout_s``:
+        the L1 bounds for the launch window and one /inference POST."""
+        self.url = url
+        self.model = model
+        self.model_path = model_path
+        self.bin_path = bin_path
+        self.sample_rate = sample_rate
+        self.launch_timeout_s = launch_timeout_s
+        self.submit_timeout_s = submit_timeout_s
+        self._lock = threading.Lock()
+        self._proc = None  # type: Optional[subprocess.Popen]
+
+    def __call__(self, pcm16: bytes) -> str:
+        """Transcribe one utterance (16 kHz mono PCM16) to text; '' when
+        the server heard nothing (the chain then speaks the canned
+        decline, L2)."""
+        if not pcm16:
+            return ""
+        self._ensure_server()
+        code, payload = self._post(
+            _wav_bytes(pcm16, self.sample_rate), self.submit_timeout_s
+        )
+        if code != 200:
+            raise WhisperError(
+                "whisper /inference returned HTTP {}: {}".format(
+                    code, payload[:300]
+                )
+            )
+        data = _decode_payload(payload)
+        text = data.get("text") if isinstance(data, dict) else None
+        if text is None:
+            raise WhisperError(
+                "whisper /inference payload has no 'text': {!r}".format(
+                    str(data)[:200]
+                )
+            )
+        return str(text).strip()
+
+    # ---------------------------------------------------- keeping the server alive
+
+    def _ensure_server(self) -> None:
+        """Make sure a whisper.cpp server answers on ``url`` (lazy, once):
+        reuse one already answering, else Popen one and wait (bounded by
+        ``launch_timeout_s``), else a loud WhisperError.  All under one
+        lock; idempotent and cheap after the first call."""
+        with self._lock:
+            proc = self._proc
+            if proc is not None and proc.poll() is None:
+                return  # still up
+            if self._probe_repeat(min(2.0, self.launch_timeout_s)):
+                log.debug("offline chain: whisper server already answering on %s", self.url)
+                return
+            model = self._resolve_model()
+            host = urlparse(self.url).hostname or "127.0.0.1"
+            port = urlparse(self.url).port or 8082
+            bin_path = self._resolve_bin()  # launch time only
+            try:
+                proc = subprocess.Popen(
+                    [bin_path, "-m", model, "--host", host, "--port", str(port)],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                )
+            except OSError as exc:
+                raise WhisperError(
+                    "cannot launch the whisper.cpp server ({!r}): {}".format(
+                        bin_path, exc
+                    )
+                )
+            self._proc = proc
+            log.info(
+                "offline chain: launched whisper.cpp server (pid %s, %s:%s, model %s)",
+                proc.pid, host, port, model,
+            )
+            started = time.monotonic()
+            deadline = started + self.launch_timeout_s
+            while time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    tail = self._drain_stderr(proc)
+                    raise WhisperError(
+                        "whisper.cpp server exited {} at startup: {}".format(
+                            proc.returncode, tail or "no stderr"
+                        )
+                    )
+                if self._probe():
+                    log.info(
+                        "offline chain: whisper.cpp server ready in %.1fs",
+                        time.monotonic() - started,
+                    )
+                    return
+                time.sleep(0.25)
+            # launch window expired: kill and reap the child
+            # (bounded, like close()), drop self._proc so
+            # no later submit trusts it; next one relaunches
+            self._proc = None
+            try:
+                proc.kill()
+                proc.wait(timeout=5.0)
+            except Exception as exc:  # noqa: BLE001 - teardown must not raise
+                log.debug(
+                    "whisper server teardown after launch timeout raised: %s", exc
+                )
+            raise WhisperError(
+                "whisper.cpp server did not accept connections within {} s "
+                "(pid {} killed)".format(self.launch_timeout_s, proc.pid)
+            )
+
+    def _resolve_model(self) -> str:
+        """The whisper.cpp model file the server is launched with.
+        ``model_path`` wins; None falls back to the standard deploy
+        layout ``voice/models/ggml-<model>.bin`` ONLY when that file
+        exists (a check, never a guess); otherwise an explicit error."""
+        if self.model_path is not None:
+            return self.model_path
+        candidate = os.path.join("voice", "models", "ggml-" + self.model + ".bin")
+        if os.path.isfile(candidate):
+            return candidate
+        raise WhisperError(
+            "no whisper.cpp model to launch: pass model_path= or place the "
+            "model at {} (model={!r})".format(candidate, self.model)
+        )
+
