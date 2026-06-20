@@ -1333,3 +1333,12 @@ class Runner:
     def capture(self, timeout_s: float) -> Optional[str]:
         return make_round_capture(self.stack["slot"])(timeout_s)
 
+    def install_voice(self) -> None:
+        """Wire the spoken paths the stack deferred: the confirm round's
+        speak + the question lane's speak/capture.  Installed for BOTH
+        lanes: the session's L9 intercept owns query_user while the
+        realtime lane is live (the brain stack is not in use), and the
+        cascade — which the director may run in either process — needs
+        the spoken question path whenever it is the active lane."""
+        self.stack["speak_ref"][0] = self.speak
+        self.stack["question_backend"].set_voice(self.speak, self.capture)
