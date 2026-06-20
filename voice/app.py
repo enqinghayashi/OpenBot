@@ -1245,3 +1245,16 @@ class Runner:
         except Exception:  # noqa: BLE001
             log.exception("stop spotter note_spoken failed")
 
+    def _tts(self) -> Callable[[str], Tuple[bytes, int]]:
+        chain = self.stack.get("chain")
+        if chain is not None:
+            return chain.tts  # offline lane's TTS (real or mock)
+        from voice.cascade import PiperTTS
+
+        return PiperTTS(
+            bin_path=str(self.cfg.voice.piper_bin),
+            voice=str(self.cfg.voice.piper_voice),
+        )
+
+    # -- who plays the cloud reply audio ----------------------------------------
+
