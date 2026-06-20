@@ -1258,3 +1258,28 @@ class Runner:
 
     # -- who plays the cloud reply audio ----------------------------------------
 
+    def _on_audio_delta(self, name: str, payload: dict) -> None:  # noqa: ARG001
+        """The session's ``audio`` events, played (Fix A).
+
+        Both cloud lanes release reply audio as session ``audio`` events
+        — base64 PCM16 24 kHz chunks (session.py:1426/1443: the realtime
+        wire's response.output_audio.delta AND the transcript lane's
+        piper re-emit, transcript.py _speak).  Nothing consumed them, so
+        a cloud reply was never played and PlayingLevel never armed —
+        the silent-robot defect.  Playing here funnels through the ONE
+        play path (:meth:`play_pcm` — it sets PlayingLevel BEFORE
+        sink.play, so EchoGuard admits nothing the robot is saying) with
+        the same resampler/rate the chain-worker reply uses (1222/1595);
+        the session already holds the 0.6 s lead + 60 s cap (L6), so
+        every delta is real reply audio.
+        """
+        raw = str(payload.get("delta") or payload.get("data") or "")
+        if not raw:
+            return
+        try:
+            pcm24 = base64.b64decode(raw)
+        except Exception:  # noqa: BLE001 — a bad chunk must not kill the lane
+            log.error("audio: bad delta (base64) %d bytes", len(raw))
+            return
+        self.play_pcm(pcm24, 24000)
+
