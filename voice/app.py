@@ -1083,3 +1083,34 @@ class Runner:
 
     # -- watching the mic for a dead stream ------------------------------------
 
+    def _mic_watchdog(self) -> None:
+        """Dead stream must never look like silence (Fix B).
+
+        The pumps stamp :attr:`_last_frame_t` on every frame; when no
+        frame arrived for ``_stall_limit_s`` the stream is dead (the
+        Explore-app voice method toggled off, the robot powered down) —
+        G1Mic then parks in its 2 s recv timeout forever, which a
+        silent-app idle must never pass as a quiet room.  Non-once:
+        loud ERROR every MIC_STALL_WARN_EVERY_S — multicast membership
+        persists, so toggling the setting back ON recovers mid-run
+        without a restart.  --once: bounded abort (rc=1) via the
+        error_flag/stop gates, exactly like a pump failure.  Mock audio
+        is exempt: a scripted pump ends by design and must never look
+        stalled.
+        """
+        if self.args.audio == "mock":
+            return
+        age = time.monotonic() - self._last_frame_t
+        if age <= self._stall_limit_s:
+            return
+        if self.args.once:
+            self.set_error(
+                "mic stall {:.0f}s: no 5555 frames (Explore app 'Voice "
+                "interaction method' OFF or the robot not powered)".format(age)
+            )
+            return
+        if time.monotonic() - self._last_warn_t >= MIC_STALL_WARN_EVERY_S:
+            self._last_warn_t = time.monotonic()
+            log.error("MIC STALL %.0fs: no 5555 frames (Explore app voice "
+                      "method = WAKE UP MODE? robot powered?)", age)
+
