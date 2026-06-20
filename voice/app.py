@@ -1124,3 +1124,19 @@ class Runner:
 
     # -- the play and speak path -----------------------------------------------
 
+    def play_pcm(self, pcm: bytes, rate: int) -> None:
+        """The ONE play path: playing-level tracking (echo guard) +
+        piper 22050 Hz -> G1 16 kHz contract resample + sink, all under
+        the play lock (the pump's whisper decline can race the chain
+        worker's reply)."""
+        if not pcm:
+            return
+        with self.play_lock:
+            self.level.set_playing(pcm)
+            pcm16 = _resample_pcm16(pcm, int(rate), G1_SAMPLE_RATE)
+            try:
+                self.sink.play(pcm16)
+            except Exception:  # noqa: BLE001 — a dead speaker must not kill
+                log.exception("sink.play failed")
+                self.error_flag = True
+
