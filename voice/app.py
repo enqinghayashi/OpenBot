@@ -1428,3 +1428,12 @@ def make_wake_leak_re(name: Any) -> "re.Pattern[str]":
     )
 
 
+def trim_wake_leak(text: str, wake_re: "re.Pattern[str]") -> str:
+    """Strip ONE leading wake/vocative from an asr transcript.
+
+    Only text that STARTS 'hey/hi/hello' is touched; a name-head without
+    a greeting ('stewart, ...') passes through — that form is layer 1
+    (the brain's name-pinned strip).
+    """
+    m = wake_re.match(text)
+    return text[m.end():] if m else text
