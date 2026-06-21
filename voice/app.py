@@ -1922,3 +1922,507 @@ def _attach_frame_hook(session: Any, stack: Dict[str, Any], cfg: Any) -> bool:
     return True
 
 
+def _run_realtime(
+    cfg: Any,
+    args: argparse.Namespace,
+    stack: Dict[str, Any],
+    script: Optional[Dict[str, List[Any]]] = None,
+) -> int:
+    """The cloud lane: asyncio loop + mic pump thread + director workers.
+
+    The session owns the query_user two-phase (L9) and all turn laws;
+    the app executes non-intercepted tool calls on a worker thread
+    through the SAME ToolExecutor the offline lane uses (confirm gate +
+    verifier apply) and answers via respond_tool_result.
+
+    THE DIRECTOR is the lane authority (director.py — the only
+    director).  It starts ONLINE (lane 'realtime') and is fed the
+    session events (turn bookkeeping + failover + session_expired) plus
+    the lane's own loud-exit signal; it announces transitions through
+    the app's speak path.  Lane switches happen ONLY as director
+    transitions at conversation boundaries — never mid-utterance: the
+    pump reads director.state once per completed utterance and routes
+    that utterance to the realtime wire (ONLINE/DEGRADING/REOPENING) or
+    the offline cascade (OFFLINE_CASCADE), which is built for this
+    process too.  KWS wake/sleep words stay INPUT GATING only.
+    """
+    import asyncio
+
+    # the command grammar this lane's cascade branch searches; both patterns
+    # must be imported here or the first cascade utterance raises NameError
+    from brain.agent.offline_brain import STOP_TALKING_RE, TURN_OFF_RE
+    # the motion halt law, imported rather than re-spelled: the offline lane
+    # and the fastpath classifier scan these exact functions, so 'stop' means
+    # one thing everywhere
+    from brain.agent.fastpath import _halt_intent, _normalize_for_halt, _strip_heard_name
+    from voice.cascade import OfflineChainError
+    from voice.director import OFFLINE_CASCADE, Director
+    from voice.session import VoiceSession
+
+    runner = Runner(cfg, args, stack, script)
+    runner.install_voice()
+    session = VoiceSession(stack["session"])
+    _attach_frame_hook(session, stack, cfg)
+    slot = stack["slot"]
+    chain = stack["chain"]
+    work_q: "queue.Queue[Any]" = queue.Queue()
+    frame_s = G1_FRAME_BYTES / 2 / float(cfg.voice.sample_rate)
+    once_done = threading.Event()
+
+    # -- the director, the only lane authority
+    # backend=session gives the default reset; the boundary source is the
+    # session's own half-duplex gate
+    # the probe must match the lane's wire: sync health_probe() on the
+    # transcript lane, the client's 'connected' flag on the realtime lane
+    # probing the wrong one pins the lane in OFFLINE_CASCADE -> REOPENING
+    # forever, announcing every ~8 s; a raising probe is logged, not raised
+    chain_busy = False  # cascade turn boundary (a reply is in flight)
+    chain_lock = threading.Lock()
+
+    def _boundary_open() -> bool:
+        if not session.gate_open:
+            return False
+        with chain_lock:
+            return not chain_busy
+
+    def _lane_probe() -> bool:
+        backend = stack["session"]
+        health = getattr(backend, "health_probe", None)
+        if callable(health):
+            return bool(health())
+        return bool(getattr(getattr(backend, "_client", None), "connected", False))
+
+    director = Director(
+        backend=session,
+        probe=_lane_probe,
+        speak=runner.speak,  # announcements use the app's speak path
+        boundary_source=_boundary_open,
+        # the actual lane: 'realtime' or 'transcript', whichever this
+        # process runs
+        cfg={"lane": stack["lane"]},
+    )
+
+    def _feed_director(name: str, payload: Optional[Dict[str, Any]] = None) -> None:
+        try:
+            director.on_event(name, payload)
+        except Exception:  # noqa: BLE001 — one bad event must not kill the lane
+            log.exception("director event %r failed", name)
+
+    def _stop_intent(text: str) -> bool:
+        """True when the utterance is an explicit MID-TASK HALT.
+
+        The law is fastpath's, not a second regex written here.  Raw text
+        is tested first so a bare 'stop' halts before any name handling;
+        the vocative-stripped text is tested second so a LEADING NAME
+        cannot push the halt word out of the scan window ('stewart, could
+        you stop' -> 'could you stop' -> 'stop' is inside the first four
+        tokens only after the strip).
+
+        KNOWN LIMIT, deliberately not papered over: the window is the
+        first four tokens, so a halt word buried deeper survives only if
+        everything before it is one strippable name ('hey stewart, could
+        you stop' still misses — 'hey' is not stripped).  Widening it is
+        a change to the ONE halt law in fastpath, which every lane shares;
+        it must not be widened here alone, or 'stop' starts meaning
+        different things on different lanes.
+        """
+        if _halt_intent(_normalize_for_halt(text)):
+            return True
+        stripped = _strip_heard_name(text)
+        return stripped != text and _halt_intent(_normalize_for_halt(stripped))
+
+    def _fire_stop(text: str) -> None:
+        """Deliver a mid-task stop to the gateway, OFF the dispatch thread.
+
+        THE OPERATOR ASK (2026-10-01, verbatim): "i want the voice delivery
+        too, such that i can tell the robot to stop doing what it is doing
+        using natural language speaking, stop the search, stop what you
+        looking for, stop picking up, stop placing, stop whatever you
+        currently doing, 'cancel'".
+
+        TWO BYPASSES, BOTH DELIBERATE:
+
+        * NOT through ``stack['executor']``.  ``ToolExecutor`` documents
+          that it is never re-entered (its ``_current_tool`` and budget
+          bookkeeping are shared), and the pick we are interrupting is
+          living inside it at this very moment — a second ``execute()``
+          would corrupt that task's state instead of interrupting it.
+        * NOT through the session's tool path.  ``session._on_function_call``
+          REFUSES any call once tool results are flowing
+          (voice/session.py:1173-1179), which is precisely the state a
+          long pick is in.  That is why a spoken 'stop' could never have
+          worked by asking the model to call the registered ``stop`` tool.
+
+        The gateway is the right seam: it is thread-per-connection
+        (gateway/gateway_node.py:4195-4210) and its cancel opens a
+        SEPARATE engine connection (``cancel_engine`` -> ``_send_unix_verb``),
+        so this lands while the pick is still moving rather than behind it.
+        ``_do_cancel`` covers all three lanes in one call — the engine
+        (pick/place), the walk FSM, and the search that rides it.  A stop
+        that arrives when nothing is running is refused by the engine
+        ("no task running") rather than armed for the NEXT task, so a late
+        stop is a no-op, never a trap.
+        """
+        def work() -> None:
+            try:
+                out = stack["gateway_backend"].stop({})
+                log.info("mid-task stop delivered (%r) -> %s",
+                         text[:60], str(out)[:200])
+                runner.record({"event": "stop", "text": text,
+                               "result": str(out)[:200]})
+            except Exception:  # noqa: BLE001 — never a silent zero
+                log.exception("mid-task stop FAILED (%r)", text[:60])
+                runner.record({"event": "stop", "text": text,
+                               "error": "delivery failed"})
+
+        threading.Thread(target=work, daemon=True,
+                         name="mid-task-stop").start()
+
+    def on_utterance(name: str, payload: dict) -> None:
+        # serves both user_text (gate open) and dropped_utterance (gate shut)
+        # the drop policy: a pending motion call keeps the gate shut, so the
+        # confirm answer turns up here, consumed and never replayed
+        # that is why a mid-task stop lives here: with a pick in flight, 'stop'
+        # arrives as dropped_utterance, and this is the only subscription that
+        # sees the text
+        text = str(payload.get("text") or "")
+        # 'turn off' on the session path: the KWS grammar is wake-only (the
+        # default sleep phrase list is empty) and there is no local transcript
+        # outside the cascade, so this is the only spot this lane can hear it;
+        # latch off and cut speech, a pending round just times out
+        if TURN_OFF_RE.search(text):
+            log.info("turn-off: latching the lane OFF (%r)", text[:80])
+            runner.close_listen_window()
+            runner.record({"event": "turn_off", "text": text})
+            return
+        # order is load-bearing: 'stop talking' also begins with the halt
+        # word 'stop', so checking the halt first would turn a request for
+        # quiet into a motion halt; the speech stop is checked first
+        if STOP_TALKING_RE.search(text):
+            log.info("stop-talking: cutting speech (%r)", text[:80])
+            runner.stop_talking()
+            runner.record({"event": "stop_talking", "text": text})
+            return
+        if _stop_intent(text):
+            _fire_stop(text)
+            return
+        # record the operator's words for the place-destination fallback and
+        # the open_hand guard; the registry and the executor share the scene
+        # graph, so this is the same self state the tools read
+        # deliberately the narrow hook, not note_utterance, which also arms the
+        # walk-only and task-done refusals; a failure never breaks delivery
+        _ss = getattr(stack.get("scene_graph"), "self_state", None)
+        if _ss is not None:
+            try:
+                _ss.note_operator_words(text)
+            except Exception:  # noqa: BLE001 - the words record never blocks the turn
+                log.exception("operator-words record failed (%r)", text[:60])
+        slot.deliver(text)
+
+    def on_tool_call(name: str, payload: dict) -> None:
+        if payload.get("intercepted"):
+            return  # intercepted: the session owns the two-phase answer
+        call_id = str(payload.get("call_id") or "")
+        tool_name = str(payload.get("name") or "")
+        arguments = payload.get("arguments") or {}
+        # one INFO line per tool call, with the arguments, so the place label
+        # is readable; logging never blocks the call
+        try:
+            log.info("tool call %s %s", tool_name,
+                     json.dumps(arguments, sort_keys=True, default=str)[:400])
+        except Exception:  # noqa: BLE001 - logging never blocks a tool call
+            log.info("tool call %s (arguments not printable)", tool_name)
+
+        def work() -> None:
+            try:
+                _reset_utterance_budget(stack["executor"])
+                outcome = stack["executor"].execute(tool_name, arguments)
+                result_text = outcome.text
+            except Exception as exc:  # noqa: BLE001 — never a silent zero
+                log.exception("director tool %r failed", tool_name)
+                result_text = "ERROR: director tool execution failed: {}".format(exc)
+            session.respond_tool_result(call_id, result_text)
+
+        threading.Thread(target=work, daemon=True, name="director-tool").start()
+
+    session.on_event("user_text", on_utterance)
+    session.on_event("dropped_utterance", on_utterance)
+    session.on_event("tool_call", on_tool_call)
+    # cloud reply audio: the session emits 'audio' events on both lanes (the
+    # realtime wire's audio deltas and the transcript lane's piper re-emit)
+    # plus the reply text as 'spoken'
+    # play_pcm arms PlayingLevel before the sink, so the echo guard never
+    # admits the robot's own voice
+    session.on_event("audio", runner._on_audio_delta)
+    session.on_event("spoken", runner._on_spoken_text)
+    # always-on local stop: 'stop' / 'cancel' is heard even while the robot
+    # talks
+    _build_stop_spotter(runner, session, _fire_stop, args.audio)
+    # director events straight off session events: turn bookkeeping keeps
+    # the boundary, failover and session_expired are lane signals
+    for _event in (
+        "gate_changed", "tool_call", "query_waiting", "answer",
+        "turn_complete", "failover", "session_expired",
+    ):
+        session.on_event(_event, _feed_director)
+
+    if args.once:
+
+        def _once(name: str, payload: dict) -> None:  # noqa: ARG001
+            once_done.set()
+
+        session.on_event("turn_complete", _once)
+
+    def chain_worker() -> None:
+        nonlocal chain_busy
+        while not runner.stop.is_set():
+            try:
+                text = work_q.get(timeout=0.2)
+            except Exception:  # noqa: BLE001 — empty after timeout
+                continue
+            if text is None:
+                break
+            with chain_lock:
+                chain_busy = True
+            _feed_director("gate_changed", {"open": False})  # the turn is opening
+            try:
+                _reset_utterance_budget(stack["executor"])
+                outcome = chain.handle_utterance(text)
+            except OfflineChainError as exc:
+                log.error("offline chain failed (stage=%s): %s", exc.stage, exc)
+                runner.record(
+                    {"event": "chain_error", "stage": exc.stage, "error": str(exc)}
+                )
+            except Exception:  # noqa: BLE001 — one bad utterance must not kill
+                log.exception("offline chain failed for %r", text)
+                runner.record({"event": "chain_error", "error": "unexpected"})
+            else:
+                _pcm = outcome.pcm or b""
+                log.info(
+                    "brain reply: source=%s text=%r pcm=%dB",
+                    outcome.source,
+                    (outcome.reply_text or "")[:120],
+                    len(_pcm),
+                )
+                runner.record(
+                    {
+                        "event": "reply",
+                        "text": outcome.reply_text,
+                        "source": outcome.source,
+                        "pcm_bytes": len(_pcm),
+                    }
+                )
+                runner.note_spoken(outcome.reply_text)  # the robot's own reply
+                runner.play_pcm(_pcm, outcome.sample_rate)
+                log.info(
+                    "playback queued: %d ms (%d Hz)",
+                    len(_pcm) * 1000 // 2 // (outcome.sample_rate or 16000),
+                    outcome.sample_rate or 16000,
+                )
+            with chain_lock:
+                chain_busy = False
+            _feed_director("turn_complete", {"lane": "offline"})  # boundary open again
+            if args.once:
+                once_done.set()  # turn done, answered or refused
+
+    def pump_worker() -> None:
+        kws = runner.kws
+        try:
+            for frame in runner.mic.iter_frames():
+                if runner.stop.is_set():
+                    break
+                # stamp the mic-liveness clock (mock too; the watchdog
+                # skips mock audio anyway)
+                runner._last_frame_t = time.monotonic()
+                # every raw frame hits the stop spotter first, before the
+                # echo guard or the mute law can drop it
+                if runner.stop_spotter is not None:
+                    runner.stop_spotter.submit(frame)
+                if args.audio == "mock":
+                    # pace the script at the G1 cadence: the gate's
+                    # wall-clock cooldown needs real time
+                    time.sleep(frame_s)
+                if not runner.echo.admit(frame, runner.level.peak()):
+                    continue
+                # the energy gate drives sessions without --directed-mode:
+                # only completed utterances reach the lane, then the server
+                # VAD closes the turn
+                utt = runner.energy.feed(frame)
+                if not utt:
+                    continue
+                # the wake gate: input only while the latch is on
+                # a wake match latches it on and the same utterance keeps
+                # going; a sleep match latches it off and is eaten
+                # no expiry: without a local whisper outside the cascade,
+                # 'turn off' arrives through the session transcript instead
+                if kws is not None:
+                    try:
+                        phrase = kws.feed(utt)
+                    except Exception as exc:  # noqa: BLE001
+                        log.error("kws failed: %s", exc)
+                        runner.error_flag = True
+                        runner.stop.set()
+                        return
+                    if phrase is not None:
+                        if phrase in kws.sleep_phrases:
+                            runner.close_listen_window()
+                            log.info("kws: sleep (%r)", phrase)
+                            runner.record(
+                                {"event": "kws", "action": "sleep", "phrase": phrase}
+                            )
+                            continue
+                        if phrase in kws.phrases:
+                            runner.open_listen_window()
+                            log.info("kws: wake (%r)", phrase)
+                            runner.record(
+                                {"event": "kws", "action": "wake", "phrase": phrase}
+                            )
+                    if not runner.is_listening():
+                        continue  # asleep: only a summon gets through
+                if runner.is_muted():
+                    # mute window: drop the utterance silently (no whisper,
+                    # no decline, no speech) so the prompt loop cannot
+                    # re-raise; answering resumes after the window
+                    log.debug("muted: dropping completed utterance")
+                    continue
+                if director.state == OFFLINE_CASCADE:
+                    # the director says offline, so this runs the cascade;
+                    # the state is read once per completed utterance, never
+                    # mid-utterance
+                    text = runner.whisper(utt)
+                    if TURN_OFF_RE.search(text):
+                        # 'turn off' on the cascade path, this lane's only
+                        # local transcript: latch off, cut speech, nothing
+                        # routed onward
+                        log.info("turn-off: latching the lane OFF (%r)", text[:80])
+                        runner.close_listen_window()
+                        runner.record({"event": "turn_off", "text": text})
+                        continue
+                    if STOP_TALKING_RE.search(text):
+                        # 'stop talking': cut speech now and mute the pump;
+                        # nothing is routed to the chain and there is no
+                        # decline, else the prompt comes right back
+                        runner.stop_talking()
+                        runner.record({"event": "stop_talking", "text": text})
+                        continue
+                    if not text.strip():
+                        # empty transcript: speak the decline, never skip
+                        # silently
+                        runner._speak_decline()
+                        continue
+                    runner.record({"event": "utterance", "text": text})
+                    if slot.deliver(text):
+                        # a round is waiting: this utterance is the
+                        # answer, never a command
+                        runner.record({"event": "answer", "text": text})
+                        continue
+                    work_q.put(text)
+                    if args.once:
+                        once_done.wait()
+                        runner.stop.set()
+                    continue
+                # realtime wire: resample 16 kHz up to 24 kHz
+                chunk = _resample_pcm16(utt, G1_SAMPLE_RATE, 24000)
+                session.upload_mic_audio(chunk)
+        except Exception:  # noqa: BLE001 — a dead mic ends the lane loudly
+            log.exception("mic pump failed")
+            runner.error_flag = True
+            runner.stop.set()
+        finally:
+            log.info("mic pump ended")
+            runner.stop.set()
+
+    def _lane_task_done(task: Any) -> None:
+        """The lane's loud-exit signal: run_forever returning with an
+        exception (auth error, retry exhaustion) is the director's
+        documented 'hard' lane signal; a deliberate close/cancel feeds
+        nothing."""
+        if task.cancelled():
+            return
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is not None:
+            _feed_director("hard", {
+                "detail": "{}: {}".format(type(exc).__name__, exc),
+            })
+
+    async def amain() -> None:
+        session.start()
+        lane_task = asyncio.ensure_future(stack["session"].run_forever())
+        lane_task.add_done_callback(_lane_task_done)
+        pump = threading.Thread(target=pump_worker, daemon=True, name="mic-pump")
+        chain = threading.Thread(target=chain_worker, daemon=True, name="realtime-chain")
+        pump.start()
+        chain.start()
+        # arrival announcements, opt-in via cfg.voice.arrival_announce
+        _start_arrival_announcer(runner)
+        try:
+            while not runner.stop.is_set():
+                if args.once and once_done.is_set():
+                    break
+                # watchdog on the idle tick: a parked mic yields
+                # nothing, so only this loop can spot the frame age
+                runner._mic_watchdog()
+                # idle tick: the director's lazy timers evaluate here,
+                # at a conversation boundary, never by wall time
+                _feed_director("tick", {})
+                await asyncio.sleep(0.2)
+            # --once + mock: scripted input can finish before the lane has
+            # answered, and a slow but alive wire needs longer than the pump
+            # budget, so wait for turn_complete, the lane's terminal signal
+            # (OFFLINE_CASCADE) or a horizon tied to the retry ladder
+            # real audio never ends on its own, hence mock-only
+            if (
+                args.once
+                and args.audio == "mock"
+                and not once_done.is_set()
+                and not runner.error_flag
+            ):
+                from voice.realtime import RETRY_LADDER_S
+
+                deadline = time.monotonic() + float(sum(RETRY_LADDER_S))
+                while not once_done.is_set() and not runner.error_flag:
+                    if director.state == OFFLINE_CASCADE:
+                        # the lane gave up by itself (retries exhausted or
+                        # failover), so no answer is coming; the gate below
+                        # decides the exit code
+                        break
+                    if time.monotonic() >= deadline:
+                        break
+                    _feed_director("tick", {})
+                    await asyncio.sleep(0.2)
+        except KeyboardInterrupt:
+            runner.stop.set()
+        finally:
+            runner.stop.set()
+            session.close()
+            try:
+                lane_task.cancel()
+            except Exception:  # noqa: BLE001 — teardown must not raise
+                pass
+        try:
+            runner.mic.close()
+            runner.sink.close()
+        except Exception:  # noqa: BLE001 — teardown must not raise
+            log.exception("audio close failed")
+
+    try:
+        asyncio.run(amain())
+    except KeyboardInterrupt:
+        runner.stop.set()
+    rc = 1 if runner.error_flag else 0
+    if rc == 0 and args.once and not once_done.is_set():
+        # false-success gate: --once promises exactly one turn. An
+        # unreachable wire retries at WARNING and never sets error_flag (only
+        # the mic-pump and KWS paths do), so teardown can return 0 after
+        # printing an empty transcript and score a dead lane as success
+        _die("--once completed no turn: the lane never answered (0 events). "
+             "Nothing was heard or replied to — check the gateway, the "
+             "network wire and the model endpoint. Exit code 1 so a smoke "
+             "run cannot score a dead lane as success.")
+        rc = 1
+    if args.audio == "mock":
+        _print_transcript(runner.transcript)
+    return rc
