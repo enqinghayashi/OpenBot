@@ -433,3 +433,63 @@ class WhisperSubmit:
             "model at {} (model={!r})".format(candidate, self.model)
         )
 
+    def _resolve_bin(self) -> str:
+        """The whisper.cpp ``whisper-server`` binary the server is
+        launched with.  ``bin_path`` containing a path separator is used
+        as-is (an explicit path always wins); a BARE name first tries the
+        cwd-relative deploy layout ``voice/models/<bin_path>`` when that
+        file exists AND is executable (os.path.isfile + os.access X_OK —
+        an existence check, never a guess), falling back to the bare name
+        (resolved on PATH) only when it does not.  Resolution happens at
+        LAUNCH time only — the constructor performs no I/O — so both
+        launch forms (``run_voice.sh`` and a bare ``python3 voice/app.py``,
+        cwd = the deploy root) exec the layout copy deterministically."""
+        if os.sep in self.bin_path:
+            return self.bin_path
+        candidate = os.path.join("voice", "models", self.bin_path)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+        return self.bin_path
+
+    def _probe(self) -> bool:
+        """One probe POST: any HTTP status means the server is up;
+        only a transport failure (refused/timeout) means it is not."""
+        try:
+            _code, _payload = self._post(
+                _silence_wav(self.sample_rate), min(2.0, self.submit_timeout_s)
+            )
+            return True
+        except WhisperError:
+            return False
+
+    def _probe_repeat(self, budget_s: float) -> bool:
+        """Probe until one answers or ``budget_s`` elapses (bounded)."""
+        deadline = time.monotonic() + budget_s
+        while time.monotonic() < deadline:
+            if self._probe():
+                return True
+            time.sleep(0.25)
+        return False
+
+    def _drain_stderr(self, proc: subprocess.Popen) -> str:
+        """Best-effort stderr tail of a dead server (diagnostics only)."""
+        try:
+            _out, err = proc.communicate(timeout=2.0)
+        except Exception:  # noqa: BLE001 - best-effort diagnostics
+            return ""
+        return (err or b"")[-300:].decode("utf-8", "replace").strip()
+
+    def close(self) -> None:
+        """Kill the server process THIS instance launched (never raises;
+        an operator-started server is left alone)."""
+        with self._lock:
+            proc, self._proc = self._proc, None
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.kill()
+                proc.wait(timeout=5.0)
+            except Exception as exc:  # noqa: BLE001 - teardown must not raise
+                log.debug("whisper server teardown raised: %s", exc)
+
+    # -------------------------------------------------------- how the request goes out
+
