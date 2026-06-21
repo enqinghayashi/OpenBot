@@ -2436,3 +2436,91 @@ def _die(message: str) -> None:
     print("ERROR: {}".format(message), file=sys.stderr)
 
 
+def _embodiment_gate(cfg: Any, args: argparse.Namespace) -> Optional[str]:
+    """Refuse to boot a configuration that would LIE about the robot.
+
+    Two boot-time false successes, both found 2026-09-02 and both
+    reproduced on this laptop:
+
+    **(a) real brain + simulated body.**  ``config.yaml`` resolves profile
+    'laptop' -> ``gateway.transport: mock`` -> ``MockGatewayBackend``, whose
+    verbs return ``ok('DONE mock pick ...')``.  ``brain.lane`` still defaults
+    to 'realtime', so the app dials the REAL (billed) cloud endpoint and then
+    reports every motion as done while the arm never moves.  Nothing read
+    ``cfg.profile`` after the load, so an operator running the documented
+    ``python3 voice/app.py --audio g1 --directed-mode`` on the box (no
+    ``--config``) got exactly this.  A mock body is now an explicit choice.
+
+    **(b) real body, gateway down.**  ``GatewayCallerBackend`` opens no
+    socket at construction — connections are per tool call — and the only
+    boot probe checked the CLOUD backend, never the local gateway.  So the
+    app booted rc 0, every preflight green, with the robot lane dead;
+    scene questions then answered "I don't see anything" (an empty scene is
+    indistinguishable from a dead pipeline downstream).  A bounded TCP
+    probe makes that state loud at boot instead of silent forever.
+
+    Returns None to proceed, or the refusal message.
+    """
+    gateway = getattr(cfg, "gateway", None)
+    # normalise exactly as the backend factory does: .strip().lower()
+    # a quoted value like `transport: " mock "` keeps its padding through the
+    # YAML-subset parser, so .lower() alone matches neither "mock" nor "real"
+    # and the gate falls through both branches while the factory builds a
+    # mock; keep these two sites byte-identical
+    transport = str(getattr(gateway, "transport", "mock") or "mock").strip().lower()
+
+    if transport == "mock":
+        # a scripted body is fine for scripted runs and explicit development,
+        # but never silently in front of a live mic
+        if args.audio == "mock" or args.allow_mock_body:
+            log.warning(
+                "SIMULATED BODY: gateway.transport is 'mock' — pick/place/"
+                "open/close will report success WITHOUT moving the robot "
+                "(profile %r)", getattr(cfg, "profile", "?"))
+            return None
+        return (
+            "refusing to start: the resolved config has a SIMULATED body "
+            "(gateway.transport 'mock', profile {!r}) but a live audio lane "
+            "({!r}).\n"
+            "         Motion commands would report success while the robot "
+            "never moves.\n"
+            "         On the robot pass --config config.voice.yaml (or "
+            "config.offline.yaml).\n"
+            "         To use a scripted body deliberately, pass "
+            "--allow-mock-body.".format(
+                getattr(cfg, "profile", "?"), args.audio)
+        )
+
+    if transport != "real":
+        return None
+    if args.skip_gateway_probe:
+        log.warning("gateway probe skipped by --skip-gateway-probe; the app "
+                    "may start blind if the gateway is not up")
+        return None
+
+    host = str(getattr(gateway, "host", "") or "")
+    port = int(getattr(gateway, "port", 0) or 0)
+    if not host or not port:
+        return None  # backend_from_config already refuses placeholder hosts
+
+    from gateway.brain_client import connect_with_timeout
+
+    try:
+        # one bounded resolve + connect: a raw connect would bound only the
+        # connect, not the DNS lookup, so a dead resolver could stall the boot
+        # probe past 2 s
+        with connect_with_timeout(host, port, 2.0):
+            pass
+    except OSError as exc:
+        return (
+            "refusing to start: the gateway at {}:{} is not accepting "
+            "connections ({}).\n"
+            "         The robot lane would be DEAD while the app looked "
+            "healthy — scene questions answer 'I don't see anything' and "
+            "motion is refused.\n"
+            "         Start the gateway node first, then relaunch.\n"
+            "         To start anyway (it will be blind until the gateway "
+            "is up), pass --skip-gateway-probe.".format(host, port, exc)
+        )
+    log.info("gateway reachable at %s:%d", host, port)
+    return None
