@@ -2426,3 +2426,7 @@ def _run_realtime(
     if args.audio == "mock":
         _print_transcript(runner.transcript)
     return rc
+
+
+# ------------------------------------------------ main and the boot checks
+
