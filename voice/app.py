@@ -1523,3 +1523,5 @@ def _start_arrival_announcer(runner: "Runner") -> None:
         name="arrival-announcer",
     ).start()
     return None
+
+
