@@ -1437,3 +1437,5 @@ def trim_wake_leak(text: str, wake_re: "re.Pattern[str]") -> str:
     """
     m = wake_re.match(text)
     return text[m.end():] if m else text
+
+
