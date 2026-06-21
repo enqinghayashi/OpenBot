@@ -2526,3 +2526,50 @@ def _embodiment_gate(cfg: Any, args: argparse.Namespace) -> Optional[str]:
     return None
 
 
+def main(argv: Optional[List[str]] = None) -> int:
+    args = parse_args(list(argv) if argv is not None else sys.argv[1:])
+    _setup_logging(args)
+
+    # 1. config: pure, and a failure never touches the box
+    try:
+        from brain.config_loader import load
+
+        cfg = load(args.config, profile=args.profile)
+    except Exception as exc:  # noqa: BLE001 — ConfigError/ValueError/OSError
+        _die("config load failed: {}".format(exc))
+        return 1
+
+    # 2. brain stack: pure, no box contact on failure
+    try:
+        stack = build_brain_stack(cfg)
+    except Exception as exc:  # noqa: BLE001 — ConfigError/ValueError/...
+        _die("brain stack build failed: {}".format(exc))
+        return 2
+
+    # 2.5 embodiment gate: the only "would this boot lie about the robot?"
+    #     check; one bounded TCP connect, no other box contact
+    refusal = _embodiment_gate(cfg, args)
+    if refusal is not None:
+        _die(refusal)
+        return 2
+
+    # 3. mock script: validated before any audio I/O
+    script: Optional[Dict[str, List[Any]]] = None
+    if args.audio == "mock":
+        try:
+            script = _load_mock_script(args.script)
+        except Exception as exc:  # noqa: BLE001 — bad JSON / shape
+            _die("mock script invalid: {}".format(exc))
+            return 2
+
+    # 4. run: audio I/O starts here, cleanup on exit
+    try:
+        if stack["lane"] in ("realtime", "transcript"):
+            # both cloud lanes share the same VoiceSession loop; the
+            # transcript lane differs only in its backend
+            return _run_realtime(cfg, args, stack, script)
+        return _run_offline(cfg, args, stack, script)
+    except Exception as exc:  # noqa: BLE001 — any runtime failure is loud
+        log.exception("voice app failed: %s", exc)
+        _die("voice app failed: {}".format(exc))
+        return 1
