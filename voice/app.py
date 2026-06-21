@@ -1920,3 +1920,5 @@ def _attach_frame_hook(session: Any, stack: Dict[str, Any], cfg: Any) -> bool:
              "frame seam (topic %s, max_age %.1fs)",
              getattr(vision, "topic", "?"), getattr(vision, "max_age_s", -1.0))
     return True
+
+
