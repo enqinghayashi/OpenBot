@@ -1368,3 +1368,29 @@ def _wake_name_from_phrases(phrases: Optional[List[str]]) -> Optional[str]:
     return None
 
 
+def _wake_names_from_phrases(phrases: Optional[List[str]]) -> List[str]:
+    """EVERY embodied name the wake phrases carry, in first-seen order.
+
+    A phrase set can hold more than one SPELLING of the name — the
+    shipped 'stewart' plus the operator's 'stuwart' (directive
+    2026-09-20) — and the wake-leak trim must strip whichever spelling
+    the recogniser actually produced.
+
+    ``_wake_name_from_phrases`` returns only the FIRST, which is correct
+    for a single-spelling set but leaves every other spelling glued to
+    the command: 'hello stuwart' would trim to 'stuwart' instead of '',
+    so the bare summon would reach the brain as the command 'stuwart',
+    match no lane, and be answered with the decline — the robot
+    answering its own wake word, which is the exact failure this trim
+    exists to prevent.
+    """
+    names: List[str] = []
+    for p in phrases or ():
+        m = re.match(r"^(?:hey|hi|hello)\s+(\S+)$", p, re.IGNORECASE)
+        if m:
+            name = m.group(1)
+            if name not in names:
+                names.append(name)
+    # longest first: a shorter spelling that prefixes a longer one must not
+    # win the alternation
+    return sorted(names, key=len, reverse=True)
