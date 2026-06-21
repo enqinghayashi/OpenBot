@@ -1500,3 +1500,26 @@ def _build_stop_spotter(runner: "Runner", session: Any,
     return spotter
 
 
+def _start_arrival_announcer(runner: "Runner") -> None:
+    """Start the arrival-announce listener thread when the config opts in.
+
+    Reads the gate DEFENSIVELY: cfg.voice.arrival_announce (bool, a
+    config_loader sibling lands it with code default False) may not exist
+    yet — getattr defaults keep app.py safe before that edit lands.
+    Returns None (a no-op) when the flag is off/missing; otherwise starts
+    ONE daemon thread whose body reads arrival lines off the coordinator's
+    AF_UNIX relay and speaks each one through runner.speak (thread-safe
+    under play_lock; the "spoken" transcript entry it records is the
+    desired audit trail).  When the relay is down the thread just retries
+    its connect until runner.stop is set — safe on either lane.
+    """
+    voice_cfg = getattr(runner.cfg, "voice", None)
+    if not bool(getattr(voice_cfg, "arrival_announce", False)):
+        return None
+    threading.Thread(
+        target=arrival_announce.arrival_listener,
+        args=(arrival_announce.SOCKET_PATH, runner.speak, runner.stop),
+        daemon=True,
+        name="arrival-announcer",
+    ).start()
+    return None
