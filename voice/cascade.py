@@ -559,3 +559,173 @@ class PiperTTS:
         self.output_rate = output_rate
         self.tts_timeout_s = tts_timeout_s
 
+    def __call__(self, text: str) -> Tuple[bytes, int]:
+        """Synthesize one reply; (pcm, sample_rate) or PiperError."""
+        try:
+            proc = subprocess.Popen(
+                [self.bin_path, "--model", self.voice, "--output_raw"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except OSError as exc:
+            raise PiperError(
+                "cannot launch piper ({!r}): {}".format(self.bin_path, exc)
+            )
+        try:
+            out, err = proc.communicate(
+                input=(text or "").encode("utf-8"), timeout=self.tts_timeout_s
+            )
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+                proc.wait(timeout=5.0)
+            except Exception:  # noqa: BLE001 - teardown best effort
+                pass
+            raise PiperError(
+                "piper synthesis exceeded {} s; process killed".format(
+                    self.tts_timeout_s
+                )
+            )
+        except OSError as exc:
+            raise PiperError("piper pipe broke: {}".format(exc))
+        if proc.returncode != 0:
+            tail = (err or b"")[-500:].decode("utf-8", "replace").strip()
+            raise PiperError(
+                "piper exited {}: {}".format(proc.returncode, tail or "no stderr")
+            )
+        if not out:
+            raise PiperError(
+                "piper produced no audio for {!r}".format((text or "")[:60])
+            )
+        return out, self.output_rate
+
+
+# ---------------------------------------------------------------------------
+# runs the show
+# ---------------------------------------------------------------------------
+
+
+class OfflineChain:
+    """The offline lane orchestration (plan §3 cascade + §5b offline
+    lane): whisper submit -> OfflineBrain.new_utterance(text,
+    typed=False) -> piper.
+
+    All boundaries are injectable: ``submit`` (default: a
+    :class:`WhisperSubmit`; any callable ``(pcm16: bytes) -> str``),
+    ``brain`` (REQUIRED — anything with ``new_utterance(text, *,
+    typed=False) -> OfflineOutcome``; the app builds the real
+    OfflineBrain over its ToolExecutor/hooks), ``tts`` (default: a
+    :class:`PiperTTS`; any callable ``(text: str) -> (pcm, sample_rate)``),
+    ``sink`` (optional; used ONLY for the L4 LED signal).
+
+    Entry points: :meth:`run_pipeline` (the full audio chain) and
+    :meth:`handle_utterance` (an already-transcribed utterance).  See the
+    module docstring for the laws (L1 timeouts, L2 whisper decline,
+    L3 verdict flow-through, L4 piper retry, L5 no success reporting).
+    """
+
+    def __init__(
+        self,
+        brain: Any,
+        *,
+        submit: Optional[Callable[[bytes], str]] = None,
+        tts: Optional[Callable[[str], Tuple[bytes, int]]] = None,
+        sink: Any = None,
+        whisper_decline: str = WHISPER_DECLINE,
+        brain_timeout_s: float = BRAIN_TIMEOUT_S,
+        whisper_launch_timeout_s: float = WHISPER_LAUNCH_TIMEOUT_S,
+        whisper_submit_timeout_s: float = WHISPER_SUBMIT_TIMEOUT_S,
+        piper_tts_timeout_s: float = PIPER_TTS_TIMEOUT_S,
+    ) -> None:
+        """Validate the four L1 stage timeouts and wire the boundaries.
+        Defaults are the documented production constants (L1): brain
+        ``BRAIN_TIMEOUT_S`` (30 s), whisper launch
+        ``WHISPER_LAUNCH_TIMEOUT_S`` (30 s), whisper submit
+        ``WHISPER_SUBMIT_TIMEOUT_S`` (15 s), piper
+        ``PIPER_TTS_TIMEOUT_S`` (20 s)."""
+        if brain is None or not callable(getattr(brain, "new_utterance", None)):
+            raise ValueError(
+                "OfflineChain requires a brain with "
+                "new_utterance(text, *, typed=False) -> OfflineOutcome"
+            )
+        bad_timeouts = [
+            name
+            for name, value in (
+                ("brain_timeout_s", brain_timeout_s),
+                ("whisper_launch_timeout_s", whisper_launch_timeout_s),
+                ("whisper_submit_timeout_s", whisper_submit_timeout_s),
+                ("piper_tts_timeout_s", piper_tts_timeout_s),
+            )
+            if not value or value <= 0
+        ]
+        if bad_timeouts:
+            raise ValueError(
+                "stage timeouts must be positive (L1: no unbounded waits): "
+                + ", ".join(bad_timeouts)
+            )
+        if whisper_decline is None or not str(whisper_decline).strip():
+            raise ValueError("whisper_decline must be a non-empty string")
+        self.brain = brain
+        self.sink = sink
+        self.whisper_decline = whisper_decline
+        self.brain_timeout_s = brain_timeout_s
+        self.submit = (
+            submit
+            if submit is not None
+            else WhisperSubmit(
+                launch_timeout_s=whisper_launch_timeout_s,
+                submit_timeout_s=whisper_submit_timeout_s,
+            )
+        )
+        self.tts = (
+            tts if tts is not None else PiperTTS(tts_timeout_s=piper_tts_timeout_s)
+        )
+
+    # ------------------------------------------------------- the entry points
+
+    def run_pipeline(self, pcm16: bytes) -> ChainOutcome:
+        """The full audio chain on one utterance (16 kHz mono PCM16):
+        whisper -> brain -> piper.  A whisper failure or an empty
+        transcript speaks the canned decline with NO brain call (L2);
+        anything else flows through handle_utterance."""
+        try:
+            text = self.submit(pcm16)
+        except OfflineChainError:
+            raise  # already a chain failure
+        except Exception as exc:  # noqa: BLE001 - any whisper failure
+            log.warning("offline chain: whisper stage failed: %s", exc)
+            return self._decline(self.whisper_decline, "whisper_decline")
+        if not str(text or "").strip():
+            return self._decline(self.whisper_decline, "whisper_empty")
+        return self.handle_utterance(text)
+
+    def handle_utterance(self, text: str) -> ChainOutcome:
+        """Brain + piper on an already-transcribed utterance.  The reply
+        spoken is the OfflineOutcome's verdict-aware text, byte-for-byte
+        (L3) — the chain never rewrites it."""
+        outcome = self._run_brain(text)
+        if outcome.silent:
+            # speech-stop = no speech
+            # ('stop talking')
+            # _speak never returns empty PCM, so a
+            # silent outcome skips piper; the app's
+            # play_pcm no-ops on an empty buffer
+            return ChainOutcome(
+                reply_text="",
+                pcm=b"",
+                sample_rate=PIPER_OUTPUT_RATE,
+                source="silent",
+                brain_outcome=outcome,
+            )
+        pcm, rate = self._speak(outcome.reply)
+        return ChainOutcome(
+            reply_text=outcome.reply,
+            pcm=pcm,
+            sample_rate=rate,
+            source="brain",
+            brain_outcome=outcome,
+        )
+
+    # -------------------------------------------------------------- the stages
+
