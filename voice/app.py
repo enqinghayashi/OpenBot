@@ -2524,3 +2524,5 @@ def _embodiment_gate(cfg: Any, args: argparse.Namespace) -> Optional[str]:
         )
     log.info("gateway reachable at %s:%d", host, port)
     return None
+
+
