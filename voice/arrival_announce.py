@@ -20,3 +20,51 @@ import socket
 SOCKET_PATH = "/tmp/arrival_announce.sock"
 
 
+def arrival_listener(sock_path, speak, stop, retry_delay_s=1.0):
+    """Read arrival lines off the relay socket and speak each one.
+
+    Meant to run on a daemon thread.  ``speak`` is a thread-safe
+    speak(text) callable and ``stop`` a threading.Event the caller sets
+    to end the listener.  Loops until ``stop`` is set: connects to
+    ``sock_path``, reads newline-delimited lines, and calls
+    ``speak(line.decode().strip())`` for each non-empty one.  When the
+    relay is not up yet (ConnectionRefusedError/FileNotFoundError) or a
+    connection dies (OSError) it closes, sleeps ``retry_delay_s``, and
+    retries — the relay may start late or restart.  Swallows every error;
+    NEVER raises out of the loop.  Returns when ``stop`` is set.
+    """
+    while not stop.is_set():
+        sock = None
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(0.5)
+            sock.connect(sock_path)
+            buf = b""
+            while not stop.is_set():
+                try:
+                    chunk = sock.recv(4096)
+                except socket.timeout:
+                    # quiet, keep going
+                    continue
+                if not chunk:
+                    break  # relay gone, reconnect
+                buf += chunk
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    text = line.decode("utf-8", errors="replace").strip()
+                    if text:
+                        try:
+                            speak(text)
+                        except Exception:  # noqa: BLE001 - one bad line is fine
+                            pass             # listener stays up
+        except Exception:  # noqa: BLE001 - relay is down or restarting, retry,
+            pass           # never raise out
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:  # noqa: BLE001
+                    pass
+        if not stop.is_set():
+            stop.wait(retry_delay_s)
+    return None
