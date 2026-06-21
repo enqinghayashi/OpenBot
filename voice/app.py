@@ -1439,3 +1439,62 @@ def trim_wake_leak(text: str, wake_re: "re.Pattern[str]") -> str:
     return text[m.end():] if m else text
 
 
+def _build_stop_spotter(runner: "Runner", session: Any,
+                        fire_stop: Callable[[str], None], audio_mode: str) -> Any:
+    """B8j-hf19: build + start the local stop spotter, or return None.
+
+    Shares the wake word's Vosk model (one model in memory).  Off for mock
+    audio, without a real wake-word engine, or with OPENBOT_STOP_SPOTTER=0.
+    Its actions are the existing ones: the motion stop is ``fire_stop`` (the
+    same gateway stop the spoken route sends), 'stop talking' is
+    ``runner.stop_talking``, and every hit first cuts the speech and drops
+    the rest of the reply (``session.stop_playback_now``)."""
+    from voice.stop_spotter import StopSpotter, make_vosk_recognizer, spotter_mode
+
+    mode = spotter_mode()
+    kws = runner.kws
+    if mode == "off":
+        log.info("stop spotter: OFF (OPENBOT_STOP_SPOTTER=0)")
+        return None
+    if audio_mode == "mock" or kws is None or not hasattr(kws, "_ensure_engine"):
+        log.info("stop spotter: not built (no real wake-word engine to share)")
+        return None
+
+    def factory() -> Any:
+        kws._ensure_engine()
+        return make_vosk_recognizer(kws._model, G1_SAMPLE_RATE)
+
+    def cut(text: str) -> None:  # noqa: ARG001
+        runner.stop_talking(0.0)          # cut the sink, no mute window
+        if session is not None and hasattr(session, "stop_playback_now"):
+            session.stop_playback_now()
+
+    def stop(text: str) -> None:
+        cut(text)
+        fire_stop(text)
+
+    def stop_talking(text: str) -> None:
+        cut(text)
+        runner.stop_talking()
+        runner.record({"event": "stop_talking", "text": text, "via": "stop_spotter"})
+
+    def speaking() -> bool:
+        probe = getattr(runner.sink, "is_speaking", None)
+        if probe is not None:
+            try:
+                if probe():
+                    return True
+            except Exception:  # noqa: BLE001
+                pass
+        return runner.level.peak() > 0.0
+
+    spotter = StopSpotter(factory, cut, stop, stop_talking, speaking,
+                          mode=mode, record=runner.record)
+    runner.stop_spotter = spotter
+    if session is not None:
+        session.on_event("spoken", lambda _n, p: runner.note_spoken(
+            (p or {}).get("text") or (p or {}).get("transcript") or ""))
+    spotter.start()
+    log.info("stop spotter: ON (mode=%s, words=%s)", mode, "/".join(
+        __import__("voice.stop_spotter", fromlist=["STOP_WORDS"]).STOP_WORDS))
+    return spotter
