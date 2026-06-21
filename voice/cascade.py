@@ -190,3 +190,5 @@ class WhisperError(RuntimeError):
     """The whisper.cpp stage failed (subprocess layer).  The chain maps
     every whisper failure onto a spoken decline (L2); this class is what
     the WhisperSubmit boundary raises."""
+
+
