@@ -2430,3 +2430,7 @@ def _run_realtime(
 
 # ------------------------------------------------ main and the boot checks
 
+def _die(message: str) -> None:
+    """Loud stderr (the main() failure contract: rc != 0 and a human can
+    see why)."""
+    print("ERROR: {}".format(message), file=sys.stderr)
