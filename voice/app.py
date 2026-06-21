@@ -1498,3 +1498,5 @@ def _build_stop_spotter(runner: "Runner", session: Any,
     log.info("stop spotter: ON (mode=%s, words=%s)", mode, "/".join(
         __import__("voice.stop_spotter", fromlist=["STOP_WORDS"]).STOP_WORDS))
     return spotter
+
+
