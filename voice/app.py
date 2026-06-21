@@ -1855,3 +1855,68 @@ def _print_transcript(transcript: List[Dict[str, Any]]) -> None:
 
 # -------------------------------------------------------- the realtime runner
 
+def _attach_frame_hook(session: Any, stack: Dict[str, Any], cfg: Any) -> bool:
+    """L10: wire the gateway camera into the session's per-turn frame seam.
+
+    THE SEAM EXISTED ON BOTH SIDES AND WAS NEVER CONNECTED (found 2026-09-02).
+    ``VoiceSession.set_frame_hook`` (voice/session.py:740) and the gateway's
+    ``capture_image()`` (gateway/brain_client.py:286) both shipped, both were
+    tested — but the ONLY caller of either was ``tests/``, which does not
+    ship.  So on the box ``session._frame_hook`` was always None, every
+    decision turn took the ``envelope is None`` branch, and the model was
+    told "no frame source" on EVERY turn regardless of camera health.  The
+    configs advertise ``vision.enabled: true`` (config.voice.yaml:84,
+    config.cloud.yaml:89, config.offline.yaml:47) and the gateway really does
+    serve the frame, so the operator had a vision-capable robot that answered
+    "I can't see anything" forever.
+
+    This is a PASS-THROUGH by design — every honesty rule already lives at
+    one end or the other, and re-implementing any of them here would be a
+    place for them to drift:
+
+    * ``capture_image()`` returns None for a dead socket, an ok:false
+      envelope, or malformed JSON — never a guess (its docstring is the
+      contract: None = no camera / no usable frame).
+    * The gateway stamps ``fresh`` itself against ``vision.max_age_s``, and
+      ``_prepare_frame_for_turn`` attaches the image ONLY when
+      ``fresh is True`` and ``jpeg_b64`` is present, otherwise telling the
+      model it is blind.  A stale frame is therefore never passed off as live.
+    * ``vision.min_interval_s`` is the GATEWAY's encode throttle
+      (gateway_node.py:126), applied server-side on the camera worker.  The
+      session already calls this hook at most once per decision turn
+      (``_frame_attached_this_turn``), so throttling again here would only
+      add a second, divergent clock.
+
+    Returns True when the hook was attached, False when the camera lane is
+    off or unavailable — the caller logs which, so "no frame" is always
+    attributable to a named cause rather than silence.
+    """
+    vision = getattr(cfg, "vision", None)
+    if not bool(getattr(vision, "enabled", False) if vision is not None else False):
+        log.info("camera lane OFF (vision.enabled is not true) — the model is "
+                 "told it is blind on every turn, by configuration")
+        return False
+
+    backend = stack.get("gateway_backend")
+    capture = getattr(backend, "capture_image", None)
+    if not callable(capture):
+        # the mock backend has capture_image too (it returns None honestly),
+        # so a missing verb means an older backend
+        log.warning("camera lane ON in config but backend %s has no "
+                    "capture_image() — the model stays blind",
+                    type(backend).__name__)
+        return False
+
+    def _frame_hook() -> Optional[Dict[str, Any]]:
+        """One gateway 'image' roundtrip per decision turn, or None."""
+        try:
+            return capture()
+        except Exception:  # noqa: BLE001 — a dead camera must not kill the turn
+            log.exception("camera capture failed — this turn is imageless")
+            return None
+
+    session.set_frame_hook(_frame_hook)
+    log.info("camera lane ON — gateway 'image' verb wired to the session "
+             "frame seam (topic %s, max_age %.1fs)",
+             getattr(vision, "topic", "?"), getattr(vision, "max_age_s", -1.0))
+    return True
