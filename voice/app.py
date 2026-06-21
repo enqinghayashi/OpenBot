@@ -1396,3 +1396,33 @@ def _wake_names_from_phrases(phrases: Optional[List[str]]) -> List[str]:
     return sorted(names, key=len, reverse=True)
 
 
+def make_wake_leak_re(name: Any) -> "re.Pattern[str]":
+    """Build the leading wake-leak regex for the given embodied name(s).
+
+    ``name`` is optional: whisper often drops the name of the wake
+    phrase — 'Hey, steal it!' is the wake 'hey stewart' plus the command
+    'steal it!' — so the head alone must strip.  Punctuation after the
+    head/name is tolerated (whisper closes vocatives with commas and
+    periods: 'Hello, Stewart.').
+
+    ``name`` may be a single string, a LIST of accepted spellings (see
+    ``_wake_names_from_phrases``), or None for a head-only pattern.  The
+    string and None forms are unchanged — the list form only widens the
+    alternation.
+    """
+    if name is None:
+        names: List[str] = []
+    elif isinstance(name, str):
+        names = [name]
+    else:
+        names = [n for n in name if n]
+    name_part = (
+        "(?:" + "|".join(re.escape(n) for n in names) + ")" if names else ""
+    )
+    return re.compile(
+        # whisper closes vocatives with any punctuation ('Hello, Stewart!'),
+        # so the class is [,.!?] on both slots; a comma-period class would
+        # leave the '!' glued to the head
+        rf"^(?:hey|hi|hello)[,.!?]?\s*(?:{name_part})?[,.!?]?\s*",
+        re.IGNORECASE,
+    )
