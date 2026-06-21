@@ -1823,3 +1823,31 @@ def _run_offline(
     return rc
 
 
+def _print_transcript(transcript: List[Dict[str, Any]]) -> None:
+    """The mock run's transcript report (stdout — the bake-off / verify
+    consumer reads it)."""
+    print("TRANSCRIPT ({} events):".format(len(transcript)))
+    for entry in transcript:
+        event = entry.get("event", "?")
+        if event == "utterance":
+            print("  utterance: {!r}".format(entry.get("text")))
+        elif event == "answer":
+            print("  confirm/query answer: {!r}".format(entry.get("text")))
+        elif event == "reply":
+            print("  reply ({0}): {1!r}".format(entry.get("source"), entry.get("text")))
+        elif event == "kws":
+            print("  kws {0}: {1!r}".format(entry.get("action"), entry.get("phrase")))
+        elif event == "spoken":
+            print("  spoken: {!r}".format(entry.get("text")))
+        elif event == "whisper_decline":
+            print("  whisper decline: {!r}".format(entry.get("reply")))
+        elif event == "whisper_error":
+            print("  whisper error: {!r}".format(entry.get("error")))
+        elif event == "chain_error":
+            print(
+                "  chain error (stage={0}): {1!r}".format(
+                    entry.get("stage"), entry.get("error")
+                )
+            )
+        else:
+            print("  {0}: {1!r}".format(event, entry))
