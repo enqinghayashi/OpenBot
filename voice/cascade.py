@@ -493,3 +493,69 @@ class WhisperSubmit:
 
     # -------------------------------------------------------- how the request goes out
 
+    def _post(self, wav: bytes, timeout_s: float) -> Tuple[int, bytes]:
+        """POST one WAV to /inference (multipart, response_format=json);
+        returns (status, body).  Raises WhisperError only on TRANSPORT
+        failures (refused/timeout) — any HTTP status comes back to the
+        caller, so the probe can tell 'server up' (any status) from
+        'server gone' (transport error)."""
+        boundary = "----openbot-cascade-{:x}".format(int(time.monotonic() * 1e6))
+        body = bytearray()
+        body += b"--" + boundary.encode() + b"\r\n"
+        body += b'Content-Disposition: form-data; name="file"; filename="audio.wav"\r\n'
+        body += b"Content-Type: audio/wav\r\n\r\n"
+        body += wav
+        body += b"\r\n"
+        for name, value in (("response_format", "json"), ("temperature", "0.0")):
+            body += b"--" + boundary.encode() + b"\r\n"
+            body += b'Content-Disposition: form-data; name="' + name.encode() + b'"\r\n\r\n'
+            body += value.encode() + b"\r\n"
+        body += b"--" + boundary.encode() + b"--\r\n"
+        request = urllib.request.Request(
+            self.url,
+            data=bytes(body),
+            headers={
+                "Content-Type": "multipart/form-data; boundary={}".format(boundary)
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_s) as resp:
+                return resp.status, resp.read()
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read()
+        except (urllib.error.URLError, OSError) as exc:
+            raise WhisperError("whisper /inference request failed: {}".format(exc))
+
+
+# ---------------------------------------------------------------------------
+# piper TTS default
+# ---------------------------------------------------------------------------
+
+
+class PiperTTS:
+    """Piper synthesis callable (the chain's default ``tts``): one
+    subprocess per synthesis (``piper --model <voice> --output_raw`` —
+    the reply text on stdin, raw PCM16 mono on stdout).  Piper is never
+    imported — always a subprocess.  Returns (pcm, sample_rate); the
+    rate is the VOICE MODEL's native rate and the sink owns resampling
+    to the G1's 16 kHz (documented in the module docstring).
+
+    ONE timeout bounds the whole stage — spawn + model load + synthesis
+    together, a single ``communicate(timeout=...)`` — so there is no
+    unbounded wait (L1).  Failures raise PiperError; the chain maps them
+    onto the L4 retry law.
+    """
+
+    def __init__(
+        self,
+        bin_path: str = "piper",
+        voice: str = "en_US-ryan-medium.onnx",
+        output_rate: int = PIPER_OUTPUT_RATE,
+        tts_timeout_s: float = PIPER_TTS_TIMEOUT_S,
+    ) -> None:
+        self.bin_path = bin_path
+        self.voice = voice
+        self.output_rate = output_rate
+        self.tts_timeout_s = tts_timeout_s
+
