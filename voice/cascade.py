@@ -254,3 +254,5 @@ def _wav_bytes(pcm16: bytes, sample_rate: int) -> bytes:
         b"data", data_len,
     )
     return header + pcm16
+
+
