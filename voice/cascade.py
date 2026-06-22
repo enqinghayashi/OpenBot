@@ -493,3 +493,36 @@ class WhisperSubmit:
 
     # -------------------------------------------------------- how the request goes out
 
+    def _post(self, wav: bytes, timeout_s: float) -> Tuple[int, bytes]:
+        """POST one WAV to /inference (multipart, response_format=json);
+        returns (status, body).  Raises WhisperError only on TRANSPORT
+        failures (refused/timeout) — any HTTP status comes back to the
+        caller, so the probe can tell 'server up' (any status) from
+        'server gone' (transport error)."""
+        boundary = "----openbot-cascade-{:x}".format(int(time.monotonic() * 1e6))
+        body = bytearray()
+        body += b"--" + boundary.encode() + b"\r\n"
+        body += b'Content-Disposition: form-data; name="file"; filename="audio.wav"\r\n'
+        body += b"Content-Type: audio/wav\r\n\r\n"
+        body += wav
+        body += b"\r\n"
+        for name, value in (("response_format", "json"), ("temperature", "0.0")):
+            body += b"--" + boundary.encode() + b"\r\n"
+            body += b'Content-Disposition: form-data; name="' + name.encode() + b'"\r\n\r\n'
+            body += value.encode() + b"\r\n"
+        body += b"--" + boundary.encode() + b"--\r\n"
+        request = urllib.request.Request(
+            self.url,
+            data=bytes(body),
+            headers={
+                "Content-Type": "multipart/form-data; boundary={}".format(boundary)
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_s) as resp:
+                return resp.status, resp.read()
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read()
+        except (urllib.error.URLError, OSError) as exc:
+            raise WhisperError("whisper /inference request failed: {}".format(exc))
