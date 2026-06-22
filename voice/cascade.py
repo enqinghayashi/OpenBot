@@ -418,3 +418,18 @@ class WhisperSubmit:
                 "(pid {} killed)".format(self.launch_timeout_s, proc.pid)
             )
 
+    def _resolve_model(self) -> str:
+        """The whisper.cpp model file the server is launched with.
+        ``model_path`` wins; None falls back to the standard deploy
+        layout ``voice/models/ggml-<model>.bin`` ONLY when that file
+        exists (a check, never a guess); otherwise an explicit error."""
+        if self.model_path is not None:
+            return self.model_path
+        candidate = os.path.join("voice", "models", "ggml-" + self.model + ".bin")
+        if os.path.isfile(candidate):
+            return candidate
+        raise WhisperError(
+            "no whisper.cpp model to launch: pass model_path= or place the "
+            "model at {} (model={!r})".format(candidate, self.model)
+        )
+
