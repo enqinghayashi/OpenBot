@@ -204,3 +204,6 @@ class OfflineChainError(RuntimeError):
     chain raises — a caller never receives a fake empty success when
     speech was impossible."""
 
+    def __init__(self, stage: str, message: str) -> None:
+        super().__init__("[{}] {}".format(stage, message))
+        self.stage = stage
