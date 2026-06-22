@@ -547,3 +547,15 @@ class PiperTTS:
     onto the L4 retry law.
     """
 
+    def __init__(
+        self,
+        bin_path: str = "piper",
+        voice: str = "en_US-ryan-medium.onnx",
+        output_rate: int = PIPER_OUTPUT_RATE,
+        tts_timeout_s: float = PIPER_TTS_TIMEOUT_S,
+    ) -> None:
+        self.bin_path = bin_path
+        self.voice = voice
+        self.output_rate = output_rate
+        self.tts_timeout_s = tts_timeout_s
+
