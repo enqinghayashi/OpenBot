@@ -533,3 +533,17 @@ class WhisperSubmit:
 # ---------------------------------------------------------------------------
 
 
+class PiperTTS:
+    """Piper synthesis callable (the chain's default ``tts``): one
+    subprocess per synthesis (``piper --model <voice> --output_raw`` —
+    the reply text on stdin, raw PCM16 mono on stdout).  Piper is never
+    imported — always a subprocess.  Returns (pcm, sample_rate); the
+    rate is the VOICE MODEL's native rate and the sink owns resampling
+    to the G1's 16 kHz (documented in the module docstring).
+
+    ONE timeout bounds the whole stage — spawn + model load + synthesis
+    together, a single ``communicate(timeout=...)`` — so there is no
+    unbounded wait (L1).  Failures raise PiperError; the chain maps them
+    onto the L4 retry law.
+    """
+
