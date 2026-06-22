@@ -323,3 +323,31 @@ class WhisperSubmit:
         self._lock = threading.Lock()
         self._proc = None  # type: Optional[subprocess.Popen]
 
+    def __call__(self, pcm16: bytes) -> str:
+        """Transcribe one utterance (16 kHz mono PCM16) to text; '' when
+        the server heard nothing (the chain then speaks the canned
+        decline, L2)."""
+        if not pcm16:
+            return ""
+        self._ensure_server()
+        code, payload = self._post(
+            _wav_bytes(pcm16, self.sample_rate), self.submit_timeout_s
+        )
+        if code != 200:
+            raise WhisperError(
+                "whisper /inference returned HTTP {}: {}".format(
+                    code, payload[:300]
+                )
+            )
+        data = _decode_payload(payload)
+        text = data.get("text") if isinstance(data, dict) else None
+        if text is None:
+            raise WhisperError(
+                "whisper /inference payload has no 'text': {!r}".format(
+                    str(data)[:200]
+                )
+            )
+        return str(text).strip()
+
+    # ---------------------------------------------------- keeping the server alive
+
