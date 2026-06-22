@@ -351,3 +351,70 @@ class WhisperSubmit:
 
     # ---------------------------------------------------- keeping the server alive
 
+    def _ensure_server(self) -> None:
+        """Make sure a whisper.cpp server answers on ``url`` (lazy, once):
+        reuse one already answering, else Popen one and wait (bounded by
+        ``launch_timeout_s``), else a loud WhisperError.  All under one
+        lock; idempotent and cheap after the first call."""
+        with self._lock:
+            proc = self._proc
+            if proc is not None and proc.poll() is None:
+                return  # still up
+            if self._probe_repeat(min(2.0, self.launch_timeout_s)):
+                log.debug("offline chain: whisper server already answering on %s", self.url)
+                return
+            model = self._resolve_model()
+            host = urlparse(self.url).hostname or "127.0.0.1"
+            port = urlparse(self.url).port or 8082
+            bin_path = self._resolve_bin()  # launch time only
+            try:
+                proc = subprocess.Popen(
+                    [bin_path, "-m", model, "--host", host, "--port", str(port)],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                )
+            except OSError as exc:
+                raise WhisperError(
+                    "cannot launch the whisper.cpp server ({!r}): {}".format(
+                        bin_path, exc
+                    )
+                )
+            self._proc = proc
+            log.info(
+                "offline chain: launched whisper.cpp server (pid %s, %s:%s, model %s)",
+                proc.pid, host, port, model,
+            )
+            started = time.monotonic()
+            deadline = started + self.launch_timeout_s
+            while time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    tail = self._drain_stderr(proc)
+                    raise WhisperError(
+                        "whisper.cpp server exited {} at startup: {}".format(
+                            proc.returncode, tail or "no stderr"
+                        )
+                    )
+                if self._probe():
+                    log.info(
+                        "offline chain: whisper.cpp server ready in %.1fs",
+                        time.monotonic() - started,
+                    )
+                    return
+                time.sleep(0.25)
+            # launch window expired: kill and reap the child
+            # (bounded, like close()), drop self._proc so
+            # no later submit trusts it; next one relaunches
+            self._proc = None
+            try:
+                proc.kill()
+                proc.wait(timeout=5.0)
+            except Exception as exc:  # noqa: BLE001 - teardown must not raise
+                log.debug(
+                    "whisper server teardown after launch timeout raised: %s", exc
+                )
+            raise WhisperError(
+                "whisper.cpp server did not accept connections within {} s "
+                "(pid {} killed)".format(self.launch_timeout_s, proc.pid)
+            )
+
