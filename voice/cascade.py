@@ -479,3 +479,17 @@ class WhisperSubmit:
             return ""
         return (err or b"")[-300:].decode("utf-8", "replace").strip()
 
+    def close(self) -> None:
+        """Kill the server process THIS instance launched (never raises;
+        an operator-started server is left alone)."""
+        with self._lock:
+            proc, self._proc = self._proc, None
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.kill()
+                proc.wait(timeout=5.0)
+            except Exception as exc:  # noqa: BLE001 - teardown must not raise
+                log.debug("whisper server teardown raised: %s", exc)
+
+    # -------------------------------------------------------- how the request goes out
+
