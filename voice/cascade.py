@@ -263,3 +263,8 @@ def _silence_wav(sample_rate: int) -> bytes:
     return _wav_bytes(b"\x00\x00" * samples, sample_rate)
 
 
+def _decode_payload(payload: bytes) -> Any:
+    try:
+        return json.loads(payload.decode("utf-8", "replace"))
+    except ValueError as exc:
+        raise WhisperError("whisper /inference returned non-JSON: {}".format(exc))
