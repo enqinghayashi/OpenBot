@@ -729,3 +729,107 @@ class OfflineChain:
 
     # -------------------------------------------------------------- the stages
 
+    def _decline(self, text: str, source: str) -> ChainOutcome:
+        """Speak a canned decline (L2).  The decline itself goes through
+        piper, so a dead piper still raises stage 'piper' (L4): when
+        piper is dead, no speech — not even a decline — is possible."""
+        pcm, rate = self._speak(text)
+        return ChainOutcome(
+            reply_text=text,
+            pcm=pcm,
+            sample_rate=rate,
+            source=source,
+            brain_outcome=None,
+        )
+
+    def _run_brain(self, text: str) -> OfflineOutcome:
+        """One brain call under the L1 timeout: new_utterance(text,
+        typed=False) runs in a daemon worker thread joined with
+        ``brain_timeout_s``.  On expiry the chain raises stage 'brain'
+        and REFUSES the thread's eventual outcome — never spoken, never
+        treated as a decline; the daemon continues in the background but
+        its result is dead on arrival."""
+        box: Dict[str, Any] = {}
+
+        def work() -> None:
+            try:
+                box["outcome"] = self.brain.new_utterance(text, typed=False)
+            except Exception as exc:  # noqa: BLE001 - surfaced below
+                box["error"] = exc
+
+        thread = threading.Thread(
+            target=work, name="offline-chain-brain", daemon=True
+        )
+        thread.start()
+        thread.join(self.brain_timeout_s)
+        if thread.is_alive():
+            raise OfflineChainError(
+                "brain",
+                "OfflineBrain.new_utterance did not finish within {} s; its "
+                "eventual outcome is REFUSED — never spoken (the worker "
+                "thread continues in the background)".format(self.brain_timeout_s),
+            )
+        if "error" in box:
+            raise OfflineChainError(
+                "brain",
+                "OfflineBrain.new_utterance raised: {}".format(box["error"]),
+            ) from box["error"]
+        return box["outcome"]
+
+    def _speak(self, text: str) -> Tuple[bytes, int]:
+        """Piper with the L4 retry law: EXACTLY ONE retry (PIPER_RETRIES
+        == 1, a law, not a knob), then the non-speech signal and
+        OfflineChainError(stage='piper').  Never returns empty PCM — an
+        empty synthesis is a failure, not a silent reply."""
+        attempt = 0
+        while True:
+            try:
+                pcm, rate = self.tts(text)
+            except OfflineChainError:
+                raise  # already a chain failure
+            except Exception as exc:  # noqa: BLE001 - any piper failure
+                cause = exc
+            else:
+                if pcm:
+                    return pcm, rate
+                cause = PiperError(
+                    "piper returned empty PCM for {!r}".format((text or "")[:60])
+                )
+            attempt += 1
+            if attempt > PIPER_RETRIES:
+                self._signal_piper_dead(cause)
+                raise OfflineChainError(
+                    "piper",
+                    "synthesis failed after {} attempts: {}".format(
+                        PIPER_RETRIES + 1, cause
+                    ),
+                ) from cause
+            log.warning(
+                "offline chain: piper attempt %d/%d failed (%s); retrying once",
+                attempt,
+                PIPER_RETRIES + 1,
+                cause,
+            )
+
+    def _signal_piper_dead(self, cause: Exception) -> None:
+        """L4 non-speech signal: the standard log line + the sink's LED
+        flashed red.  The LED is left red — the persistent 'piper dead'
+        indicator; the app owns restoring it."""
+        log.error("%s: %s", PIPER_DEAD_LOG, cause)
+        sink = self.sink
+        set_led = getattr(sink, "set_led", None)
+        if callable(set_led):
+            try:
+                set_led(255, 0, 0)
+            except Exception as exc:  # noqa: BLE001 - a light is not worth
+                log.debug("LED signal failed: %s", exc)  # blowing the whole conversation over
+
+    def close(self) -> None:
+        """Best-effort teardown of the whisper server subprocess (never
+        raises)."""
+        submit = getattr(self.submit, "close", None)
+        if callable(submit):
+            try:
+                submit()
+            except Exception as exc:  # noqa: BLE001 - shutdown must not raise
+                log.debug("whisper submit close raised: %s", exc)
