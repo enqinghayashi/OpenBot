@@ -198,3 +198,9 @@ class PiperError(RuntimeError):
     OfflineChainError (L4); this class is what PiperTTS raises."""
 
 
+class OfflineChainError(RuntimeError):
+    """One stage of the offline chain died.  ``stage`` names the dead
+    stage: 'whisper' | 'brain' | 'piper'.  This is the ONLY exception the
+    chain raises — a caller never receives a fake empty success when
+    speech was impossible."""
+
