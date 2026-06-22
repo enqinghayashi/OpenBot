@@ -235,3 +235,10 @@ class ChainOutcome:
     sample_rate: int
     source: str
     brain_outcome: Optional[OfflineOutcome] = None
+
+
+# ---------------------------------------------------------------------------
+# submit boundary
+# ---------------------------------------------------------------------------
+
+
