@@ -526,3 +526,10 @@ class WhisperSubmit:
             return exc.code, exc.read()
         except (urllib.error.URLError, OSError) as exc:
             raise WhisperError("whisper /inference request failed: {}".format(exc))
+
+
+# ---------------------------------------------------------------------------
+# piper TTS default
+# ---------------------------------------------------------------------------
+
+
