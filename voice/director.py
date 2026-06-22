@@ -338,3 +338,148 @@ class Director:
         with self._lock:
             return list(self._held)
 
+    def on_event(self, name: str, payload: Optional[Dict[str, Any]] = None) -> str:
+        """Feed one event; returns the resulting state.
+
+        Lane signals apply only at a conversation boundary (held
+        otherwise); turn-bookkeeping events update the boundary; the
+        held queue drains whenever the boundary is open.  Injected
+        reset()/speak() run once per committed transition, after the
+        lock is released.
+        """
+        name = str(name)
+        payload = dict(payload or {})
+        with self._lock:
+            event = self._normalize(name, payload)
+            if event is not None:
+                if event in TURN_EVENTS:
+                    self._apply_turn_event_locked(event, payload)
+                elif self._at_boundary_locked():
+                    self._step_locked(event, payload)
+                else:
+                    self._hold_locked(event, payload)
+                self._drain_locked()
+        self._notify_outside_lock()
+        return self.state
+
+    # -------------------------------------------------- the transition table
+
+    @staticmethod
+    def transition(
+        state: str,
+        event: str,
+        *,
+        probe_ok: Optional[bool] = None,
+        deadline_passed: bool = False,
+        backoff_elapsed: bool = False,
+        retries_remaining: Optional[int] = None,
+    ) -> Optional[str]:
+        """The PURE per-event transition table (no I/O, no mutation) —
+        reachable for tests.
+
+        Returns the new state or None (same-state no-op).  ``probe_ok``
+        is the ONLY path into ONLINE; ``deadline_passed`` /
+        ``backoff_elapsed`` are the timer facts for the lazy timers;
+        ``retries_remaining`` disambiguates connect_failed.
+        """
+        if state not in STATES:
+            return None
+        if event == "probe":
+            # probe or nothing.
+            if state == REOPENING:
+                return ONLINE if probe_ok else OFFLINE_CASCADE
+            return None
+        if event == "tick":
+            if state == DEGRADING and deadline_passed:
+                return OFFLINE_CASCADE
+            if state == OFFLINE_CASCADE and backoff_elapsed:
+                return REOPENING
+            return None  # timer never ONLINE
+        if event == "warning":
+            return DEGRADING if state == ONLINE else None
+        if event == "connect_failed":
+            retries = 0 if retries_remaining is None else int(retries_remaining)
+            if state == ONLINE:
+                # retries left = transient.
+                # none left = hard.
+                return DEGRADING if retries > 0 else OFFLINE_CASCADE
+            if state == DEGRADING:
+                return OFFLINE_CASCADE if retries <= 0 else None
+            return None
+        if event == "hard":
+            return OFFLINE_CASCADE if state in (ONLINE, DEGRADING) else None
+        if event == "session_expired":
+            # 60-min cap: client reset itself.
+            # we probe the lane first.
+            # only then ONLINE.
+            return REOPENING if state in (ONLINE, DEGRADING) else None
+        if event == "success":
+            return ONLINE if state == DEGRADING else None
+        return None
+
+    # -------------------------------------------------------- the internals
+
+    def _cfg_get(self, key: str, default: Any) -> Any:
+        cfg = self._cfg
+        if isinstance(cfg, dict):
+            return cfg.get(key, default)
+        return getattr(cfg, key, default)
+
+    def _normalize(self, name: str, payload: Dict[str, Any]) -> Optional[str]:
+        """Map the app's raw event names onto the canonical vocabulary."""
+        if name in ("warn",):
+            return "warning"
+        if name == "failover":
+            reason = str(payload.get("reason") or "error")
+            # failover reason:
+            # 'session_expired' = 60-min cap,
+            # anything else = hard.
+            return "session_expired" if reason == "session_expired" else "hard"
+        if name in ("error",):
+            return "hard"
+        if name in ("session.expired",):
+            return "session_expired"
+        if name in SIGNAL_EVENTS or name in TURN_EVENTS:
+            return name
+        return None  # not ours.
+
+    def _at_boundary_locked(self) -> bool:
+        """Boundary = no turn in flight (and no pending tool batch / open
+        query round) AND the injected boundary source."""
+        if self._turn_active:
+            return False
+        source = self._boundary_source
+        try:
+            return bool(source())
+        except Exception as exc:  # noqa: BLE001 - a broken source must not
+            log.warning("director boundary_source raised: %s", exc)
+            return True  # just fall back to the event-derived flags
+
+    def _apply_turn_event_locked(self, event: str, payload: Dict[str, Any]) -> None:
+        """Turn bookkeeping: maintain ``_turn_active`` (a query_user round
+        counts as a turn — the gate is open while the answer is awaited)."""
+        if event == "gate_changed":
+            if payload.get("open") is False:
+                self._turn_active = True
+            else:
+                # gate_changed open:True reopens
+                # the boundary - held queue drains.
+                # a query round still counts as a
+                # turn: its gate is knowingly open.
+                if not self._query_open:
+                    self._turn_active = False
+        elif event == "tool_call":
+            self._turn_active = True
+        elif event == "query_waiting":
+            self._query_open = True
+            self._turn_active = True
+        elif event == "answer":
+            # answer closes the round.
+            # fresh turn on the next
+            # gate_changed.
+            self._query_open = False
+            self._turn_active = False
+        elif event == "turn_complete":
+            self._query_open = False
+            self._turn_active = False
+
