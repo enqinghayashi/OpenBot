@@ -261,3 +261,5 @@ def _silence_wav(sample_rate: int) -> bytes:
     means 'server up'; transport errors mean 'not up')."""
     samples = max(1600, sample_rate // 10)
     return _wav_bytes(b"\x00\x00" * samples, sample_rate)
+
+
