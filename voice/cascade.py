@@ -214,3 +214,24 @@ class OfflineChainError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class ChainOutcome:
+    """One chain run's result.
+
+    Deliberately NO success field (L5): the chain never reports success —
+    the executor's verdicts reach the human only through the brain's
+    verdict-aware reply, and the chain only annotates.  ``pcm`` is always
+    real audio when an outcome is RETURNED (a piper failure raises
+    OfflineChainError instead of returning); ``source`` names which stage
+    produced the reply: 'brain' (an OfflineOutcome reply, decline or
+    verdict-aware motion phrasing) | 'whisper_decline' (whisper stage
+    failed — L2) | 'whisper_empty' (whisper heard nothing — L2) |
+    'silent' (the brain's speech-stop lane, e.g. 'stop talking': pcm is
+    EMPTY and nothing is spoken — the app's play path no-ops on it).
+    """
+
+    reply_text: str
+    pcm: bytes
+    sample_rate: int
+    source: str
+    brain_outcome: Optional[OfflineOutcome] = None
