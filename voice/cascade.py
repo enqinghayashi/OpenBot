@@ -270,3 +270,18 @@ def _decode_payload(payload: bytes) -> Any:
         raise WhisperError("whisper /inference returned non-JSON: {}".format(exc))
 
 
+class WhisperSubmit:
+    """whisper.cpp ASR submit callable (the chain's default ``submit``).
+
+    Keeps a whisper.cpp server answering on ``url``: lazily Popen'd on
+    first use, or reused when one is already answering (probed first —
+    an operator/deploy-kit-started server is never shadowed by a second
+    process).  ``submit(pcm16)`` POSTs the utterance as a WAV and
+    returns the transcript ('' = nothing heard).  All of this is lazy —
+    the constructor performs no I/O and whisper.cpp is never imported.
+
+    Construction is lazy and idempotent exactly like StewardKws' engine
+    build (voice/kws.py pattern); failures raise WhisperError, which the
+    chain turns into the spoken decline (L2).
+    """
+
