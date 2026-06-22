@@ -462,3 +462,12 @@ class WhisperSubmit:
         except WhisperError:
             return False
 
+    def _probe_repeat(self, budget_s: float) -> bool:
+        """Probe until one answers or ``budget_s`` elapses (bounded)."""
+        deadline = time.monotonic() + budget_s
+        while time.monotonic() < deadline:
+            if self._probe():
+                return True
+            time.sleep(0.25)
+        return False
+
