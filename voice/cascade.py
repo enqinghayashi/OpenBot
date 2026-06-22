@@ -451,3 +451,14 @@ class WhisperSubmit:
             return candidate
         return self.bin_path
 
+    def _probe(self) -> bool:
+        """One probe POST: any HTTP status means the server is up;
+        only a transport failure (refused/timeout) means it is not."""
+        try:
+            _code, _payload = self._post(
+                _silence_wav(self.sample_rate), min(2.0, self.submit_timeout_s)
+            )
+            return True
+        except WhisperError:
+            return False
+
