@@ -559,3 +559,43 @@ class PiperTTS:
         self.output_rate = output_rate
         self.tts_timeout_s = tts_timeout_s
 
+    def __call__(self, text: str) -> Tuple[bytes, int]:
+        """Synthesize one reply; (pcm, sample_rate) or PiperError."""
+        try:
+            proc = subprocess.Popen(
+                [self.bin_path, "--model", self.voice, "--output_raw"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except OSError as exc:
+            raise PiperError(
+                "cannot launch piper ({!r}): {}".format(self.bin_path, exc)
+            )
+        try:
+            out, err = proc.communicate(
+                input=(text or "").encode("utf-8"), timeout=self.tts_timeout_s
+            )
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+                proc.wait(timeout=5.0)
+            except Exception:  # noqa: BLE001 - teardown best effort
+                pass
+            raise PiperError(
+                "piper synthesis exceeded {} s; process killed".format(
+                    self.tts_timeout_s
+                )
+            )
+        except OSError as exc:
+            raise PiperError("piper pipe broke: {}".format(exc))
+        if proc.returncode != 0:
+            tail = (err or b"")[-500:].decode("utf-8", "replace").strip()
+            raise PiperError(
+                "piper exited {}: {}".format(proc.returncode, tail or "no stderr")
+            )
+        if not out:
+            raise PiperError(
+                "piper produced no audio for {!r}".format((text or "")[:60])
+            )
+        return out, self.output_rate
