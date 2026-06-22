@@ -471,3 +471,11 @@ class WhisperSubmit:
             time.sleep(0.25)
         return False
 
+    def _drain_stderr(self, proc: subprocess.Popen) -> str:
+        """Best-effort stderr tail of a dead server (diagnostics only)."""
+        try:
+            _out, err = proc.communicate(timeout=2.0)
+        except Exception:  # noqa: BLE001 - best-effort diagnostics
+            return ""
+        return (err or b"")[-300:].decode("utf-8", "replace").strip()
+
