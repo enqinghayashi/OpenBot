@@ -285,3 +285,41 @@ class WhisperSubmit:
     chain turns into the spoken decline (L2).
     """
 
+    def __init__(
+        self,
+        url: str = WHISPER_URL,
+        model: str = "tiny.en-q5_1",  # 2026-09-04 pick, measured 1.52 s
+        model_path: Optional[str] = None,
+        bin_path: str = "whisper-server",
+        sample_rate: int = 16000,
+        launch_timeout_s: float = WHISPER_LAUNCH_TIMEOUT_S,
+        submit_timeout_s: float = WHISPER_SUBMIT_TIMEOUT_S,
+    ) -> None:
+        """Pure state capture — NO I/O here (the constructor I/O-free
+        invariant, pinned by test_constructor_defaults_and_boundaries):
+        probing, ``model_path``/``bin_path`` resolution and the Popen all
+        happen lazily on the first ``submit``, never in ``__init__``.
+
+        ``url``: the whisper.cpp /inference endpoint to keep answering
+        (probed before any launch; an operator-started server is reused).
+        ``model``: the model name used to build the layout fallback
+        ``voice/models/ggml-<model>.bin``.  ``model_path``: explicit
+        model file — wins when given; ``None`` falls back at LAUNCH time
+        to that layout file ONLY when it exists.  ``bin_path``: the
+        whisper-server binary, resolved at LAUNCH time — a path
+        containing a separator is used as-is; a BARE name first tries the
+        cwd-relative deploy layout ``voice/models/<bin_path>`` when that
+        file exists AND is executable, falling back to the bare name (on
+        PATH) only when it does not.  ``sample_rate``: the PCM16 rate of
+        submitted utterances.  ``launch_timeout_s`` / ``submit_timeout_s``:
+        the L1 bounds for the launch window and one /inference POST."""
+        self.url = url
+        self.model = model
+        self.model_path = model_path
+        self.bin_path = bin_path
+        self.sample_rate = sample_rate
+        self.launch_timeout_s = launch_timeout_s
+        self.submit_timeout_s = submit_timeout_s
+        self._lock = threading.Lock()
+        self._proc = None  # type: Optional[subprocess.Popen]
+
