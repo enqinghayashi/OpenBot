@@ -606,3 +606,22 @@ class PiperTTS:
 # ---------------------------------------------------------------------------
 
 
+class OfflineChain:
+    """The offline lane orchestration (plan §3 cascade + §5b offline
+    lane): whisper submit -> OfflineBrain.new_utterance(text,
+    typed=False) -> piper.
+
+    All boundaries are injectable: ``submit`` (default: a
+    :class:`WhisperSubmit`; any callable ``(pcm16: bytes) -> str``),
+    ``brain`` (REQUIRED — anything with ``new_utterance(text, *,
+    typed=False) -> OfflineOutcome``; the app builds the real
+    OfflineBrain over its ToolExecutor/hooks), ``tts`` (default: a
+    :class:`PiperTTS`; any callable ``(text: str) -> (pcm, sample_rate)``),
+    ``sink`` (optional; used ONLY for the L4 LED signal).
+
+    Entry points: :meth:`run_pipeline` (the full audio chain) and
+    :meth:`handle_utterance` (an already-transcribed utterance).  See the
+    module docstring for the laws (L1 timeouts, L2 whisper decline,
+    L3 verdict flow-through, L4 piper retry, L5 no success reporting).
+    """
+
