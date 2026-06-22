@@ -256,3 +256,8 @@ def _wav_bytes(pcm16: bytes, sample_rate: int) -> bytes:
     return header + pcm16
 
 
+def _silence_wav(sample_rate: int) -> bytes:
+    """A ~0.1 s silence WAV — the tiny probe payload (any HTTP status
+    means 'server up'; transport errors mean 'not up')."""
+    samples = max(1600, sample_rate // 10)
+    return _wav_bytes(b"\x00\x00" * samples, sample_rate)
