@@ -268,3 +268,5 @@ def _decode_payload(payload: bytes) -> Any:
         return json.loads(payload.decode("utf-8", "replace"))
     except ValueError as exc:
         raise WhisperError("whisper /inference returned non-JSON: {}".format(exc))
+
+
