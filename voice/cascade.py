@@ -207,3 +207,10 @@ class OfflineChainError(RuntimeError):
     def __init__(self, stage: str, message: str) -> None:
         super().__init__("[{}] {}".format(stage, message))
         self.stage = stage
+
+
+# ---------------------------------------------------------------------------
+# what we hand back
+# ---------------------------------------------------------------------------
+
+
