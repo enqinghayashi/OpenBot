@@ -196,3 +196,5 @@ class PiperError(RuntimeError):
     """The piper stage failed (subprocess layer).  The chain maps piper
     failures onto one retry, then the non-speech signal + a raised
     OfflineChainError (L4); this class is what PiperTTS raises."""
+
+
