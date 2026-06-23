@@ -546,3 +546,41 @@ class Director:
             event, payload = self._held.pop(0)
             self._step_locked(event, payload)
 
+    def _step_locked(self, event: str, payload: Dict[str, Any]) -> None:
+        """One step at a boundary: lazy timers first (elapsed reality),
+        then the event itself; at most one transition per step."""
+        now = float(self._clock())
+        nxt: Optional[str] = None
+        reason = ""
+        if (
+            self._state == DEGRADING
+            and self._degrade_deadline is not None
+            and now >= self._degrade_deadline
+        ):
+            nxt = self.transition(self._state, "tick", deadline_passed=True)
+            reason = "degrade deadline elapsed ({:.1f}s) — the transient window closed".format(
+                self._degrade_deadline_s
+            )
+        elif (
+            self._state == OFFLINE_CASCADE
+            and self._offline_entered is not None
+            and now >= self._offline_entered + self._reopen_backoff_s
+        ):
+            nxt = self.transition(self._state, "tick", backoff_elapsed=True)
+            reason = "reopen backoff elapsed ({:.1f}s)".format(self._reopen_backoff_s)
+        elif (
+            self._state == REOPENING
+            and self._last_probe_at is not None
+            and now >= self._last_probe_at + self._probe_interval_s
+        ):
+            self._last_probe_at = now
+            ok = self._run_probe_locked()
+            nxt = self.transition(self._state, "probe", probe_ok=ok)
+            reason = "probe {} — ONLINE only ever follows probe success".format(
+                "succeeded" if ok else "failed"
+            )
+        if nxt is None:
+            nxt, reason = self._event_step_locked(event, payload)
+        if nxt is not None and nxt != self._state:
+            self._commit_locked(nxt, event, reason or "lane signal", payload)
+
