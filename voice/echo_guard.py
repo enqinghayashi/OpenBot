@@ -43,3 +43,54 @@ class EchoGuard:
     whose own peak clears the bar is admitted.
     """
 
+    def __init__(
+        self,
+        coupling: float = 0.5,
+        margin: float = 1.6,
+        max_peak: float = 12000.0,
+        ref_active_peak: float = REF_ACTIVE_PEAK,
+    ) -> None:
+        if not 0.0 <= coupling <= MAX_COUPLING:
+            raise ValueError("coupling must be 0-{}".format(MAX_COUPLING))
+        self.coupling = coupling
+        self.margin = margin
+        self.max_peak = max_peak
+        self.ref_active_peak = ref_active_peak
+
+        self.admitted = 0
+        self.suppressed = 0
+
+    def admit(self, frame: bytes, playing_peak: Optional[float] = None) -> bool:
+        """True if the frame may go upstream.
+
+        Admitted when nothing is audibly playing, or when the frame's peak
+        beats ``coupling * margin * playing_peak`` (capped at ``max_peak``).
+        """
+        peak = _peak(frame)
+        if playing_peak is None or playing_peak <= 0:
+            allowed = True
+        elif playing_peak < self.ref_active_peak:
+            allowed = True  # no opinion
+        else:
+            bar = min(self.coupling * self.margin * playing_peak, self.max_peak)
+            allowed = peak > bar
+        if allowed:
+            self.admitted += 1
+        else:
+            self.suppressed += 1
+        return allowed
+
+    def maybe(self, frame: bytes, playing_peak: Optional[float] = None) -> Optional[bytes]:
+        """The frame itself when admitted, else None (convenience)."""
+        return frame if self.admit(frame, playing_peak) else None
+
+
+def _peak(pcm: bytes) -> float:
+    """Loudest |sample| as an int16 level; 0.0 for empty/odd input."""
+    if not pcm or len(pcm) % 2:
+        return 0.0
+    samples = array.array("h")
+    samples.frombytes(pcm[: len(pcm) - (len(pcm) % 2)])
+    if not samples:
+        return 0.0
+    return float(max(abs(s) for s in samples))
