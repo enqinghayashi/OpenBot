@@ -483,3 +483,145 @@ class Director:
             self._query_open = False
             self._turn_active = False
 
+    def _hold_locked(self, event: str, payload: Dict[str, Any]) -> None:
+        """HOLD POLICY: a lane signal mid-turn is queued in order; beyond
+        HELD_QUEUE_CAP the idempotent TICK entries are the drop
+        candidates — a real signal evicts the FIRST held tick (in place,
+        so real signals keep their order and never lose a slot to a
+        tick), a tick to a full queue evicts an older tick (or is dropped
+        itself when the queue holds only real signals), and only a queue
+        with no ticks left evicts its OLDEST entry (the most recent real
+        signals are the relevant ones)."""
+        if len(self._held) >= HELD_QUEUE_CAP:
+            if event == "tick":
+                # swap in the newer tick - its
+                # timer check runs during the drain.
+                # no older tick? a real-signal queue
+                # drops the incoming one instead.
+                for i, (ev, _) in enumerate(self._held):
+                    if ev == "tick":
+                        dropped = self._held.pop(i)
+                        log.warning(
+                            "director held queue full: dropped tick entry "
+                            "%r (idempotent — no real signal evicted)",
+                            dropped[0],
+                        )
+                        self._held.append((event, dict(payload)))
+                        return
+                log.info(
+                    "director held queue full of real signals: incoming "
+                    "idempotent tick dropped (lazy timers evaluate during "
+                    "the drain anyway)"
+                )
+                return
+            # real signal: replace the first
+            # held tick in place, order kept.
+            for i, (ev, _) in enumerate(self._held):
+                if ev == "tick":
+                    self._held[i] = (event, dict(payload))
+                    log.info(
+                        "director held queue full: replaced idempotent "
+                        "tick %r with %r (signals keep their order)",
+                        ev, event,
+                    )
+                    return
+            dropped = self._held.pop(0)
+            log.warning(
+                "director held queue full: dropped oldest held signal %r "
+                "(no ticks left to evict — most recent signals win)",
+                dropped[0],
+            )
+            self._held.append((event, dict(payload)))
+            return
+        self._held.append((event, dict(payload)))
+        log.info(
+            "director holds %r until the next conversation boundary "
+            "(turn in flight / pending tool batch / query round)",
+            event,
+        )
+
+    def _drain_locked(self) -> None:
+        """Apply held signals, in order, whenever the boundary is open."""
+        while self._held and self._at_boundary_locked():
+            event, payload = self._held.pop(0)
+            self._step_locked(event, payload)
+
+    def _step_locked(self, event: str, payload: Dict[str, Any]) -> None:
+        """One step at a boundary: lazy timers first (elapsed reality),
+        then the event itself; at most one transition per step."""
+        now = float(self._clock())
+        nxt: Optional[str] = None
+        reason = ""
+        if (
+            self._state == DEGRADING
+            and self._degrade_deadline is not None
+            and now >= self._degrade_deadline
+        ):
+            nxt = self.transition(self._state, "tick", deadline_passed=True)
+            reason = "degrade deadline elapsed ({:.1f}s) — the transient window closed".format(
+                self._degrade_deadline_s
+            )
+        elif (
+            self._state == OFFLINE_CASCADE
+            and self._offline_entered is not None
+            and now >= self._offline_entered + self._reopen_backoff_s
+        ):
+            nxt = self.transition(self._state, "tick", backoff_elapsed=True)
+            reason = "reopen backoff elapsed ({:.1f}s)".format(self._reopen_backoff_s)
+        elif (
+            self._state == REOPENING
+            and self._last_probe_at is not None
+            and now >= self._last_probe_at + self._probe_interval_s
+        ):
+            self._last_probe_at = now
+            ok = self._run_probe_locked()
+            nxt = self.transition(self._state, "probe", probe_ok=ok)
+            reason = "probe {} — ONLINE only ever follows probe success".format(
+                "succeeded" if ok else "failed"
+            )
+        if nxt is None:
+            nxt, reason = self._event_step_locked(event, payload)
+        if nxt is not None and nxt != self._state:
+            self._commit_locked(nxt, event, reason or "lane signal", payload)
+
+    def _event_step_locked(
+        self, event: str, payload: Dict[str, Any]
+    ) -> Tuple[Optional[str], str]:
+        """The event's own table row + a human reason."""
+        if event == "warning":
+            return self.transition(self._state, "warning"), "transient warning signal"
+        if event == "connect_failed":
+            retries = int(payload.get("retries_remaining", 1) or 0)
+            return (
+                self.transition(
+                    self._state, "connect_failed", retries_remaining=retries
+                ),
+                "connect failed with {} retries remaining".format(retries),
+            )
+        if event == "hard":
+            return (
+                self.transition(self._state, "hard"),
+                "hard failure: {}".format(payload.get("detail") or "unknown"),
+            )
+        if event == "session_expired":
+            return (
+                self.transition(self._state, "session_expired"),
+                "60-min session cap signal (clean reset reconnect)",
+            )
+        if event == "success":
+            return (
+                self.transition(self._state, "success"),
+                "the lane reported healthy",
+            )
+        return None, ""
+
+    def _run_probe_locked(self) -> bool:
+        """The director's own connectivity probe: a raising probe counts
+        as a failure (logged, never propagated).  Runs under the lock —
+        the probe contract is LIGHTWEIGHT (short timeout)."""
+        try:
+            return bool(self._probe())
+        except Exception as exc:  # noqa: BLE001 - a probe must never raise
+            log.warning("director probe raised: %s", exc)
+            return False
+
