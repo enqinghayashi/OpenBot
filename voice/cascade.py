@@ -684,3 +684,19 @@ class OfflineChain:
 
     # ------------------------------------------------------- the entry points
 
+    def run_pipeline(self, pcm16: bytes) -> ChainOutcome:
+        """The full audio chain on one utterance (16 kHz mono PCM16):
+        whisper -> brain -> piper.  A whisper failure or an empty
+        transcript speaks the canned decline with NO brain call (L2);
+        anything else flows through handle_utterance."""
+        try:
+            text = self.submit(pcm16)
+        except OfflineChainError:
+            raise  # already a chain failure
+        except Exception as exc:  # noqa: BLE001 - any whisper failure
+            log.warning("offline chain: whisper stage failed: %s", exc)
+            return self._decline(self.whisper_decline, "whisper_decline")
+        if not str(text or "").strip():
+            return self._decline(self.whisper_decline, "whisper_empty")
+        return self.handle_utterance(text)
+
