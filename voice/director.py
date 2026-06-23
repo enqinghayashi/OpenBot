@@ -540,3 +540,9 @@ class Director:
             event,
         )
 
+    def _drain_locked(self) -> None:
+        """Apply held signals, in order, whenever the boundary is open."""
+        while self._held and self._at_boundary_locked():
+            event, payload = self._held.pop(0)
+            self._step_locked(event, payload)
+
