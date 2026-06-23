@@ -625,3 +625,96 @@ class Director:
             log.warning("director probe raised: %s", exc)
             return False
 
+    def _commit_locked(
+        self, to: str, event: str, reason: str, payload: Dict[str, Any]
+    ) -> None:
+        """Commit ONE transition under the lock: record it, arm the timers,
+        queue the (reset, announce) notification for outside the lock."""
+        now = float(self._clock())
+        frm = self._state
+        self._state = to
+        self.transitions.append({
+            "from": frm, "state": to, "event": event, "reason": reason,
+            "ts": now, "detail": payload,
+        })
+        if to == DEGRADING:
+            self._degrade_deadline = now + self._degrade_deadline_s
+        elif to == OFFLINE_CASCADE:
+            self._offline_entered = now
+            self._last_probe_at = None
+        elif to == REOPENING:
+            self._reopen_entered = now
+            # backdated: the first probe fires
+            # right away.
+            # the interval paces the rest.
+            self._last_probe_at = now - self._probe_interval_s
+        elif to == ONLINE:
+            self._degrade_deadline = None
+            self._offline_entered = None
+            self._reopen_entered = None
+            self._last_probe_at = None
+        self._pending_notify.append((frm, to))
+
+    def _notify_outside_lock(self) -> None:
+        """EXACTLY ONE reset and ONE announcement per committed
+        transition — outside the lock, in order."""
+        while True:
+            with self._lock:
+                if not self._pending_notify:
+                    return
+                frm, to = self._pending_notify.pop(0)
+            try:
+                self._reset()
+            except Exception:  # noqa: BLE001 - a reset hiccup must not
+                log.exception("director reset raised")  # take the whole caller down
+            text = ANNOUNCEMENTS.get(to, "switching")
+            try:
+                self._speak(text)
+            except Exception:  # noqa: BLE001 - one bad announcement must
+                log.exception("director announce raised")  # not wreck the event loop
+            log.info(
+                "director transition %s -> %s (announced %r)", frm, to, text
+            )
+
+    # ------------------------------------------------------ the default reset
+
+    def _default_reset(self) -> None:
+        """The reset-path adaptation onto the existing session contract.
+
+        DOCUMENTED GAP: VoiceSession exposes no public reset — only the
+        private ``_reset_turn_state`` (session.py), invoked on its own
+        error/session-expired/close paths.  This adapter prefers a public
+        reset/session-update method when one exists, else calls
+        ``_reset_turn_state`` (the nearest available equivalent — it IS
+        the exact turn-local reset the session uses on failover), else
+        logs the gap and proceeds; the director never fabricates a reset.
+
+        What the reset clears (mirrors session.py ``_reset_turn_state``):
+        in-flight response flags, pending tool call ids, turn call ids,
+        the query_user intercept state, the playback lead buffer and
+        queued-audio accounting.  The L3 dedup map (``_emitted_outputs``)
+        is deliberately kept.
+        """
+        backend = self.backend
+        for name in ("reset", "reset_session", "reset_context",
+                     "session_reset", "clear"):
+            method = getattr(backend, name, None)
+            if callable(method):
+                method()
+                return
+        turn_reset = getattr(backend, "_reset_turn_state", None)
+        if callable(turn_reset):
+            log.debug(
+                "director reset: no public reset on %s — using the nearest "
+                "equivalent %s._reset_turn_state (turn-local law state; "
+                "the L3 dedup map is kept)",
+                type(backend).__name__, type(backend).__name__,
+            )
+            turn_reset()
+            return
+        log.warning(
+            "director reset GAP: %s exposes no reset/session-update path — "
+            "context NOT reset on this transition (documented in "
+            "voice/director.py _default_reset)",
+            type(backend).__name__,
+        )
