@@ -625,3 +625,62 @@ class OfflineChain:
     L3 verdict flow-through, L4 piper retry, L5 no success reporting).
     """
 
+    def __init__(
+        self,
+        brain: Any,
+        *,
+        submit: Optional[Callable[[bytes], str]] = None,
+        tts: Optional[Callable[[str], Tuple[bytes, int]]] = None,
+        sink: Any = None,
+        whisper_decline: str = WHISPER_DECLINE,
+        brain_timeout_s: float = BRAIN_TIMEOUT_S,
+        whisper_launch_timeout_s: float = WHISPER_LAUNCH_TIMEOUT_S,
+        whisper_submit_timeout_s: float = WHISPER_SUBMIT_TIMEOUT_S,
+        piper_tts_timeout_s: float = PIPER_TTS_TIMEOUT_S,
+    ) -> None:
+        """Validate the four L1 stage timeouts and wire the boundaries.
+        Defaults are the documented production constants (L1): brain
+        ``BRAIN_TIMEOUT_S`` (30 s), whisper launch
+        ``WHISPER_LAUNCH_TIMEOUT_S`` (30 s), whisper submit
+        ``WHISPER_SUBMIT_TIMEOUT_S`` (15 s), piper
+        ``PIPER_TTS_TIMEOUT_S`` (20 s)."""
+        if brain is None or not callable(getattr(brain, "new_utterance", None)):
+            raise ValueError(
+                "OfflineChain requires a brain with "
+                "new_utterance(text, *, typed=False) -> OfflineOutcome"
+            )
+        bad_timeouts = [
+            name
+            for name, value in (
+                ("brain_timeout_s", brain_timeout_s),
+                ("whisper_launch_timeout_s", whisper_launch_timeout_s),
+                ("whisper_submit_timeout_s", whisper_submit_timeout_s),
+                ("piper_tts_timeout_s", piper_tts_timeout_s),
+            )
+            if not value or value <= 0
+        ]
+        if bad_timeouts:
+            raise ValueError(
+                "stage timeouts must be positive (L1: no unbounded waits): "
+                + ", ".join(bad_timeouts)
+            )
+        if whisper_decline is None or not str(whisper_decline).strip():
+            raise ValueError("whisper_decline must be a non-empty string")
+        self.brain = brain
+        self.sink = sink
+        self.whisper_decline = whisper_decline
+        self.brain_timeout_s = brain_timeout_s
+        self.submit = (
+            submit
+            if submit is not None
+            else WhisperSubmit(
+                launch_timeout_s=whisper_launch_timeout_s,
+                submit_timeout_s=whisper_submit_timeout_s,
+            )
+        )
+        self.tts = (
+            tts if tts is not None else PiperTTS(tts_timeout_s=piper_tts_timeout_s)
+        )
+
+    # ------------------------------------------------------- the entry points
+
