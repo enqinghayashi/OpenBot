@@ -729,3 +729,16 @@ class OfflineChain:
 
     # -------------------------------------------------------------- the stages
 
+    def _decline(self, text: str, source: str) -> ChainOutcome:
+        """Speak a canned decline (L2).  The decline itself goes through
+        piper, so a dead piper still raises stage 'piper' (L4): when
+        piper is dead, no speech — not even a decline — is possible."""
+        pcm, rate = self._speak(text)
+        return ChainOutcome(
+            reply_text=text,
+            pcm=pcm,
+            sample_rate=rate,
+            source=source,
+            brain_outcome=None,
+        )
+
