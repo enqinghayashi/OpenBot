@@ -338,3 +338,29 @@ class Director:
         with self._lock:
             return list(self._held)
 
+    def on_event(self, name: str, payload: Optional[Dict[str, Any]] = None) -> str:
+        """Feed one event; returns the resulting state.
+
+        Lane signals apply only at a conversation boundary (held
+        otherwise); turn-bookkeeping events update the boundary; the
+        held queue drains whenever the boundary is open.  Injected
+        reset()/speak() run once per committed transition, after the
+        lock is released.
+        """
+        name = str(name)
+        payload = dict(payload or {})
+        with self._lock:
+            event = self._normalize(name, payload)
+            if event is not None:
+                if event in TURN_EVENTS:
+                    self._apply_turn_event_locked(event, payload)
+                elif self._at_boundary_locked():
+                    self._step_locked(event, payload)
+                else:
+                    self._hold_locked(event, payload)
+                self._drain_locked()
+        self._notify_outside_lock()
+        return self.state
+
+    # -------------------------------------------------- the transition table
+
