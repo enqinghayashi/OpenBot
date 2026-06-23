@@ -425,3 +425,21 @@ class Director:
             return cfg.get(key, default)
         return getattr(cfg, key, default)
 
+    def _normalize(self, name: str, payload: Dict[str, Any]) -> Optional[str]:
+        """Map the app's raw event names onto the canonical vocabulary."""
+        if name in ("warn",):
+            return "warning"
+        if name == "failover":
+            reason = str(payload.get("reason") or "error")
+            # failover reason:
+            # 'session_expired' = 60-min cap,
+            # anything else = hard.
+            return "session_expired" if reason == "session_expired" else "hard"
+        if name in ("error",):
+            return "hard"
+        if name in ("session.expired",):
+            return "session_expired"
+        if name in SIGNAL_EVENTS or name in TURN_EVENTS:
+            return name
+        return None  # not ours.
+
