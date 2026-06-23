@@ -776,3 +776,38 @@ class OfflineChain:
             ) from box["error"]
         return box["outcome"]
 
+    def _speak(self, text: str) -> Tuple[bytes, int]:
+        """Piper with the L4 retry law: EXACTLY ONE retry (PIPER_RETRIES
+        == 1, a law, not a knob), then the non-speech signal and
+        OfflineChainError(stage='piper').  Never returns empty PCM — an
+        empty synthesis is a failure, not a silent reply."""
+        attempt = 0
+        while True:
+            try:
+                pcm, rate = self.tts(text)
+            except OfflineChainError:
+                raise  # already a chain failure
+            except Exception as exc:  # noqa: BLE001 - any piper failure
+                cause = exc
+            else:
+                if pcm:
+                    return pcm, rate
+                cause = PiperError(
+                    "piper returned empty PCM for {!r}".format((text or "")[:60])
+                )
+            attempt += 1
+            if attempt > PIPER_RETRIES:
+                self._signal_piper_dead(cause)
+                raise OfflineChainError(
+                    "piper",
+                    "synthesis failed after {} attempts: {}".format(
+                        PIPER_RETRIES + 1, cause
+                    ),
+                ) from cause
+            log.warning(
+                "offline chain: piper attempt %d/%d failed (%s); retrying once",
+                attempt,
+                PIPER_RETRIES + 1,
+                cause,
+            )
+
