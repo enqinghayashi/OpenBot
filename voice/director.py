@@ -615,3 +615,13 @@ class Director:
             )
         return None, ""
 
+    def _run_probe_locked(self) -> bool:
+        """The director's own connectivity probe: a raising probe counts
+        as a failure (logged, never propagated).  Runs under the lock —
+        the probe contract is LIGHTWEIGHT (short timeout)."""
+        try:
+            return bool(self._probe())
+        except Exception as exc:  # noqa: BLE001 - a probe must never raise
+            log.warning("director probe raised: %s", exc)
+            return False
+
