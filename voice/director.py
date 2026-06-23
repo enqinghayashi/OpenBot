@@ -584,3 +584,34 @@ class Director:
         if nxt is not None and nxt != self._state:
             self._commit_locked(nxt, event, reason or "lane signal", payload)
 
+    def _event_step_locked(
+        self, event: str, payload: Dict[str, Any]
+    ) -> Tuple[Optional[str], str]:
+        """The event's own table row + a human reason."""
+        if event == "warning":
+            return self.transition(self._state, "warning"), "transient warning signal"
+        if event == "connect_failed":
+            retries = int(payload.get("retries_remaining", 1) or 0)
+            return (
+                self.transition(
+                    self._state, "connect_failed", retries_remaining=retries
+                ),
+                "connect failed with {} retries remaining".format(retries),
+            )
+        if event == "hard":
+            return (
+                self.transition(self._state, "hard"),
+                "hard failure: {}".format(payload.get("detail") or "unknown"),
+            )
+        if event == "session_expired":
+            return (
+                self.transition(self._state, "session_expired"),
+                "60-min session cap signal (clean reset reconnect)",
+            )
+        if event == "success":
+            return (
+                self.transition(self._state, "success"),
+                "the lane reported healthy",
+            )
+        return None, ""
+
