@@ -625,3 +625,33 @@ class Director:
             log.warning("director probe raised: %s", exc)
             return False
 
+    def _commit_locked(
+        self, to: str, event: str, reason: str, payload: Dict[str, Any]
+    ) -> None:
+        """Commit ONE transition under the lock: record it, arm the timers,
+        queue the (reset, announce) notification for outside the lock."""
+        now = float(self._clock())
+        frm = self._state
+        self._state = to
+        self.transitions.append({
+            "from": frm, "state": to, "event": event, "reason": reason,
+            "ts": now, "detail": payload,
+        })
+        if to == DEGRADING:
+            self._degrade_deadline = now + self._degrade_deadline_s
+        elif to == OFFLINE_CASCADE:
+            self._offline_entered = now
+            self._last_probe_at = None
+        elif to == REOPENING:
+            self._reopen_entered = now
+            # backdated: the first probe fires
+            # right away.
+            # the interval paces the rest.
+            self._last_probe_at = now - self._probe_interval_s
+        elif to == ONLINE:
+            self._degrade_deadline = None
+            self._offline_entered = None
+            self._reopen_entered = None
+            self._last_probe_at = None
+        self._pending_notify.append((frm, to))
+
