@@ -419,3 +419,9 @@ class Director:
 
     # -------------------------------------------------------- the internals
 
+    def _cfg_get(self, key: str, default: Any) -> Any:
+        cfg = self._cfg
+        if isinstance(cfg, dict):
+            return cfg.get(key, default)
+        return getattr(cfg, key, default)
+
