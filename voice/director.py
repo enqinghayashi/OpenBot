@@ -326,3 +326,9 @@ class Director:
 
     # ------------------------------------------------------------ public bits
 
+    @property
+    def state(self) -> str:
+        """The current state (locked read)."""
+        with self._lock:
+            return self._state
+
