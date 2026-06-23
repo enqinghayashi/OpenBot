@@ -262,3 +262,67 @@ class Director:
     (see the module docstring's event vocabulary).
     """
 
+    def __init__(
+        self,
+        backend: Any,
+        probe: Callable[[], bool],
+        speak: Callable[[str], Any],
+        reset: Optional[Callable[[], Any]] = None,
+        boundary_source: Optional[Callable[[], bool]] = None,
+        cfg: Optional[Any] = None,
+    ) -> None:
+        if probe is None or not callable(probe):
+            raise ValueError("Director requires a probe callable () -> bool")
+        if speak is None or not callable(speak):
+            raise ValueError("Director requires a speak callable (text) -> Any")
+        self.backend = backend
+        self._probe = probe
+        self._speak = speak
+        self._reset: Callable[[], Any] = (
+            reset if reset is not None else self._default_reset
+        )
+        self._cfg = cfg if cfg is not None else {}
+        self._clock = self._cfg_get("clock", time.monotonic)
+        self._degrade_deadline_s = float(
+            self._cfg_get("degrade_deadline_s", DEGRADE_DEADLINE_S)
+        )
+        self._reopen_backoff_s = float(self._cfg_get("reopen_backoff_s", REOPEN_BACKOFF_S))
+        self._probe_interval_s = float(self._cfg_get("probe_interval_s", PROBE_INTERVAL_S))
+
+        #: boundary source.
+        #: default: the session's half-duplex
+        #: gate (nothing in flight, no pending
+        #: tools), else True - we trust the
+        #: event flags then.
+        if boundary_source is None:
+            boundary_source = lambda: bool(getattr(self.backend, "gate_open", True))
+        self._boundary_source = boundary_source
+
+        #: one state.
+        #: one lock.
+        self._lock = threading.Lock()
+        self.lock = self._lock
+        #: offline -> OFFLINE_CASCADE;
+        #: else ONLINE.
+        lane = str(self._cfg_get("lane", "realtime") or "realtime")
+        self._state: str = OFFLINE_CASCADE if lane == "offline" else ONLINE
+
+        #: transition log.
+        #: oldest first; from/state/event/
+        #: reason/ts + detail
+        self.transitions: List[Dict[str, Any]] = []
+        self._held: List[Tuple[str, Dict[str, Any]]] = []
+        self._pending_notify: List[Tuple[str, str]] = []  # (from, to) pairs
+
+        # -- keeping track of the boundary --
+        self._turn_active = False
+        self._query_open = False
+
+        # -- the lazy timers --
+        self._degrade_deadline: Optional[float] = None
+        self._offline_entered: Optional[float] = None
+        self._reopen_entered: Optional[float] = None
+        self._last_probe_at: Optional[float] = None
+
+    # ------------------------------------------------------------ public bits
+
