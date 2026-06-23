@@ -700,3 +700,32 @@ class OfflineChain:
             return self._decline(self.whisper_decline, "whisper_empty")
         return self.handle_utterance(text)
 
+    def handle_utterance(self, text: str) -> ChainOutcome:
+        """Brain + piper on an already-transcribed utterance.  The reply
+        spoken is the OfflineOutcome's verdict-aware text, byte-for-byte
+        (L3) — the chain never rewrites it."""
+        outcome = self._run_brain(text)
+        if outcome.silent:
+            # speech-stop = no speech
+            # ('stop talking')
+            # _speak never returns empty PCM, so a
+            # silent outcome skips piper; the app's
+            # play_pcm no-ops on an empty buffer
+            return ChainOutcome(
+                reply_text="",
+                pcm=b"",
+                sample_rate=PIPER_OUTPUT_RATE,
+                source="silent",
+                brain_outcome=outcome,
+            )
+        pcm, rate = self._speak(outcome.reply)
+        return ChainOutcome(
+            reply_text=outcome.reply,
+            pcm=pcm,
+            sample_rate=rate,
+            source="brain",
+            brain_outcome=outcome,
+        )
+
+    # -------------------------------------------------------------- the stages
+
