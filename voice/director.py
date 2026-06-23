@@ -443,3 +443,15 @@ class Director:
             return name
         return None  # not ours.
 
+    def _at_boundary_locked(self) -> bool:
+        """Boundary = no turn in flight (and no pending tool batch / open
+        query round) AND the injected boundary source."""
+        if self._turn_active:
+            return False
+        source = self._boundary_source
+        try:
+            return bool(source())
+        except Exception as exc:  # noqa: BLE001 - a broken source must not
+            log.warning("director boundary_source raised: %s", exc)
+            return True  # just fall back to the event-derived flags
+
