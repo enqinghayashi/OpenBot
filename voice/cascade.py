@@ -742,3 +742,37 @@ class OfflineChain:
             brain_outcome=None,
         )
 
+    def _run_brain(self, text: str) -> OfflineOutcome:
+        """One brain call under the L1 timeout: new_utterance(text,
+        typed=False) runs in a daemon worker thread joined with
+        ``brain_timeout_s``.  On expiry the chain raises stage 'brain'
+        and REFUSES the thread's eventual outcome — never spoken, never
+        treated as a decline; the daemon continues in the background but
+        its result is dead on arrival."""
+        box: Dict[str, Any] = {}
+
+        def work() -> None:
+            try:
+                box["outcome"] = self.brain.new_utterance(text, typed=False)
+            except Exception as exc:  # noqa: BLE001 - surfaced below
+                box["error"] = exc
+
+        thread = threading.Thread(
+            target=work, name="offline-chain-brain", daemon=True
+        )
+        thread.start()
+        thread.join(self.brain_timeout_s)
+        if thread.is_alive():
+            raise OfflineChainError(
+                "brain",
+                "OfflineBrain.new_utterance did not finish within {} s; its "
+                "eventual outcome is REFUSED — never spoken (the worker "
+                "thread continues in the background)".format(self.brain_timeout_s),
+            )
+        if "error" in box:
+            raise OfflineChainError(
+                "brain",
+                "OfflineBrain.new_utterance raised: {}".format(box["error"]),
+            ) from box["error"]
+        return box["outcome"]
+
