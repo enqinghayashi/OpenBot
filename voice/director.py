@@ -250,3 +250,15 @@ TURN_EVENTS = frozenset((
 ))
 
 
+class Director:
+    """The voice lane state director (module docstring: states, boundary
+    definition, hold policy, timers, probe, reset, announcements).
+
+    API: ``Director(backend, probe, speak, reset=None, boundary_source=None,
+    cfg=None)``; ``on_event(name, payload=None)`` returns the resulting
+    state; ``state`` (locked read) and ``lock`` are public; the static
+    ``transition()`` is the pure per-event transition table, reachable
+    for tests.  Feed the app's session events + lane signals verbatim
+    (see the module docstring's event vocabulary).
+    """
+
