@@ -364,3 +364,58 @@ class Director:
 
     # -------------------------------------------------- the transition table
 
+    @staticmethod
+    def transition(
+        state: str,
+        event: str,
+        *,
+        probe_ok: Optional[bool] = None,
+        deadline_passed: bool = False,
+        backoff_elapsed: bool = False,
+        retries_remaining: Optional[int] = None,
+    ) -> Optional[str]:
+        """The PURE per-event transition table (no I/O, no mutation) —
+        reachable for tests.
+
+        Returns the new state or None (same-state no-op).  ``probe_ok``
+        is the ONLY path into ONLINE; ``deadline_passed`` /
+        ``backoff_elapsed`` are the timer facts for the lazy timers;
+        ``retries_remaining`` disambiguates connect_failed.
+        """
+        if state not in STATES:
+            return None
+        if event == "probe":
+            # probe or nothing.
+            if state == REOPENING:
+                return ONLINE if probe_ok else OFFLINE_CASCADE
+            return None
+        if event == "tick":
+            if state == DEGRADING and deadline_passed:
+                return OFFLINE_CASCADE
+            if state == OFFLINE_CASCADE and backoff_elapsed:
+                return REOPENING
+            return None  # timer never ONLINE
+        if event == "warning":
+            return DEGRADING if state == ONLINE else None
+        if event == "connect_failed":
+            retries = 0 if retries_remaining is None else int(retries_remaining)
+            if state == ONLINE:
+                # retries left = transient.
+                # none left = hard.
+                return DEGRADING if retries > 0 else OFFLINE_CASCADE
+            if state == DEGRADING:
+                return OFFLINE_CASCADE if retries <= 0 else None
+            return None
+        if event == "hard":
+            return OFFLINE_CASCADE if state in (ONLINE, DEGRADING) else None
+        if event == "session_expired":
+            # 60-min cap: client reset itself.
+            # we probe the lane first.
+            # only then ONLINE.
+            return REOPENING if state in (ONLINE, DEGRADING) else None
+        if event == "success":
+            return ONLINE if state == DEGRADING else None
+        return None
+
+    # -------------------------------------------------------- the internals
+
