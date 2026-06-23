@@ -455,3 +455,31 @@ class Director:
             log.warning("director boundary_source raised: %s", exc)
             return True  # just fall back to the event-derived flags
 
+    def _apply_turn_event_locked(self, event: str, payload: Dict[str, Any]) -> None:
+        """Turn bookkeeping: maintain ``_turn_active`` (a query_user round
+        counts as a turn — the gate is open while the answer is awaited)."""
+        if event == "gate_changed":
+            if payload.get("open") is False:
+                self._turn_active = True
+            else:
+                # gate_changed open:True reopens
+                # the boundary - held queue drains.
+                # a query round still counts as a
+                # turn: its gate is knowingly open.
+                if not self._query_open:
+                    self._turn_active = False
+        elif event == "tool_call":
+            self._turn_active = True
+        elif event == "query_waiting":
+            self._query_open = True
+            self._turn_active = True
+        elif event == "answer":
+            # answer closes the round.
+            # fresh turn on the next
+            # gate_changed.
+            self._query_open = False
+            self._turn_active = False
+        elif event == "turn_complete":
+            self._query_open = False
+            self._turn_active = False
+
