@@ -811,3 +811,16 @@ class OfflineChain:
                 cause,
             )
 
+    def _signal_piper_dead(self, cause: Exception) -> None:
+        """L4 non-speech signal: the standard log line + the sink's LED
+        flashed red.  The LED is left red — the persistent 'piper dead'
+        indicator; the app owns restoring it."""
+        log.error("%s: %s", PIPER_DEAD_LOG, cause)
+        sink = self.sink
+        set_led = getattr(sink, "set_led", None)
+        if callable(set_led):
+            try:
+                set_led(255, 0, 0)
+            except Exception as exc:  # noqa: BLE001 - a light is not worth
+                log.debug("LED signal failed: %s", exc)  # blowing the whole conversation over
+
