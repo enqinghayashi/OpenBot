@@ -483,3 +483,60 @@ class Director:
             self._query_open = False
             self._turn_active = False
 
+    def _hold_locked(self, event: str, payload: Dict[str, Any]) -> None:
+        """HOLD POLICY: a lane signal mid-turn is queued in order; beyond
+        HELD_QUEUE_CAP the idempotent TICK entries are the drop
+        candidates — a real signal evicts the FIRST held tick (in place,
+        so real signals keep their order and never lose a slot to a
+        tick), a tick to a full queue evicts an older tick (or is dropped
+        itself when the queue holds only real signals), and only a queue
+        with no ticks left evicts its OLDEST entry (the most recent real
+        signals are the relevant ones)."""
+        if len(self._held) >= HELD_QUEUE_CAP:
+            if event == "tick":
+                # swap in the newer tick - its
+                # timer check runs during the drain.
+                # no older tick? a real-signal queue
+                # drops the incoming one instead.
+                for i, (ev, _) in enumerate(self._held):
+                    if ev == "tick":
+                        dropped = self._held.pop(i)
+                        log.warning(
+                            "director held queue full: dropped tick entry "
+                            "%r (idempotent — no real signal evicted)",
+                            dropped[0],
+                        )
+                        self._held.append((event, dict(payload)))
+                        return
+                log.info(
+                    "director held queue full of real signals: incoming "
+                    "idempotent tick dropped (lazy timers evaluate during "
+                    "the drain anyway)"
+                )
+                return
+            # real signal: replace the first
+            # held tick in place, order kept.
+            for i, (ev, _) in enumerate(self._held):
+                if ev == "tick":
+                    self._held[i] = (event, dict(payload))
+                    log.info(
+                        "director held queue full: replaced idempotent "
+                        "tick %r with %r (signals keep their order)",
+                        ev, event,
+                    )
+                    return
+            dropped = self._held.pop(0)
+            log.warning(
+                "director held queue full: dropped oldest held signal %r "
+                "(no ticks left to evict — most recent signals win)",
+                dropped[0],
+            )
+            self._held.append((event, dict(payload)))
+            return
+        self._held.append((event, dict(payload)))
+        log.info(
+            "director holds %r until the next conversation boundary "
+            "(turn in flight / pending tool batch / query round)",
+            event,
+        )
+
