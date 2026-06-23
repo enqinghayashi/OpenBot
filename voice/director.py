@@ -332,3 +332,9 @@ class Director:
         with self._lock:
             return self._state
 
+    @property
+    def held(self) -> List[Tuple[str, Dict[str, Any]]]:
+        """Copy of the currently held mid-turn signals (diagnostics)."""
+        with self._lock:
+            return list(self._held)
+
