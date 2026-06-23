@@ -824,3 +824,12 @@ class OfflineChain:
             except Exception as exc:  # noqa: BLE001 - a light is not worth
                 log.debug("LED signal failed: %s", exc)  # blowing the whole conversation over
 
+    def close(self) -> None:
+        """Best-effort teardown of the whisper server subprocess (never
+        raises)."""
+        submit = getattr(self.submit, "close", None)
+        if callable(submit):
+            try:
+                submit()
+            except Exception as exc:  # noqa: BLE001 - shutdown must not raise
+                log.debug("whisper submit close raised: %s", exc)
