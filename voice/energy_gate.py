@@ -36,3 +36,63 @@ from typing import Deque, List, Optional
 G1_SAMPLE_RATE = 16000
 
 
+class EnergyGate:
+    """Adaptive level VAD; :meth:`feed` emits completed utterances."""
+
+    def __init__(
+        self,
+        sample_rate: int = G1_SAMPLE_RATE,
+        min_peak: int = 2200,
+        floor_factor: float = 3.0,
+        floor_percentile: float = 30.0,
+        floor_window_s: float = 5.0,
+        prefix_ms: int = 400,
+        hangover_ms: int = 900,
+        cooldown_s: float = 3.0,
+    ) -> None:
+        self.sample_rate = sample_rate
+        # 2200: fan peaks 836-1122, clangs 1501, speech 5315 (p95) /
+        # 26400-32571 (max). clears the clang band, stays under speech.
+        # the old 1200 let a 1501 clang open the gate; that fed the
+        # empty-transcript whisper-decline loop.
+        self.min_peak = min_peak
+        self.floor_factor = floor_factor
+        self.floor_percentile = floor_percentile
+        self.hangover_ms = hangover_ms
+        self.prefix_ms = prefix_ms
+        self.cooldown_s = cooldown_s
+
+        self._bytes_per_s = sample_rate * 2  # 16-bit mono
+        # ~40 ms chunks, so this window is always floor_window_s of audio
+        window = max(8, int(floor_window_s * 1000.0 / 40.0))
+        self._peaks = collections.deque(maxlen=window)  # type: Deque[float]
+        # run-up while shut, capped at prefix_ms
+        self._prefix = collections.deque()  # type: Deque[bytes]
+        self._prefix_bytes = 0
+        self._speech = bytearray()
+        self._open = False
+        self._quiet_chunks = 0
+        self._cooldown_until = 0.0
+
+        self.opened = 0  # diagnostics only
+
+    # ------------------------------------------------------- quick queries
+
+    @property
+    def is_open(self) -> bool:
+        return self._open
+
+    @property
+    def noise_floor(self) -> float:
+        if not self._peaks:
+            return 0.0
+        ordered = sorted(self._peaks)
+        index = int(self.floor_percentile / 100.0 * (len(ordered) - 1))
+        return float(ordered[index])
+
+    @property
+    def threshold(self) -> float:
+        return max(float(self.min_peak), self.noise_floor * self.floor_factor)
+
+    # ------------------------------------------------------ taking audio in
+
