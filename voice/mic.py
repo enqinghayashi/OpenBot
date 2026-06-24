@@ -83,3 +83,95 @@ def robot_interface_ip() -> Optional[str]:
 
 class MicError(RuntimeError):
     """A microphone could not be opened or read."""
+
+
+class G1Mic:
+    """The G1 microphone array, as synchronous 5120-byte PCM16 frames.
+
+    Constructor binds UDP multicast (``SO_REUSEADDR`` + ``IP_ADD_MEMBERSHIP``)
+    so errors surface immediately.  ``iter_frames()`` yields exactly
+    ``frame_bytes`` per frame, reassembling if a datagram ever splits a
+    frame; ``close()`` unblocks a blocked ``iter_frames()`` and releases the
+    socket.  All socket access is serialised by one lock, so a reader and
+    ``close()`` may run on different threads.
+    """
+
+    def __init__(
+        self,
+        group: str = MULTICAST_GROUP,
+        port: int = MULTICAST_PORT,
+        interface_ip: Optional[str] = None,
+        frame_bytes: int = G1_FRAME_BYTES,
+        recv_timeout_s: float = 2.0,
+    ) -> None:
+        self.group = group
+        self.port = port
+        if interface_ip is None:
+            interface_ip = robot_interface_ip()
+            if interface_ip is None:
+                raise MicError(
+                    "no interface carries an address on the robot subnet "
+                    "{}0/24 — the G1 mic multicast group is reachable only "
+                    "on the robot-facing interface, and an INADDR_ANY join "
+                    "would silently hear nothing (see G1Mic docstring). "
+                    "Boot with the robot interface up, or pass "
+                    "interface_ip explicitly.".format(ROBOT_SUBNET_PREFIX)
+                )
+        self.interface_ip = interface_ip
+        self.frame_bytes = frame_bytes
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._sock = self._make_socket(recv_timeout_s)
+        log.info(
+            "g1-mic: joined %s:%d via %s",
+            self.group,
+            self.port,
+            self.interface_ip,
+        )
+
+    def _make_socket(self, timeout_s: float) -> socket.socket:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("", self.port))
+            membership = socket.inet_aton(self.group) + socket.inet_aton(
+                self.interface_ip or "0.0.0.0"
+            )
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership)
+        except OSError as exc:
+            sock.close()
+            raise MicError(
+                "cannot join G1 mic multicast {}:{} (interface {}): {}".format(
+                    self.group, self.port, self.interface_ip or "any", exc
+                )
+            )
+        sock.settimeout(max(0.05, timeout_s))
+        return sock
+
+    @property
+    def connected(self) -> bool:
+        with self._lock:
+            return self._sock is not None
+
+    def iter_frames(self) -> Iterator[bytes]:
+        """Yield complete ``frame_bytes`` PCM16 frames until ``close()``."""
+        pending = bytearray()
+        while not self._stop.is_set():
+            with self._lock:
+                sock = self._sock
+                if sock is None:
+                    return
+                try:
+                    data = sock.recv(65536)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    return  # closed on us
+            if not data:
+                return
+            pending += data
+            while len(pending) >= self.frame_bytes:
+                frame = bytes(pending[: self.frame_bytes])
+                del pending[: self.frame_bytes]
+                yield frame
+
