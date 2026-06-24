@@ -171,3 +171,55 @@ class StewardKws:
         except Exception:  # noqa: BLE001 - older vosk builds lack Reset()
             self._recognizer = None
 
+    def reset(self) -> None:
+        """Drop recogniser state (used on session boundaries)."""
+        with self._lock:
+            if self._recognizer is not None:
+                try:
+                    self._recognizer.Reset()
+                except Exception:  # noqa: BLE001 - rebuilt next feed
+                    self._recognizer = None
+
+
+class MockKws:
+    """A scripted wake-word detector for tests and ``--audio mock``.
+
+    ``script`` is a list consumed one entry per ``feed``/``feed_text``
+    call: a string is returned as the matched phrase, ``None`` returns
+    None.  Useful for walking a robot through wake -> conversation ->
+    sleep without any model.
+
+    MIRROR SURFACE: the app's pump reads ``kws.phrases`` and
+    ``kws.sleep_phrases`` in BOTH lanes to classify a matched phrase
+    (wake vs sleep), so the mock exposes exactly the StewardKws
+    attributes, normalised the same way (stripped, lower-cased,
+    empties dropped) and defaulted the same way — the mock never
+    invents a new API.  ``phrases``/``sleep_phrases`` mirror the
+    constructor args (the app passes the same wake list it would give
+    StewardKws); ``cooldown_s`` is accepted for signature parity (the
+    scripted mock never enforces a cooldown itself).
+    """
+
+    def __init__(
+        self,
+        script: Optional[Sequence] = None,
+        phrases: Sequence[str] = DEFAULT_WAKE_PHRASES,
+        sleep_phrases: Sequence[str] = DEFAULT_SLEEP_PHRASES,
+        cooldown_s: float = 3.0,
+    ) -> None:
+        self.script = list(script or [])  # type: List
+        self.calls = 0
+        self.phrases = [p.strip().lower() for p in phrases if p.strip()]
+        self.sleep_phrases = [p.strip().lower() for p in sleep_phrases if p.strip()]
+        self.cooldown_s = float(cooldown_s)
+
+    def _next(self) -> Optional[str]:
+        if not self.script:
+            return None
+        self.calls += 1
+        item = self.script.pop(0)
+        return item if isinstance(item, str) else None
+
+    def feed(self, pcm16k: bytes) -> Optional[str]:
+        return self._next()
+
