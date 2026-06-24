@@ -43,3 +43,20 @@ class EchoGuard:
     whose own peak clears the bar is admitted.
     """
 
+    def __init__(
+        self,
+        coupling: float = 0.5,
+        margin: float = 1.6,
+        max_peak: float = 12000.0,
+        ref_active_peak: float = REF_ACTIVE_PEAK,
+    ) -> None:
+        if not 0.0 <= coupling <= MAX_COUPLING:
+            raise ValueError("coupling must be 0-{}".format(MAX_COUPLING))
+        self.coupling = coupling
+        self.margin = margin
+        self.max_peak = max_peak
+        self.ref_active_peak = ref_active_peak
+
+        self.admitted = 0
+        self.suppressed = 0
+
