@@ -50,3 +50,5 @@ DEFAULT_SLEEP_PHRASES: tuple = ()
 
 class KwsError(RuntimeError):
     """The wake-word engine could not be built or run."""
+
+
