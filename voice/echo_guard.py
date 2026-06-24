@@ -83,3 +83,5 @@ class EchoGuard:
     def maybe(self, frame: bytes, playing_peak: Optional[float] = None) -> Optional[bytes]:
         """The frame itself when admitted, else None (convenience)."""
         return frame if self.admit(frame, playing_peak) else None
+
+
