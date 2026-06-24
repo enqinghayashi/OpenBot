@@ -178,3 +178,5 @@ def _peak(pcm: bytes) -> float:
     if not samples:
         return 0.0
     return float(max(abs(s) for s in samples))
+
+
