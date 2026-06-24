@@ -149,3 +149,10 @@ class EnergyGate:
         self._cooldown_until = time.monotonic() + self.cooldown_s
         return utterance if utterance else None
 
+    def drop_prefix(self) -> None:
+        """Forget the buffered run-up (the echo guard calls this when it
+        starts withholding audio: whatever is in the prefix is the robot's
+        own voice, and releasing it later would hand the model an echo)."""
+        self._prefix.clear()
+        self._prefix_bytes = 0
+
