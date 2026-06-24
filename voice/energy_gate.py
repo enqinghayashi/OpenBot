@@ -82,3 +82,11 @@ class EnergyGate:
     def is_open(self) -> bool:
         return self._open
 
+    @property
+    def noise_floor(self) -> float:
+        if not self._peaks:
+            return 0.0
+        ordered = sorted(self._peaks)
+        index = int(self.floor_percentile / 100.0 * (len(ordered) - 1))
+        return float(ordered[index])
+
