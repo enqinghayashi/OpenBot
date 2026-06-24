@@ -36,3 +36,6 @@ from typing import Deque, List, Optional
 G1_SAMPLE_RATE = 16000
 
 
+class EnergyGate:
+    """Adaptive level VAD; :meth:`feed` emits completed utterances."""
+
