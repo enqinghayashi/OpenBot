@@ -96,3 +96,47 @@ class EnergyGate:
 
     # ------------------------------------------------------ taking audio in
 
+    def feed(self, pcm: bytes) -> Optional[bytes]:
+        """One chunk of 16 kHz mono PCM16.
+
+        Returns a completed utterance (prefix + speech + intra-utterance
+        gaps) when the hangover closes it, else ``None``.
+        """
+        if not pcm:
+            return None
+        now = time.monotonic()
+        if now < self._cooldown_until:
+            return None  # still cooling down
+
+        peak = _peak(pcm)
+        self._peaks.append(peak)
+
+        if self._open:
+            if peak >= self.threshold:
+                self._quiet_chunks = 0
+                self._speech += pcm
+            else:
+                self._quiet_chunks += 1
+                self._speech += pcm  # intra-utterance gap / hangover
+                if self._quiet_chunks >= _chunks(self.hangover_ms, self._bytes_per_s, len(pcm)):
+                    return self._close()
+            return None
+
+        # rolling run-up, so the first word never clips
+        self._prefix.append(pcm)
+        self._prefix_bytes += len(pcm)
+        while self._prefix_bytes > _bytes(self.prefix_ms, self._bytes_per_s):
+            dropped = self._prefix.popleft()
+            self._prefix_bytes -= len(dropped)
+        if peak < self.threshold:
+            return None
+
+        self._open = True
+        self._quiet_chunks = 0
+        self._speech = bytearray()
+        self._speech += b"".join(self._prefix)
+        self._prefix.clear()
+        self._prefix_bytes = 0
+        self._speech += pcm
+        return None
+
