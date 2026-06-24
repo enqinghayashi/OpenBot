@@ -34,3 +34,12 @@ REF_ACTIVE_PEAK = 2000.0
 MAX_COUPLING = 2.0
 
 
+class EchoGuard:
+    """Level bar: ``admit``/``maybe`` per microphone frame.
+
+    ``playing_peak`` is the loudness of what the speaker is currently
+    playing (0.0 / ``None`` = nothing playing).  The bar is
+    ``coupling * margin * playing_peak``, capped at ``max_peak``; a frame
+    whose own peak clears the bar is admitted.
+    """
+
