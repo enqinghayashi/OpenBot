@@ -140,3 +140,12 @@ class EnergyGate:
         self._speech += pcm
         return None
 
+    def _close(self) -> Optional[bytes]:
+        self._open = False
+        self._quiet_chunks = 0
+        utterance = bytes(self._speech)
+        self._speech = bytearray()
+        self.opened += 1
+        self._cooldown_until = time.monotonic() + self.cooldown_s
+        return utterance if utterance else None
+
