@@ -167,3 +167,23 @@ class EnergyGate:
         self._cooldown_until = 0.0
         if not keep_floor:
             self._peaks.clear()
+
+
+def _peak(pcm: bytes) -> float:
+    """Loudest |sample| as an int16 level; 0.0 for empty/odd input."""
+    if not pcm or len(pcm) % 2:
+        return 0.0
+    samples = array.array("h")
+    samples.frombytes(pcm[: len(pcm) - (len(pcm) % 2)])
+    if not samples:
+        return 0.0
+    return float(max(abs(s) for s in samples))
+
+
+def _chunks(ms: int, bytes_per_s: int, chunk_bytes: int) -> int:
+    """How many ``chunk_bytes`` chunks fit in ``ms`` milliseconds."""
+    return max(1, int(ms / 1000.0 * bytes_per_s) // max(1, chunk_bytes) + 1)
+
+
+def _bytes(ms: int, bytes_per_s: int) -> int:
+    return max(1, int(ms / 1000.0 * bytes_per_s))
