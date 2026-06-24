@@ -52,3 +52,13 @@ class KwsError(RuntimeError):
     """The wake-word engine could not be built or run."""
 
 
+class StewardKws:
+    """Restricted-grammar Vosk wake/sleep detector.
+
+    ``feed(pcm16k)`` returns the matched phrase (wake or sleep) or None;
+    ``feed_text(text)`` does the same on already-recognised text (tests,
+    or the offline lane's transcript).  Accepts are spaced by
+    ``cooldown_s``; after a hit the recogniser is reset so the same words
+    cannot immediately re-trigger from a stale partial.
+    """
+
