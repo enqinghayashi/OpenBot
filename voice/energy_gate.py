@@ -156,3 +156,14 @@ class EnergyGate:
         self._prefix.clear()
         self._prefix_bytes = 0
 
+    def reset(self, keep_floor: bool = False) -> None:
+        """Shut the gate and drop buffers.  ``keep_floor`` preserves the
+        learned noise floor (otherwise every close/reopen starts from a
+        single-chunk sample, which is not a measurement of the room)."""
+        self._open = False
+        self._quiet_chunks = 0
+        self._speech = bytearray()
+        self.drop_prefix()
+        self._cooldown_until = 0.0
+        if not keep_floor:
+            self._peaks.clear()
