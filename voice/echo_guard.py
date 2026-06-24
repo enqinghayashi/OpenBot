@@ -60,3 +60,23 @@ class EchoGuard:
         self.admitted = 0
         self.suppressed = 0
 
+    def admit(self, frame: bytes, playing_peak: Optional[float] = None) -> bool:
+        """True if the frame may go upstream.
+
+        Admitted when nothing is audibly playing, or when the frame's peak
+        beats ``coupling * margin * playing_peak`` (capped at ``max_peak``).
+        """
+        peak = _peak(frame)
+        if playing_peak is None or playing_peak <= 0:
+            allowed = True
+        elif playing_peak < self.ref_active_peak:
+            allowed = True  # no opinion
+        else:
+            bar = min(self.coupling * self.margin * playing_peak, self.max_peak)
+            allowed = peak > bar
+        if allowed:
+            self.admitted += 1
+        else:
+            self.suppressed += 1
+        return allowed
+
