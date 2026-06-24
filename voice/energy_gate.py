@@ -169,3 +169,12 @@ class EnergyGate:
             self._peaks.clear()
 
 
+def _peak(pcm: bytes) -> float:
+    """Loudest |sample| as an int16 level; 0.0 for empty/odd input."""
+    if not pcm or len(pcm) % 2:
+        return 0.0
+    samples = array.array("h")
+    samples.frombytes(pcm[: len(pcm) - (len(pcm) % 2)])
+    if not samples:
+        return 0.0
+    return float(max(abs(s) for s in samples))
