@@ -108,3 +108,66 @@ class StewardKws:
                 os.path.basename(self.model_dir),
             )
 
+    def _grammar(self) -> str:
+        words = set(self.phrases + self.sleep_phrases)
+        return json.dumps(sorted(words))
+
+    # ----------------------------------------------------- the public api
+
+    def feed(self, pcm16k: bytes) -> Optional[str]:
+        """One 16 kHz mono PCM16 chunk; returns the matched phrase or None."""
+        if not pcm16k:
+            return None
+        try:
+            self._ensure_engine()
+        except KwsError:
+            raise
+        text = ""
+        try:
+            with self._lock:
+                recognizer = self._recognizer
+                if recognizer is None:  # pragma: no cover - _ensure_engine ran
+                    return None
+                if recognizer.AcceptWaveform(pcm16k):
+                    text = json.loads(recognizer.Result()).get("text", "")
+                else:
+                    text = json.loads(recognizer.PartialResult()).get("partial", "")
+        except Exception as exc:  # noqa: BLE001 - a recogniser fault must
+            # not take down the capture path; the next chunk simply retries.
+            log.warning("steward kws recogniser error: %s", exc)
+            return None
+        return self._match(text)
+
+    def feed_text(self, text: str) -> Optional[str]:
+        """Match already-recognised text (tests / offline transcript lane)."""
+        return self._match(text or "")
+
+    def _match(self, text: str) -> Optional[str]:
+        text = (text or "").strip().lower()
+        if not text:
+            return None
+        now = time.monotonic()
+        if now - self._last_fired < self.cooldown_s:
+            return None
+        # sleep first - "go to sleep" contains the wake family
+        for phrase in self.sleep_phrases:
+            if phrase in text:
+                self._fire(now)
+                return phrase
+        for phrase in self.phrases:
+            if phrase in text:
+                self._fire(now)
+                return phrase
+        return None
+
+    def _fire(self, now: float) -> None:
+        self._last_fired = now
+        # drop recogniser state; the same words can't re-fire
+        # straight away from a stale partial
+        try:
+            with self._lock:
+                if self._recognizer is not None:
+                    self._recognizer.Reset()
+        except Exception:  # noqa: BLE001 - older vosk builds lack Reset()
+            self._recognizer = None
+
