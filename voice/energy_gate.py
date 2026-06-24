@@ -90,3 +90,9 @@ class EnergyGate:
         index = int(self.floor_percentile / 100.0 * (len(ordered) - 1))
         return float(ordered[index])
 
+    @property
+    def threshold(self) -> float:
+        return max(float(self.min_peak), self.noise_floor * self.floor_factor)
+
+    # ------------------------------------------------------ taking audio in
+
