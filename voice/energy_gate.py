@@ -185,3 +185,5 @@ def _chunks(ms: int, bytes_per_s: int, chunk_bytes: int) -> int:
     return max(1, int(ms / 1000.0 * bytes_per_s) // max(1, chunk_bytes) + 1)
 
 
+def _bytes(ms: int, bytes_per_s: int) -> int:
+    return max(1, int(ms / 1000.0 * bytes_per_s))
