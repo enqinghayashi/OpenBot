@@ -655,3 +655,26 @@ class Director:
             self._last_probe_at = None
         self._pending_notify.append((frm, to))
 
+    def _notify_outside_lock(self) -> None:
+        """EXACTLY ONE reset and ONE announcement per committed
+        transition — outside the lock, in order."""
+        while True:
+            with self._lock:
+                if not self._pending_notify:
+                    return
+                frm, to = self._pending_notify.pop(0)
+            try:
+                self._reset()
+            except Exception:  # noqa: BLE001 - a reset hiccup must not
+                log.exception("director reset raised")  # take the whole caller down
+            text = ANNOUNCEMENTS.get(to, "switching")
+            try:
+                self._speak(text)
+            except Exception:  # noqa: BLE001 - one bad announcement must
+                log.exception("director announce raised")  # not wreck the event loop
+            log.info(
+                "director transition %s -> %s (announced %r)", frm, to, text
+            )
+
+    # ------------------------------------------------------ the default reset
+
