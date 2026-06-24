@@ -78,3 +78,7 @@ class EnergyGate:
 
     # ------------------------------------------------------- quick queries
 
+    @property
+    def is_open(self) -> bool:
+        return self._open
+
