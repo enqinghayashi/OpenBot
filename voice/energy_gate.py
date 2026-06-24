@@ -183,3 +183,5 @@ def _peak(pcm: bytes) -> float:
 def _chunks(ms: int, bytes_per_s: int, chunk_bytes: int) -> int:
     """How many ``chunk_bytes`` chunks fit in ``ms`` milliseconds."""
     return max(1, int(ms / 1000.0 * bytes_per_s) // max(1, chunk_bytes) + 1)
+
+
