@@ -678,3 +678,43 @@ class Director:
 
     # ------------------------------------------------------ the default reset
 
+    def _default_reset(self) -> None:
+        """The reset-path adaptation onto the existing session contract.
+
+        DOCUMENTED GAP: VoiceSession exposes no public reset — only the
+        private ``_reset_turn_state`` (session.py), invoked on its own
+        error/session-expired/close paths.  This adapter prefers a public
+        reset/session-update method when one exists, else calls
+        ``_reset_turn_state`` (the nearest available equivalent — it IS
+        the exact turn-local reset the session uses on failover), else
+        logs the gap and proceeds; the director never fabricates a reset.
+
+        What the reset clears (mirrors session.py ``_reset_turn_state``):
+        in-flight response flags, pending tool call ids, turn call ids,
+        the query_user intercept state, the playback lead buffer and
+        queued-audio accounting.  The L3 dedup map (``_emitted_outputs``)
+        is deliberately kept.
+        """
+        backend = self.backend
+        for name in ("reset", "reset_session", "reset_context",
+                     "session_reset", "clear"):
+            method = getattr(backend, name, None)
+            if callable(method):
+                method()
+                return
+        turn_reset = getattr(backend, "_reset_turn_state", None)
+        if callable(turn_reset):
+            log.debug(
+                "director reset: no public reset on %s — using the nearest "
+                "equivalent %s._reset_turn_state (turn-local law state; "
+                "the L3 dedup map is kept)",
+                type(backend).__name__, type(backend).__name__,
+            )
+            turn_reset()
+            return
+        log.warning(
+            "director reset GAP: %s exposes no reset/session-update path — "
+            "context NOT reset on this transition (documented in "
+            "voice/director.py _default_reset)",
+            type(backend).__name__,
+        )
