@@ -167,3 +167,5 @@ class EnergyGate:
         self._cooldown_until = 0.0
         if not keep_floor:
             self._peaks.clear()
+
+
