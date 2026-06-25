@@ -138,3 +138,7 @@ class StewardKws:
             return None
         return self._match(text)
 
+    def feed_text(self, text: str) -> Optional[str]:
+        """Match already-recognised text (tests / offline transcript lane)."""
+        return self._match(text or "")
+
