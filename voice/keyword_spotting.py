@@ -223,3 +223,6 @@ class MockKws:
     def feed(self, pcm16k: bytes) -> Optional[str]:
         return self._next()
 
+    def feed_text(self, text: str) -> Optional[str]:
+        return self._next()
+
