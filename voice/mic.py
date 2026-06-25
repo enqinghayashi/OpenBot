@@ -175,3 +175,60 @@ class G1Mic:
                 del pending[: self.frame_bytes]
                 yield frame
 
+    def close(self) -> None:
+        """Stop the stream and release the socket (idempotent)."""
+        self._stop.set()
+        with self._lock:
+            sock, self._sock = self._sock, None
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    def __enter__(self) -> "G1Mic":
+        return self
+
+    def __exit__(self, *exc) -> None:  # noqa: ANN002 - stub for the protocol
+        self.close()
+
+
+class MockMic:
+    """A scripted microphone for tests and ``--audio mock``.
+
+    Yields the frames given at construction (or lazily from any iterable,
+    so an infinite generator works too).  Useful helper: :meth:`sine`
+        builds a PCM16 frame sequence of a tone for driver scripts.
+    """
+
+    def __init__(self, frames: Optional[Iterable] = None, frame_bytes: int = G1_FRAME_BYTES) -> None:
+        self.frames = list(frames or [])
+        self.frame_bytes = frame_bytes
+        self.closed = False
+
+    @classmethod
+    def sine(
+        cls,
+        seconds: float,
+        frequency: float = 440.0,
+        amplitude: float = 0.3,
+        sample_rate: int = G1_SAMPLE_RATE,
+        frame_bytes: int = G1_FRAME_BYTES,
+    ) -> "MockMic":
+        """A tone as full ``frame_bytes`` PCM16 frames (pure stdlib).
+
+        The final partial frame is zero-padded so every frame matches the
+        G1's 5120-byte/160 ms cadence.
+        """
+        total = int(seconds * sample_rate)
+        samples = array.array("h")
+        for i in range(total):
+            samples.append(
+                int(amplitude * 32767.0 * math.sin(2.0 * math.pi * frequency * i / sample_rate))
+            )
+        raw = samples.tobytes()
+        frames = [raw[i : i + frame_bytes] for i in range(0, len(raw), frame_bytes)]
+        if frames and len(frames[-1]) < frame_bytes:
+            frames[-1] = frames[-1] + b"\x00\x00" * ((frame_bytes - len(frames[-1])) // 2)
+        return cls(frames, frame_bytes=frame_bytes)
+
