@@ -160,3 +160,14 @@ class StewardKws:
                 return phrase
         return None
 
+    def _fire(self, now: float) -> None:
+        self._last_fired = now
+        # drop recogniser state; the same words can't re-fire
+        # straight away from a stale partial
+        try:
+            with self._lock:
+                if self._recognizer is not None:
+                    self._recognizer.Reset()
+        except Exception:  # noqa: BLE001 - older vosk builds lack Reset()
+            self._recognizer = None
+
