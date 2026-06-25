@@ -114,3 +114,27 @@ class StewardKws:
 
     # ----------------------------------------------------- the public api
 
+    def feed(self, pcm16k: bytes) -> Optional[str]:
+        """One 16 kHz mono PCM16 chunk; returns the matched phrase or None."""
+        if not pcm16k:
+            return None
+        try:
+            self._ensure_engine()
+        except KwsError:
+            raise
+        text = ""
+        try:
+            with self._lock:
+                recognizer = self._recognizer
+                if recognizer is None:  # pragma: no cover - _ensure_engine ran
+                    return None
+                if recognizer.AcceptWaveform(pcm16k):
+                    text = json.loads(recognizer.Result()).get("text", "")
+                else:
+                    text = json.loads(recognizer.PartialResult()).get("partial", "")
+        except Exception as exc:  # noqa: BLE001 - a recogniser fault must
+            # not take down the capture path; the next chunk simply retries.
+            log.warning("steward kws recogniser error: %s", exc)
+            return None
+        return self._match(text)
+
