@@ -154,3 +154,119 @@ class RealtimeError(RuntimeError):
 
 class RealtimeAuthError(RealtimeError):
     """Bad key or no access to the model.  Retrying will not help."""
+
+
+class RealtimeClient:
+    """One authenticated, reconnectable WebSocket to the Realtime API.
+
+    Build it (no I/O), register callbacks, then drive it with
+    :meth:`run_forever` (connect-with-retry + handshake + read/dispatch
+    loop with auto-reconnect and the 60-min session cap).  ``tools`` is
+    the flat tool list produced by ``voice.adapters.flatten_specs``.
+
+    The GA ``session.update`` field set is LOCKED (reference-verified
+    byte-for-byte against OpenBot ``build_session_update``): audio is a
+    single ``audio`` object whose ``input`` nests ``format`` {``type``,
+    ``rate``}, ``transcription`` {``model``, ``language``} and
+    ``turn_detection`` {``type``, ``threshold``, ``prefix_padding_ms``,
+    ``silence_duration_ms``, ``create_response``}, and whose ``output``
+    nests ``format`` {``type``, ``rate``}, ``voice`` and ``speed`` -
+    ``output_modalities`` (never ``modalities``), no ``sample_rate`` key
+    anywhere, no top-level ``input_transcription`` /
+    ``input_turn_detection``; ``tools`` / ``tool_choice`` only when tools
+    were supplied; and no ``OpenAI-Beta`` header.  Consequence quote
+    (reference): "A wrong
+    field name does not close the socket; the server sends one ``error``
+    event and carries on, so the symptom is a session that connects and
+    then never speaks."
+    """
+
+    def __init__(
+        self,
+        base_url: str = DEFAULT_BASE_URL,
+        model: str = DEFAULT_MODEL,
+        api_key: str = "",
+        version: str = DEFAULT_VERSION,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        instructions: str = "",
+        session_updated_timeout_s: float = SESSION_UPDATED_TIMEOUT_S,
+        session_cap_s: float = SESSION_CAP_S,
+        on_session_expired: Optional[Callable[[], Any]] = None,
+    ) -> None:
+        self.base_url = base_url
+        self.model = model
+        self.api_key = api_key
+        self.version = version  # pin, info only
+        self.tools = list(tools or [])
+        #: identity text the model speaks as
+        #: same channel as DEFAULT_INSTRUCTIONS
+        #: unset -> field absent (tests pin it)
+        self.instructions = str(instructions)
+        self.session_updated_timeout_s = session_updated_timeout_s
+        self.session_cap_s = session_cap_s
+        self.on_session_expired = on_session_expired
+
+        self._ws = None  # type: Optional[Any]
+        self._handlers = {}  # type: Dict[str, List[Callable[[str, dict], Any]]]
+        self._closing = False
+        self._retried_429 = False
+        self._session_started_at = 0.0
+        # the 60-min cap resets the context
+        self.context_reset = False
+
+    # ------------------------------------------------ events and handlers
+
+    def on_event(self, name: str, callback: Callable[[str, dict], Any]) -> None:
+        """Register ``callback(name, payload_dict)`` for events named ``name``.
+
+        Sync callables run inline; if a callback returns an awaitable it is
+        scheduled as a task on the running loop.
+        """
+        self._handlers.setdefault(name, []).append(callback)
+
+    def _fire(self, name: str, payload: Dict[str, Any]) -> None:
+        """Dispatch an INBOUND event to listeners (raw name + aliases).
+
+        Sync callables run inline; if a callback returns an awaitable it is
+        scheduled as a task on the running loop.  (The SEND-side choke
+        point is :meth:`_emit`; this method only fans inbound events out.)
+        """
+        for callback in list(self._handlers.get(name, ())):
+            try:
+                result = callback(name, payload)
+            except Exception:  # noqa: BLE001 - keep the client up
+                log.exception("realtime callback for %r failed", name)
+                continue
+            if inspect.isawaitable(result):
+                try:
+                    asyncio.ensure_future(result)
+                except RuntimeError:  # no running loop
+                    log.debug("realtime callback %r returned awaitable outside a loop", name)
+
+    def _emit(self, event_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """THE send choke point: every client->server event passes here.
+
+        Validates ``event_type`` against ``_REALTIME_SEND_TYPES`` and
+        returns the wire event ``{"type": event_type, **payload}``.
+        ``input_audio_buffer.commit`` is lifetime-banned - server VAD owns
+        turn segmentation and a manual commit would double-turn every
+        utterance - and any type outside the allowlist is equally
+        rejected; both raise ``AssertionError``.  All ``send_*`` methods
+        (and the session.update send) route through this method.
+        """
+        if event_type == "input_audio_buffer.commit":
+            raise AssertionError("input_audio_buffer.commit is lifetime-banned — never committed")
+        if event_type not in _REALTIME_SEND_TYPES:
+            raise AssertionError(
+                "unsendable event type {!r}: not in _REALTIME_SEND_TYPES".format(event_type)
+            )
+        event = {"type": event_type}
+        event.update(payload)
+        return event
+
+    # ------------------------------------------------ lifecycle / reconnect
+
+    @property
+    def endpoint(self) -> str:
+        return "{}?model={}".format(self.base_url, self.model)
+
