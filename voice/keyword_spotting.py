@@ -226,3 +226,5 @@ class MockKws:
     def feed_text(self, text: str) -> Optional[str]:
         return self._next()
 
+    def reset(self) -> None:
+        pass
