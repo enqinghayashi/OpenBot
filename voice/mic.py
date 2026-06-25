@@ -232,3 +232,27 @@ class MockMic:
             frames[-1] = frames[-1] + b"\x00\x00" * ((frame_bytes - len(frames[-1])) // 2)
         return cls(frames, frame_bytes=frame_bytes)
 
+    def iter_frames(self) -> Iterator[bytes]:
+        for frame in self.frames:
+            yield frame
+
+    def close(self) -> None:
+        self.closed = True
+
+    def __enter__(self) -> "MockMic":
+        return self
+
+    def __exit__(self, *exc) -> None:  # noqa: ANN002 - stub for the protocol
+        self.close()
+
+
+class SounddeviceMic:
+    """Laptop microphone via sounddevice (lazy import; laptop mode only).
+
+    Captures 16 kHz mono int16 and yields frames of the configured size,
+    matching the G1's sink format so half-duplex timing tuned on a laptop
+    transfers to the robot unchanged (OpenBot protocol reference,
+    devices/laptop/sounddevice_io.py).  ``sounddevice`` is imported only
+    inside :meth:`open`, so importing this class never requires it.
+    """
+
