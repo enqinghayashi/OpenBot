@@ -108,3 +108,9 @@ class StewardKws:
                 os.path.basename(self.model_dir),
             )
 
+    def _grammar(self) -> str:
+        words = set(self.phrases + self.sleep_phrases)
+        return json.dumps(sorted(words))
+
+    # ----------------------------------------------------- the public api
+
