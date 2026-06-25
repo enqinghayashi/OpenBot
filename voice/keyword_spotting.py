@@ -200,3 +200,16 @@ class MockKws:
     scripted mock never enforces a cooldown itself).
     """
 
+    def __init__(
+        self,
+        script: Optional[Sequence] = None,
+        phrases: Sequence[str] = DEFAULT_WAKE_PHRASES,
+        sleep_phrases: Sequence[str] = DEFAULT_SLEEP_PHRASES,
+        cooldown_s: float = 3.0,
+    ) -> None:
+        self.script = list(script or [])  # type: List
+        self.calls = 0
+        self.phrases = [p.strip().lower() for p in phrases if p.strip()]
+        self.sleep_phrases = [p.strip().lower() for p in sleep_phrases if p.strip()]
+        self.cooldown_s = float(cooldown_s)
+
