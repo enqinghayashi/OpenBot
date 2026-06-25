@@ -181,3 +181,22 @@ class StewardKws:
                     self._recognizer = None
 
 
+class MockKws:
+    """A scripted wake-word detector for tests and ``--audio mock``.
+
+    ``script`` is a list consumed one entry per ``feed``/``feed_text``
+    call: a string is returned as the matched phrase, ``None`` returns
+    None.  Useful for walking a robot through wake -> conversation ->
+    sleep without any model.
+
+    MIRROR SURFACE: the app's pump reads ``kws.phrases`` and
+    ``kws.sleep_phrases`` in BOTH lanes to classify a matched phrase
+    (wake vs sleep), so the mock exposes exactly the StewardKws
+    attributes, normalised the same way (stripped, lower-cased,
+    empties dropped) and defaulted the same way — the mock never
+    invents a new API.  ``phrases``/``sleep_phrases`` mirror the
+    constructor args (the app passes the same wake list it would give
+    StewardKws); ``cooldown_s`` is accepted for signature parity (the
+    scripted mock never enforces a cooldown itself).
+    """
+
