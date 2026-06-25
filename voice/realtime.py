@@ -270,3 +270,134 @@ class RealtimeClient:
     def endpoint(self) -> str:
         return "{}?model={}".format(self.base_url, self.model)
 
+    @property
+    def connected(self) -> bool:
+        return self._ws is not None
+
+    async def connect(self) -> None:
+        """One connect + session.update handshake.  Raises on failure.
+
+        Sends ``session.update`` with the locked GA field set and waits up
+        to ``session_updated_timeout_s`` for ``session.updated`` - a
+        timeout is a loud failure (almost always a rejected field name).
+        """
+        if not self.api_key:
+            raise RealtimeAuthError(
+                "no api key; pass api_key= or set OPENAI_API_KEY", status=401
+            )
+        try:
+            import websockets  # lazy: net dep
+        except ImportError as exc:
+            raise RealtimeError("websockets is not installed: {}".format(exc))
+        try:
+            self._ws = await _ws_connect(
+                self.endpoint,
+                self._headers(),
+                ping_interval=20,
+                ping_timeout=20,
+                close_timeout=5,
+                max_size=MAX_MESSAGE_BYTES,
+                open_timeout=self.session_updated_timeout_s + 10.0,
+            )
+        except websockets.InvalidStatusCode as exc:  # this is the websockets < 14 spelling
+            self._raise_status(getattr(exc, "status_code", 0), exc)
+        except Exception as exc:  # noqa: BLE001
+            status = getattr(getattr(exc, "response", None), "status_code", 0)
+            if status:
+                self._raise_status(status, exc)
+            raise RealtimeError("could not open the Realtime socket: {}".format(exc))
+        self._session_started_at = time.monotonic()
+        self._retried_429 = False
+        self._fire("open", {})
+        log.info("realtime socket open (%s)", self.endpoint)
+        await self._send_raw(self._session_update())
+        await self._await_handshake()
+
+    def _raise_status(self, status: int, exc: Exception) -> None:
+        """Map an HTTP handshake status to the right error class."""
+        if status in NO_RETRY_STATUS:
+            raise RealtimeAuthError(
+                "OpenAI rejected the handshake (HTTP {}): {}".format(status, exc),
+                status=status,
+            )
+        if status == 429:
+            raise RealtimeError(
+                "rate limited (HTTP 429): {}".format(exc),
+                status=status,
+                retry_after=_retry_after_seconds(getattr(exc, "headers", None)),
+            )
+        raise RealtimeError("handshake failed (HTTP {}): {}".format(status, exc), status=status)
+
+    async def _await_handshake(self) -> None:
+        """Wait for session.updated; any other event is dispatched and any
+        error event means the update was rejected."""
+        while True:
+            try:
+                message = await asyncio.wait_for(
+                    self._ws.recv(), timeout=self.session_updated_timeout_s
+                )
+            except asyncio.TimeoutError:
+                self._fire("timeout", {"seconds": self.session_updated_timeout_s})
+                raise RealtimeError(
+                    "the server never acknowledged session.update within {} s; "
+                    "the field names may have been rejected (look for an "
+                    "'error' event above)".format(self.session_updated_timeout_s)
+                )
+            except Exception as exc:  # noqa: BLE001 - counts as connect fail
+                raise RealtimeError(
+                    "realtime socket closed during the handshake: {}".format(
+                        str(exc).strip() or exc.__class__.__name__
+                    )
+                )
+            event = _decode(message)
+            if event.get("type") == "session.updated":
+                self._dispatch(event)
+                log.info("session.updated: handshake complete")
+                return
+            if event.get("type") == "error":
+                self._dispatch(event)
+                raise RealtimeError(
+                    "session.update rejected: {}".format(_error_text(event))
+                )
+            self._dispatch(event)
+
+    async def run_forever(self) -> None:
+        """Connect (with retry ladder), then read/dispatch until close.
+
+        Auto-reconnects on drops (clean handshake each time) and performs
+        the clean 60-min session-cap reconnect; returns only on deliberate
+        :meth:`close`, an auth error, or after retry exhaustion (loud).
+        """
+        while not self._closing:
+            try:
+                await self.connect_with_retry()
+            except RealtimeAuthError:
+                await self._close_socket()
+                raise
+            except RealtimeError as exc:
+                await self._close_socket()
+                self._fire("error", {"message": str(exc)})
+                log.error("realtime: %s", exc)
+                return  # loud stop
+            try:
+                while not self._closing:
+                    if self._session_started_at and (
+                        time.monotonic() - self._session_started_at >= self.session_cap_s
+                    ):
+                        self._expire_session()
+                        break
+                    try:
+                        message = await asyncio.wait_for(self._ws.recv(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        continue
+                    except Exception as exc:  # noqa: BLE001 - a dead socket ends the read
+                        log.warning("realtime read ended: %s", exc)
+                        break
+                    event = _decode(message)
+                    self._dispatch(event)
+            finally:
+                was_open = self._ws is not None
+                await self._close_socket()
+                if was_open:
+                    self._fire("close", {})
+
