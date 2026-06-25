@@ -47,3 +47,35 @@ ROBOT_SUBNET_PREFIX = "192.168.123."
 _SIOCGIFADDR = 0x8915
 
 
+def robot_interface_ip() -> Optional[str]:
+    """The IPv4 address of the interface on the robot subnet, or None.
+
+    Joining a multicast group with ``INADDR_ANY`` picks the host's
+    *default* interface — which is not the robot-facing one when the box
+    also has wifi.  Measured 2026-09-05 on Stuart's box (default route
+    via wlan0 192.168.0.x, robot subnet on eth0): a join via 0.0.0.0
+    hears NOTHING on 239.168.123.161:5555 (0 frames/8 s); the same join
+    passed 192.168.123.164 (eth0) yields the 160 ms/5120 B stream.  The
+    reference (OpenBot devices/g1/connection.py) solves this by
+    scanning interfaces for the robot-subnet address; ported with raw
+    ioctl so the pin holds with stdlib only (no netifaces).
+    """
+    try:
+        names = sorted(os.listdir("/sys/class/net"))
+    except OSError:
+        return None
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        for name in names:
+            try:
+                packed = struct.pack("256s", name[:15].encode("utf-8"))
+                address = socket.inet_ntoa(
+                    fcntl.ioctl(probe.fileno(), _SIOCGIFADDR, packed)[20:24]
+                )
+            except OSError:
+                continue
+            if address.startswith(ROBOT_SUBNET_PREFIX):
+                return address
+        return None
+    finally:
+        probe.close()
