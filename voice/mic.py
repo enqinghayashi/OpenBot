@@ -256,3 +256,65 @@ class SounddeviceMic:
     inside :meth:`open`, so importing this class never requires it.
     """
 
+    def __init__(
+        self,
+        sample_rate: int = G1_SAMPLE_RATE,
+        channels: int = G1_CHANNELS,
+        block_bytes: int = G1_FRAME_BYTES,
+        dtype: str = "int16",
+    ) -> None:
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.block_bytes = block_bytes
+        self.dtype = dtype
+        self._stream = None  # type: Optional[object]
+        self._device = None  # type: Optional[object]
+
+    def open(self) -> None:
+        """Create the input stream; the only method that imports sounddevice."""
+        if self._stream is not None:
+            return
+        try:
+            import sounddevice as sd  # laptop-only dep
+        except ImportError as exc:  # pragma: no cover - depends on the env
+            raise MicError("sounddevice is not installed: {}".format(exc))
+        blocksize = max(1, self.block_bytes // (2 * self.channels))
+        try:
+            self._stream = sd.RawInputStream(
+                samplerate=self.sample_rate,
+                channels=self.channels,
+                dtype=self.dtype,
+                blocksize=blocksize,
+            )
+            self._stream.start()
+            self._device = sd
+        except Exception as exc:  # noqa: BLE001 - let any device error through
+            self._stream = None
+            raise MicError("cannot open sounddevice input: {}".format(exc))
+
+    def iter_frames(self) -> Iterator[bytes]:
+        self.open()
+        stream = self._stream
+        if stream is None:  # pragma: no cover - open() would have raised already
+            return
+        while True:
+            try:
+                data, _overflow = stream.read(max(1, self.block_bytes // (2 * self.channels)))
+            except Exception as exc:  # noqa: BLE001 - the device disappeared
+                raise MicError("sounddevice read failed: {}".format(exc))
+            if not data:
+                continue
+            yield bytes(data[: self.block_bytes])
+
+    def close(self) -> None:
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:  # noqa: BLE001 - shutdown must never raise
+                pass
+
+    def __enter__(self) -> "SounddeviceMic":
+        return self
+
