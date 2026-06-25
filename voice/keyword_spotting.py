@@ -220,3 +220,6 @@ class MockKws:
         item = self.script.pop(0)
         return item if isinstance(item, str) else None
 
+    def feed(self, pcm16k: bytes) -> Optional[str]:
+        return self._next()
+
