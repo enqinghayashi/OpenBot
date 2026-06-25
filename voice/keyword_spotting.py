@@ -171,3 +171,11 @@ class StewardKws:
         except Exception:  # noqa: BLE001 - older vosk builds lack Reset()
             self._recognizer = None
 
+    def reset(self) -> None:
+        """Drop recogniser state (used on session boundaries)."""
+        with self._lock:
+            if self._recognizer is not None:
+                try:
+                    self._recognizer.Reset()
+                except Exception:  # noqa: BLE001 - rebuilt next feed
+                    self._recognizer = None
