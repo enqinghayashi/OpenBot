@@ -179,3 +179,5 @@ class StewardKws:
                     self._recognizer.Reset()
                 except Exception:  # noqa: BLE001 - rebuilt next feed
                     self._recognizer = None
+
+
