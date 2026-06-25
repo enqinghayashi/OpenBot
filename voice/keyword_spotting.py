@@ -213,3 +213,10 @@ class MockKws:
         self.sleep_phrases = [p.strip().lower() for p in sleep_phrases if p.strip()]
         self.cooldown_s = float(cooldown_s)
 
+    def _next(self) -> Optional[str]:
+        if not self.script:
+            return None
+        self.calls += 1
+        item = self.script.pop(0)
+        return item if isinstance(item, str) else None
+
