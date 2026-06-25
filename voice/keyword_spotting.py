@@ -62,3 +62,23 @@ class StewardKws:
     cannot immediately re-trigger from a stale partial.
     """
 
+    def __init__(
+        self,
+        model_dir: str,
+        phrases: Sequence[str] = DEFAULT_WAKE_PHRASES,
+        sleep_phrases: Sequence[str] = DEFAULT_SLEEP_PHRASES,
+        cooldown_s: float = 3.0,
+    ) -> None:
+        self.model_dir = model_dir
+        self.phrases = [p.strip().lower() for p in phrases if p.strip()]
+        self.sleep_phrases = [p.strip().lower() for p in sleep_phrases if p.strip()]
+        self.cooldown_s = cooldown_s
+        self._model = None  # type: Optional[object]
+        self._recognizer = None  # type: Optional[object]
+        self._lock = threading.RLock()
+        self._last_fired = float("-inf")  # -inf not 0: time base is boot-relative
+        if not self.phrases:
+            raise KwsError("at least one wake phrase is required")
+
+    # ------------------------------------------- built lazily on first use
+
