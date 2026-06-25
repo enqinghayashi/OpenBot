@@ -81,3 +81,5 @@ def robot_interface_ip() -> Optional[str]:
         probe.close()
 
 
+class MicError(RuntimeError):
+    """A microphone could not be opened or read."""
