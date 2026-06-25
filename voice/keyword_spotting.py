@@ -142,3 +142,21 @@ class StewardKws:
         """Match already-recognised text (tests / offline transcript lane)."""
         return self._match(text or "")
 
+    def _match(self, text: str) -> Optional[str]:
+        text = (text or "").strip().lower()
+        if not text:
+            return None
+        now = time.monotonic()
+        if now - self._last_fired < self.cooldown_s:
+            return None
+        # sleep first - "go to sleep" contains the wake family
+        for phrase in self.sleep_phrases:
+            if phrase in text:
+                self._fire(now)
+                return phrase
+        for phrase in self.phrases:
+            if phrase in text:
+                self._fire(now)
+                return phrase
+        return None
+
