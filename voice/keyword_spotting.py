@@ -82,3 +82,29 @@ class StewardKws:
 
     # ------------------------------------------- built lazily on first use
 
+    def _ensure_engine(self) -> None:
+        """Build the Vosk model + recognizer once, on first use."""
+        with self._lock:
+            if self._recognizer is not None:
+                return
+            if not os.path.isdir(self.model_dir):
+                raise KwsError(
+                    "wake-word model not found at {}: run the model fetch "
+                    "script".format(self.model_dir)
+                )
+            try:
+                from vosk import KaldiRecognizer, Model, SetLogLevel
+            except ImportError as exc:
+                raise KwsError("vosk is not installed: {}".format(exc))
+            SetLogLevel(-1)  # else Kaldi chatters on stdout
+            self._model = Model(self.model_dir)
+            self._recognizer = KaldiRecognizer(
+                self._model, VOSK_RATE, self._grammar()
+            )
+            log.info(
+                "steward kws ready: %s | sleep: %s (model %s)",
+                ", ".join(repr(p) for p in self.phrases),
+                ", ".join(repr(p) for p in self.sleep_phrases) or "none",
+                os.path.basename(self.model_dir),
+            )
+
