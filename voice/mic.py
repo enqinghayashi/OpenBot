@@ -236,3 +236,6 @@ class MockMic:
         for frame in self.frames:
             yield frame
 
+    def close(self) -> None:
+        self.closed = True
+
