@@ -148,3 +148,8 @@ class G1Mic:
         sock.settimeout(max(0.05, timeout_s))
         return sock
 
+    @property
+    def connected(self) -> bool:
+        with self._lock:
+            return self._sock is not None
+
