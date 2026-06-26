@@ -85,3 +85,14 @@ class MicError(RuntimeError):
     """A microphone could not be opened or read."""
 
 
+class G1Mic:
+    """The G1 microphone array, as synchronous 5120-byte PCM16 frames.
+
+    Constructor binds UDP multicast (``SO_REUSEADDR`` + ``IP_ADD_MEMBERSHIP``)
+    so errors surface immediately.  ``iter_frames()`` yields exactly
+    ``frame_bytes`` per frame, reassembling if a datagram ever splits a
+    frame; ``close()`` unblocks a blocked ``iter_frames()`` and releases the
+    socket.  All socket access is serialised by one lock, so a reader and
+    ``close()`` may run on different threads.
+    """
+
