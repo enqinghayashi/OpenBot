@@ -239,3 +239,6 @@ class MockMic:
     def close(self) -> None:
         self.closed = True
 
+    def __enter__(self) -> "MockMic":
+        return self
+
