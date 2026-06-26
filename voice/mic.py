@@ -186,3 +186,6 @@ class G1Mic:
             except OSError:
                 pass
 
+    def __enter__(self) -> "G1Mic":
+        return self
+
