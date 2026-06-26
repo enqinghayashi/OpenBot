@@ -175,3 +175,14 @@ class G1Mic:
                 del pending[: self.frame_bytes]
                 yield frame
 
+    def close(self) -> None:
+        """Stop the stream and release the socket (idempotent)."""
+        self._stop.set()
+        with self._lock:
+            sock, self._sock = self._sock, None
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
