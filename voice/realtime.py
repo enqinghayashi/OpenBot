@@ -566,3 +566,78 @@ class RealtimeClient:
             )
         )
 
+    async def send_image(self, jpeg_b64: str) -> None:
+        """Attach one JPEG (already base64) as a user message part."""
+        self._require_connected()
+        await self._send_raw(
+            self._emit(
+                CONVERSATION_ITEM_CREATE,
+                {
+                    "item": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_image",
+                                "image_url": "data:image/jpeg;base64,{}".format(jpeg_b64),
+                            }
+                        ],
+                    }
+                },
+            )
+        )
+
+    async def send_input_text(self, text: str) -> None:
+        """Inject a text user turn (tests / non-audio prompts)."""
+        self._require_connected()
+        await self._send_raw(
+            self._emit(
+                CONVERSATION_ITEM_CREATE,
+                {
+                    "item": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": text}],
+                    }
+                },
+            )
+        )
+
+    async def send_function_call_output(self, call_id: str, output_text: str) -> None:
+        """Answer a function call; the model does nothing until a
+        ``create_response`` follows - the caller owns that second step."""
+        self._require_connected()
+        await self._send_raw(
+            self._emit(
+                CONVERSATION_ITEM_CREATE,
+                {
+                    "item": {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": output_text,
+                    }
+                },
+            )
+        )
+
+    async def send_truncate(self, item_id: str, audio_end_ms: int) -> None:
+        """Rewrite an assistant item to only the audio actually heard.
+
+        NOTE: ``conversation.item.truncate`` is NOT in
+        ``_REALTIME_SEND_TYPES`` (the locked slice allowlist), so the
+        ``_emit`` choke point raises ``AssertionError``.  The method is
+        kept as a documented dead end until the orchestrator decides
+        whether truncation belongs on this lane.
+        """
+        self._require_connected()
+        await self._send_raw(
+            self._emit(
+                CONVERSATION_ITEM_TRUNCATE,
+                {
+                    "item_id": item_id,
+                    "content_index": 0,
+                    "audio_end_ms": max(0, int(audio_end_ms)),
+                },
+            )
+        )
+
