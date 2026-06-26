@@ -401,3 +401,82 @@ class RealtimeClient:
                 if was_open:
                     self._fire("close", {})
 
+    async def connect_with_retry(self) -> None:
+        """Connect with the ladder 1, 2, 4, 8, 8, 8, 8, 8 s (8 retries max).
+
+        401/402/403/404 raise immediately (never retried); 429 gets a
+        single retry honouring ``Retry-After`` when present and parseable,
+        otherwise it falls through to the generic ladder; exhaustion
+        raises a loud :class:`RealtimeError`.
+        """
+        for attempt in range(1, MAX_RETRIES + 2):
+            try:
+                await self.connect()
+                return
+            except RealtimeAuthError:
+                raise  # creds and model won't fix themselves
+            except RealtimeError as exc:
+                if exc.status in NO_RETRY_STATUS:
+                    raise
+                if attempt > MAX_RETRIES:
+                    # budget spent; checked before 429
+                    # a "retrying once" log with no retry = lie
+                    raise RealtimeError(
+                        "could not reach the Realtime API after {} retries: {}".format(
+                            MAX_RETRIES, exc
+                        )
+                    )
+                if exc.status == 429 and not self._retried_429:
+                    self._retried_429 = True
+                    if exc.retry_after is not None:
+                        wait = min(exc.retry_after, 60.0)
+                        log.warning("realtime rate limited; retrying once in %.0fs", wait)
+                        await asyncio.sleep(wait)
+                        continue
+                    # no usable Retry-After -> generic
+                    # ladder below (the 429 retry is spent)
+                delay = RETRY_LADDER_S[attempt - 1]
+                log.warning(
+                    "realtime connect attempt %d/%d failed (%s); retrying in %.0fs",
+                    attempt,
+                    MAX_RETRIES + 1,
+                    exc,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+
+    def _expire_session(self) -> None:
+        """60-min session cap: flag the context reset and reconnect cleanly."""
+        self.context_reset = True
+        self._fire("session.expired", {"seconds": int(self.session_cap_s)})
+        callback = self.on_session_expired
+        if callback is not None:
+            try:
+                callback()
+            except Exception:  # noqa: BLE001
+                log.exception("on_session_expired callback failed")
+
+    async def close(self) -> None:
+        """Deliberate close: stop reconnecting and release the socket.
+
+        ``close`` is emitted only when the socket was actually open - the
+        ``was_open`` pattern from ``run_forever``'s finally - so a
+        never-connected client stays silent.
+        """
+        self._closing = True
+        was_open = self._ws is not None
+        await self._close_socket()
+        if was_open:
+            self._fire("close", {})
+
+    async def _close_socket(self) -> None:
+        ws, self._ws = self._ws, None
+        if ws is None:
+            return
+        try:
+            await ws.close()
+        except Exception as exc:  # noqa: BLE001 - teardown must not raise
+            log.debug("closing the realtime socket raised: %s", exc)
+
+    # ------------------------------------------------------ the senders
+
