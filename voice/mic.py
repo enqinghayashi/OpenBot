@@ -246,3 +246,13 @@ class MockMic:
         self.close()
 
 
+class SounddeviceMic:
+    """Laptop microphone via sounddevice (lazy import; laptop mode only).
+
+    Captures 16 kHz mono int16 and yields frames of the configured size,
+    matching the G1's sink format so half-duplex timing tuned on a laptop
+    transfers to the robot unchanged (OpenBot protocol reference,
+    devices/laptop/sounddevice_io.py).  ``sounddevice`` is imported only
+    inside :meth:`open`, so importing this class never requires it.
+    """
+
