@@ -480,3 +480,89 @@ class RealtimeClient:
 
     # ------------------------------------------------------ the senders
 
+    def _headers(self) -> Dict[str, str]:
+        """GA: no ``OpenAI-Beta`` header - the retired beta header is
+        removed (the GA docs dropped it; sending it only risks the beta
+        dialect)."""
+        return {"Authorization": "Bearer {}".format(self.api_key)}
+
+    def _session_update(self) -> Dict[str, Any]:
+        """The LOCKED GA session.update payload (reference-verified
+        byte-for-byte against OpenBot ``build_session_update``, minus
+        the intentional deviation below).  ``audio.input.format`` is the
+        object shape {"type": "audio/pcm", "rate": 24000} and
+        ``transcription`` / ``turn_detection`` nest under ``audio.input``
+        - there is no ``sample_rate`` key anywhere.  ``tools`` /
+        ``tool_choice`` are attached ONLY when tools were supplied (never
+        an empty list).  Routes through ``_emit`` like every send.
+        ``instructions`` is present ONLY when configured (the identity
+        the model speaks as — see ``RealtimeClient.__init__``): the
+        pre-identity wire kept it absent and the locked-shape tests pin
+        that default; OpenBot ships its identity text in
+        ``config.voice.yaml realtime.instructions`` the same channel
+        OpenBot ships its DEFAULT_INSTRUCTIONS on."""
+        session = {
+            "type": "realtime",
+            "output_modalities": ["audio"],
+            "audio": {
+                "input": {
+                    "format": {"type": "audio/pcm", "rate": 24000},
+                    "transcription": {"model": "gpt-realtime-whisper", "language": "en"},
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "threshold": 0.75,
+                        "prefix_padding_ms": 300,
+                        "silence_duration_ms": 500,
+                        "create_response": True,
+                    },
+                },
+                "output": {
+                    "format": {"type": "audio/pcm", "rate": 24000},
+                    "voice": "cedar",
+                    "speed": 0.9,
+                },
+            },
+        }
+        if self.tools:
+            # parity: tools only when supplied
+            # never an empty list
+            session["tools"] = self.tools
+            session["tool_choice"] = "auto"
+        if self.instructions:
+            # identity: sent once, at connect time
+            # per-turn wins
+            # unset -> absent (the tests pin that)
+            session["instructions"] = self.instructions
+        return self._emit(SESSION_UPDATE, {"session": session})
+
+    async def _send_raw(self, event: Dict[str, Any]) -> None:
+        ws = self._ws
+        if ws is None:
+            raise RealtimeError("send on a closed realtime socket")
+        payload = json.dumps(event)
+        try:
+            await ws.send(payload)
+        except Exception as exc:  # noqa: BLE001
+            raise RealtimeError("send failed: {}".format(exc))
+        if log.isEnabledFor(logging.DEBUG):
+            if event.get("type") == INPUT_AUDIO_APPEND:
+                log.debug("-> input_audio_buffer.append (length only)")
+            else:
+                log.debug("-> %s %s", event.get("type"), redact(event))
+
+    def _require_connected(self) -> None:
+        if self._ws is None:
+            raise RealtimeError("realtime socket is not connected; call connect() first")
+
+    async def send_audio(self, bytes_pcm24k: bytes) -> None:
+        """Append one 24 kHz mono PCM16 chunk.  No per-chunk ack exists."""
+        if not bytes_pcm24k:
+            return
+        self._require_connected()
+        await self._send_raw(
+            self._emit(
+                INPUT_AUDIO_APPEND,
+                {"audio": base64.b64encode(bytes_pcm24k).decode("ascii")},
+            )
+        )
+
