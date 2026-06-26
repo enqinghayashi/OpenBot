@@ -193,3 +193,11 @@ class G1Mic:
         self.close()
 
 
+class MockMic:
+    """A scripted microphone for tests and ``--audio mock``.
+
+    Yields the frames given at construction (or lazily from any iterable,
+    so an infinite generator works too).  Useful helper: :meth:`sine`
+        builds a PCM16 frame sequence of a tone for driver scripts.
+    """
+
