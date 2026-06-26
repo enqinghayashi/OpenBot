@@ -292,3 +292,17 @@ class SounddeviceMic:
             self._stream = None
             raise MicError("cannot open sounddevice input: {}".format(exc))
 
+    def iter_frames(self) -> Iterator[bytes]:
+        self.open()
+        stream = self._stream
+        if stream is None:  # pragma: no cover - open() would have raised already
+            return
+        while True:
+            try:
+                data, _overflow = stream.read(max(1, self.block_bytes // (2 * self.channels)))
+            except Exception as exc:  # noqa: BLE001 - the device disappeared
+                raise MicError("sounddevice read failed: {}".format(exc))
+            if not data:
+                continue
+            yield bytes(data[: self.block_bytes])
+
