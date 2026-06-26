@@ -129,3 +129,22 @@ class G1Mic:
             self.interface_ip,
         )
 
+    def _make_socket(self, timeout_s: float) -> socket.socket:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("", self.port))
+            membership = socket.inet_aton(self.group) + socket.inet_aton(
+                self.interface_ip or "0.0.0.0"
+            )
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership)
+        except OSError as exc:
+            sock.close()
+            raise MicError(
+                "cannot join G1 mic multicast {}:{} (interface {}): {}".format(
+                    self.group, self.port, self.interface_ip or "any", exc
+                )
+            )
+        sock.settimeout(max(0.05, timeout_s))
+        return sock
+
