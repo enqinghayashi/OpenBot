@@ -306,3 +306,12 @@ class SounddeviceMic:
                 continue
             yield bytes(data[: self.block_bytes])
 
+    def close(self) -> None:
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:  # noqa: BLE001 - shutdown must never raise
+                pass
+
