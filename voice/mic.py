@@ -232,3 +232,7 @@ class MockMic:
             frames[-1] = frames[-1] + b"\x00\x00" * ((frame_bytes - len(frames[-1])) // 2)
         return cls(frames, frame_bytes=frame_bytes)
 
+    def iter_frames(self) -> Iterator[bytes]:
+        for frame in self.frames:
+            yield frame
+
