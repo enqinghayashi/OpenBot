@@ -315,3 +315,6 @@ class SounddeviceMic:
             except Exception:  # noqa: BLE001 - shutdown must never raise
                 pass
 
+    def __enter__(self) -> "SounddeviceMic":
+        return self
+
