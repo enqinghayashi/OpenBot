@@ -153,3 +153,25 @@ class G1Mic:
         with self._lock:
             return self._sock is not None
 
+    def iter_frames(self) -> Iterator[bytes]:
+        """Yield complete ``frame_bytes`` PCM16 frames until ``close()``."""
+        pending = bytearray()
+        while not self._stop.is_set():
+            with self._lock:
+                sock = self._sock
+                if sock is None:
+                    return
+                try:
+                    data = sock.recv(65536)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    return  # closed on us
+            if not data:
+                return
+            pending += data
+            while len(pending) >= self.frame_bytes:
+                frame = bytes(pending[: self.frame_bytes])
+                del pending[: self.frame_bytes]
+                yield frame
+
