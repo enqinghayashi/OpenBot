@@ -270,3 +270,25 @@ class SounddeviceMic:
         self._stream = None  # type: Optional[object]
         self._device = None  # type: Optional[object]
 
+    def open(self) -> None:
+        """Create the input stream; the only method that imports sounddevice."""
+        if self._stream is not None:
+            return
+        try:
+            import sounddevice as sd  # laptop-only dep
+        except ImportError as exc:  # pragma: no cover - depends on the env
+            raise MicError("sounddevice is not installed: {}".format(exc))
+        blocksize = max(1, self.block_bytes // (2 * self.channels))
+        try:
+            self._stream = sd.RawInputStream(
+                samplerate=self.sample_rate,
+                channels=self.channels,
+                dtype=self.dtype,
+                blocksize=blocksize,
+            )
+            self._stream.start()
+            self._device = sd
+        except Exception as exc:  # noqa: BLE001 - let any device error through
+            self._stream = None
+            raise MicError("cannot open sounddevice input: {}".format(exc))
+
