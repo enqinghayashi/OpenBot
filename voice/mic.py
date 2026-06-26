@@ -244,3 +244,5 @@ class MockMic:
 
     def __exit__(self, *exc) -> None:  # noqa: ANN002 - stub for the protocol
         self.close()
+
+
