@@ -256,3 +256,17 @@ class SounddeviceMic:
     inside :meth:`open`, so importing this class never requires it.
     """
 
+    def __init__(
+        self,
+        sample_rate: int = G1_SAMPLE_RATE,
+        channels: int = G1_CHANNELS,
+        block_bytes: int = G1_FRAME_BYTES,
+        dtype: str = "int16",
+    ) -> None:
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.block_bytes = block_bytes
+        self.dtype = dtype
+        self._stream = None  # type: Optional[object]
+        self._device = None  # type: Optional[object]
+
