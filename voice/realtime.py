@@ -641,3 +641,48 @@ class RealtimeClient:
             )
         )
 
+    async def send_clear(self) -> None:
+        """Clear the server's input audio buffer."""
+        self._require_connected()
+        await self._send_raw(self._emit(INPUT_AUDIO_CLEAR, {}))
+
+    async def create_response(self) -> None:
+        """Ask for a response now (server VAD also creates them)."""
+        self._require_connected()
+        await self._send_raw(self._emit(RESPONSE_CREATE, {"response": {}}))
+
+    async def cancel_response(self) -> None:
+        """Cancel the in-flight response (a barge-in)."""
+        self._require_connected()
+        await self._send_raw(self._emit(RESPONSE_CANCEL, {}))
+
+    # --------------------------------------------------- the receive side
+
+    def _dispatch(self, event: Dict[str, Any]) -> None:
+        """Fire an event to callbacks (raw name + canonical aliases), and
+        log it REDACTED - audio deltas are logged as lengths only and the
+        audio itself is never passed through the logger."""
+        name = str(event.get("type", ""))
+        self._fire(name, event)
+        for alias in CANONICAL_ALIASES.get(name, ()):
+            self._fire(alias, event)
+        if log.isEnabledFor(logging.DEBUG):
+            if name in AUDIO_DELTA_TYPES:
+                log.debug("<- %s (length only)", name)
+            else:
+                log.debug("<- %s %s", name, redact(event))
+
+
+async def _ws_connect(endpoint: str, headers: Dict[str, str], **common: Any) -> Any:
+    """``additional_headers`` landed in websockets 13; ``extra_headers``
+    was removed in 14.  Try the new spelling, fall back to the old one.
+    The cp38 pin stays ``websockets>=12,<14`` (voice/requirements-box.txt
+    later)."""
+    try:
+        import websockets  # lazy, same reason
+    except ImportError as exc:  # pragma: no cover - connect checks first
+        raise RealtimeError("websockets is not installed: {}".format(exc))
+    try:
+        return await websockets.connect(endpoint, additional_headers=headers, **common)
+    except TypeError:
+        return await websockets.connect(endpoint, extra_headers=headers, **common)
