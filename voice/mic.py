@@ -318,3 +318,5 @@ class SounddeviceMic:
     def __enter__(self) -> "SounddeviceMic":
         return self
 
+    def __exit__(self, *exc) -> None:  # noqa: ANN002 - stub for the protocol
+        self.close()
