@@ -201,3 +201,8 @@ class MockMic:
         builds a PCM16 frame sequence of a tone for driver scripts.
     """
 
+    def __init__(self, frames: Optional[Iterable] = None, frame_bytes: int = G1_FRAME_BYTES) -> None:
+        self.frames = list(frames or [])
+        self.frame_bytes = frame_bytes
+        self.closed = False
+
