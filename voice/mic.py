@@ -96,3 +96,36 @@ class G1Mic:
     ``close()`` may run on different threads.
     """
 
+    def __init__(
+        self,
+        group: str = MULTICAST_GROUP,
+        port: int = MULTICAST_PORT,
+        interface_ip: Optional[str] = None,
+        frame_bytes: int = G1_FRAME_BYTES,
+        recv_timeout_s: float = 2.0,
+    ) -> None:
+        self.group = group
+        self.port = port
+        if interface_ip is None:
+            interface_ip = robot_interface_ip()
+            if interface_ip is None:
+                raise MicError(
+                    "no interface carries an address on the robot subnet "
+                    "{}0/24 — the G1 mic multicast group is reachable only "
+                    "on the robot-facing interface, and an INADDR_ANY join "
+                    "would silently hear nothing (see G1Mic docstring). "
+                    "Boot with the robot interface up, or pass "
+                    "interface_ip explicitly.".format(ROBOT_SUBNET_PREFIX)
+                )
+        self.interface_ip = interface_ip
+        self.frame_bytes = frame_bytes
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._sock = self._make_socket(recv_timeout_s)
+        log.info(
+            "g1-mic: joined %s:%d via %s",
+            self.group,
+            self.port,
+            self.interface_ip,
+        )
+
