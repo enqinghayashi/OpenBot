@@ -333,3 +333,50 @@ class BrainBackend(abc.ABC):
 
     # --------------------------------------------------- driving the response
 
+    @abc.abstractmethod
+    def create_response(
+        self, *, tools: bool = True, instruction: Optional[str] = None
+    ) -> bool:
+        """Ask for ONE response.
+
+        ``tools`` False disables the model's tools for this response
+        (``tools: []`` / ``tool_choice: "none"`` override); ``instruction``
+        is a per-response instruction override.  The realtime lane sends a
+        plain ``response.create`` when both take their defaults and a
+        response-level override otherwise (the locked slice's
+        ``RealtimeClient.create_response`` supports neither — the override
+        event is built through the client's own ``_emit`` choke point so
+        the allowlist enforcement stays intact).
+        """
+
+    @abc.abstractmethod
+    def cancel_response(self) -> bool:
+        """Cancel the in-flight response (barge-in, L2)."""
+
+    @abc.abstractmethod
+    def truncate_response(self, item_id: str, audio_end_ms: int) -> bool:
+        """Rewrite an assistant item to only the audio actually heard (L2).
+
+        The realtime lane's ``conversation.item.truncate`` is a documented
+        dead end while the locked slice allowlist excludes it
+        (voice/realtime.py ``send_truncate``): the backend then returns
+        False with a logged warning and the barge-in proceeds cancel-only.
+        """
+
+
+# ------------------------------------------ RealtimeBackend (the cloud lane)
+
+
+class RealtimeBackend(BrainBackend):
+    """The cloud lane's BrainBackend: wraps a
+    voice.realtime.RealtimeClient.
+
+    All sends bridge onto the client's asyncio loop: from the loop thread
+    they are scheduled with ``asyncio.ensure_future``; from any other
+    thread (the mic UDP pump) with ``asyncio.run_coroutine_threadsafe``.
+    The app MUST schedule :meth:`run_forever` as a task on the loop (it
+    drives the client's connect/read/reconnect loop) and call :meth:`start`
+    from the loop thread before events must flow.  A send made with no
+    captured loop is dropped with a logged error — loud, never silent.
+    """
+
