@@ -663,3 +663,47 @@ class VoiceSession:
         """
         self._handlers.setdefault(name, []).append(callback)
 
+    def _fire(self, name: str, payload: Dict[str, Any]) -> None:
+        if name not in SESSION_EVENTS:
+            log.debug("session fires undocumented event %r", name)
+        for callback in list(self._handlers.get(name, ())):
+            try:
+                result = callback(name, payload)
+            except Exception:  # noqa: BLE001 - one bad listener can't kill
+                log.exception("session callback for %r failed", name)
+                continue
+            if inspect.isawaitable(result):
+                try:
+                    asyncio.ensure_future(result)
+                except RuntimeError:  # no running loop: the awaitable is dropped
+                    log.debug("session callback %r returned awaitable outside a loop", name)
+
+    def _on_backend_event(self, name: str, payload: Dict[str, Any]) -> None:
+        """Route every subscribed backend event to its handler."""
+        handler = getattr(self, "_handle_" + name.replace(".", "_"), None)
+        if handler is None:
+            log.debug("session ignores backend event %r", name)
+            return
+        try:
+            handler(payload)
+        except Exception:  # noqa: BLE001 - one bad handler can't kill
+            log.exception("session handler for %r failed", name)
+
+    # ------------------------------------------------------ gate, mic and mute
+
+    @property
+    def gate_open(self) -> bool:
+        """The half-duplex gate (L1): open only when no response is in
+        flight AND no tool results are pending."""
+        return (not self._response_in_flight) and (not self._pending_call_ids)
+
+    @property
+    def muted(self) -> bool:
+        """Mute law (L5): the explicit session mute flag OR echoed audio
+        currently queued for playback."""
+        return self._muted or self._queued_s > 0.0
+
+    def set_muted(self, flag: bool) -> None:
+        """Set the session mute flag (L5)."""
+        self._muted = bool(flag)
+
