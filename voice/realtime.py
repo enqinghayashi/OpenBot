@@ -554,3 +554,15 @@ class RealtimeClient:
         if self._ws is None:
             raise RealtimeError("realtime socket is not connected; call connect() first")
 
+    async def send_audio(self, bytes_pcm24k: bytes) -> None:
+        """Append one 24 kHz mono PCM16 chunk.  No per-chunk ack exists."""
+        if not bytes_pcm24k:
+            return
+        self._require_connected()
+        await self._send_raw(
+            self._emit(
+                INPUT_AUDIO_APPEND,
+                {"audio": base64.b64encode(bytes_pcm24k).decode("ascii")},
+            )
+        )
+
