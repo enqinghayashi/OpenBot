@@ -328,3 +328,36 @@ class RealtimeClient:
             )
         raise RealtimeError("handshake failed (HTTP {}): {}".format(status, exc), status=status)
 
+    async def _await_handshake(self) -> None:
+        """Wait for session.updated; any other event is dispatched and any
+        error event means the update was rejected."""
+        while True:
+            try:
+                message = await asyncio.wait_for(
+                    self._ws.recv(), timeout=self.session_updated_timeout_s
+                )
+            except asyncio.TimeoutError:
+                self._fire("timeout", {"seconds": self.session_updated_timeout_s})
+                raise RealtimeError(
+                    "the server never acknowledged session.update within {} s; "
+                    "the field names may have been rejected (look for an "
+                    "'error' event above)".format(self.session_updated_timeout_s)
+                )
+            except Exception as exc:  # noqa: BLE001 - counts as connect fail
+                raise RealtimeError(
+                    "realtime socket closed during the handshake: {}".format(
+                        str(exc).strip() or exc.__class__.__name__
+                    )
+                )
+            event = _decode(message)
+            if event.get("type") == "session.updated":
+                self._dispatch(event)
+                log.info("session.updated: handshake complete")
+                return
+            if event.get("type") == "error":
+                self._dispatch(event)
+                raise RealtimeError(
+                    "session.update rejected: {}".format(_error_text(event))
+                )
+            self._dispatch(event)
+
