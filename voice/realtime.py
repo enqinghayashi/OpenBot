@@ -566,3 +566,24 @@ class RealtimeClient:
             )
         )
 
+    async def send_image(self, jpeg_b64: str) -> None:
+        """Attach one JPEG (already base64) as a user message part."""
+        self._require_connected()
+        await self._send_raw(
+            self._emit(
+                CONVERSATION_ITEM_CREATE,
+                {
+                    "item": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_image",
+                                "image_url": "data:image/jpeg;base64,{}".format(jpeg_b64),
+                            }
+                        ],
+                    }
+                },
+            )
+        )
+
