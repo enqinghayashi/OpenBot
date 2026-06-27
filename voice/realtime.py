@@ -313,3 +313,18 @@ class RealtimeClient:
         await self._send_raw(self._session_update())
         await self._await_handshake()
 
+    def _raise_status(self, status: int, exc: Exception) -> None:
+        """Map an HTTP handshake status to the right error class."""
+        if status in NO_RETRY_STATUS:
+            raise RealtimeAuthError(
+                "OpenAI rejected the handshake (HTTP {}): {}".format(status, exc),
+                status=status,
+            )
+        if status == 429:
+            raise RealtimeError(
+                "rate limited (HTTP 429): {}".format(exc),
+                status=status,
+                retry_after=_retry_after_seconds(getattr(exc, "headers", None)),
+            )
+        raise RealtimeError("handshake failed (HTTP {}): {}".format(status, exc), status=status)
+
