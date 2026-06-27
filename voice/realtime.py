@@ -243,3 +243,26 @@ class RealtimeClient:
                 except RuntimeError:  # no running loop
                     log.debug("realtime callback %r returned awaitable outside a loop", name)
 
+    def _emit(self, event_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """THE send choke point: every client->server event passes here.
+
+        Validates ``event_type`` against ``_REALTIME_SEND_TYPES`` and
+        returns the wire event ``{"type": event_type, **payload}``.
+        ``input_audio_buffer.commit`` is lifetime-banned - server VAD owns
+        turn segmentation and a manual commit would double-turn every
+        utterance - and any type outside the allowlist is equally
+        rejected; both raise ``AssertionError``.  All ``send_*`` methods
+        (and the session.update send) route through this method.
+        """
+        if event_type == "input_audio_buffer.commit":
+            raise AssertionError("input_audio_buffer.commit is lifetime-banned — never committed")
+        if event_type not in _REALTIME_SEND_TYPES:
+            raise AssertionError(
+                "unsendable event type {!r}: not in _REALTIME_SEND_TYPES".format(event_type)
+            )
+        event = {"type": event_type}
+        event.update(payload)
+        return event
+
+    # ------------------------------------------------ lifecycle / reconnect
+
