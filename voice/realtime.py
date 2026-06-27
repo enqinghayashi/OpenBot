@@ -456,3 +456,16 @@ class RealtimeClient:
             except Exception:  # noqa: BLE001
                 log.exception("on_session_expired callback failed")
 
+    async def close(self) -> None:
+        """Deliberate close: stop reconnecting and release the socket.
+
+        ``close`` is emitted only when the socket was actually open - the
+        ``was_open`` pattern from ``run_forever``'s finally - so a
+        never-connected client stays silent.
+        """
+        self._closing = True
+        was_open = self._ws is not None
+        await self._close_socket()
+        if was_open:
+            self._fire("close", {})
+
