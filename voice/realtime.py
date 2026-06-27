@@ -143,3 +143,6 @@ AUDIO_DELTA_TYPES = frozenset(("response.output_audio.delta", "response.audio.de
 _BLOB_KEYS = frozenset(("audio", "delta"))
 
 
+class RealtimeError(RuntimeError):
+    """A Realtime wire failure (retryable unless ``status`` says otherwise)."""
+
