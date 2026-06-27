@@ -156,3 +156,28 @@ class RealtimeAuthError(RealtimeError):
     """Bad key or no access to the model.  Retrying will not help."""
 
 
+class RealtimeClient:
+    """One authenticated, reconnectable WebSocket to the Realtime API.
+
+    Build it (no I/O), register callbacks, then drive it with
+    :meth:`run_forever` (connect-with-retry + handshake + read/dispatch
+    loop with auto-reconnect and the 60-min session cap).  ``tools`` is
+    the flat tool list produced by ``voice.adapters.flatten_specs``.
+
+    The GA ``session.update`` field set is LOCKED (reference-verified
+    byte-for-byte against OpenBot ``build_session_update``): audio is a
+    single ``audio`` object whose ``input`` nests ``format`` {``type``,
+    ``rate``}, ``transcription`` {``model``, ``language``} and
+    ``turn_detection`` {``type``, ``threshold``, ``prefix_padding_ms``,
+    ``silence_duration_ms``, ``create_response``}, and whose ``output``
+    nests ``format`` {``type``, ``rate``}, ``voice`` and ``speed`` -
+    ``output_modalities`` (never ``modalities``), no ``sample_rate`` key
+    anywhere, no top-level ``input_transcription`` /
+    ``input_turn_detection``; ``tools`` / ``tool_choice`` only when tools
+    were supplied; and no ``OpenAI-Beta`` header.  Consequence quote
+    (reference): "A wrong
+    field name does not close the socket; the server sends one ``error``
+    event and carries on, so the symptom is a session that connects and
+    then never speaks."
+    """
+
