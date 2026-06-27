@@ -480,3 +480,9 @@ class RealtimeClient:
 
     # ------------------------------------------------------ the senders
 
+    def _headers(self) -> Dict[str, str]:
+        """GA: no ``OpenAI-Beta`` header - the retired beta header is
+        removed (the GA docs dropped it; sending it only risks the beta
+        dialect)."""
+        return {"Authorization": "Bearer {}".format(self.api_key)}
+
