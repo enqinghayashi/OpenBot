@@ -550,3 +550,7 @@ class RealtimeClient:
             else:
                 log.debug("-> %s %s", event.get("type"), redact(event))
 
+    def _require_connected(self) -> None:
+        if self._ws is None:
+            raise RealtimeError("realtime socket is not connected; call connect() first")
+
