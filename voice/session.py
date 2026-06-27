@@ -380,3 +380,30 @@ class RealtimeBackend(BrainBackend):
     captured loop is dropped with a logged error — loud, never silent.
     """
 
+    def __init__(self, client: Any) -> None:
+        self._client = client
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+
+    # --------------------------------------------------- start up / shut down
+
+    def start(self) -> None:
+        try:
+            self._loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._loop = None
+        log.debug("realtime backend started (loop=%s)", self._loop is not None)
+
+    async def run_forever(self) -> None:
+        """Drive the client's connect/read/reconnect loop (app task)."""
+        return await self._client.run_forever()
+
+    def close(self) -> bool:
+        if self._client is not None:
+            return self._bridge(self._client.close())
+        return True
+
+    def on_event(self, name: str, callback: Callable[[str, dict], Any]) -> None:
+        self._client.on_event(name, callback)
+
+    # ------------------------------------------------- bridging onto the app's loop
+
