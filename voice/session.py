@@ -707,3 +707,147 @@ class VoiceSession:
         """Set the session mute flag (L5)."""
         self._muted = bool(flag)
 
+    def upload_mic_audio(self, chunk: bytes) -> bool:
+        """PCM16/24k mono chunk from the mic pump (any thread).
+
+        Mute law (L5): while the echoed audio is queued for playback OR the
+        session mute flag is set, the chunk is DROPPED — never uploaded,
+        never padded.  The session NEVER fabricates silence: the exact
+        bytes given are the only bytes that ever reach the lane, and a
+        drop is a drop (no synthetic low-energy frame is uploaded "to keep
+        the buffer warm").  Returns True when the chunk was handed to the
+        lane.
+        """
+        if self._closed or not chunk:
+            return False
+        if self.muted:
+            return False
+        return self.backend.submit_mic_audio(chunk)
+
+    def pending_tool_calls(self) -> List[str]:
+        """call_ids whose outputs the director has not delivered yet."""
+        return list(self._pending_call_ids)
+
+    # --------------------------------------------------- the tool-result batch
+
+    def respond_tool_result(self, call_id: str, output_text: str) -> bool:
+        """The director's answer for one executed tool call (L3 + L4).
+
+        Delivers the output item (dedup: exactly once per call_id) and, on
+        the batch's LAST output, decides the batch's ONE follow-up: an
+        ANSWER-tool batch (see ANSWER_TOOLS — notify_user) CLOSES the
+        turn — the answer was the model's final words — and so does a
+        batch whose drain would exceed MAX_DECISION_ROUNDS_PER_TURN; any
+        other batch gets the single decision continuation response (never
+        one per output).  Returns True when the output was accepted.  A
+        call_id the session never recorded (a duplicate director answer,
+        or a stale call from a reset session) is dropped with a warning.
+
+        Concurrency note (C-L1, round 3): this method runs on the app's
+        PER-CALL director threads (app.py spawns one daemon thread per
+        tool execution), NOT on the lane's worker.  The batch bookkeeping
+        below — ``_pending_call_ids`` removal, the drained-batch decision
+        (``_continuation_created`` / ``_batch_has_answer_call``), the
+        round counter and the one-create-per-batch response — is therefore
+        deliberately UNLOCKED: each call_id has exactly one writer thread,
+        the GIL serializes the list reads/removes, and the queueing to
+        the transcript lane (FIFO) serializes the effects.  A full
+        locking rewrite is deliberately NOT made here (out of round-3
+        scope) — the drain's check-then-create races only when the app
+        delivers two outputs for the SAME batch concurrently, which the
+        director's one-thread-per-call + one-call-per-response contract
+        prevents.
+        """
+        if self._closed:
+            return False
+        if call_id not in self._pending_call_ids:
+            log.warning(
+                "respond_tool_result for unknown/duplicate call_id %r "
+                "(pending=%r) — dropped", call_id, self._pending_call_ids
+            )
+            return False
+        self._send_function_call_output(call_id, output_text)
+        self._pending_call_ids.remove(call_id)
+        if not self._pending_call_ids:
+            # batch drained: the post-done refusal stops, and the next
+            # response's calls join their own fresh batch
+            self._tools_flowing_after_done = False
+        self._fire("gate_changed", {"open": self.gate_open})
+        if not self._pending_call_ids and not self._continuation_created:
+            self._continuation_created = True
+            if self._batch_has_answer_call:
+                # the drained batch held an answer (notify_user) call: its
+                # final notice is out and the executor already spoke it, so
+                # close the turn instead of a continuation that would re-ask
+                self._batch_has_answer_call = False
+                self._close_turn_after_drain("the drained batch was an "
+                                             "answer (notify_user) call")
+                return True
+            if self._decision_rounds_this_turn >= MAX_DECISION_ROUNDS_PER_TURN:
+                # safety cap: a model answering every round with a
+                # non-answer tool call would chain forever; close the turn
+                log.warning(
+                    "decision round cap (%d) reached in one utterance "
+                    "turn — closing the turn without a further "
+                    "continuation",
+                    MAX_DECISION_ROUNDS_PER_TURN,
+                )
+                self._close_turn_after_drain("decision round cap reached")
+                return True
+            self._decision_rounds_this_turn += 1
+            # one create per batch, triggered by the last output
+            self._create_response(tools=True, instruction=None, kind="decision")
+        return True
+
+    def _close_turn_after_drain(self, reason: str) -> None:
+        """Close the utterance turn at a batch drain (the answer-final
+        path): fire ``turn_complete`` + gate open exactly like a
+        call-less response.done would have, and reset the decision-round
+        count for the next turn.  ``reason`` names the close for the log.
+        An ask still owed its turn (L9: a query_user intercepted in the
+        SAME response) starts FIRST — the question must be asked before
+        the turn closes; the ask's own done then fires ``turn_complete``
+        and reopens the gate for the human's answer."""
+        self._decision_rounds_this_turn = 0
+        if self._query_call_id is not None and not self._ask_sent:
+            log.info("turn closed at the batch drain (%s) — the query "
+                     "ask still owed its turn; asking first", reason)
+            self._start_ask_turn()
+            return
+        log.info("turn closed at the batch drain (%s)", reason)
+        # usage and status of the batch-owning response, from the ledger:
+        # the drain site never sees the done payload itself
+        status = "completed"
+        usage = None
+        if self._cost_ledger:
+            status = str(self._cost_ledger[-1].get("status") or status)
+            usage = self._cost_ledger[-1].get("usage")
+        self._fire("turn_complete", {"usage": usage, "status": status})
+        self._fire("gate_changed", {"open": self.gate_open})
+
+    def _send_function_call_output(
+        self, call_id: str, output_text: str, *, force: bool = False
+    ) -> bool:
+        """L3: the single emission choke for function_call_output.
+
+        A call_id already in the dedup map is answered exactly once: the
+        repeat is logged and dropped.  ``force`` is the query_user
+        two-phase exception (L9): the ``DONE:<answer>`` emission succeeds
+        the ``OK: awaiting…`` placeholder for the same call_id.
+        """
+        if call_id in self._emitted_outputs and not force:
+            # a new call cannot land here: the client mints a fresh id per
+            # parsed call, so a repeat is a stale or duplicate tool answer
+            # or an id collision, never a server re-emit
+            log.warning(
+                "duplicate function_call_output for call_id %r (already "
+                "emitted for this session; a duplicate director answer or "
+                "an id collision, not a server repeat) — answering once, "
+                "never zero", call_id
+            )
+            return False
+        self._emitted_outputs[call_id] = output_text
+        return self.backend.send_tool_result(call_id, output_text)
+
+    # --------------------------------------------------------- the frame seam
+
