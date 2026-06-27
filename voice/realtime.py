@@ -152,3 +152,5 @@ class RealtimeError(RuntimeError):
         self.retry_after = retry_after
 
 
+class RealtimeAuthError(RealtimeError):
+    """Bad key or no access to the model.  Retrying will not help."""
