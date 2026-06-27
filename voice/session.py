@@ -303,3 +303,33 @@ class BrainBackend(abc.ABC):
     def close(self) -> None:
         """Tear the lane down."""
 
+    @abc.abstractmethod
+    def on_event(self, name: str, callback: Callable[[str, dict], Any]) -> None:
+        """Subscribe to lane events; callbacks are ``(name, payload)``."""
+
+    # --------------------------------------------- utterance, frame, results
+
+    def submit_mic_audio(self, chunk: bytes) -> bool:
+        """PCM16/24k mono chunk -> the lane (realtime lane only).
+
+        The transcript/offline lanes have no live mic: the default drops
+        (returns False).  The session's mute law (L5) sits ABOVE this.
+        """
+        return False
+
+    @abc.abstractmethod
+    def send_user_text(self, text: str) -> bool:
+        """Inject a text user turn (the query answer attachment, L9)."""
+
+    @abc.abstractmethod
+    def send_user_frame(self, jpeg_b64: str) -> bool:
+        """Attach one JPEG (already base64) as a user image part (L10)."""
+
+    @abc.abstractmethod
+    def send_tool_result(self, call_id: str, output_text: str) -> bool:
+        """Answer one function call (function_call_output item).  The model
+        does nothing until a create_response follows — the session owns
+        that second step (L4)."""
+
+    # --------------------------------------------------- driving the response
+
