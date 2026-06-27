@@ -535,3 +535,18 @@ class RealtimeClient:
             session["instructions"] = self.instructions
         return self._emit(SESSION_UPDATE, {"session": session})
 
+    async def _send_raw(self, event: Dict[str, Any]) -> None:
+        ws = self._ws
+        if ws is None:
+            raise RealtimeError("send on a closed realtime socket")
+        payload = json.dumps(event)
+        try:
+            await ws.send(payload)
+        except Exception as exc:  # noqa: BLE001
+            raise RealtimeError("send failed: {}".format(exc))
+        if log.isEnabledFor(logging.DEBUG):
+            if event.get("type") == INPUT_AUDIO_APPEND:
+                log.debug("-> input_audio_buffer.append (length only)")
+            else:
+                log.debug("-> %s %s", event.get("type"), redact(event))
+
