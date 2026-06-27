@@ -445,3 +445,14 @@ class RealtimeClient:
                 )
                 await asyncio.sleep(delay)
 
+    def _expire_session(self) -> None:
+        """60-min session cap: flag the context reset and reconnect cleanly."""
+        self.context_reset = True
+        self._fire("session.expired", {"seconds": int(self.session_cap_s)})
+        callback = self.on_session_expired
+        if callback is not None:
+            try:
+                callback()
+            except Exception:  # noqa: BLE001
+                log.exception("on_session_expired callback failed")
+
