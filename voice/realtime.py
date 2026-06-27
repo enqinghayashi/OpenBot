@@ -146,3 +146,7 @@ _BLOB_KEYS = frozenset(("audio", "delta"))
 class RealtimeError(RuntimeError):
     """A Realtime wire failure (retryable unless ``status`` says otherwise)."""
 
+    def __init__(self, message: str, status: Optional[int] = None, retry_after: Optional[float] = None) -> None:
+        super().__init__(message)
+        self.status = status
+        self.retry_after = retry_after
