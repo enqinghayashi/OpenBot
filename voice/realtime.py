@@ -270,3 +270,7 @@ class RealtimeClient:
     def endpoint(self) -> str:
         return "{}?model={}".format(self.base_url, self.model)
 
+    @property
+    def connected(self) -> bool:
+        return self._ws is not None
+
