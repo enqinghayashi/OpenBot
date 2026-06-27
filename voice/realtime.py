@@ -469,3 +469,14 @@ class RealtimeClient:
         if was_open:
             self._fire("close", {})
 
+    async def _close_socket(self) -> None:
+        ws, self._ws = self._ws, None
+        if ws is None:
+            return
+        try:
+            await ws.close()
+        except Exception as exc:  # noqa: BLE001 - teardown must not raise
+            log.debug("closing the realtime socket raised: %s", exc)
+
+    # ------------------------------------------------------ the senders
+
