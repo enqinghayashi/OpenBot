@@ -216,3 +216,11 @@ class RealtimeClient:
 
     # ------------------------------------------------ events and handlers
 
+    def on_event(self, name: str, callback: Callable[[str, dict], Any]) -> None:
+        """Register ``callback(name, payload_dict)`` for events named ``name``.
+
+        Sync callables run inline; if a callback returns an awaitable it is
+        scheduled as a task on the running loop.
+        """
+        self._handlers.setdefault(name, []).append(callback)
+
