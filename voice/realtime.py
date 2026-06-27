@@ -486,3 +486,52 @@ class RealtimeClient:
         dialect)."""
         return {"Authorization": "Bearer {}".format(self.api_key)}
 
+    def _session_update(self) -> Dict[str, Any]:
+        """The LOCKED GA session.update payload (reference-verified
+        byte-for-byte against OpenBot ``build_session_update``, minus
+        the intentional deviation below).  ``audio.input.format`` is the
+        object shape {"type": "audio/pcm", "rate": 24000} and
+        ``transcription`` / ``turn_detection`` nest under ``audio.input``
+        - there is no ``sample_rate`` key anywhere.  ``tools`` /
+        ``tool_choice`` are attached ONLY when tools were supplied (never
+        an empty list).  Routes through ``_emit`` like every send.
+        ``instructions`` is present ONLY when configured (the identity
+        the model speaks as — see ``RealtimeClient.__init__``): the
+        pre-identity wire kept it absent and the locked-shape tests pin
+        that default; OpenBot ships its identity text in
+        ``config.voice.yaml realtime.instructions`` the same channel
+        OpenBot ships its DEFAULT_INSTRUCTIONS on."""
+        session = {
+            "type": "realtime",
+            "output_modalities": ["audio"],
+            "audio": {
+                "input": {
+                    "format": {"type": "audio/pcm", "rate": 24000},
+                    "transcription": {"model": "gpt-realtime-whisper", "language": "en"},
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "threshold": 0.75,
+                        "prefix_padding_ms": 300,
+                        "silence_duration_ms": 500,
+                        "create_response": True,
+                    },
+                },
+                "output": {
+                    "format": {"type": "audio/pcm", "rate": 24000},
+                    "voice": "cedar",
+                    "speed": 0.9,
+                },
+            },
+        }
+        if self.tools:
+            # parity: tools only when supplied
+            # never an empty list
+            session["tools"] = self.tools
+            session["tool_choice"] = "auto"
+        if self.instructions:
+            # identity: sent once, at connect time
+            # per-turn wins
+            # unset -> absent (the tests pin that)
+            session["instructions"] = self.instructions
+        return self._emit(SESSION_UPDATE, {"session": session})
+
