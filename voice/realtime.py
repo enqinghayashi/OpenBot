@@ -181,3 +181,38 @@ class RealtimeClient:
     then never speaks."
     """
 
+    def __init__(
+        self,
+        base_url: str = DEFAULT_BASE_URL,
+        model: str = DEFAULT_MODEL,
+        api_key: str = "",
+        version: str = DEFAULT_VERSION,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        instructions: str = "",
+        session_updated_timeout_s: float = SESSION_UPDATED_TIMEOUT_S,
+        session_cap_s: float = SESSION_CAP_S,
+        on_session_expired: Optional[Callable[[], Any]] = None,
+    ) -> None:
+        self.base_url = base_url
+        self.model = model
+        self.api_key = api_key
+        self.version = version  # pin, info only
+        self.tools = list(tools or [])
+        #: identity text the model speaks as
+        #: same channel as DEFAULT_INSTRUCTIONS
+        #: unset -> field absent (tests pin it)
+        self.instructions = str(instructions)
+        self.session_updated_timeout_s = session_updated_timeout_s
+        self.session_cap_s = session_cap_s
+        self.on_session_expired = on_session_expired
+
+        self._ws = None  # type: Optional[Any]
+        self._handlers = {}  # type: Dict[str, List[Callable[[str, dict], Any]]]
+        self._closing = False
+        self._retried_429 = False
+        self._session_started_at = 0.0
+        # the 60-min cap resets the context
+        self.context_reset = False
+
+    # ------------------------------------------------ events and handlers
+
