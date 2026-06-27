@@ -361,3 +361,43 @@ class RealtimeClient:
                 )
             self._dispatch(event)
 
+    async def run_forever(self) -> None:
+        """Connect (with retry ladder), then read/dispatch until close.
+
+        Auto-reconnects on drops (clean handshake each time) and performs
+        the clean 60-min session-cap reconnect; returns only on deliberate
+        :meth:`close`, an auth error, or after retry exhaustion (loud).
+        """
+        while not self._closing:
+            try:
+                await self.connect_with_retry()
+            except RealtimeAuthError:
+                await self._close_socket()
+                raise
+            except RealtimeError as exc:
+                await self._close_socket()
+                self._fire("error", {"message": str(exc)})
+                log.error("realtime: %s", exc)
+                return  # loud stop
+            try:
+                while not self._closing:
+                    if self._session_started_at and (
+                        time.monotonic() - self._session_started_at >= self.session_cap_s
+                    ):
+                        self._expire_session()
+                        break
+                    try:
+                        message = await asyncio.wait_for(self._ws.recv(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        continue
+                    except Exception as exc:  # noqa: BLE001 - a dead socket ends the read
+                        log.warning("realtime read ended: %s", exc)
+                        break
+                    event = _decode(message)
+                    self._dispatch(event)
+            finally:
+                was_open = self._ws is not None
+                await self._close_socket()
+                if was_open:
+                    self._fire("close", {})
+
