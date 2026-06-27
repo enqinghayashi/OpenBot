@@ -274,3 +274,42 @@ class RealtimeClient:
     def connected(self) -> bool:
         return self._ws is not None
 
+    async def connect(self) -> None:
+        """One connect + session.update handshake.  Raises on failure.
+
+        Sends ``session.update`` with the locked GA field set and waits up
+        to ``session_updated_timeout_s`` for ``session.updated`` - a
+        timeout is a loud failure (almost always a rejected field name).
+        """
+        if not self.api_key:
+            raise RealtimeAuthError(
+                "no api key; pass api_key= or set OPENAI_API_KEY", status=401
+            )
+        try:
+            import websockets  # lazy: net dep
+        except ImportError as exc:
+            raise RealtimeError("websockets is not installed: {}".format(exc))
+        try:
+            self._ws = await _ws_connect(
+                self.endpoint,
+                self._headers(),
+                ping_interval=20,
+                ping_timeout=20,
+                close_timeout=5,
+                max_size=MAX_MESSAGE_BYTES,
+                open_timeout=self.session_updated_timeout_s + 10.0,
+            )
+        except websockets.InvalidStatusCode as exc:  # this is the websockets < 14 spelling
+            self._raise_status(getattr(exc, "status_code", 0), exc)
+        except Exception as exc:  # noqa: BLE001
+            status = getattr(getattr(exc, "response", None), "status_code", 0)
+            if status:
+                self._raise_status(status, exc)
+            raise RealtimeError("could not open the Realtime socket: {}".format(exc))
+        self._session_started_at = time.monotonic()
+        self._retried_429 = False
+        self._fire("open", {})
+        log.info("realtime socket open (%s)", self.endpoint)
+        await self._send_raw(self._session_update())
+        await self._await_handshake()
+
