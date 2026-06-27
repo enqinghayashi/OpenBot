@@ -686,3 +686,71 @@ async def _ws_connect(endpoint: str, headers: Dict[str, str], **common: Any) -> 
         return await websockets.connect(endpoint, additional_headers=headers, **common)
     except TypeError:
         return await websockets.connect(endpoint, extra_headers=headers, **common)
+
+
+def _decode(message: Any) -> Dict[str, Any]:
+    """JSON-decode one server message; bytes are decoded first."""
+    if isinstance(message, bytes):
+        message = message.decode("utf-8", "replace")
+    try:
+        decoded = json.loads(message)
+    except ValueError as exc:
+        raise RealtimeError("server sent invalid JSON: {}".format(exc))
+    if not isinstance(decoded, dict):
+        raise RealtimeError("server sent a non-object event")
+    return decoded
+
+
+def _error_text(event: Dict[str, Any]) -> str:
+    error = event.get("error") or {}
+    if not isinstance(error, dict):
+        return str(error)
+    parts = [
+        str(error.get("type", "")),
+        str(error.get("code", "")),
+        str(error.get("message", "")),
+    ]
+    param = error.get("param")
+    if param:
+        parts.append("param={}".format(param))
+    return " ".join(p for p in parts if p)
+
+
+def _retry_after_seconds(headers: Any) -> Optional[float]:
+    """Best-effort ``Retry-After`` parse from a websockets Headers object."""
+    if headers is None:
+        return None
+    try:
+        value = headers.get("retry-after")
+    except Exception:  # noqa: BLE001 - headers may not map
+        return None
+    if not value:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None  # HTTP-date form, not worth parsing
+
+
+# ---------------------------------------------------------- log redaction
+
+def redact(obj: Any) -> Any:
+    """A log-safe copy: blob fields (``audio``/``delta``) and any string
+    longer than 64 chars become size markers; strings of 64 chars or fewer
+    pass through untouched (the boundary is cosmetic - real audio frames
+    are ~6.8 KB of base64, far above it).  Audio bytes/events are NEVER
+    passed through the logger - the dispatch path calls this on dicts and
+    logs lengths for audio deltas."""
+    if isinstance(obj, dict):
+        out = {}
+        for key, value in obj.items():
+            if key in _BLOB_KEYS and isinstance(value, str) and len(value) > 64:
+                out[key] = "<{} base64 chars>".format(len(value))
+            else:
+                out[key] = redact(value)
+        return out
+    if isinstance(obj, list):
+        return [redact(item) for item in obj]
+    if isinstance(obj, str) and len(obj) > 64:
+        return "<{} chars>".format(len(obj))
+    return obj
