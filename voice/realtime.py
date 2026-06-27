@@ -224,3 +224,22 @@ class RealtimeClient:
         """
         self._handlers.setdefault(name, []).append(callback)
 
+    def _fire(self, name: str, payload: Dict[str, Any]) -> None:
+        """Dispatch an INBOUND event to listeners (raw name + aliases).
+
+        Sync callables run inline; if a callback returns an awaitable it is
+        scheduled as a task on the running loop.  (The SEND-side choke
+        point is :meth:`_emit`; this method only fans inbound events out.)
+        """
+        for callback in list(self._handlers.get(name, ())):
+            try:
+                result = callback(name, payload)
+            except Exception:  # noqa: BLE001 - keep the client up
+                log.exception("realtime callback for %r failed", name)
+                continue
+            if inspect.isawaitable(result):
+                try:
+                    asyncio.ensure_future(result)
+                except RuntimeError:  # no running loop
+                    log.debug("realtime callback %r returned awaitable outside a loop", name)
+
