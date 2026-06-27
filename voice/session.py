@@ -540,3 +540,126 @@ class RealtimeBackend(BrainBackend):
 # ----------------------------------------------- VoiceSession (the turn laws)
 
 
+class VoiceSession:
+    """The turn-law enforcement layer (laws L1-L10, module docstring).
+
+    Build it with a :class:`BrainBackend` and the optional frame hook,
+    subscribe to session events, :meth:`start` it, then feed it:
+
+    * mic chunks via :meth:`upload_mic_audio` (any thread);
+    * tool results via :meth:`respond_tool_result` (the director, after
+      executing a ``tool_call`` event);
+    * nothing else — every lane event arrives through the backend.
+
+    Outward events (subscribe via :meth:`on_event`; payloads documented at
+    each ``_fire`` site): ``tool_call``, ``tool_refused``, ``user_text``,
+    ``dropped_utterance``, ``spoken``, ``text``, ``audio``,
+    ``audio_dropped``, ``playback_started``, ``playback_finished``,
+    ``speech_started``, ``barge_in``, ``answer``, ``query_waiting``,
+    ``frame_attached``, ``frame_absent``, ``turn_complete``,
+    ``gate_changed``, ``failover``, ``session_expired``, ``started``,
+    ``closed``.
+    """
+
+    def __init__(
+        self,
+        backend: BrainBackend,
+        *,
+        frame_hook: Optional[Callable[[], Optional[Dict[str, Any]]]] = None,
+        query_tools: frozenset = QUERY_TOOLS,
+        playback_lead_s: float = PLAYBACK_LEAD_S,
+        playback_queue_cap_s: float = PLAYBACK_QUEUE_CAP_S,
+    ) -> None:
+        if backend is None:
+            raise ValueError("VoiceSession requires a BrainBackend")
+        self.backend = backend
+        #: frame seam: callable returning a fresh frame envelope or None,
+        #: called once per decision turn
+        self._frame_hook = frame_hook
+        self._query_tools = frozenset(query_tools)
+        self._answer_tools = frozenset(ANSWER_TOOLS)
+        self._playback_lead_s = float(playback_lead_s)
+        self._playback_queue_cap_s = float(playback_queue_cap_s)
+
+        self._handlers: Dict[str, List[Callable[[str, dict], Any]]] = {}
+        self._closed = False
+        self._started = False
+
+        # -- the half-duplex gate --
+        self._response_in_flight = False
+        self._response_kind: Optional[str] = None  # "decision"|"ask"|"server"
+        self._pending_call_ids: List[str] = []  # calls awaiting their tool output
+        self._turn_call_ids = set()  # call_ids seen this turn, for dedup
+        self._continuation_created = False  # one create per batch
+        #: True while the current batch holds an ANSWER_TOOLS call; its
+        #: drain closes the turn instead of creating a continuation
+        self._batch_has_answer_call = False
+        #: decision continuations since the turn seed, capped at
+        #: MAX_DECISION_ROUNDS_PER_TURN; reset by a new seed, a server-kind
+        #: created, or a drain that closes the turn
+        self._decision_rounds_this_turn = 0
+        #: True after a response.done that left a batch open: a later call
+        #: belongs to a different response (a server auto-create raced the
+        #: turn), so it is refused and answered once, never run or truncated
+        self._tools_flowing_after_done = False
+        self._frame_attached_this_turn = False
+
+        # -- query_user, two-phase --
+        self._query_call_id: Optional[str] = None
+        self._ask_sent = False
+        self._query_question = ""
+
+        # -- the dedup map --
+        self._emitted_outputs: Dict[str, str] = {}
+
+        # -- mute and playback --
+        self._muted = False
+        self._queued_s = 0.0
+        self._lead_buffer: List[tuple] = []
+        self._lead_accum_s = 0.0
+        #: a local stop dropped the rest of this response's audio; cleared
+        #: at the next created or done
+        self._drop_audio = False
+
+        # -- the cost ledger --
+        self._cost_ledger: List[Dict[str, Any]] = []
+
+    # --------------------------------------------------- start up / shut down
+
+    def start(self) -> None:
+        """Bring the lane up and wire the backend events: one call starts
+        the whole stack.  (The realtime app additionally schedules
+        ``RealtimeBackend.run_forever()`` as a task on the loop — that is
+        the lane's connect/read/reconnect loop; see the module docstring's
+        concurrency model.)"""
+        if self._started:
+            return
+        try:
+            self.backend.start()
+        except Exception:  # noqa: BLE001 - a lane hiccup can't kill the wiring
+            log.exception("backend.start() raised")
+        for name in BACKEND_EVENTS:
+            self.backend.on_event(name, self._on_backend_event)
+        self._started = True
+        self._fire("started", {})
+
+    def close(self) -> None:
+        """Tear down: backend close, turn state cleared, ``closed`` fired."""
+        if self._closed:
+            return
+        self._closed = True
+        self._reset_turn_state()
+        try:
+            self.backend.close()
+        except Exception:  # noqa: BLE001 - teardown must not raise
+            log.exception("backend.close() raised")
+        self._fire("closed", {})
+
+    def on_event(self, name: str, callback: Callable[[str, dict], Any]) -> None:
+        """Subscribe to session-level events (see the class docstring).
+
+        Sync callables run inline; an awaitable return is scheduled as a
+        task on the running loop (same contract as the realtime client).
+        """
+        self._handlers.setdefault(name, []).append(callback)
+
