@@ -688,3 +688,14 @@ async def _ws_connect(endpoint: str, headers: Dict[str, str], **common: Any) -> 
         return await websockets.connect(endpoint, extra_headers=headers, **common)
 
 
+def _decode(message: Any) -> Dict[str, Any]:
+    """JSON-decode one server message; bytes are decoded first."""
+    if isinstance(message, bytes):
+        message = message.decode("utf-8", "replace")
+    try:
+        decoded = json.loads(message)
+    except ValueError as exc:
+        raise RealtimeError("server sent invalid JSON: {}".format(exc))
+    if not isinstance(decoded, dict):
+        raise RealtimeError("server sent a non-object event")
+    return decoded
