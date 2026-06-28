@@ -1388,3 +1388,85 @@ class VoiceSession:
             "final": False,
         })
 
+    def _handle_response_audio_transcript_done(self, payload: Dict[str, Any]) -> None:
+        """Spoken-text final (``spoken`` event, final=True)."""
+        log.info("cloud transcript done: %r", str(payload.get("transcript") or ""))
+        self._fire("spoken", {
+            "text": str(payload.get("transcript") or ""),
+            "item_id": str(payload.get("item_id") or ""),
+            "final": True,
+        })
+
+    def _handle_response_output_audio_transcript_delta(
+            self, payload: Dict[str, Any]) -> None:
+        """GA spelling of the spoken-text partial (same behaviour)."""
+        self._handle_response_audio_transcript_delta(payload)
+
+    def _handle_response_output_audio_transcript_done(
+            self, payload: Dict[str, Any]) -> None:
+        """GA spelling of the spoken-text final (same behaviour)."""
+        self._handle_response_audio_transcript_done(payload)
+
+    # --------------------------------------------------- failover and teardown
+
+    def _handle_error(self, payload: Dict[str, Any]) -> None:
+        """Backend fatal error (auth, retry exhaustion): clear turn state
+        and surface the failover signal.
+
+        Boundary-reopen contract (shared by BOTH lanes — transcript and
+        realtime): when the error lands mid-turn (a response in flight or
+        a pending tool batch closed the gate — e.g. the transcript lane's
+        cloud transport failure after its response.created, or a realtime
+        wss drop mid-response), the reset reopens the session gate and a
+        ``gate_changed open:True`` is emitted so the director re-opens its
+        boundary and the held ``hard`` signal drains to OFFLINE_CASCADE —
+        never a held-forever deadlock.  The emission is conditional on the
+        gate having ACTUALLY been closed: an error that arrived while the
+        gate was already open (the whisper-transport path — the failure
+        fires before any response.created) emits nothing extra, so that
+        path stays exactly as today (the failover applies at the open
+        boundary).  Idempotent: a gate already open re-fires nothing."""
+        error = payload.get("error") or payload.get("message") or "unknown error"
+        if isinstance(error, dict):
+            detail = (
+                str(error.get("message") or "")
+                or str(error.get("code") or "")
+                or "unknown error"
+            )
+        else:
+            detail = str(error)
+        gate_was_closed = not self.gate_open
+        self._reset_turn_state()
+        if gate_was_closed:
+            # mid-turn failover: fire gate_changed open:True before the
+            # failover signal, so a held ``hard`` signal drains at the open
+            # boundary instead of re-holding
+            self._fire("gate_changed", {"open": True})
+        self._fire("failover", {"reason": "error", "detail": detail})
+
+    def _handle_session_expired(self, payload: Dict[str, Any]) -> None:
+        """L7: the client performed the clean 60-min context-reset
+        reconnect.  Turn-local state is dead on the new conversation:
+        clear it.  The dedup map is kept — old call_ids cannot re-arrive,
+        so it can only guard stragglers.  Surfaced as a failover signal
+        AND a ``session_expired`` event; the app decides the lane switch.
+        An expiry that lands mid-turn emits the boundary-reopen
+        ``gate_changed open:True`` (see the inline comment) so the
+        director's held ``session_expired`` signal drains to REOPENING —
+        the same contract as :meth:`_handle_error`.
+        """
+        seconds = int(payload.get("seconds") or 3600)
+        gate_was_closed = not self.gate_open
+        self._reset_turn_state()
+        if gate_was_closed:
+            # same boundary reopen as _handle_error: an expiry mid-turn
+            # would hold a ``session_expired`` signal forever.
+            # emit only for an expiry that landed on a shut gate.
+            self._fire("gate_changed", {"open": True})
+        self._fire("session_expired", {"seconds": seconds})
+        self._fire("failover", {
+            "reason": "session_expired",
+            "detail": "60-min session cap: clean reconnect with a reset "
+                      "conversation context",
+        })
+
