@@ -734,3 +734,23 @@ def _retry_after_seconds(headers: Any) -> Optional[float]:
 
 # ---------------------------------------------------------- log redaction
 
+def redact(obj: Any) -> Any:
+    """A log-safe copy: blob fields (``audio``/``delta``) and any string
+    longer than 64 chars become size markers; strings of 64 chars or fewer
+    pass through untouched (the boundary is cosmetic - real audio frames
+    are ~6.8 KB of base64, far above it).  Audio bytes/events are NEVER
+    passed through the logger - the dispatch path calls this on dicts and
+    logs lengths for audio deltas."""
+    if isinstance(obj, dict):
+        out = {}
+        for key, value in obj.items():
+            if key in _BLOB_KEYS and isinstance(value, str) and len(value) > 64:
+                out[key] = "<{} base64 chars>".format(len(value))
+            else:
+                out[key] = redact(value)
+        return out
+    if isinstance(obj, list):
+        return [redact(item) for item in obj]
+    if isinstance(obj, str) and len(obj) > 64:
+        return "<{} chars>".format(len(obj))
+    return obj
