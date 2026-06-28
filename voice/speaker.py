@@ -121,3 +121,117 @@ RPC_ERRORS = {
 }
 
 
+def describe_code(code: int) -> str:
+    return "{} ({})".format(code, RPC_ERRORS.get(code, "unknown / voice-service specific"))
+
+
+class SpeakerError(RuntimeError):
+    """A speaker call failed.  Never downgrade this to a warning."""
+
+
+class G1Speaker:
+    """PCM16 / 16 kHz / mono playback on the G1's own speaker.
+
+    Constructor performs the ~0.7 s SDK client build once; it requires
+    ``unitree_sdk2py`` (robot only).  All RPC calls serialise under one
+    lock.  ``play`` ENQUEUES and the paced playback worker drains it as
+    ``chunk_ms`` chunks under one stream id (see the module docstring —
+    before the queue, each chunk was one synchronous RPC per audio delta
+    from the WebSocket thread, which is the reported lag/artefact);
+    ``stop`` cancels queued audio then issues ``PlayStop`` — a documented
+    no-op in effect, so silence after ``stop()`` is not promised.
+    Construction also runs the volume boot gate: SetVolume(100) + a
+    read-back that must equal 100 (``G1_VOLUME``), else the ctor raises
+    and the process fails fast - the volume pin is architectural.
+    """
+
+    def __init__(
+        self,
+        app_name: str = G1_APP_NAME,
+        sample_rate: int = G1_SAMPLE_RATE,
+        cap_bytes: int = MAX_PLAYSTREAM_BYTES,
+        timeout_s: float = 10.0,
+        chunk_ms: int = PLAYBACK_CHUNK_MS,
+        max_lead_s: float = PLAYBACK_LEAD_S,
+        sink_latency_s: float = PLAYBACK_SINK_LATENCY_S,
+        queue_cap_s: float = PLAYBACK_QUEUE_CAP_S,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep_fn: Callable[[float], None] = time.sleep,
+    ) -> None:
+        if sample_rate != G1_SAMPLE_RATE:
+            raise ValueError(
+                "G1Speaker accepts 16 kHz only (PlayStream contract), got {}".format(sample_rate)
+            )
+        self.app_name = app_name
+        self.cap_bytes = int(cap_bytes)
+        self.timeout_s = timeout_s
+        # RPC + this state under ONE lock
+        # (SDK client is not thread-safe), never
+        # held across the pacing sleep
+        self.chunk_bytes = min(
+            int(cap_bytes), int(sample_rate * 2 * chunk_ms / 1000.0)
+        )
+        self.max_lead_s = float(max_lead_s)
+        self.sink_latency_s = float(sink_latency_s)
+        self.queue_cap_bytes = int(sample_rate * 2 * float(queue_cap_s))
+        self._bytes_per_second = sample_rate * 2
+        self._monotonic = monotonic
+        self._sleep = sleep_fn
+        self._lock = threading.Lock()
+        self._queue = queue.Queue()  # type: queue.Queue
+        self._queued_bytes = 0
+        self._generation = 0
+        self._stream_id = ""  # one stream per burst
+        self._play_until = 0.0  # when the queued audio runs out
+        self._stream_started = 0.0
+        self._stream_bytes = 0
+        self._speaking = False
+        self._drained = threading.Event()
+        self._drained.set()
+        self._fatal = None  # type: Optional[Exception]
+        self._worker = None  # type: Optional[threading.Thread]
+        self._client = self._build_client()  # ~0.7 s, done once
+        self._ensure_volume()  # boot gate: 100
+        self._worker = threading.Thread(
+            target=self._worker_main, name="g1-playback", daemon=True
+        )
+        self._worker.start()
+        log.info(
+            "playback queue: 16 kHz mono, %d ms chunks (%d B), bound %.1f s, "
+            "lead %.1f s (one stream per burst)",
+            chunk_ms, self.chunk_bytes, self.queue_cap_bytes / self._bytes_per_second,
+            self.max_lead_s,
+        )
+
+    def _build_client(self) -> Any:
+        # box SDK checkout:
+        # /home/unitree/unitree_sdk2_python
+        # bare 'voice' env never pip-installed it
+        # (RUNBOOK §13.3)
+        # no-op on a laptop
+        # import stays lazy
+        if os.path.isdir(
+            "/home/unitree/unitree_sdk2_python"
+        ) and "/home/unitree/unitree_sdk2_python" not in sys.path:
+            sys.path.insert(0, "/home/unitree/unitree_sdk2_python")
+        try:
+            from unitree_sdk2py.g1.audio.g1_audio_client import AudioClient
+            from unitree_sdk2py.core.channel import ChannelFactoryInitialize
+        except ImportError as exc:  # pragma: no cover - robot-only
+            raise SpeakerError(
+                "unitree_sdk2py is not installed ({}); G1Speaker runs on "
+                "the robot, use SounddeviceSink/MockSink on a laptop".format(exc)
+            )
+        # channel factory MUST init before any client
+        # skip it: DDS participant None, then
+        # "'NoneType' object has no attribute '_ref'"
+        # in the cyclonedds Topic ctor
+        # eth0 iface
+        # idempotent
+        # G1Mic: multicast
+        ChannelFactoryInitialize(0, "eth0")
+        client = AudioClient()
+        client.SetTimeout(self.timeout_s)
+        client.Init()
+        return client
+
