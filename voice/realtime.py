@@ -730,3 +730,7 @@ def _retry_after_seconds(headers: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None  # HTTP-date form, not worth parsing
+
+
+# ---------------------------------------------------------- log redaction
+
