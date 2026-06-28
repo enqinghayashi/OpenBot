@@ -716,3 +716,17 @@ def _error_text(event: Dict[str, Any]) -> str:
     return " ".join(p for p in parts if p)
 
 
+def _retry_after_seconds(headers: Any) -> Optional[float]:
+    """Best-effort ``Retry-After`` parse from a websockets Headers object."""
+    if headers is None:
+        return None
+    try:
+        value = headers.get("retry-after")
+    except Exception:  # noqa: BLE001 - headers may not map
+        return None
+    if not value:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None  # HTTP-date form, not worth parsing
