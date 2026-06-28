@@ -1284,3 +1284,107 @@ class VoiceSession:
             return
         self._barge_in(item_id, audio_start_ms)
 
+    def stop_playback_now(self) -> Dict[str, Any]:
+        """B8j-hf19: the local stop spotter heard 'stop' (any thread).
+
+        The robot must go quiet NOW: the rest of the in-flight response's
+        audio is dropped (``_drop_audio``, cleared at the next created/done),
+        the response is CANCELLED when L2 allows a barge-in (no tool results
+        flowing; after tool results it keeps running silently, never cut),
+        and the queued-audio booking is cleared so the mute law (L5) stops
+        dropping the operator's next words.  The caller cuts the sink.
+        """
+        cancelled = False
+        if self._response_in_flight:
+            self._drop_audio = True
+            if not self._pending_call_ids:
+                try:
+                    cancelled = bool(self.backend.cancel_response())
+                except Exception:  # noqa: BLE001 - stop is never allowed to raise
+                    log.exception("stop_playback_now: cancel_response failed")
+        cleared = self._queued_s > 0
+        if cleared:
+            self._queued_s = 0.0
+            self._fire("playback_finished", {})
+        log.info("local stop: audio dropped=%s cancelled=%s queue cleared=%s",
+                 self._drop_audio, cancelled, cleared)
+        return {"dropped": self._drop_audio, "cancelled": cancelled,
+                "queue_cleared": cleared}
+
+    def _barge_in(self, item_id: str, audio_end_ms: int) -> None:
+        """Truncate the assistant item + cancel the response (L2).
+
+        Truncate may be a documented dead end on the realtime lane (the
+        backend returns False and logs); cancel always fires.
+        """
+        phase = "ask" if self._response_kind == "ask" else "decision"
+        self.backend.truncate_response(item_id, audio_end_ms)
+        self.backend.cancel_response()
+        self._fire("barge_in", {
+            "item_id": item_id, "audio_end_ms": audio_end_ms, "phase": phase,
+        })
+
+    # --------------------------------------------------------- audio playback
+
+    def _handle_response_output_audio_delta(self, payload: Dict[str, Any]) -> None:
+        """Echoed audio (L6): cap the queue at 60 s, hold the 0.6 s lead,
+        then release deltas as ``audio`` events for the sink."""
+        delta = str(payload.get("delta") or "")
+        if not delta or self._drop_audio:  # a local stop hit this one
+            return
+        seconds = self._b64_pcm_seconds(delta)
+        if seconds <= 0:
+            return
+        if self._queued_s + seconds > self._playback_queue_cap_s:
+            self._fire("audio_dropped", {
+                "bytes": len(delta),
+                "reason": "playback queue cap {:.0f} s (L6)".format(
+                    self._playback_queue_cap_s
+                ),
+            })
+            log.warning(
+                "playback queue cap %.0fs: dropping %.1fs of audio",
+                self._playback_queue_cap_s, seconds,
+            )
+            return
+        self._queued_s += seconds
+        if self._lead_accum_s < self._playback_lead_s:
+            self._lead_buffer.append((delta, seconds))
+            self._lead_accum_s += seconds
+            if self._lead_accum_s >= self._playback_lead_s:
+                self._flush_lead()
+        else:
+            self._fire("audio", {"delta": delta})
+
+    def _handle_response_output_audio_done(self, payload: Dict[str, Any]) -> None:
+        """The response's audio finished: release the trailing lead buffer
+        and clear the queue (the sink keeps draining; the EchoGuard owns
+        level-based echo suppression — see the concurrency note in L5)."""
+        self._flush_lead()
+        if self._queued_s > 0:
+            self._queued_s = 0.0
+            self._fire("playback_finished", {})
+            self._fire("gate_changed", {"open": self.gate_open})
+
+    def _flush_lead(self) -> None:
+        """Release the lead-buffered audio (L6) and mark playback start."""
+        if not self._lead_buffer:
+            return
+        if self._drop_audio:              # a stopped reply stays silent
+            self._lead_buffer.clear()
+            self._lead_accum_s = 0.0
+            return
+        for delta, _seconds in self._lead_buffer:
+            self._fire("audio", {"delta": delta})
+        self._lead_buffer.clear()
+        self._lead_accum_s = 0.0
+        self._fire("playback_started", {})
+
+    def _handle_response_audio_transcript_delta(self, payload: Dict[str, Any]) -> None:
+        """Spoken-text partials (``spoken`` events, final=False)."""
+        self._fire("spoken", {
+            "text": str(payload.get("delta") or ""),
+            "item_id": str(payload.get("item_id") or ""),
+            "final": False,
+        })
+
