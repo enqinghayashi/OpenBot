@@ -603,3 +603,20 @@ class RealtimeClient:
             )
         )
 
+    async def send_function_call_output(self, call_id: str, output_text: str) -> None:
+        """Answer a function call; the model does nothing until a
+        ``create_response`` follows - the caller owns that second step."""
+        self._require_connected()
+        await self._send_raw(
+            self._emit(
+                CONVERSATION_ITEM_CREATE,
+                {
+                    "item": {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": output_text,
+                    }
+                },
+            )
+        )
+
