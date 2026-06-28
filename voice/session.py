@@ -1470,3 +1470,65 @@ class VoiceSession:
                       "conversation context",
         })
 
+    def _reset_turn_state(self) -> None:
+        """Clear every turn-local law-accounting field (session reset,
+        session-expired context reset, close)."""
+        self._response_in_flight = False
+        self._response_kind = None
+        self._pending_call_ids.clear()
+        self._turn_call_ids.clear()
+        self._continuation_created = False
+        self._batch_has_answer_call = False
+        self._decision_rounds_this_turn = 0
+        self._tools_flowing_after_done = False
+        self._frame_attached_this_turn = False
+        self._query_call_id = None
+        self._ask_sent = False
+        self._query_question = ""
+        self._lead_buffer.clear()
+        self._lead_accum_s = 0.0
+        self._queued_s = 0.0
+
+    # --------------------------------------------------------- the cost ledger
+
+    def last_cost(self) -> Optional[Dict[str, Any]]:
+        """The most recent response.done usage entry (L8; bake-off
+        consumer).  Returns None when no response has completed yet."""
+        return self._cost_ledger[-1] if self._cost_ledger else None
+
+    def cost_summary(self) -> str:
+        """Whole-session usage totals (L8).  Usage is never assumed
+        constant and never guessed: entries the wire left without usage
+        are counted but reported as not reported."""
+        if not self._cost_ledger:
+            return "No response usage recorded (Not reported)"
+        recorded = len(self._cost_ledger)
+        ins = outs = reported = 0
+        for entry in self._cost_ledger:
+            usage = entry.get("usage") or {}
+            if not usage:
+                continue
+            reported += 1
+            ins += int(usage.get("input_tokens") or 0)
+            outs += int(usage.get("output_tokens") or 0)
+        text = "{} response(s) recorded".format(recorded)
+        if reported:
+            text += (
+                "; input_tokens={}, output_tokens={} (summed from "
+                "response.done usage — never assumed constants)"
+            ).format(ins, outs)
+        else:
+            text += "; usage Not reported on the wire"
+        return text
+
+    @staticmethod
+    def _b64_pcm_seconds(delta_b64: str) -> float:
+        """PCM16/24k seconds for one base64 audio delta; 0 on garbage."""
+        try:
+            raw = base64.b64decode(delta_b64)
+        except Exception:  # noqa: BLE001 - a malformed delta just gets dropped
+            return 0.0
+        return len(raw) / 2.0 / AUDIO_SAMPLE_RATE
+
+
+
