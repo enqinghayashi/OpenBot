@@ -587,3 +587,19 @@ class RealtimeClient:
             )
         )
 
+    async def send_input_text(self, text: str) -> None:
+        """Inject a text user turn (tests / non-audio prompts)."""
+        self._require_connected()
+        await self._send_raw(
+            self._emit(
+                CONVERSATION_ITEM_CREATE,
+                {
+                    "item": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": text}],
+                    }
+                },
+            )
+        )
+
