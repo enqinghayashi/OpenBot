@@ -699,3 +699,5 @@ def _decode(message: Any) -> Dict[str, Any]:
     if not isinstance(decoded, dict):
         raise RealtimeError("server sent a non-object event")
     return decoded
+
+
