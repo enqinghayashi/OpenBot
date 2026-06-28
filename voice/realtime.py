@@ -701,3 +701,16 @@ def _decode(message: Any) -> Dict[str, Any]:
     return decoded
 
 
+def _error_text(event: Dict[str, Any]) -> str:
+    error = event.get("error") or {}
+    if not isinstance(error, dict):
+        return str(error)
+    parts = [
+        str(error.get("type", "")),
+        str(error.get("code", "")),
+        str(error.get("message", "")),
+    ]
+    param = error.get("param")
+    if param:
+        parts.append("param={}".format(param))
+    return " ".join(p for p in parts if p)
