@@ -641,3 +641,8 @@ class RealtimeClient:
             )
         )
 
+    async def send_clear(self) -> None:
+        """Clear the server's input audio buffer."""
+        self._require_connected()
+        await self._send_raw(self._emit(INPUT_AUDIO_CLEAR, {}))
+
