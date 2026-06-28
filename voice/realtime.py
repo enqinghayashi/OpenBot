@@ -658,3 +658,16 @@ class RealtimeClient:
 
     # --------------------------------------------------- the receive side
 
+    def _dispatch(self, event: Dict[str, Any]) -> None:
+        """Fire an event to callbacks (raw name + canonical aliases), and
+        log it REDACTED - audio deltas are logged as lengths only and the
+        audio itself is never passed through the logger."""
+        name = str(event.get("type", ""))
+        self._fire(name, event)
+        for alias in CANONICAL_ALIASES.get(name, ()):
+            self._fire(alias, event)
+        if log.isEnabledFor(logging.DEBUG):
+            if name in AUDIO_DELTA_TYPES:
+                log.debug("<- %s (length only)", name)
+            else:
+                log.debug("<- %s %s", name, redact(event))
