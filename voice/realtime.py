@@ -646,3 +646,8 @@ class RealtimeClient:
         self._require_connected()
         await self._send_raw(self._emit(INPUT_AUDIO_CLEAR, {}))
 
+    async def create_response(self) -> None:
+        """Ask for a response now (server VAD also creates them)."""
+        self._require_connected()
+        await self._send_raw(self._emit(RESPONSE_CREATE, {"response": {}}))
+
