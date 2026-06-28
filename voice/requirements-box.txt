@@ -1,0 +1,76 @@
+# requirements-box.txt — OpenBot v4 voice app, BOX-side Python deps
+# (Orin NX 16 GB, JetPack 5 = Ubuntu 20.04, Python 3.8).
+#
+# Install into the box conda env that runs the voice app:
+#     conda activate voice   # the voice phase env (RUNBOOK §13.3 creates it)
+#     pip install -r voice/requirements-box.txt
+#
+# What is deliberately NOT here (each is a subprocess, stdlib, or a
+# box-provided package — NOT a pip dependency of this file; voice/app.py
+# is stdlib-only at import, and every third-party package (websockets,
+# vosk, sounddevice, unitree_sdk2py) is imported lazily inside the
+# builder that needs it):
+#   * whisper.cpp server  — built from source by voice/fetch_models.sh
+#     (no prebuilt aarch64 binary works on JetPack 5: the shipped
+#     whisper-bin-ubuntu-arm64 builds require GLIBC_2.34; Ubuntu 20.04
+#     has glibc 2.31 — verified 2026-08-31 via readelf)
+#   * piper TTS          — prebuilt binary + voice model, installed by
+#     voice/fetch_models.sh (voice/models/piper, glibc 2.17-only: fine)
+#   * whisper STT model  — voice/models/ggml-tiny.en-q5_1.bin (fetch script;
+#     B2 decision 2026-09-04: small.en 21.7 s/inference on this CPU failed
+#     the 6 s gate; tiny.en-q5_1 measured 1.52 s)
+#   * vosk model         — voice/models/vosk-model-small-en-us (fetch)
+#   * gateway I/O        — plain TCP sockets (stdlib socket), no client
+#   * unitree_sdk2py     — NOT pip-installed here: the G1 box image
+#     provides the SDK as a checkout at /home/unitree/unitree_sdk2_python
+#     (skills/docs/README.md lists it as "installed, not scripts", and
+#     the skills stack resolves it with sys.path.insert(0, ...) — e.g.
+#     skills/helpers/manual_arm_joints.py:41).  G1Speaker._build_client
+#     (voice/speaker.py:96) does the same guarded sys.path.insert(0,
+#     '/home/unitree/unitree_sdk2_python') before its lazy import, so a
+#     bare 'voice' env needs no pip install of the SDK.  Failure is
+#     LOUD: a missing SDK raises SpeakerError "unitree_sdk2py is not
+#     installed (...)" at first TTS (speaker.py:111-115) — never a
+#     silent no-op.  CAUTION: the SDK is box-provided — documented as
+#     preinstalled on the box image, PyPI-unverifiable from this
+#     sandbox, so nothing here proves the box env itself; the app
+#     resolves it via speaker.py's guarded insert above, and the B2 gate
+#     (deploy/RUNBOOK-STUART.md §13.4, voice/app.py --audio g1) verifies
+#     the import with REAL G1 playback.  Also CAUTION: walknode-verified
+#     2026-08-16 that a bare unitree_sdk2py import on Stuart can pick
+#     the BROKEN xrkong fork (skills/docs/STATUS.md); the B2 gate must
+#     verify playback against the intended copy.
+#
+# The four pins below are the COMPLETE box-side pip set; unitree_sdk2py
+# is the ONE non-pip python import in the stack, provided by the box as
+# documented above.
+
+# websockets>=12,<14 — voice/realtime.py connects to the OpenAI Realtime
+# WebSocket with additional_headers= (added in websockets 13) and falls
+# back to extra_headers= (removed in websockets 14), so 13 is the sweet
+# spot and 14 must never resolve.  Upper bound <14 is also the py3.8
+# law: websockets 14.0 requires Python >=3.9.  >=12 keeps the modern
+# connect() API (12.0 dropped the pre-3.8 async API).
+websockets>=12,<14
+
+# numpy<=1.24.4 — NO voice/*.py imports numpy (the whole stack is
+# stdlib-only at import; sounddevice is used without its numpy
+# bindings).  Pinned anyway as the py3.8 floor guard: numpy 1.25.0 is
+# the first release that requires Python >=3.9, so on this interpreter
+# pip can never go above 1.24.4 — the pin documents that ceiling for
+# the sounddevice/vosk dependency trees and keeps the line explicit.
+numpy<=1.24.4
+
+# vosk>=0.3.44 — voice/keyword_spotting.py lazily imports vosk (KaldiRecognizer,
+# Model, SetLogLevel) for the on-device wake-word engine.  0.3.44 is
+# the plan's floor: the first 0.3.x line shipped with cp38
+# linux-aarch64 wheels for the Orin NX.  No upper bound: 0.3.x keeps
+# cp38 wheels through 0.3.50.
+vosk>=0.3.44
+
+# sounddevice>=0.4.6 — voice/mic.py + voice/speaker.py lazily import
+# sounddevice for the LAPTOP audio transport only (the G1 on-box mic/
+# speaker path is multicast + PlayStream sockets and never imports it).
+# 0.4.6 is the first py3.8-era release; current 0.5.x still ships cp38
+# wheels, so no upper bound is needed.
+sounddevice>=0.4.6
