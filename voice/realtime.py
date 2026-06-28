@@ -686,3 +686,5 @@ async def _ws_connect(endpoint: str, headers: Dict[str, str], **common: Any) -> 
         return await websockets.connect(endpoint, additional_headers=headers, **common)
     except TypeError:
         return await websockets.connect(endpoint, extra_headers=headers, **common)
+
+
