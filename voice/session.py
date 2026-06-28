@@ -851,3 +851,186 @@ class VoiceSession:
 
     # --------------------------------------------------------- the frame seam
 
+    def set_frame_hook(self, hook: Optional[Callable[[], Optional[Dict[str, Any]]]]) -> None:
+        """Attach/replace the per-decision-turn frame hook (L10; L3 wires
+        the gateway capture here — the seam stays pluggable)."""
+        self._frame_hook = hook
+
+    def _prepare_frame_for_turn(self, instruction: Optional[str]) -> Optional[str]:
+        """L10: one frame-hook call per decision turn.
+
+        Attaches ``input_image`` ONLY when the envelope is fresh and
+        present (never fabricated); otherwise returns ``instruction`` with
+        the NO_FRAME note appended so the model is told it is blind.
+
+        Called from the places whose ordering lets the frame actually
+        inform the answer (round-3, S2):
+
+        * ``_create_response(kind="decision")`` — BEFORE ``response.create``
+          goes out (every lane);
+        * a bare ``response.created`` on a lane whose
+          ``created_precedes_model_call`` is True (the transcript lane):
+          there the worker fires the created immediately before its ONE
+          chat call, so a frame staged at the created attaches to that
+          chat (see _handle_response_created).
+
+        It is NOT called for realtime server-VAD turns (that lane's
+        capability is False): by the time ``response.created`` arrives the
+        input is already snapshotted, so a send there would return True
+        and fire "frame_attached" for a turn the model answers blind.
+        For the same reason the NO_FRAME note is only meaningful before
+        creation — a response already created cannot be instructed after
+        the fact, so the note's return value is dropped at the
+        created-time call sites (there is no instruction channel on those
+        turns).
+        """
+        if self._frame_attached_this_turn:
+            return instruction
+        self._frame_attached_this_turn = True
+        envelope = None
+        if self._frame_hook is not None:
+            try:
+                envelope = self._frame_hook()
+            except Exception:  # noqa: BLE001 - one hook hiccup must not kill
+                log.exception("frame hook raised")
+                envelope = None
+        if (
+            isinstance(envelope, dict)
+            and envelope.get("fresh") is True
+            and envelope.get("jpeg_b64")
+        ):
+            jpeg = str(envelope["jpeg_b64"])
+            if self.backend.send_user_frame(jpeg):
+                self._fire("frame_attached", {"bytes": len(jpeg)})
+                return instruction
+            # the lane refused the send (no live loop, dropped bridge):
+            # claim nothing; the turn is imageless and frame_absent says so
+            self._fire("frame_absent", {
+                "reason": "frame send refused by the backend (not attached)",
+            })
+            note = NO_FRAME_INSTRUCTION
+            return (instruction + " " + note) if instruction else note
+        if envelope is None:
+            reason = "no frame source (hook returned None)"
+        elif isinstance(envelope, dict) and envelope.get("fresh") is False:
+            reason = "stale frame (fresh=False)"
+        else:
+            reason = "invalid frame envelope"
+        self._fire("frame_absent", {"reason": reason})
+        note = NO_FRAME_INSTRUCTION
+        return (instruction + " " + note) if instruction else note
+
+    # ---------------------------------------------------- creating a response
+
+    def _create_response(
+        self,
+        *,
+        tools: bool,
+        instruction: Optional[str],
+        kind: str,
+    ) -> bool:
+        """The ONE place the session asks for a response (L1/L4/L9/L10).
+
+        ``kind`` labels the turn for the done-accounting: "decision"
+        (tools-enabled plan turns), "ask" (the query question, L9), and
+        "server" (VAD auto-creates — never created here).  Decision turns
+        run the frame seam first; ask turns never carry a frame.
+        """
+        if self._closed:
+            return False
+        if kind == "decision":
+            instruction = self._prepare_frame_for_turn(instruction)
+        self._response_in_flight = True
+        self._response_kind = kind
+        self._frame_attached_this_turn = True
+        ok = self.backend.create_response(tools=tools, instruction=instruction)
+        self._fire("gate_changed", {"open": False})
+        if not ok:
+            log.error("create_response was dropped by the backend (kind=%r)", kind)
+            self._response_in_flight = False
+            self._response_kind = None
+        return ok
+
+    # ----------------------------------------------------- the turn handlers
+
+    def _handle_response_created(self, payload: Dict[str, Any]) -> None:
+        """A response started.  Session-created responses already carry
+        their kind; a bare response.created means a lane-started turn.
+        What the frame seam does there is a LANE capability (round-3,
+        S2, ``BrainBackend.created_precedes_model_call``):
+
+        * Realtime lane (False): the server VAD started the response and
+          snapshotted its input strictly before this event reached us —
+          the turn is IMAGELESS by construction.  The seam therefore does
+          NOT run here; it fires ``frame_absent`` with the ordering
+          reason so the transcript records what actually happened.
+        * Transcript lane (True): the worker fires this created
+          immediately before its ONE chat call, so the created-to-chat
+          window exists: the seam runs inline and a fresh frame attaches
+          to the very response this created announces.  ``no_model_call``
+          createds (the lane's empty-transcript retry — no chat follows)
+          and createds fired while a query answer is being captured (L9
+          phase 2) skip the seam: nothing will see a frame, and staging
+          one would misattribute it to a later turn.
+
+        While a query answer is being captured (L9 phase 2), a VAD
+        auto-create is cancelled immediately on BOTH lanes: the human's
+        speech is the answer, not a new turn.
+        """
+        self._drop_audio = False          # a new response may play
+        if self._response_kind is None:
+            self._response_kind = "server"
+            self._response_in_flight = True
+            # fresh utterance-turn seed: session-created responses arrive
+            # with their kind set and skip this; the round budget resets
+            self._decision_rounds_this_turn = 0
+            if self.backend.created_precedes_model_call:
+                # transcript lane: a bare created precedes one chat call, so
+                # a staged frame informs it.  creates with no model call, or
+                # made while an answer is owed, are skipped silently.
+                if not (
+                    payload.get("no_model_call")
+                    or (self._query_call_id is not None and self._ask_sent)
+                ):
+                    self._prepare_frame_for_turn(None)
+            else:
+                # realtime lane: server VAD snapshotted the input before this
+                # event, so the turn is imageless.  send nothing and leave
+                # the seam armed so the continuation gets a frame.
+                self._frame_attached_this_turn = False
+                self._fire("frame_absent", {
+                    "reason": "server-VAD turn: the server created the "
+                              "response before any frame could be attached "
+                              "— this turn is imageless (not a camera "
+                              "failure)",
+                })
+        if (
+            self._query_call_id is not None
+            and self._ask_sent
+            and self._response_kind == "server"
+        ):
+            log.info(
+                "cancelling VAD auto-response while waiting for the query "
+                "answer (the transcription is the answer, not a new turn)"
+            )
+            self.backend.cancel_response()
+        self._fire("gate_changed", {"open": self.gate_open})
+
+    def _handle_response_output_item_done(self, payload: Dict[str, Any]) -> None:
+        """A response output item finished: function_call -> tool dispatch;
+        message -> text event."""
+        item = payload.get("item") or {}
+        if not isinstance(item, dict):
+            return
+        itype = item.get("type")
+        if itype == "function_call":
+            self._on_function_call(
+                name=str(item.get("name") or ""),
+                call_id=str(item.get("call_id") or ""),
+                arguments_text=str(item.get("arguments") or ""),
+            )
+        elif itype == "message":
+            for part in item.get("content") or []:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    self._fire("text", {"text": str(part.get("text") or "")})
+
