@@ -620,3 +620,24 @@ class RealtimeClient:
             )
         )
 
+    async def send_truncate(self, item_id: str, audio_end_ms: int) -> None:
+        """Rewrite an assistant item to only the audio actually heard.
+
+        NOTE: ``conversation.item.truncate`` is NOT in
+        ``_REALTIME_SEND_TYPES`` (the locked slice allowlist), so the
+        ``_emit`` choke point raises ``AssertionError``.  The method is
+        kept as a documented dead end until the orchestrator decides
+        whether truncation belongs on this lane.
+        """
+        self._require_connected()
+        await self._send_raw(
+            self._emit(
+                CONVERSATION_ITEM_TRUNCATE,
+                {
+                    "item_id": item_id,
+                    "content_index": 0,
+                    "audio_end_ms": max(0, int(audio_end_ms)),
+                },
+            )
+        )
+
