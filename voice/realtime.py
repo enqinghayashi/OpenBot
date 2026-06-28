@@ -673,3 +673,16 @@ class RealtimeClient:
                 log.debug("<- %s %s", name, redact(event))
 
 
+async def _ws_connect(endpoint: str, headers: Dict[str, str], **common: Any) -> Any:
+    """``additional_headers`` landed in websockets 13; ``extra_headers``
+    was removed in 14.  Try the new spelling, fall back to the old one.
+    The cp38 pin stays ``websockets>=12,<14`` (voice/requirements-box.txt
+    later)."""
+    try:
+        import websockets  # lazy, same reason
+    except ImportError as exc:  # pragma: no cover - connect checks first
+        raise RealtimeError("websockets is not installed: {}".format(exc))
+    try:
+        return await websockets.connect(endpoint, additional_headers=headers, **common)
+    except TypeError:
+        return await websockets.connect(endpoint, extra_headers=headers, **common)
