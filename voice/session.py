@@ -1,0 +1,258 @@
+"""session: the OpenBot v4 turn-management layer (L2, plan §3 + §4 + §5b).
+
+Sits BETWEEN the lane wire client and the app/director.  The lane client
+(voice/realtime.RealtimeClient today; the transcript/offline impls come
+later) is a dumb pipe; the app is the director (tools execution, sinks).
+This module is the LAW-ENFORCEMENT layer: the exact turn laws the plan
+pins on the session, the frame-cadence seam, the query_user two-phase
+intercept, and the per-turn cost ledger.
+
+    RealtimeClient (wire, voice/realtime.py)   -- dumb pipe, locked wire
+    BrainBackend    (this module)              -- ONE interface, both lanes
+    VoiceSession    (this module)              -- the turn laws
+    app / director  (later slice)              -- tool execution, sinks
+
+Plan §5b wants one backend interface both lanes implement: utterance in,
+events out (spoken/text), a frame per decision turn, tool results in,
+failover signal out.  :class:`BrainBackend` is that contract;
+:class:`RealtimeBackend` (the cloud lane) lives HERE as part of session;
+the offline/transcript impls come later and implement the same surface.
+
+--------------------------------------------------------------------------
+THE LAWS (each with its implementation pointer)
+--------------------------------------------------------------------------
+
+L1. HALF-DUPLEX GATE (plan §3).  While a response is in flight AND the
+    last intermediate response.done carried a tool call, the gate stays
+    SHUT — no new response.create.  Implemented as: the gate is open only
+    when no response is in flight AND no tool results are pending
+    (``_pending_call_ids`` empty).  A done with no tool calls reopens it;
+    a done with tool calls leaves it shut until the batch's outputs are
+    delivered and the ONE continuation response completes.
+    QUEUED-MIC-TURN POLICY (exactly one, documented): DROP.  A user
+    transcription that lands while the gate is shut is logged and
+    discarded (``dropped_utterance`` event) — never queued for replay:
+    replaying stale audio after a tool turn corrupts the plan, and the
+    human re-speaks or VAD re-captures on the next open turn.
+    LANE NOTE (transcript): the transcript lane owns its server turns
+    lane-side and fires NO transcription event for a normal committed
+    server turn (the L9 query-answer cancel path excepted) — the lane's
+    commit IS the admission, so this L1 branch is the realtime lane's
+    path and no false ``dropped while gate shut`` is ever logged for an
+    utterance about to be answered (2026-09-04 fix).
+
+L2. BARGE-IN (plan §3).  On server ``speech_started`` while a response is
+    in flight and BEFORE any tool results of that response: truncate the
+    assistant item + response.cancel.  NEVER truncate after tool results
+    are flowing (``_pending_call_ids`` non-empty) — the model's calls are
+    committed; cutting would orphan their outputs.  Wire note: the locked
+    slice allowlist in realtime.py does NOT contain
+    ``conversation.item.truncate`` (``send_truncate`` is a documented dead
+    end that raises AssertionError through ``_emit``), so the session
+    attempts truncate and ALWAYS sends cancel; until the orchestrator
+    allowlists truncate, the barge-in is cancel-only and logs a warning.
+
+L3. function_call_output — EXACTLY ONE per call_id (plan §3).  Client-side
+    dedup map ``_emitted_outputs``, NEVER cleared for the session's
+    lifetime: every call_id the session processes is answered — NEVER
+    zero (intercepted queries answer immediately; refused gate-shut calls
+    answer with an explicit refusal envelope).  Call ids are per-client
+    monotonic (the C1 fix: the transcript lane's client mints a fresh id
+    for every parsed call), so the wire never re-delivers one; a
+    duplicate landing in the map is a duplicate/stale DIRECTOR answer or
+    an id collision — it is answered ONCE with a logged warning, never
+    twice, never silently.
+    The query_user two-phase is the documented exception (plan §4): the
+    intercept emits the placeholder ``OK: awaiting…`` at once and the
+    answer ``DONE:<answer>`` when the human replies — two deliberate
+    emissions for one call_id, forced through the dedup map.
+
+L4. ONE response.create per batch of tool outputs (plan §3), never one
+    per output.  ``respond_tool_result`` may deliver outputs one by one
+    (the wire accepts them at any time), but the continuation response is
+    created exactly once, when the batch's last output lands.
+    The query_user continuation is the documented exception shape (plan
+    §4): a dedicated ask-turn response and then the plan-continuation
+    response, both session-created and single.  An ANSWER-tool batch
+    (ANSWER_TOOLS — the registry's notify_user, see voice/session.py
+    below) is the second documented exception: its drain CLOSES
+    the turn (the answer was the model's final words — never a
+    continuation that would re-ask it), and MAX_DECISION_ROUNDS_PER_TURN
+    caps decision continuations per utterance turn the same way.
+
+L5. MUTE / QUIET (plan §3).  While the echoed audio is queued for
+    playback (``_queued_s > 0``) OR the session mute flag is set, NO
+    silence frames are uploaded: ``upload_mic_audio`` drops the chunk.
+    The session NEVER fabricates silence — the exact bytes given are the
+    only bytes that ever reach the lane; a drop is a drop, never a padded
+    low-energy frame "to keep the buffer warm".
+
+L6. PLAYBACK QUEUE CAP (plan §3): 60 s of queued audio per response plus
+    a 0.6 s lead.  Deltas beyond the cap are dropped with a logged warning
+    (``audio_dropped``).  The lead: the first 0.6 s of a response is held
+    in ``_lead_buffer`` before any audio is released to the sink
+    (``audio`` events) so playback never starts on a model false-start.
+
+L7. 60-MIN SESSION CAP (plan §3).  The realtime client performs the clean
+    context-reset reconnect and fires ``session.expired``; the session
+    clears its turn-local state (the old conversation context is dead) and
+    surfaces the expiry as a failover signal AND a ``session_expired``
+    event — the app decides the lane switch.
+
+L8. COST LEDGER (plan §3).  Every ``response.done`` usage lands in
+    ``_cost_ledger``; ``last_cost()`` / ``cost_summary()`` serve the
+    bake-off consumer.  Usage is never assumed constant: absent usage is
+    reported as "Not reported", never guessed.
+
+L9. QUERY_USER TWO-PHASE INTERCEPT (plan §4; cross-checked against
+    brain/agent/tools.py — the registry builds make_user_tool
+    ("query_user", blocking=True) and ("notify_user", blocking=False), so
+    the query set is EXACTLY {"query_user"}; notify_user is deliberately
+    not intercepted — it stays instant non-motion through the executor).
+    Phase 1: the session answers the call_id with ``OK: awaiting…``
+    IMMEDIATELY (L3), then speaks the question through ONE response.create
+    whose instructions say "ask the human and stop" with tools disabled
+    (``tools: []`` / ``tool_choice: "none"``).  Phase 2: the gate reopens
+    and the NEXT transcription is the answer: ``DONE:<answer>`` output +
+    the human's input_text attached + ONE response.create with tools
+    enabled to continue the plan.
+
+L10. FRAME CADENCE SEAM (plan §3 hard contract).  The session owns only
+    the seam: a per-decision-turn frame hook (callable returning a fresh
+    frame envelope or None) attached once at construction (settable later
+    via :meth:`set_frame_hook` — L3 wires the gateway).  On each new
+    model decision turn the hook is called once and ``input_image`` is
+    attached ONLY when the payload is fresh and present; the session never
+    fabricates a frame.  Where the seam runs is a LANE capability
+    (round-3, S2, ``BrainBackend.created_precedes_model_call``):
+    session-initiated turns run it before every ``response.create``; the
+    TRANSCRIPT lane additionally runs it at a bare ``response.created``
+    (there the worker fires the created immediately before its ONE chat
+    call, so a frame staged at the created attaches to that chat), while
+    the REALTIME lane never runs it at a server-VAD created (the server
+    snapshotted the input before the event reached us — imageless by
+    construction).  None/stale -> the turn goes out imageless and a
+    per-turn instruction tells the model it is blind (session-initiated
+    turns only; a server-VAD turn cannot be instructed after the fact —
+    the created-time call sites drop the note and fire ``frame_absent``
+    instead).
+
+--------------------------------------------------------------------------
+CONCURRENCY MODEL (documented per plan §3)
+--------------------------------------------------------------------------
+RealtimeClient's connect/read/reconnect loop runs on the app's asyncio
+loop (the app schedules ``RealtimeBackend.run_forever()`` as a task);
+inbound events dispatch inline on the loop to the session's sync
+handlers, which only mutate session state and fire outward events (they
+never block).  Sends from the loop thread are scheduled with
+``asyncio.ensure_future``; sends from any other thread (the mic UDP pump)
+bridge with ``asyncio.run_coroutine_threadsafe`` inside RealtimeBackend.
+VoiceSession state is confined to the loop thread EXCEPT ``muted`` —
+a plain bool read by the mic path, written from the loop thread — the
+single documented cross-thread read.
+
+Module-level import surface is stdlib-only (abc/asyncio/base64/inspect/
+json/logging/time/typing) plus one sibling wire constant from
+voice/realtime.py (CONVERSATION_ITEM_TRUNCATE, used to pre-validate the
+truncate dead end), matching the established voice/ sibling pattern
+(voice/__init__.py): third-party dependencies load lazily inside
+methods, so importing this module succeeds dep-free on any laptop.
+"""
+
+from __future__ import annotations
+
+import abc
+import asyncio
+import base64
+import inspect
+import json
+import logging
+import time
+from typing import Any, Callable, Dict, List, Optional
+
+from voice.realtime import CONVERSATION_ITEM_TRUNCATE
+
+log = logging.getLogger("voice.session")
+
+# -------------------------------------------------------- the fixed numbers
+
+#: wire audio: 24 kHz PCM16 mono
+AUDIO_SAMPLE_RATE = 24000
+#: hold the first 0.6 s of a response before the sink hears anything, so
+#: playback never starts on a false start
+PLAYBACK_LEAD_S = 0.6
+#: cap on queued audio per response, in seconds
+PLAYBACK_QUEUE_CAP_S = 60.0
+
+#: tools intercepted at the session: only query_user blocks for a human
+#: answer, so it is the only one intercepted; notify_user does not block
+QUERY_TOOLS = frozenset({"query_user"})
+
+#: the answer tool, notify_user: non-blocking, its message is the model's
+#: closing notice spoken by the executor (no separate say tool exists).
+#: a drained batch holding one closes the turn instead of re-asking.
+ANSWER_TOOLS = frozenset({"notify_user"})
+
+#: decision continuations allowed per utterance turn.  each drain creates
+#: at most one, but answering every round with a non-answer tool call would
+#: chain without bound; at the cap the turn closes.
+MAX_DECISION_ROUNDS_PER_TURN = 8
+
+#: phase 1 placeholder.  the "OK:" prefix reads as neutral in the
+#: executor's budget classifier: the tool ran, no world-goal claim.
+QUERY_OK_PLACEHOLDER = "OK: awaiting…"
+#: phase 2 prefix for the human's answer
+ANSWER_PREFIX = "DONE:"
+
+#: per-turn note when the frame hook yields no fresh frame
+NO_FRAME_INSTRUCTION = (
+    "NO fresh camera frame is available for this turn. Do NOT describe the "
+    "scene; proceed from the conversation alone."
+)
+
+#: ask-turn instruction: speak the question once, with tools off
+ASK_INSTRUCTION_TEMPLATE = (
+    "Ask the human operator the following question OUT LOUD, then STOP. "
+    "Do NOT call any tools. Question: {question}"
+)
+
+#: refusal for a call that arrived with the gate shut (a server
+#: auto-create raced a mid-batch turn): answered once, never executed and
+#: never truncated
+GATE_SHUT_REFUSAL_TEMPLATE = (
+    "ERROR: {name} not executed — the session was mid-turn with pending "
+    "tool results (half-duplex gate shut). Repeat the request when the "
+    "turn completes."
+)
+
+#: events the session fires, payloads per handler
+SESSION_EVENTS = frozenset((
+    "tool_call", "tool_refused", "user_text", "dropped_utterance",
+    "spoken", "text", "audio", "audio_dropped", "playback_started",
+    "playback_finished", "speech_started", "barge_in", "answer",
+    "query_waiting", "frame_attached", "frame_absent", "turn_complete",
+    "gate_changed", "failover", "session_expired", "started", "closed",
+))
+
+#: wire events the session subscribes to; beta and GA spellings of the
+#: transcript events are both listed so either wire name is routed
+BACKEND_EVENTS = (
+    "response.created",
+    "response.output_item.done",
+    "response.function_call_arguments.done",
+    "response.done",
+    "response.output_audio.delta",
+    "response.output_audio.done",
+    "response.audio_transcript.delta",
+    "response.audio_transcript.done",
+    "response.output_audio_transcript.delta",
+    "response.output_audio_transcript.done",
+    "conversation.item.input_audio_transcription.completed",
+    "input_audio_buffer.speech_started",
+    "error",
+    "session.expired",
+)
+
+# -------------------------------------------- BrainBackend (the shared API)
+
+
