@@ -1146,3 +1146,141 @@ class VoiceSession:
         })
         self._fire("gate_changed", {"open": self.gate_open})
 
+    def _start_ask_turn(self) -> None:
+        """L9 phase 1 (the speak step): ONE response.create whose
+        instructions say "ask the human and stop", with tools disabled."""
+        question = self._query_question or "(no question text)"
+        instruction = ASK_INSTRUCTION_TEMPLATE.format(question=question)
+        ok = self._create_response(tools=False, instruction=instruction, kind="ask")
+        if not ok:
+            # the question could not be spoken (a lane with no live loop);
+            # the answer is captured when it arrives
+            log.error(
+                "ask-turn response.create failed — the question could not "
+                "be spoken; still awaiting the answer"
+            )
+            self._ask_sent = True
+            self._fire("query_waiting", {"call_id": self._query_call_id})
+
+    def _complete_query(self, answer_text: str) -> None:
+        """L9 phase 2: the next transcription is the answer.
+
+        Delivers ``DONE:<answer>`` (the documented SECOND emission for
+        this call_id — the placeholder closed the model's wait, this
+        delivers the answer), attaches the human's input_text, and creates
+        ONE response.create with tools enabled to continue the plan.
+        """
+        call_id = self._query_call_id
+        self._query_call_id = None
+        self._ask_sent = False
+        self._query_question = ""
+        self._send_function_call_output(call_id, ANSWER_PREFIX + answer_text, force=True)
+        self.backend.send_user_text(answer_text)  # attach what the human said
+        self._fire("answer", {"call_id": call_id, "text": answer_text})
+        self._create_response(tools=True, instruction=None, kind="decision")
+
+    def _handle_response_done(self, payload: Dict[str, Any]) -> None:
+        """End-of-response accounting (L1/L4/L8/L9).
+
+        Records the usage ledger entry, releases the trailing lead-buffered
+        audio, clears any queue still booked from this response's stream
+        (L5 mute-leak guard: a cancelled/errored response never reaches
+        output_audio.done, whose handler owns the normal queue reset), and
+        decides the next move: an ask-response done opens the answer
+        capture; a done with the intercepted query's call and no pending
+        batch starts the ask-turn; a done with a pending batch leaves the
+        gate shut until the director's outputs land.
+        """
+        response = payload.get("response") or {}
+        status = str(response.get("status") or "unknown")
+        usage = response.get("usage")
+        self._cost_ledger.append({
+            "ts": time.monotonic(), "status": status, "usage": usage,
+        })
+        kind = self._response_kind or "server"
+        self._response_in_flight = False
+        self._response_kind = None
+        self._turn_call_ids.clear()
+        self._frame_attached_this_turn = False
+        self._continuation_created = False
+        self._flush_lead()
+        self._drop_audio = False          # the dropped response has ended
+        if self._queued_s > 0:
+            # mute-leak guard: a cancelled or errored response never reaches
+            # output_audio.done, whose handler owns the queue reset, so the
+            # queue stays booked, ``muted`` sticks, and mic audio is dropped
+            self._queued_s = 0.0
+            self._fire("playback_finished", {})
+        if kind == "ask":
+            # the ask response finished: the question is out (a barge-in
+            # may cut it; the wait survives); the next transcription is the answer
+            self._ask_sent = True
+            self._fire("query_waiting", {"call_id": self._query_call_id})
+        elif (
+            self._query_call_id is not None
+            and not self._ask_sent
+            and not self._pending_call_ids
+        ):
+            # the intercepted query's response settled with the batch
+            # drained, so the ask waited for its own done
+            self._start_ask_turn()
+        if self._pending_call_ids:
+            # the done left a batch open: until it drains, a call belongs to
+            # a different response (a server auto-create raced the turn), so
+            # refuse it.  calls during this response already joined the batch.
+            self._tools_flowing_after_done = True
+        if not self._pending_call_ids:
+            self._fire("turn_complete", {"usage": usage, "status": status})
+        self._fire("gate_changed", {"open": self.gate_open})
+
+    def _handle_conversation_item_input_audio_transcription_completed(
+        self, payload: Dict[str, Any]
+    ) -> None:
+        """A user utterance transcription (L1/L9).
+
+        While a query answer is being captured it IS the answer (L9 phase
+        2).  Otherwise: gate open -> forwarded as ``user_text`` (the server
+        VAD owns the response start); gate shut -> DROPPED per the
+        documented one-policy (L1) — logged, never queued for replay.
+        Lane note: on the TRANSCRIPT lane this event is fired only for
+        the L9 query-answer case — a normal committed server turn fires
+        none (the lane's commit is the admission); this branch is the
+        realtime lane's path.
+        """
+        transcript = (str(payload.get("transcript") or "")).strip()
+        if not transcript:
+            return
+        if self._query_call_id is not None and self._ask_sent:
+            self._complete_query(transcript)
+            return
+        if not self.gate_open:
+            self._fire("dropped_utterance", {
+                "text": transcript,
+                "reason": "half-duplex gate shut (response in flight or "
+                          "tool results pending) — DROP policy (L1)",
+            })
+            log.info("dropped utterance while gate shut: %r", transcript)
+            return
+        # log the user's words: without this a tool call has no visible
+        # request behind it
+        log.info("user said: %r", transcript)
+        self._fire("user_text", {"text": transcript})
+
+    def _handle_input_audio_buffer_speech_started(self, payload: Dict[str, Any]) -> None:
+        """Barge-in signal (L2): truncate + cancel only before tool
+        results are flowing; NEVER after."""
+        item_id = str(payload.get("item_id") or "")
+        audio_start_ms = int(payload.get("audio_start_ms") or 0)
+        self._fire("speech_started", {
+            "item_id": item_id, "audio_start_ms": audio_start_ms,
+        })
+        if not self._response_in_flight:
+            return  # nothing to cut; VAD auto-creates
+        if self._pending_call_ids:
+            log.info(
+                "barge-in speech ignored: tool results are flowing — NEVER "
+                "truncate after tool results (L2)"
+            )
+            return
+        self._barge_in(item_id, audio_start_ms)
+
