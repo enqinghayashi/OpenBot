@@ -651,3 +651,10 @@ class RealtimeClient:
         self._require_connected()
         await self._send_raw(self._emit(RESPONSE_CREATE, {"response": {}}))
 
+    async def cancel_response(self) -> None:
+        """Cancel the in-flight response (a barge-in)."""
+        self._require_connected()
+        await self._send_raw(self._emit(RESPONSE_CANCEL, {}))
+
+    # --------------------------------------------------- the receive side
+
