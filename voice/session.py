@@ -303,3 +303,9 @@ class BrainBackend(abc.ABC):
     def close(self) -> None:
         """Tear the lane down."""
 
+    @abc.abstractmethod
+    def on_event(self, name: str, callback: Callable[[str, dict], Any]) -> None:
+        """Subscribe to lane events; callbacks are ``(name, payload)``."""
+
+    # --------------------------------------------- utterance, frame, results
+
