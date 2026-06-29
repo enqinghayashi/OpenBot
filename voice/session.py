@@ -325,3 +325,11 @@ class BrainBackend(abc.ABC):
     def send_user_frame(self, jpeg_b64: str) -> bool:
         """Attach one JPEG (already base64) as a user image part (L10)."""
 
+    @abc.abstractmethod
+    def send_tool_result(self, call_id: str, output_text: str) -> bool:
+        """Answer one function call (function_call_output item).  The model
+        does nothing until a create_response follows — the session owns
+        that second step (L4)."""
+
+    # --------------------------------------------------- driving the response
+
