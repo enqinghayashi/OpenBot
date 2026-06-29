@@ -309,3 +309,11 @@ class BrainBackend(abc.ABC):
 
     # --------------------------------------------- utterance, frame, results
 
+    def submit_mic_audio(self, chunk: bytes) -> bool:
+        """PCM16/24k mono chunk -> the lane (realtime lane only).
+
+        The transcript/offline lanes have no live mic: the default drops
+        (returns False).  The session's mute law (L5) sits ABOVE this.
+        """
+        return False
+
