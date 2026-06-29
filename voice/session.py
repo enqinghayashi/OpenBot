@@ -407,3 +407,24 @@ class RealtimeBackend(BrainBackend):
 
     # ------------------------------------------------- bridging onto the app's loop
 
+    def _bridge(self, coro: Any) -> bool:
+        """Schedule ``coro`` on the app loop; True when accepted."""
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            log.error(
+                "realtime backend send dropped: no live asyncio loop "
+                "(call start() on the loop and schedule run_forever())"
+            )
+            return False
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            asyncio.ensure_future(coro)
+        else:
+            asyncio.run_coroutine_threadsafe(coro, loop)
+        return True
+
+    # -------------------------------------------------------- the send calls
+
