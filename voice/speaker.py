@@ -451,3 +451,87 @@ class G1Speaker:
         with self._lock:
             self._speaking = value
 
+    def _drain_queue(self) -> int:
+        dropped = 0
+        while True:
+            try:
+                self._queue.get_nowait()
+                dropped += 1
+            except queue.Empty:
+                return dropped
+
+    # ------------------------------------------------- volume / led (safe)
+
+    def get_volume(self) -> int:
+        """Current speaker volume, 0-100 (``(code, data)`` shape)."""
+        client = self._require()
+        with self._lock:
+            code, data = client.GetVolume()
+        if code != 0:
+            raise SpeakerError("GetVolume failed: {}".format(describe_code(code)))
+        if not isinstance(data, dict) or "volume" not in data:
+            raise SpeakerError("GetVolume returned unexpected payload: {!r}".format(data))
+        try:
+            return int(data["volume"])
+        except (TypeError, ValueError) as exc:
+            # code-0 with a non-integer volume leaked
+            # a raw TypeError; docstring promises only
+            # SpeakerError
+            raise SpeakerError(
+                "GetVolume returned non-integer volume: {!r}".format(data["volume"])
+            ) from exc
+
+    def set_volume(self, volume: int) -> None:
+        """Set speaker volume, 0-100 (bare-``int`` shape)."""
+        if not 0 <= volume <= 100:
+            raise ValueError("volume must be 0-100, got {}".format(volume))
+        client = self._require()
+        with self._lock:
+            code = client.SetVolume(volume)  # bare int, so do NOT unpack it
+        if code != 0:
+            raise SpeakerError(
+                "SetVolume({}) failed: {}".format(volume, describe_code(code))
+            )
+
+    def _ensure_volume(self) -> None:
+        """Boot gate: pin the speaker to ``G1_VOLUME`` and prove it.
+
+        Set then read back on EVERY G1Speaker boot (one construction
+        site per process, so this covers the whole architecture).  A
+        SetVolume RPC failure raises via ``set_volume``; a successful
+        write that does NOT stick (body-side clamp, board state) is a
+        hard ``SpeakerError`` — never a warning, because a quiet robot
+        is a silently broken robot.  This gate exists because a B2
+        probe set volume 20 for a sine test and the robot stayed quiet;
+        after this change, any boot re-pins 100.
+        """
+        self.set_volume(G1_VOLUME)
+        actual = self.get_volume()
+        if actual != G1_VOLUME:
+            raise SpeakerError(
+                "volume gate failed: SetVolume({}) but read back {} "
+                "- volume is pinned to {} (user directive)".format(
+                    G1_VOLUME, actual, G1_VOLUME
+                )
+            )
+
+    def set_led(self, red: int, green: int, blue: int) -> None:
+        """Head LED, 0-255 each.  Failures are logged, never raised."""
+        client = self._client
+        if client is None:
+            return
+        try:
+            with self._lock:
+                code = client.LedControl(  # bare int, so do NOT unpack it
+                    max(0, min(255, int(red))),
+                    max(0, min(255, int(green))),
+                    max(0, min(255, int(blue))),
+                )
+        except Exception as exc:  # noqa: BLE001 - a light isn't worth a
+            log.debug("LedControl raised: %s", exc)  # whole conversation
+            return
+        if code != 0:
+            log.debug("LedControl failed: %s", describe_code(code))
+
+    # ------------------------------------------------------------ internals
+
