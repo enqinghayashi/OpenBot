@@ -353,3 +353,12 @@ class BrainBackend(abc.ABC):
     def cancel_response(self) -> bool:
         """Cancel the in-flight response (barge-in, L2)."""
 
+    @abc.abstractmethod
+    def truncate_response(self, item_id: str, audio_end_ms: int) -> bool:
+        """Rewrite an assistant item to only the audio actually heard (L2).
+
+        The realtime lane's ``conversation.item.truncate`` is a documented
+        dead end while the locked slice allowlist excludes it
+        (voice/realtime.py ``send_truncate``): the backend then returns
+        False with a logged warning and the barge-in proceeds cancel-only.
+        """
