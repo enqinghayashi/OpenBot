@@ -393,3 +393,7 @@ class RealtimeBackend(BrainBackend):
             self._loop = None
         log.debug("realtime backend started (loop=%s)", self._loop is not None)
 
+    async def run_forever(self) -> None:
+        """Drive the client's connect/read/reconnect loop (app task)."""
+        return await self._client.run_forever()
+
