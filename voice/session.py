@@ -256,3 +256,42 @@ BACKEND_EVENTS = (
 # -------------------------------------------- BrainBackend (the shared API)
 
 
+class BrainBackend(abc.ABC):
+    """One interface BOTH lanes implement (plan §5b): utterance in, events
+    out (spoken/text), a frame per decision turn, tool results in, failover
+    signal out.
+
+    The VoiceSession drives EVERY law through this contract and never
+    touches a lane client directly — the transcript/offline impls later
+    implement the same surface.  Events flow lane -> session via
+    :meth:`on_event` (same ``(name, payload)`` callback shape as the
+    realtime client); everything else flows session -> lane.
+
+    Failover: the lane signals its own fatal conditions (auth failure,
+    retry exhaustion, the 60-min session-cap reconnect) as the wire events
+    ``error`` / ``session.expired``; the session turns those into the
+    ``failover`` signal.
+
+    Concurrency: each backend brings its own threading model and documents
+    it; the session calls backend methods from ANY thread (the mic pump)
+    and expects them to be safe.  Send methods return True when the call
+    was accepted for delivery, False when it was dropped (loudly logged —
+    never silently).
+
+    Lane capability (round-3, S2): ``created_precedes_model_call`` —
+    True when, on THIS lane, a bare ``response.created`` (no input item
+    yet attached) is ALWAYS followed by a session-owned model call whose
+    chat payload is built AFTER the created was handled.  The transcript
+    lane qualifies (the worker fires created, then chats); the realtime
+    lane does NOT (created precedes nothing — the session never creates
+    a response there, and a server-VAD created can be followed by a
+    user item the session does not stage for).  The session uses the
+    flag to run the L10 frame seam at a bare created on the qualifying
+    lane only — see ``_handle_response_created``.
+    """
+
+    # lane capability: a bare created is followed by a session-owned model call
+    created_precedes_model_call = False
+
+    # --------------------------------------------------- start up / shut down
+
