@@ -594,3 +594,29 @@ class SounddeviceSink:
             self._stream = None
             raise SpeakerError("cannot open sounddevice output: {}".format(exc))
 
+    def play(self, pcm16: bytes) -> None:
+        if not pcm16:
+            return
+        self._open()
+        stream = self._stream
+        if stream is None:  # pragma: no cover - _open() raised already
+            return
+        stream.write(pcm16)
+
+    def stop(self) -> None:
+        """No-op on the laptop: playback is synchronous and already done."""
+
+    def close(self) -> None:
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:  # noqa: BLE001 - shutdown must not raise
+                pass
+
+    def __enter__(self) -> "SounddeviceSink":
+        return self
+
+    def __exit__(self, *exc) -> None:  # noqa: ANN002 - protocol stub
+        self.close()
