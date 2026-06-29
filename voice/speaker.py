@@ -535,3 +535,62 @@ class G1Speaker:
 
     # ------------------------------------------------------------ internals
 
+    def _require(self) -> Any:
+        client = self._client
+        if client is None:
+            raise SpeakerError("G1 audio client is not connected")
+        return client
+
+    def close(self) -> None:
+        """Best-effort teardown; never raises.  Stops the queue first."""
+        self.stop()  # kills queued audio, then PlayStop
+        self._queue.put(_STOP)
+        worker, self._worker = self._worker, None
+        if worker is not None:
+            worker.join(5.0)
+        client, self._client = self._client, None
+        if client is None:
+            return
+        try:
+            with self._lock:
+                client.PlayStop(self.app_name)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("PlayStop during close raised: %s", exc)
+
+
+class SounddeviceSink:
+    """Laptop speaker via sounddevice (lazy import; same 16 kHz sink format
+    as the G1 on purpose, so half-duplex timing tuned on a laptop transfers
+    to the robot unchanged - OpenBot protocol reference)."""
+
+    def __init__(
+        self,
+        sample_rate: int = G1_SAMPLE_RATE,
+        channels: int = G1_CHANNELS,
+        dtype: str = "int16",
+    ) -> None:
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.dtype = dtype
+        self._stream = None  # type: Optional[Any]
+        self._device = None  # type: Optional[Any]
+
+    def _open(self) -> None:
+        if self._stream is not None:
+            return
+        try:
+            import sounddevice as sd  # lazy: laptop-only dep
+        except ImportError as exc:  # pragma: no cover - env dependent
+            raise SpeakerError("sounddevice is not installed: {}".format(exc))
+        try:
+            self._stream = sd.RawOutputStream(
+                samplerate=self.sample_rate,
+                channels=self.channels,
+                dtype=self.dtype,
+            )
+            self._stream.start()
+            self._device = sd
+        except Exception as exc:  # noqa: BLE001 - surface whatever the device throws
+            self._stream = None
+            raise SpeakerError("cannot open sounddevice output: {}".format(exc))
+
