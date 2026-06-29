@@ -402,3 +402,8 @@ class RealtimeBackend(BrainBackend):
             return self._bridge(self._client.close())
         return True
 
+    def on_event(self, name: str, callback: Callable[[str, dict], Any]) -> None:
+        self._client.on_event(name, callback)
+
+    # ------------------------------------------------- bridging onto the app's loop
+
