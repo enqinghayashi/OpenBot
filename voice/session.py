@@ -321,3 +321,7 @@ class BrainBackend(abc.ABC):
     def send_user_text(self, text: str) -> bool:
         """Inject a text user turn (the query answer attachment, L9)."""
 
+    @abc.abstractmethod
+    def send_user_frame(self, jpeg_b64: str) -> bool:
+        """Attach one JPEG (already base64) as a user image part (L10)."""
+
