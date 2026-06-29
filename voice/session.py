@@ -317,3 +317,7 @@ class BrainBackend(abc.ABC):
         """
         return False
 
+    @abc.abstractmethod
+    def send_user_text(self, text: str) -> bool:
+        """Inject a text user turn (the query answer attachment, L9)."""
+
