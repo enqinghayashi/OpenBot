@@ -620,3 +620,19 @@ class SounddeviceSink:
 
     def __exit__(self, *exc) -> None:  # noqa: ANN002 - protocol stub
         self.close()
+
+
+class MockSink:
+    """Records everything it is asked to play (for tests)."""
+
+    def __init__(self) -> None:
+        self.played = []  # type: List[bytes]
+        self.stopped = 0
+
+    def play(self, pcm16: bytes) -> None:
+        if pcm16:
+            self.played.append(pcm16)
+
+    def stop(self) -> None:
+        self.stopped += 1
+
