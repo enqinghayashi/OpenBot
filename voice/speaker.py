@@ -321,3 +321,133 @@ class G1Speaker:
         with self._lock:
             return self._speaking or self._monotonic() < self._play_until
 
+    def wait_until_drained(self, timeout: Optional[float] = None) -> bool:
+        """Block until the queued audio has finished sounding.  ``False``
+        on timeout.  Test/teardown seam; the live app never calls it."""
+        return self._drained.wait(timeout)
+
+    # ------------------------------------------------------ playback worker
+
+    def _worker_main(self) -> None:
+        """One thread for ALL PlayStream calls (FR-8, module docstring)."""
+        buffer = bytearray()
+        buffer_generation = self._generation
+        while True:
+            try:
+                item = self._queue.get(timeout=PLAYBACK_POLL_S)
+            except queue.Empty:
+                if self._generation != buffer_generation:
+                    buffer.clear()  # got cancelled while we held audio
+                    buffer_generation = self._generation
+                if buffer:
+                    # idle-flush: a reply's last <200 ms
+                    # must not wait for the next enqueue,
+                    # or every answer loses its last word
+                    # same stream id: device concatenates
+                    if self._generation == buffer_generation:
+                        if not self._emit(bytes(buffer), buffer_generation):
+                            return  # fair enough - the wire died
+                    buffer = bytearray()
+                # done-when-quiet decay runs on the
+                # real clock (time.monotonic, same as the
+                # injected test clock); pacing leads stay
+                # on self._monotonic
+                with self._lock:
+                    empty = self._queued_bytes == 0
+                    still = time.monotonic() < self._play_until
+                if empty and not still:
+                    self._speaking = False
+                    self._drained.set()
+                continue
+            if item is _STOP:
+                break
+            generation, item = item
+            if generation != self._generation:
+                continue  # a stop() already superseded this
+            if generation != buffer_generation:
+                buffer = bytearray()
+                buffer_generation = generation
+            with self._lock:
+                self._queued_bytes = max(0, self._queued_bytes - len(item))
+            buffer += item
+            while len(buffer) >= self.chunk_bytes:
+                if self._generation != generation:
+                    buffer.clear()
+                    buffer_generation = self._generation
+                    break
+                chunk = bytes(buffer[: self.chunk_bytes])
+                del buffer[: self.chunk_bytes]
+                if not self._emit(chunk, generation):
+                    return  # wire failed, worker ends
+
+    def _emit(self, chunk: bytes, generation: int) -> bool:
+        """Pace, then hand ONE chunk to the speaker.  ``False`` = stop."""
+        now = self._monotonic()
+        with self._lock:
+            if generation != self._generation or self._fatal is not None:
+                return True  # superseded or fatal: drop it
+            if self._stream_started == 0.0:
+                # first chunk isn't audible until the
+                # buffer fills; clock starts one latency late
+                self._stream_started = now
+                self._play_until = now + self.sink_latency_s
+            elif self._play_until < now:
+                # starved after an idle gap: give it the
+                # same buffer latency, or the pace clock
+                # runs ahead and the echo guard opens the
+                # mic early
+                self._play_until = now + self.sink_latency_s
+            lead = self._play_until - now
+            stream_id = self._stream_id or "{:d}".format(int(time.time() * 1000))
+            self._stream_id = stream_id
+        if lead > self.max_lead_s:
+            self._sleep(lead - self.max_lead_s)
+            with self._lock:
+                if generation != self._generation or self._fatal is not None:
+                    return True  # stop() landed during the sleep
+        self._set_speaking(True)
+        self._drained.clear()
+        client = self._require()
+        try:
+            with self._lock:
+                # last-instant re-check: stop() can land
+                # while this chunk waits; a cancelled burst
+                # never plays
+                if generation != self._generation or self._fatal is not None:
+                    return True
+                result = client.PlayStream(self.app_name, stream_id, chunk)
+        except Exception as exc:  # noqa: BLE001 - a wire failure is fatal
+            self._fatalize(
+                "PlayStream raised {}: {}".format(type(exc).__name__, exc)
+            )
+            return False
+        code = _unpack_play(result)
+        if code != 0:
+            self._fatalize(
+                "PlayStream failed: {}".format(describe_code(code))
+            )
+            return False
+        duration_s = len(chunk) / float(self._bytes_per_second)
+        with self._lock:
+            self._play_until += duration_s
+            self._stream_bytes += len(chunk)
+        return True
+
+    def _fatalize(self, message: str) -> None:
+        """The wire failed mid-playback.
+
+        Records the failure (every later ``play`` raises it, so the app
+        sets its error flag within one delta) and ends the worker's
+        playing.  Never a warning: a dead speaker is a silent robot.
+        """
+        log.error("playback is unrecoverable: %s", message)
+        with self._lock:
+            if self._fatal is None:
+                self._fatal = SpeakerError(message)
+        self._speaking = False
+        self._drained.set()
+
+    def _set_speaking(self, value: bool) -> None:
+        with self._lock:
+            self._speaking = value
+
