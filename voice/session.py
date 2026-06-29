@@ -386,3 +386,10 @@ class RealtimeBackend(BrainBackend):
 
     # --------------------------------------------------- start up / shut down
 
+    def start(self) -> None:
+        try:
+            self._loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._loop = None
+        log.debug("realtime backend started (loop=%s)", self._loop is not None)
+
