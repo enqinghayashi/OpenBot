@@ -333,3 +333,19 @@ class BrainBackend(abc.ABC):
 
     # --------------------------------------------------- driving the response
 
+    @abc.abstractmethod
+    def create_response(
+        self, *, tools: bool = True, instruction: Optional[str] = None
+    ) -> bool:
+        """Ask for ONE response.
+
+        ``tools`` False disables the model's tools for this response
+        (``tools: []`` / ``tool_choice: "none"`` override); ``instruction``
+        is a per-response instruction override.  The realtime lane sends a
+        plain ``response.create`` when both take their defaults and a
+        response-level override otherwise (the locked slice's
+        ``RealtimeClient.create_response`` supports neither — the override
+        event is built through the client's own ``_emit`` choke point so
+        the allowlist enforcement stays intact).
+        """
+
