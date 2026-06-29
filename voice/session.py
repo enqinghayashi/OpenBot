@@ -380,3 +380,9 @@ class RealtimeBackend(BrainBackend):
     captured loop is dropped with a logged error — loud, never silent.
     """
 
+    def __init__(self, client: Any) -> None:
+        self._client = client
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+
+    # --------------------------------------------------- start up / shut down
+
