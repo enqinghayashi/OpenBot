@@ -428,3 +428,6 @@ class RealtimeBackend(BrainBackend):
 
     # -------------------------------------------------------- the send calls
 
+    def submit_mic_audio(self, chunk: bytes) -> bool:
+        return self._bridge(self._client.send_audio(bytes(chunk)))
+
