@@ -397,3 +397,8 @@ class RealtimeBackend(BrainBackend):
         """Drive the client's connect/read/reconnect loop (app task)."""
         return await self._client.run_forever()
 
+    def close(self) -> bool:
+        if self._client is not None:
+            return self._bridge(self._client.close())
+        return True
+
