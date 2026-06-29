@@ -636,3 +636,18 @@ class MockSink:
     def stop(self) -> None:
         self.stopped += 1
 
+    def close(self) -> None:
+        pass
+
+    @property
+    def total_bytes(self) -> int:
+        return sum(len(p) for p in self.played)
+
+
+def _unpack_play(result: Any) -> int:
+    """``PlayStream`` returns ``(code, data)``; be strict about it."""
+    if isinstance(result, tuple):
+        return int(result[0])
+    if isinstance(result, int):
+        return result  # a future SDK might hand back a bare int
+    raise SpeakerError("PlayStream returned unexpected {!r}".format(result))
