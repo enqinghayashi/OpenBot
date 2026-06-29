@@ -367,3 +367,16 @@ class BrainBackend(abc.ABC):
 # ------------------------------------------ RealtimeBackend (the cloud lane)
 
 
+class RealtimeBackend(BrainBackend):
+    """The cloud lane's BrainBackend: wraps a
+    voice.realtime.RealtimeClient.
+
+    All sends bridge onto the client's asyncio loop: from the loop thread
+    they are scheduled with ``asyncio.ensure_future``; from any other
+    thread (the mic UDP pump) with ``asyncio.run_coroutine_threadsafe``.
+    The app MUST schedule :meth:`run_forever` as a task on the loop (it
+    drives the client's connect/read/reconnect loop) and call :meth:`start`
+    from the loop thread before events must flow.  A send made with no
+    captured loop is dropped with a logged error — loud, never silent.
+    """
+
