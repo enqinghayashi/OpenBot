@@ -349,3 +349,7 @@ class BrainBackend(abc.ABC):
         the allowlist enforcement stays intact).
         """
 
+    @abc.abstractmethod
+    def cancel_response(self) -> bool:
+        """Cancel the in-flight response (barge-in, L2)."""
+
