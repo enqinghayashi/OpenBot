@@ -362,3 +362,8 @@ class BrainBackend(abc.ABC):
         (voice/realtime.py ``send_truncate``): the backend then returns
         False with a logged warning and the barge-in proceeds cancel-only.
         """
+
+
+# ------------------------------------------ RealtimeBackend (the cloud lane)
+
+
