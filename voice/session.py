@@ -299,3 +299,7 @@ class BrainBackend(abc.ABC):
     def start(self) -> None:
         """Bring the lane up (wire handlers; capture the app loop)."""
 
+    @abc.abstractmethod
+    def close(self) -> None:
+        """Tear the lane down."""
+
