@@ -691,3 +691,9 @@ class VoiceSession:
 
     # ------------------------------------------------------ gate, mic and mute
 
+    @property
+    def gate_open(self) -> bool:
+        """The half-duplex gate (L1): open only when no response is in
+        flight AND no tool results are pending."""
+        return (not self._response_in_flight) and (not self._pending_call_ids)
+
