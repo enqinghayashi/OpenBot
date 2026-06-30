@@ -922,3 +922,34 @@ class VoiceSession:
 
     # ---------------------------------------------------- creating a response
 
+    def _create_response(
+        self,
+        *,
+        tools: bool,
+        instruction: Optional[str],
+        kind: str,
+    ) -> bool:
+        """The ONE place the session asks for a response (L1/L4/L9/L10).
+
+        ``kind`` labels the turn for the done-accounting: "decision"
+        (tools-enabled plan turns), "ask" (the query question, L9), and
+        "server" (VAD auto-creates — never created here).  Decision turns
+        run the frame seam first; ask turns never carry a frame.
+        """
+        if self._closed:
+            return False
+        if kind == "decision":
+            instruction = self._prepare_frame_for_turn(instruction)
+        self._response_in_flight = True
+        self._response_kind = kind
+        self._frame_attached_this_turn = True
+        ok = self.backend.create_response(tools=tools, instruction=instruction)
+        self._fire("gate_changed", {"open": False})
+        if not ok:
+            log.error("create_response was dropped by the backend (kind=%r)", kind)
+            self._response_in_flight = False
+            self._response_kind = None
+        return ok
+
+    # ----------------------------------------------------- the turn handlers
+
