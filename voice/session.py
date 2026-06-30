@@ -536,3 +536,7 @@ class RealtimeBackend(BrainBackend):
                 "conversation.item.truncate unavailable (%s); barge-in "
                 "proceeds with response.cancel alone", exc
             )
+
+# ----------------------------------------------- VoiceSession (the turn laws)
+
+
