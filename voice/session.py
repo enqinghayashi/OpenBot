@@ -856,3 +856,69 @@ class VoiceSession:
         the gateway capture here — the seam stays pluggable)."""
         self._frame_hook = hook
 
+    def _prepare_frame_for_turn(self, instruction: Optional[str]) -> Optional[str]:
+        """L10: one frame-hook call per decision turn.
+
+        Attaches ``input_image`` ONLY when the envelope is fresh and
+        present (never fabricated); otherwise returns ``instruction`` with
+        the NO_FRAME note appended so the model is told it is blind.
+
+        Called from the places whose ordering lets the frame actually
+        inform the answer (round-3, S2):
+
+        * ``_create_response(kind="decision")`` — BEFORE ``response.create``
+          goes out (every lane);
+        * a bare ``response.created`` on a lane whose
+          ``created_precedes_model_call`` is True (the transcript lane):
+          there the worker fires the created immediately before its ONE
+          chat call, so a frame staged at the created attaches to that
+          chat (see _handle_response_created).
+
+        It is NOT called for realtime server-VAD turns (that lane's
+        capability is False): by the time ``response.created`` arrives the
+        input is already snapshotted, so a send there would return True
+        and fire "frame_attached" for a turn the model answers blind.
+        For the same reason the NO_FRAME note is only meaningful before
+        creation — a response already created cannot be instructed after
+        the fact, so the note's return value is dropped at the
+        created-time call sites (there is no instruction channel on those
+        turns).
+        """
+        if self._frame_attached_this_turn:
+            return instruction
+        self._frame_attached_this_turn = True
+        envelope = None
+        if self._frame_hook is not None:
+            try:
+                envelope = self._frame_hook()
+            except Exception:  # noqa: BLE001 - one hook hiccup must not kill
+                log.exception("frame hook raised")
+                envelope = None
+        if (
+            isinstance(envelope, dict)
+            and envelope.get("fresh") is True
+            and envelope.get("jpeg_b64")
+        ):
+            jpeg = str(envelope["jpeg_b64"])
+            if self.backend.send_user_frame(jpeg):
+                self._fire("frame_attached", {"bytes": len(jpeg)})
+                return instruction
+            # the lane refused the send (no live loop, dropped bridge):
+            # claim nothing; the turn is imageless and frame_absent says so
+            self._fire("frame_absent", {
+                "reason": "frame send refused by the backend (not attached)",
+            })
+            note = NO_FRAME_INSTRUCTION
+            return (instruction + " " + note) if instruction else note
+        if envelope is None:
+            reason = "no frame source (hook returned None)"
+        elif isinstance(envelope, dict) and envelope.get("fresh") is False:
+            reason = "stale frame (fresh=False)"
+        else:
+            reason = "invalid frame envelope"
+        self._fire("frame_absent", {"reason": reason})
+        note = NO_FRAME_INSTRUCTION
+        return (instruction + " " + note) if instruction else note
+
+    # ---------------------------------------------------- creating a response
+
