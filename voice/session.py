@@ -825,3 +825,29 @@ class VoiceSession:
         self._fire("turn_complete", {"usage": usage, "status": status})
         self._fire("gate_changed", {"open": self.gate_open})
 
+    def _send_function_call_output(
+        self, call_id: str, output_text: str, *, force: bool = False
+    ) -> bool:
+        """L3: the single emission choke for function_call_output.
+
+        A call_id already in the dedup map is answered exactly once: the
+        repeat is logged and dropped.  ``force`` is the query_user
+        two-phase exception (L9): the ``DONE:<answer>`` emission succeeds
+        the ``OK: awaiting…`` placeholder for the same call_id.
+        """
+        if call_id in self._emitted_outputs and not force:
+            # a new call cannot land here: the client mints a fresh id per
+            # parsed call, so a repeat is a stale or duplicate tool answer
+            # or an id collision, never a server re-emit
+            log.warning(
+                "duplicate function_call_output for call_id %r (already "
+                "emitted for this session; a duplicate director answer or "
+                "an id collision, not a server repeat) — answering once, "
+                "never zero", call_id
+            )
+            return False
+        self._emitted_outputs[call_id] = output_text
+        return self.backend.send_tool_result(call_id, output_text)
+
+    # --------------------------------------------------------- the frame seam
+
