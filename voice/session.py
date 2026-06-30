@@ -626,3 +626,20 @@ class VoiceSession:
 
     # --------------------------------------------------- start up / shut down
 
+    def start(self) -> None:
+        """Bring the lane up and wire the backend events: one call starts
+        the whole stack.  (The realtime app additionally schedules
+        ``RealtimeBackend.run_forever()`` as a task on the loop — that is
+        the lane's connect/read/reconnect loop; see the module docstring's
+        concurrency model.)"""
+        if self._started:
+            return
+        try:
+            self.backend.start()
+        except Exception:  # noqa: BLE001 - a lane hiccup can't kill the wiring
+            log.exception("backend.start() raised")
+        for name in BACKEND_EVENTS:
+            self.backend.on_event(name, self._on_backend_event)
+        self._started = True
+        self._fire("started", {})
+
