@@ -724,3 +724,9 @@ class VoiceSession:
             return False
         return self.backend.submit_mic_audio(chunk)
 
+    def pending_tool_calls(self) -> List[str]:
+        """call_ids whose outputs the director has not delivered yet."""
+        return list(self._pending_call_ids)
+
+    # --------------------------------------------------- the tool-result batch
+
