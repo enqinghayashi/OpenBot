@@ -703,3 +703,7 @@ class VoiceSession:
         currently queued for playback."""
         return self._muted or self._queued_s > 0.0
 
+    def set_muted(self, flag: bool) -> None:
+        """Set the session mute flag (L5)."""
+        self._muted = bool(flag)
+
