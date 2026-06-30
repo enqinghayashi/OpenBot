@@ -462,3 +462,57 @@ class RealtimeBackend(BrainBackend):
     def cancel_response(self) -> bool:
         return self._bridge(self._client.cancel_response())
 
+    def truncate_response(self, item_id: str, audio_end_ms: int) -> bool:
+        """The realtime lane's ``conversation.item.truncate`` is a
+        documented dead end while the locked slice allowlist excludes it
+        (voice/realtime.py ``send_truncate``): the event type is
+        pre-validated at the client's OWN ``_emit`` choke point HERE —
+        ``send_truncate`` is an async coroutine whose body (and its
+        ``_emit`` AssertionError) runs only when AWAITED, so a try/except
+        around the call can never see the refusal (it used to escape as
+        an unhandled task exception on the live loop while this method
+        returned True).  The refusal therefore returns False here,
+        synchronously, with a logged warning, and the barge-in proceeds
+        cancel-only.  When the type IS allowlisted the send is scheduled
+        inside a guarded task (see :meth:`_truncate_guard`): any wire
+        refusal while the coroutine RUNS is caught inside the task and
+        logged — never an unhandled task exception.
+        """
+        try:
+            item = str(item_id)
+            end_ms = max(0, int(audio_end_ms))
+            # pre-validate the exact event through the client's emit choke
+            # point: an allowlist refusal surfaces here, synchronously,
+            # instead of inside the coroutine
+            self._client._emit(
+                CONVERSATION_ITEM_TRUNCATE,
+                {"item_id": item, "content_index": 0, "audio_end_ms": end_ms},
+            )
+        except AssertionError as exc:
+            # truncate is not in the client's event allowlist: the barge-in
+            # stays cancel-only and the refusal is reported here
+            log.warning(
+                "conversation.item.truncate is a documented dead end on "
+                "the realtime lane (%s); barge-in proceeds with "
+                "response.cancel alone", exc
+            )
+            return False
+        except Exception as exc:  # noqa: BLE001 - pre-validation is only half
+            # any failure in pre-validation (disconnected client, bad
+            # audio_end_ms) also goes cancel-only and never propagates
+            log.warning(
+                "conversation.item.truncate unavailable (%s); barge-in "
+                "proceeds with response.cancel alone", exc
+            )
+            return False
+        try:
+            coro = self._client.send_truncate(item, end_ms)
+        except Exception as exc:  # noqa: BLE001 - building it failed
+            # a client without send_truncate falls back to cancel-only
+            log.warning(
+                "conversation.item.truncate unavailable (%s); barge-in "
+                "proceeds with response.cancel alone", exc
+            )
+            return False
+        return self._bridge(self._truncate_guard(coro))
+
