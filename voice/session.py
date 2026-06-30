@@ -434,3 +434,6 @@ class RealtimeBackend(BrainBackend):
     def send_user_text(self, text: str) -> bool:
         return self._bridge(self._client.send_input_text(str(text)))
 
+    def send_user_frame(self, jpeg_b64: str) -> bool:
+        return self._bridge(self._client.send_image(str(jpeg_b64)))
+
