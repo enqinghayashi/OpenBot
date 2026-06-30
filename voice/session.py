@@ -1034,3 +1034,18 @@ class VoiceSession:
                 if isinstance(part, dict) and part.get("type") == "text":
                     self._fire("text", {"text": str(part.get("text") or "")})
 
+    def _handle_response_function_call_arguments_done(self, payload: Dict[str, Any]) -> None:
+        """Final arguments for a function call.  The call may already have
+        been recorded via output_item.done (partial args there); the
+        intercept refreshes its question text from the final arguments."""
+        call_id = str(payload.get("call_id") or "")
+        name = str(payload.get("name") or "")
+        arguments_text = str(payload.get("arguments") or "")
+        if call_id and call_id not in self._turn_call_ids:
+            self._on_function_call(name, call_id, arguments_text)
+        elif call_id == self._query_call_id:
+            args = self._parse_arguments(arguments_text)
+            question = str(args.get("question") or "")
+            if question:
+                self._query_question = question
+
