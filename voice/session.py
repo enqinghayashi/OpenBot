@@ -540,3 +540,24 @@ class RealtimeBackend(BrainBackend):
 # ----------------------------------------------- VoiceSession (the turn laws)
 
 
+class VoiceSession:
+    """The turn-law enforcement layer (laws L1-L10, module docstring).
+
+    Build it with a :class:`BrainBackend` and the optional frame hook,
+    subscribe to session events, :meth:`start` it, then feed it:
+
+    * mic chunks via :meth:`upload_mic_audio` (any thread);
+    * tool results via :meth:`respond_tool_result` (the director, after
+      executing a ``tool_call`` event);
+    * nothing else — every lane event arrives through the backend.
+
+    Outward events (subscribe via :meth:`on_event`; payloads documented at
+    each ``_fire`` site): ``tool_call``, ``tool_refused``, ``user_text``,
+    ``dropped_utterance``, ``spoken``, ``text``, ``audio``,
+    ``audio_dropped``, ``playback_started``, ``playback_finished``,
+    ``speech_started``, ``barge_in``, ``answer``, ``query_waiting``,
+    ``frame_attached``, ``frame_absent``, ``turn_complete``,
+    ``gate_changed``, ``failover``, ``session_expired``, ``started``,
+    ``closed``.
+    """
+
