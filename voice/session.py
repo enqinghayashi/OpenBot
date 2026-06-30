@@ -459,3 +459,6 @@ class RealtimeBackend(BrainBackend):
         event = self._client._emit("response.create", {"response": override})
         return self._bridge(self._client._send_raw(event))
 
+    def cancel_response(self) -> bool:
+        return self._bridge(self._client.cancel_response())
+
