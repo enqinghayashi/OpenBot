@@ -707,3 +707,20 @@ class VoiceSession:
         """Set the session mute flag (L5)."""
         self._muted = bool(flag)
 
+    def upload_mic_audio(self, chunk: bytes) -> bool:
+        """PCM16/24k mono chunk from the mic pump (any thread).
+
+        Mute law (L5): while the echoed audio is queued for playback OR the
+        session mute flag is set, the chunk is DROPPED — never uploaded,
+        never padded.  The session NEVER fabricates silence: the exact
+        bytes given are the only bytes that ever reach the lane, and a
+        drop is a drop (no synthetic low-energy frame is uploaded "to keep
+        the buffer warm").  Returns True when the chunk was handed to the
+        lane.
+        """
+        if self._closed or not chunk:
+            return False
+        if self.muted:
+            return False
+        return self.backend.submit_mic_audio(chunk)
+
