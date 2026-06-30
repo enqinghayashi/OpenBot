@@ -1016,3 +1016,21 @@ class VoiceSession:
             self.backend.cancel_response()
         self._fire("gate_changed", {"open": self.gate_open})
 
+    def _handle_response_output_item_done(self, payload: Dict[str, Any]) -> None:
+        """A response output item finished: function_call -> tool dispatch;
+        message -> text event."""
+        item = payload.get("item") or {}
+        if not isinstance(item, dict):
+            return
+        itype = item.get("type")
+        if itype == "function_call":
+            self._on_function_call(
+                name=str(item.get("name") or ""),
+                call_id=str(item.get("call_id") or ""),
+                arguments_text=str(item.get("arguments") or ""),
+            )
+        elif itype == "message":
+            for part in item.get("content") or []:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    self._fire("text", {"text": str(part.get("text") or "")})
+
