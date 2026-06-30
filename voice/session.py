@@ -442,3 +442,20 @@ class RealtimeBackend(BrainBackend):
             self._client.send_function_call_output(str(call_id), str(output_text))
         )
 
+    def create_response(
+        self, *, tools: bool = True, instruction: Optional[str] = None
+    ) -> bool:
+        if tools and instruction is None:
+            return self._bridge(self._client.create_response())
+        # per-response override: the client's create_response() sends a
+        # plain {"response": {}}, so build the event through its emit choke
+        # point (allowlist enforced) and hand it to the raw send primitive
+        override: Dict[str, Any] = {}
+        if instruction is not None:
+            override["instructions"] = str(instruction)
+        if not tools:
+            override["tools"] = []
+            override["tool_choice"] = "none"
+        event = self._client._emit("response.create", {"response": override})
+        return self._bridge(self._client._send_raw(event))
+
