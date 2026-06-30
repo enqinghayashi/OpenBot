@@ -799,3 +799,29 @@ class VoiceSession:
             self._create_response(tools=True, instruction=None, kind="decision")
         return True
 
+    def _close_turn_after_drain(self, reason: str) -> None:
+        """Close the utterance turn at a batch drain (the answer-final
+        path): fire ``turn_complete`` + gate open exactly like a
+        call-less response.done would have, and reset the decision-round
+        count for the next turn.  ``reason`` names the close for the log.
+        An ask still owed its turn (L9: a query_user intercepted in the
+        SAME response) starts FIRST — the question must be asked before
+        the turn closes; the ask's own done then fires ``turn_complete``
+        and reopens the gate for the human's answer."""
+        self._decision_rounds_this_turn = 0
+        if self._query_call_id is not None and not self._ask_sent:
+            log.info("turn closed at the batch drain (%s) — the query "
+                     "ask still owed its turn; asking first", reason)
+            self._start_ask_turn()
+            return
+        log.info("turn closed at the batch drain (%s)", reason)
+        # usage and status of the batch-owning response, from the ledger:
+        # the drain site never sees the done payload itself
+        status = "completed"
+        usage = None
+        if self._cost_ledger:
+            status = str(self._cost_ledger[-1].get("status") or status)
+            usage = self._cost_ledger[-1].get("usage")
+        self._fire("turn_complete", {"usage": usage, "status": status})
+        self._fire("gate_changed", {"open": self.gate_open})
+
