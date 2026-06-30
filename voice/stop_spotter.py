@@ -85,3 +85,84 @@ HANGOVER_FRAMES = 8        # 8 frames x 160 ms = 1.28 s
 QUEUE_FRAMES = 50          # 50 x 160 ms = 8 s of audio before dropping
 
 
+def spotter_mode(env: Any = None) -> str:
+    """'act' | 'log' | 'off' from OPENBOT_STOP_SPOTTER (unset = 'act')."""
+    raw = str((os.environ if env is None else env).get("OPENBOT_STOP_SPOTTER", "")).strip().lower()
+    if raw in ("0", "off", "false", "no"):
+        return "off"
+    if raw == "log":
+        return "log"
+    return "act"
+
+
+def make_vosk_recognizer(model: Any, rate: int = 16000) -> Any:
+    """A FULL-vocabulary KaldiRecognizer over ``model``, with words.
+
+    NOT a restricted grammar (unlike the wake word): MEASURED 2026-10-16 with
+    the box's model (vosk-model-small-en-us-0.15) on piper speech, a
+    stop-words-only grammar forced ordinary robot sentences onto the grammar
+    ('the top shelf' -> 'stop', 'ready for the next' -> 'abort' / 'freeze';
+    4 of 4 sentences gave a false hit, one a motion stop).  The full
+    vocabulary decoded the same sentences as themselves (0 of 5 false hits)."""
+    from vosk import KaldiRecognizer  # lazy: laptop tests inject a fake
+    rec = KaldiRecognizer(model, rate)
+    try:
+        rec.SetWords(True)
+    except Exception:  # noqa: BLE001 - an old vosk that has no per-word conf
+        log.warning("stop spotter: SetWords unavailable - confidence treated as 1.0")
+    return rec
+
+
+class StopSpotter(object):
+    """See the module docstring.  ``process`` is the synchronous core (tests
+    drive it directly); ``start`` + ``submit`` run it on a worker thread."""
+
+    def __init__(self,
+                 recognizer_factory: Callable[[], Any],
+                 on_cut_speech: Callable[[str], None],
+                 on_stop: Callable[[str], None],
+                 on_stop_talking: Callable[[str], None],
+                 speaking: Callable[[], bool],
+                 mode: str = "act",
+                 tail_s: float = DEFAULT_TAIL_S,
+                 cooldown_s: float = DEFAULT_COOLDOWN_S,
+                 clock: Callable[[], float] = time.monotonic,
+                 record: Optional[Callable[[dict], None]] = None) -> None:
+        self._factory = recognizer_factory
+        self._rec = None  # first frame; model load stays off boot
+        self.on_cut_speech = on_cut_speech
+        self.on_stop = on_stop
+        self.on_stop_talking = on_stop_talking
+        self.speaking = speaking
+        self.mode = mode
+        self.tail_s = float(tail_s)
+        self.cooldown_s = float(cooldown_s)
+        self.clock = clock
+        self.record = record
+        self._lock = threading.Lock()
+        self._echo_armed = False
+        self._last_speaking = float("-inf")
+        self._acted_this_segment = False
+        self._spoke_cut = False
+        self._pending = None      # None | 'word' (stop at end) | 'alias'
+        self._last_action = float("-inf")
+        self._q = queue.Queue(maxsize=QUEUE_FRAMES)
+        self._thread = None
+        self._stop_evt = threading.Event()
+        self.dropped_frames = 0
+        self.skipped = 0           # quiet frames skipped (CPU saver)
+        self._quiet = 0
+        self.busy_s = 0.0          # time spent inside the recognizer
+        self.frames = 0
+        self.events = []  # type: List[dict]
+        self._broken = False
+
+    # -- keeping track of echoes (any thread) ------------------------------
+    def note_spoken(self, text: str) -> None:
+        """The robot is about to say / is saying ``text``."""
+        low = (text or "").lower()
+        if any(s in low for s in ECHO_STEMS):
+            with self._lock:
+                self._echo_armed = True
+                self._last_speaking = self.clock()
+
