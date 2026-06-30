@@ -678,3 +678,16 @@ class VoiceSession:
                 except RuntimeError:  # no running loop: the awaitable is dropped
                     log.debug("session callback %r returned awaitable outside a loop", name)
 
+    def _on_backend_event(self, name: str, payload: Dict[str, Any]) -> None:
+        """Route every subscribed backend event to its handler."""
+        handler = getattr(self, "_handle_" + name.replace(".", "_"), None)
+        if handler is None:
+            log.debug("session ignores backend event %r", name)
+            return
+        try:
+            handler(payload)
+        except Exception:  # noqa: BLE001 - one bad handler can't kill
+            log.exception("session handler for %r failed", name)
+
+    # ------------------------------------------------------ gate, mic and mute
+
