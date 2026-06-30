@@ -643,3 +643,15 @@ class VoiceSession:
         self._started = True
         self._fire("started", {})
 
+    def close(self) -> None:
+        """Tear down: backend close, turn state cleared, ``closed`` fired."""
+        if self._closed:
+            return
+        self._closed = True
+        self._reset_turn_state()
+        try:
+            self.backend.close()
+        except Exception:  # noqa: BLE001 - teardown must not raise
+            log.exception("backend.close() raised")
+        self._fire("closed", {})
+
