@@ -516,3 +516,23 @@ class RealtimeBackend(BrainBackend):
             return False
         return self._bridge(self._truncate_guard(coro))
 
+    async def _truncate_guard(self, coro: Any) -> None:
+        """Run the truncate send INSIDE the scheduled task: any wire
+        refusal (the ``_emit`` AssertionError included — it fires when
+        the coroutine body executes, not when it is built) is caught and
+        logged HERE, so no unhandled task exception can escape.  The
+        barge-in path (L2) always reaches response.cancel regardless."""
+        try:
+            await coro
+        except AssertionError as exc:
+            log.warning(
+                "conversation.item.truncate refused by the wire (%s); "
+                "barge-in proceeds with response.cancel alone", exc
+            )
+        except Exception as exc:  # noqa: BLE001 - awaiting can raise
+            # awaiting can raise (a gone client); any failure goes
+            # cancel-only and never propagates
+            log.warning(
+                "conversation.item.truncate unavailable (%s); barge-in "
+                "proceeds with response.cancel alone", exc
+            )
