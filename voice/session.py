@@ -663,3 +663,18 @@ class VoiceSession:
         """
         self._handlers.setdefault(name, []).append(callback)
 
+    def _fire(self, name: str, payload: Dict[str, Any]) -> None:
+        if name not in SESSION_EVENTS:
+            log.debug("session fires undocumented event %r", name)
+        for callback in list(self._handlers.get(name, ())):
+            try:
+                result = callback(name, payload)
+            except Exception:  # noqa: BLE001 - one bad listener can't kill
+                log.exception("session callback for %r failed", name)
+                continue
+            if inspect.isawaitable(result):
+                try:
+                    asyncio.ensure_future(result)
+                except RuntimeError:  # no running loop: the awaitable is dropped
+                    log.debug("session callback %r returned awaitable outside a loop", name)
+
