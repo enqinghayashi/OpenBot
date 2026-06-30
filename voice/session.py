@@ -730,3 +730,72 @@ class VoiceSession:
 
     # --------------------------------------------------- the tool-result batch
 
+    def respond_tool_result(self, call_id: str, output_text: str) -> bool:
+        """The director's answer for one executed tool call (L3 + L4).
+
+        Delivers the output item (dedup: exactly once per call_id) and, on
+        the batch's LAST output, decides the batch's ONE follow-up: an
+        ANSWER-tool batch (see ANSWER_TOOLS — notify_user) CLOSES the
+        turn — the answer was the model's final words — and so does a
+        batch whose drain would exceed MAX_DECISION_ROUNDS_PER_TURN; any
+        other batch gets the single decision continuation response (never
+        one per output).  Returns True when the output was accepted.  A
+        call_id the session never recorded (a duplicate director answer,
+        or a stale call from a reset session) is dropped with a warning.
+
+        Concurrency note (C-L1, round 3): this method runs on the app's
+        PER-CALL director threads (app.py spawns one daemon thread per
+        tool execution), NOT on the lane's worker.  The batch bookkeeping
+        below — ``_pending_call_ids`` removal, the drained-batch decision
+        (``_continuation_created`` / ``_batch_has_answer_call``), the
+        round counter and the one-create-per-batch response — is therefore
+        deliberately UNLOCKED: each call_id has exactly one writer thread,
+        the GIL serializes the list reads/removes, and the queueing to
+        the transcript lane (FIFO) serializes the effects.  A full
+        locking rewrite is deliberately NOT made here (out of round-3
+        scope) — the drain's check-then-create races only when the app
+        delivers two outputs for the SAME batch concurrently, which the
+        director's one-thread-per-call + one-call-per-response contract
+        prevents.
+        """
+        if self._closed:
+            return False
+        if call_id not in self._pending_call_ids:
+            log.warning(
+                "respond_tool_result for unknown/duplicate call_id %r "
+                "(pending=%r) — dropped", call_id, self._pending_call_ids
+            )
+            return False
+        self._send_function_call_output(call_id, output_text)
+        self._pending_call_ids.remove(call_id)
+        if not self._pending_call_ids:
+            # batch drained: the post-done refusal stops, and the next
+            # response's calls join their own fresh batch
+            self._tools_flowing_after_done = False
+        self._fire("gate_changed", {"open": self.gate_open})
+        if not self._pending_call_ids and not self._continuation_created:
+            self._continuation_created = True
+            if self._batch_has_answer_call:
+                # the drained batch held an answer (notify_user) call: its
+                # final notice is out and the executor already spoke it, so
+                # close the turn instead of a continuation that would re-ask
+                self._batch_has_answer_call = False
+                self._close_turn_after_drain("the drained batch was an "
+                                             "answer (notify_user) call")
+                return True
+            if self._decision_rounds_this_turn >= MAX_DECISION_ROUNDS_PER_TURN:
+                # safety cap: a model answering every round with a
+                # non-answer tool call would chain forever; close the turn
+                log.warning(
+                    "decision round cap (%d) reached in one utterance "
+                    "turn — closing the turn without a further "
+                    "continuation",
+                    MAX_DECISION_ROUNDS_PER_TURN,
+                )
+                self._close_turn_after_drain("decision round cap reached")
+                return True
+            self._decision_rounds_this_turn += 1
+            # one create per batch, triggered by the last output
+            self._create_response(tools=True, instruction=None, kind="decision")
+        return True
+
