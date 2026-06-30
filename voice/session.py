@@ -851,3 +851,8 @@ class VoiceSession:
 
     # --------------------------------------------------------- the frame seam
 
+    def set_frame_hook(self, hook: Optional[Callable[[], Optional[Dict[str, Any]]]]) -> None:
+        """Attach/replace the per-decision-turn frame hook (L10; L3 wires
+        the gateway capture here — the seam stays pluggable)."""
+        self._frame_hook = hook
+
