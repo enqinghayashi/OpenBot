@@ -166,3 +166,61 @@ class StopSpotter(object):
                 self._echo_armed = True
                 self._last_speaking = self.clock()
 
+    def _echo_suppressed(self, now: float) -> bool:
+        with self._lock:
+            if self._echo_armed and now - self._last_speaking > self.tail_s:
+                self._echo_armed = False
+            return self._echo_armed
+
+    # -- worker thread ------------------------------------------------------
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name="stop-spotter")
+        self._thread.start()
+
+    def close(self) -> None:
+        self._stop_evt.set()
+
+    def submit(self, frame: bytes) -> None:
+        """Hand one raw 16 kHz PCM16 mic frame over (pump thread; never blocks)."""
+        if self._broken or not frame:
+            return
+        try:
+            self._q.put_nowait(frame)
+        except queue.Full:
+            try:
+                self._q.get_nowait()
+            except queue.Empty:
+                pass
+            self.dropped_frames += 1
+            try:
+                self._q.put_nowait(frame)
+            except queue.Full:
+                pass
+
+    def _run(self) -> None:
+        last_report = self.clock()
+        while not self._stop_evt.is_set():
+            try:
+                frame = self._q.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                self.process(frame)
+            except Exception:  # noqa: BLE001 - the spotter must never take the voice app down with it
+                log.exception("stop spotter failed; disabled (the cloud stop route still works)")
+                self._broken = True
+                return
+            now = self.clock()
+            if now - last_report >= 60.0:
+                log.info("stop spotter: %d frames, recognizer busy %.1f%% of a core, "
+                         "%d frames dropped", self.frames,
+                         100.0 * self.busy_s / max(1e-6, now - last_report),
+                         self.dropped_frames)
+                self.busy_s = 0.0
+                self.frames = 0
+                last_report = now
+
+    # -- the actual logic -----------------------------------------------------
