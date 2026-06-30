@@ -953,3 +953,66 @@ class VoiceSession:
 
     # ----------------------------------------------------- the turn handlers
 
+    def _handle_response_created(self, payload: Dict[str, Any]) -> None:
+        """A response started.  Session-created responses already carry
+        their kind; a bare response.created means a lane-started turn.
+        What the frame seam does there is a LANE capability (round-3,
+        S2, ``BrainBackend.created_precedes_model_call``):
+
+        * Realtime lane (False): the server VAD started the response and
+          snapshotted its input strictly before this event reached us —
+          the turn is IMAGELESS by construction.  The seam therefore does
+          NOT run here; it fires ``frame_absent`` with the ordering
+          reason so the transcript records what actually happened.
+        * Transcript lane (True): the worker fires this created
+          immediately before its ONE chat call, so the created-to-chat
+          window exists: the seam runs inline and a fresh frame attaches
+          to the very response this created announces.  ``no_model_call``
+          createds (the lane's empty-transcript retry — no chat follows)
+          and createds fired while a query answer is being captured (L9
+          phase 2) skip the seam: nothing will see a frame, and staging
+          one would misattribute it to a later turn.
+
+        While a query answer is being captured (L9 phase 2), a VAD
+        auto-create is cancelled immediately on BOTH lanes: the human's
+        speech is the answer, not a new turn.
+        """
+        self._drop_audio = False          # a new response may play
+        if self._response_kind is None:
+            self._response_kind = "server"
+            self._response_in_flight = True
+            # fresh utterance-turn seed: session-created responses arrive
+            # with their kind set and skip this; the round budget resets
+            self._decision_rounds_this_turn = 0
+            if self.backend.created_precedes_model_call:
+                # transcript lane: a bare created precedes one chat call, so
+                # a staged frame informs it.  creates with no model call, or
+                # made while an answer is owed, are skipped silently.
+                if not (
+                    payload.get("no_model_call")
+                    or (self._query_call_id is not None and self._ask_sent)
+                ):
+                    self._prepare_frame_for_turn(None)
+            else:
+                # realtime lane: server VAD snapshotted the input before this
+                # event, so the turn is imageless.  send nothing and leave
+                # the seam armed so the continuation gets a frame.
+                self._frame_attached_this_turn = False
+                self._fire("frame_absent", {
+                    "reason": "server-VAD turn: the server created the "
+                              "response before any frame could be attached "
+                              "— this turn is imageless (not a camera "
+                              "failure)",
+                })
+        if (
+            self._query_call_id is not None
+            and self._ask_sent
+            and self._response_kind == "server"
+        ):
+            log.info(
+                "cancelling VAD auto-response while waiting for the query "
+                "answer (the transcription is the answer, not a new turn)"
+            )
+            self.backend.cancel_response()
+        self._fire("gate_changed", {"open": self.gate_open})
+
