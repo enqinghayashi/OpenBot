@@ -561,3 +561,68 @@ class VoiceSession:
     ``closed``.
     """
 
+    def __init__(
+        self,
+        backend: BrainBackend,
+        *,
+        frame_hook: Optional[Callable[[], Optional[Dict[str, Any]]]] = None,
+        query_tools: frozenset = QUERY_TOOLS,
+        playback_lead_s: float = PLAYBACK_LEAD_S,
+        playback_queue_cap_s: float = PLAYBACK_QUEUE_CAP_S,
+    ) -> None:
+        if backend is None:
+            raise ValueError("VoiceSession requires a BrainBackend")
+        self.backend = backend
+        #: frame seam: callable returning a fresh frame envelope or None,
+        #: called once per decision turn
+        self._frame_hook = frame_hook
+        self._query_tools = frozenset(query_tools)
+        self._answer_tools = frozenset(ANSWER_TOOLS)
+        self._playback_lead_s = float(playback_lead_s)
+        self._playback_queue_cap_s = float(playback_queue_cap_s)
+
+        self._handlers: Dict[str, List[Callable[[str, dict], Any]]] = {}
+        self._closed = False
+        self._started = False
+
+        # -- the half-duplex gate --
+        self._response_in_flight = False
+        self._response_kind: Optional[str] = None  # "decision"|"ask"|"server"
+        self._pending_call_ids: List[str] = []  # calls awaiting their tool output
+        self._turn_call_ids = set()  # call_ids seen this turn, for dedup
+        self._continuation_created = False  # one create per batch
+        #: True while the current batch holds an ANSWER_TOOLS call; its
+        #: drain closes the turn instead of creating a continuation
+        self._batch_has_answer_call = False
+        #: decision continuations since the turn seed, capped at
+        #: MAX_DECISION_ROUNDS_PER_TURN; reset by a new seed, a server-kind
+        #: created, or a drain that closes the turn
+        self._decision_rounds_this_turn = 0
+        #: True after a response.done that left a batch open: a later call
+        #: belongs to a different response (a server auto-create raced the
+        #: turn), so it is refused and answered once, never run or truncated
+        self._tools_flowing_after_done = False
+        self._frame_attached_this_turn = False
+
+        # -- query_user, two-phase --
+        self._query_call_id: Optional[str] = None
+        self._ask_sent = False
+        self._query_question = ""
+
+        # -- the dedup map --
+        self._emitted_outputs: Dict[str, str] = {}
+
+        # -- mute and playback --
+        self._muted = False
+        self._queued_s = 0.0
+        self._lead_buffer: List[tuple] = []
+        self._lead_accum_s = 0.0
+        #: a local stop dropped the rest of this response's audio; cleared
+        #: at the next created or done
+        self._drop_audio = False
+
+        # -- the cost ledger --
+        self._cost_ledger: List[Dict[str, Any]] = []
+
+    # --------------------------------------------------- start up / shut down
+
