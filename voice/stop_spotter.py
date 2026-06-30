@@ -224,3 +224,104 @@ class StopSpotter(object):
                 last_report = now
 
     # -- the actual logic -----------------------------------------------------
+    def process(self, frame: bytes) -> None:
+        now = self.clock()
+        try:
+            if self.speaking():
+                with self._lock:
+                    self._last_speaking = now
+        except Exception:  # noqa: BLE001 - an unknown speaker state means not speaking
+            pass
+        if _peak(frame) < QUIET_PEAK:
+            self._quiet += 1
+            if self._quiet > HANGOVER_FRAMES:
+                self.skipped += 1
+                return
+        else:
+            self._quiet = 0
+        if self._rec is None:
+            self._rec = self._factory()
+        t0 = time.perf_counter()
+        final = self._rec.AcceptWaveform(frame)
+        if final:
+            res = json.loads(self._rec.Result() or "{}")
+        else:
+            res = json.loads(self._rec.PartialResult() or "{}")
+        self.busy_s += time.perf_counter() - t0
+        self.frames += 1
+        if final:
+            self._on_final(res, now)
+            self._acted_this_segment = False
+            self._spoke_cut = False
+            self._pending = None
+        else:
+            self._on_partial(str(res.get("partial") or ""), now)
+
+    def _event(self, kind: str, text: str, acted: bool, why: str = "") -> None:
+        ev = {"event": "stop_spotter", "kind": kind, "text": text,
+              "acted": acted, "why": why}
+        self.events.append(ev)
+        del self.events[:-50]
+        log.info("stop spotter: %s %r -> %s%s", kind, text,
+                 "ACT" if acted else "no action", (" (%s)" % why) if why else "")
+        if self.record is not None:
+            try:
+                self.record(ev)
+            except Exception:  # noqa: BLE001
+                pass
+
+    @staticmethod
+    def _norm(tokens: List[str]) -> List[str]:
+        """Drop '[unk]'; a 'top' right before talking/speaking is 'stop'
+        (the model's reading of a clipped "Stop talking.", MEASURED)."""
+        toks = [t for t in tokens if t and t != "[unk]"]
+        return ["stop" if (t == "top" and i + 1 < len(toks)
+                           and toks[i + 1] in SPEECH_ONLY_NEXT) else t
+                for i, t in enumerate(toks)]
+
+    @staticmethod
+    def classify(tokens: List[str]) -> Optional[str]:
+        """'stop' | 'stop_talking' | 'negated' | None for one FINAL segment."""
+        toks = StopSpotter._norm(tokens)
+        if toks and "top" in toks and set(toks) <= COMMAND_WORDS:
+            return "stop"               # e.g. 'top', 'top it', 'hey stewart top'
+        for i, tok in enumerate(toks):
+            if tok not in STOP_WORDS:
+                continue
+            if i > 0 and toks[i - 1] in NEGATIONS:
+                return "negated"
+            if tok == "stop" and i + 1 < len(toks) and toks[i + 1] in SPEECH_ONLY_NEXT:
+                return "stop_talking"
+            return "stop"
+        return None
+
+    def _on_partial(self, text: str, now: float) -> None:
+        """Earliest evidence.  A halt word other than 'stop' acts at once;
+        'stop' acts at once when the word after it is already heard and is
+        not talking/speaking; a trailing 'stop' (or a lone 'top') only cuts
+        the speech now and leaves the motion decision to the final."""
+        if self._acted_this_segment:
+            return
+        toks = self._norm(text.split())
+        for i, tok in enumerate(toks):
+            if tok not in STOP_WORDS:
+                continue
+            if i > 0 and toks[i - 1] in NEGATIONS:
+                return
+            if tok != "stop":
+                self._act("stop", "partial", text, now)
+                return
+            if i + 1 < len(toks):
+                if toks[i + 1] in SPEECH_ONLY_NEXT:
+                    self._cut("partial", text, now)   # final -> treat it as stop talking
+                    self._pending = "word"
+                else:
+                    self._act("stop", "partial", text, now)
+                return
+            self._cut("partial", text, now)
+            self._pending = "word"
+            return
+        if toks == ["top"] and self._pending is None:
+            self._cut("partial", text, now)
+            self._pending = "alias"
+
