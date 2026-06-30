@@ -697,3 +697,9 @@ class VoiceSession:
         flight AND no tool results are pending."""
         return (not self._response_in_flight) and (not self._pending_call_ids)
 
+    @property
+    def muted(self) -> bool:
+        """Mute law (L5): the explicit session mute flag OR echoed audio
+        currently queued for playback."""
+        return self._muted or self._queued_s > 0.0
+
