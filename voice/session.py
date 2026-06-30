@@ -655,3 +655,11 @@ class VoiceSession:
             log.exception("backend.close() raised")
         self._fire("closed", {})
 
+    def on_event(self, name: str, callback: Callable[[str, dict], Any]) -> None:
+        """Subscribe to session-level events (see the class docstring).
+
+        Sync callables run inline; an awaitable return is scheduled as a
+        task on the running loop (same contract as the realtime client).
+        """
+        self._handlers.setdefault(name, []).append(callback)
+
