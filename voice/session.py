@@ -1266,3 +1266,21 @@ class VoiceSession:
         log.info("user said: %r", transcript)
         self._fire("user_text", {"text": transcript})
 
+    def _handle_input_audio_buffer_speech_started(self, payload: Dict[str, Any]) -> None:
+        """Barge-in signal (L2): truncate + cancel only before tool
+        results are flowing; NEVER after."""
+        item_id = str(payload.get("item_id") or "")
+        audio_start_ms = int(payload.get("audio_start_ms") or 0)
+        self._fire("speech_started", {
+            "item_id": item_id, "audio_start_ms": audio_start_ms,
+        })
+        if not self._response_in_flight:
+            return  # nothing to cut; VAD auto-creates
+        if self._pending_call_ids:
+            log.info(
+                "barge-in speech ignored: tool results are flowing — NEVER "
+                "truncate after tool results (L2)"
+            )
+            return
+        self._barge_in(item_id, audio_start_ms)
+
