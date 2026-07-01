@@ -1162,3 +1162,20 @@ class VoiceSession:
             self._ask_sent = True
             self._fire("query_waiting", {"call_id": self._query_call_id})
 
+    def _complete_query(self, answer_text: str) -> None:
+        """L9 phase 2: the next transcription is the answer.
+
+        Delivers ``DONE:<answer>`` (the documented SECOND emission for
+        this call_id — the placeholder closed the model's wait, this
+        delivers the answer), attaches the human's input_text, and creates
+        ONE response.create with tools enabled to continue the plan.
+        """
+        call_id = self._query_call_id
+        self._query_call_id = None
+        self._ask_sent = False
+        self._query_question = ""
+        self._send_function_call_output(call_id, ANSWER_PREFIX + answer_text, force=True)
+        self.backend.send_user_text(answer_text)  # attach what the human said
+        self._fire("answer", {"call_id": call_id, "text": answer_text})
+        self._create_response(tools=True, instruction=None, kind="decision")
+
