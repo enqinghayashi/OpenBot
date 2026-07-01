@@ -1103,3 +1103,10 @@ class VoiceSession:
             return {"raw": text}
         return parsed if isinstance(parsed, dict) else {"raw": text}
 
+    def _refuse_gate_shut_call(self, call_id: str, name: str) -> None:
+        """Answer a gate-shut call exactly once with an explicit refusal
+        (L3 never-zero; never executed, never truncated)."""
+        text = GATE_SHUT_REFUSAL_TEMPLATE.format(name=name)
+        self._send_function_call_output(call_id, text)
+        self._fire("tool_refused", {"name": name, "call_id": call_id, "reason": "half-duplex gate shut"})
+
