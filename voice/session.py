@@ -1110,3 +1110,39 @@ class VoiceSession:
         self._send_function_call_output(call_id, text)
         self._fire("tool_refused", {"name": name, "call_id": call_id, "reason": "half-duplex gate shut"})
 
+    def _intercept_query(self, call_id: str, name: str, args: Dict[str, Any]) -> None:
+        """L9 phase 1: intercept a query_user call at the session.
+
+        Emits the ``OK: awaiting…`` placeholder IMMEDIATELY (L3 — the
+        call_id is never left at zero outputs), records the call for the
+        ask-turn, and defers the question's speech to the current
+        response's done.  A query_user from a response that started AFTER
+        the batch-owning response has done (``_tools_flowing_after_done``:
+        a server auto-create raced the mid-batch turn) is refused — a
+        question cannot be interleaved mid-batch.  A query_user that is a
+        SIBLING of the current response's calls (same response, same
+        batch) is intercepted normally and simply waits its turn: the
+        ask starts when the batch drains (see ``_handle_response_done``).
+        """
+        if self._tools_flowing_after_done:
+            self._refuse_gate_shut_call(call_id, name)
+            return
+        if self._query_call_id is not None:
+            # one open question at a time: a second query_user while the
+            # first waits for its ask is refused, never stacked or dropped;
+            # the refusal is its exactly-one output
+            self._refuse_gate_shut_call(call_id, name)
+            return
+        self._query_call_id = call_id
+        self._ask_sent = False
+        self._query_question = str(args.get("question") or "")
+        # placeholder emission: the first of the two outputs this call_id
+        # is owed; the answer step sends the second
+        self._emitted_outputs[call_id] = QUERY_OK_PLACEHOLDER
+        self.backend.send_tool_result(call_id, QUERY_OK_PLACEHOLDER)
+        self._fire("tool_call", {
+            "name": name, "call_id": call_id, "arguments": args,
+            "intercepted": True,
+        })
+        self._fire("gate_changed", {"open": self.gate_open})
+
