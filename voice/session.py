@@ -1388,3 +1388,12 @@ class VoiceSession:
             "final": False,
         })
 
+    def _handle_response_audio_transcript_done(self, payload: Dict[str, Any]) -> None:
+        """Spoken-text final (``spoken`` event, final=True)."""
+        log.info("cloud transcript done: %r", str(payload.get("transcript") or ""))
+        self._fire("spoken", {
+            "text": str(payload.get("transcript") or ""),
+            "item_id": str(payload.get("item_id") or ""),
+            "final": True,
+        })
+
