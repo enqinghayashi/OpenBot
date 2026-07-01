@@ -1402,3 +1402,10 @@ class VoiceSession:
         """GA spelling of the spoken-text partial (same behaviour)."""
         self._handle_response_audio_transcript_delta(payload)
 
+    def _handle_response_output_audio_transcript_done(
+            self, payload: Dict[str, Any]) -> None:
+        """GA spelling of the spoken-text final (same behaviour)."""
+        self._handle_response_audio_transcript_done(payload)
+
+    # --------------------------------------------------- failover and teardown
+
