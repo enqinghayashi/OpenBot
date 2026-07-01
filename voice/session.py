@@ -1095,3 +1095,11 @@ class VoiceSession:
             "intercepted": False,
         })
 
+    @staticmethod
+    def _parse_arguments(text: str) -> Dict[str, Any]:
+        try:
+            parsed = json.loads(text) if text else {}
+        except ValueError:
+            return {"raw": text}
+        return parsed if isinstance(parsed, dict) else {"raw": text}
+
