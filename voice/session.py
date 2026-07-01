@@ -1366,3 +1366,17 @@ class VoiceSession:
             self._fire("playback_finished", {})
             self._fire("gate_changed", {"open": self.gate_open})
 
+    def _flush_lead(self) -> None:
+        """Release the lead-buffered audio (L6) and mark playback start."""
+        if not self._lead_buffer:
+            return
+        if self._drop_audio:              # a stopped reply stays silent
+            self._lead_buffer.clear()
+            self._lead_accum_s = 0.0
+            return
+        for delta, _seconds in self._lead_buffer:
+            self._fire("audio", {"delta": delta})
+        self._lead_buffer.clear()
+        self._lead_accum_s = 0.0
+        self._fire("playback_started", {})
+
