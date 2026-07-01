@@ -1233,3 +1233,36 @@ class VoiceSession:
             self._fire("turn_complete", {"usage": usage, "status": status})
         self._fire("gate_changed", {"open": self.gate_open})
 
+    def _handle_conversation_item_input_audio_transcription_completed(
+        self, payload: Dict[str, Any]
+    ) -> None:
+        """A user utterance transcription (L1/L9).
+
+        While a query answer is being captured it IS the answer (L9 phase
+        2).  Otherwise: gate open -> forwarded as ``user_text`` (the server
+        VAD owns the response start); gate shut -> DROPPED per the
+        documented one-policy (L1) — logged, never queued for replay.
+        Lane note: on the TRANSCRIPT lane this event is fired only for
+        the L9 query-answer case — a normal committed server turn fires
+        none (the lane's commit is the admission); this branch is the
+        realtime lane's path.
+        """
+        transcript = (str(payload.get("transcript") or "")).strip()
+        if not transcript:
+            return
+        if self._query_call_id is not None and self._ask_sent:
+            self._complete_query(transcript)
+            return
+        if not self.gate_open:
+            self._fire("dropped_utterance", {
+                "text": transcript,
+                "reason": "half-duplex gate shut (response in flight or "
+                          "tool results pending) — DROP policy (L1)",
+            })
+            log.info("dropped utterance while gate shut: %r", transcript)
+            return
+        # log the user's words: without this a tool call has no visible
+        # request behind it
+        log.info("user said: %r", transcript)
+        self._fire("user_text", {"text": transcript})
+
