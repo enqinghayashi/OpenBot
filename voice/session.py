@@ -1146,3 +1146,19 @@ class VoiceSession:
         })
         self._fire("gate_changed", {"open": self.gate_open})
 
+    def _start_ask_turn(self) -> None:
+        """L9 phase 1 (the speak step): ONE response.create whose
+        instructions say "ask the human and stop", with tools disabled."""
+        question = self._query_question or "(no question text)"
+        instruction = ASK_INSTRUCTION_TEMPLATE.format(question=question)
+        ok = self._create_response(tools=False, instruction=instruction, kind="ask")
+        if not ok:
+            # the question could not be spoken (a lane with no live loop);
+            # the answer is captured when it arrives
+            log.error(
+                "ask-turn response.create failed — the question could not "
+                "be spoken; still awaiting the answer"
+            )
+            self._ask_sent = True
+            self._fire("query_waiting", {"call_id": self._query_call_id})
+
