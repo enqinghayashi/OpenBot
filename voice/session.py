@@ -1284,3 +1284,30 @@ class VoiceSession:
             return
         self._barge_in(item_id, audio_start_ms)
 
+    def stop_playback_now(self) -> Dict[str, Any]:
+        """B8j-hf19: the local stop spotter heard 'stop' (any thread).
+
+        The robot must go quiet NOW: the rest of the in-flight response's
+        audio is dropped (``_drop_audio``, cleared at the next created/done),
+        the response is CANCELLED when L2 allows a barge-in (no tool results
+        flowing; after tool results it keeps running silently, never cut),
+        and the queued-audio booking is cleared so the mute law (L5) stops
+        dropping the operator's next words.  The caller cuts the sink.
+        """
+        cancelled = False
+        if self._response_in_flight:
+            self._drop_audio = True
+            if not self._pending_call_ids:
+                try:
+                    cancelled = bool(self.backend.cancel_response())
+                except Exception:  # noqa: BLE001 - stop is never allowed to raise
+                    log.exception("stop_playback_now: cancel_response failed")
+        cleared = self._queued_s > 0
+        if cleared:
+            self._queued_s = 0.0
+            self._fire("playback_finished", {})
+        log.info("local stop: audio dropped=%s cancelled=%s queue cleared=%s",
+                 self._drop_audio, cancelled, cleared)
+        return {"dropped": self._drop_audio, "cancelled": cancelled,
+                "queue_cleared": cleared}
+
