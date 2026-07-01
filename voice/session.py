@@ -1311,3 +1311,18 @@ class VoiceSession:
         return {"dropped": self._drop_audio, "cancelled": cancelled,
                 "queue_cleared": cleared}
 
+    def _barge_in(self, item_id: str, audio_end_ms: int) -> None:
+        """Truncate the assistant item + cancel the response (L2).
+
+        Truncate may be a documented dead end on the realtime lane (the
+        backend returns False and logs); cancel always fires.
+        """
+        phase = "ask" if self._response_kind == "ask" else "decision"
+        self.backend.truncate_response(item_id, audio_end_ms)
+        self.backend.cancel_response()
+        self._fire("barge_in", {
+            "item_id": item_id, "audio_end_ms": audio_end_ms, "phase": phase,
+        })
+
+    # --------------------------------------------------------- audio playback
+
