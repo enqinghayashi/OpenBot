@@ -1380,3 +1380,11 @@ class VoiceSession:
         self._lead_accum_s = 0.0
         self._fire("playback_started", {})
 
+    def _handle_response_audio_transcript_delta(self, payload: Dict[str, Any]) -> None:
+        """Spoken-text partials (``spoken`` events, final=False)."""
+        self._fire("spoken", {
+            "text": str(payload.get("delta") or ""),
+            "item_id": str(payload.get("item_id") or ""),
+            "final": False,
+        })
+
