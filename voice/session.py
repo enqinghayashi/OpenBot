@@ -1356,3 +1356,13 @@ class VoiceSession:
         else:
             self._fire("audio", {"delta": delta})
 
+    def _handle_response_output_audio_done(self, payload: Dict[str, Any]) -> None:
+        """The response's audio finished: release the trailing lead buffer
+        and clear the queue (the sink keeps draining; the EchoGuard owns
+        level-based echo suppression — see the concurrency note in L5)."""
+        self._flush_lead()
+        if self._queued_s > 0:
+            self._queued_s = 0.0
+            self._fire("playback_finished", {})
+            self._fire("gate_changed", {"open": self.gate_open})
+
