@@ -325,3 +325,55 @@ class StopSpotter(object):
             self._cut("partial", text, now)
             self._pending = "alias"
 
+    def _on_final(self, res: dict, now: float) -> None:
+        text = str(res.get("text") or "")
+        words = res.get("result")
+        toks = ([str(w.get("word") or "") for w in words] if isinstance(words, list)
+                else text.split())
+        toks = [t for t in toks if t and t != "[unk]"]
+        kind = self.classify(toks)
+        if kind == "negated":
+            self._event("final", text, False, "negated")
+            return
+        if kind is None and self._pending == "word":
+            kind = "stop"               # 'stop stop' came out as 'top stump'
+        if kind is None:
+            return
+        if kind == "stop_talking" or not self._acted_this_segment:
+            self._act(kind, "final", text, now)
+
+    def _cut(self, stage: str, text: str, now: float) -> None:
+        """Cut the robot's speech only (cheap to get wrong)."""
+        if self._spoke_cut or self._echo_suppressed(now) or self.mode != "act":
+            return
+        self._spoke_cut = True
+        self._event(stage, text, True, "cut speech")
+        self.on_cut_speech(text)
+
+    def _act(self, kind: str, stage: str, text: str, now: float) -> None:
+        self._acted_this_segment = True
+        if self._echo_suppressed(now):
+            self._event(stage, text, False, "robot is saying a stop word")
+            return
+        if self.mode != "act":
+            self._event(stage, text, False, "log mode")
+            return
+        if kind == "stop" and now - self._last_action < self.cooldown_s:
+            self._event(stage, text, False, "cooldown")
+            return
+        self._last_action = now
+        if kind == "stop_talking":
+            self._event(stage, text, True, "stop talking")
+            self.on_stop_talking(text)
+        else:
+            self._event(stage, text, True, "motion stop")
+            self.on_stop(text)
+
+
+def _peak(pcm: bytes) -> int:
+    """Loudest |sample| of a PCM16 buffer (every 4th sample: a level, not DSP)."""
+    if not pcm or len(pcm) < 2:
+        return 0
+    a = array.array("h")
+    a.frombytes(pcm[: len(pcm) - (len(pcm) % 2)])
+    return max(abs(v) for v in a[::4]) if a else 0
