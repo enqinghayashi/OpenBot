@@ -1444,3 +1444,29 @@ class VoiceSession:
             self._fire("gate_changed", {"open": True})
         self._fire("failover", {"reason": "error", "detail": detail})
 
+    def _handle_session_expired(self, payload: Dict[str, Any]) -> None:
+        """L7: the client performed the clean 60-min context-reset
+        reconnect.  Turn-local state is dead on the new conversation:
+        clear it.  The dedup map is kept — old call_ids cannot re-arrive,
+        so it can only guard stragglers.  Surfaced as a failover signal
+        AND a ``session_expired`` event; the app decides the lane switch.
+        An expiry that lands mid-turn emits the boundary-reopen
+        ``gate_changed open:True`` (see the inline comment) so the
+        director's held ``session_expired`` signal drains to REOPENING —
+        the same contract as :meth:`_handle_error`.
+        """
+        seconds = int(payload.get("seconds") or 3600)
+        gate_was_closed = not self.gate_open
+        self._reset_turn_state()
+        if gate_was_closed:
+            # same boundary reopen as _handle_error: an expiry mid-turn
+            # would hold a ``session_expired`` signal forever.
+            # emit only for an expiry that landed on a shut gate.
+            self._fire("gate_changed", {"open": True})
+        self._fire("session_expired", {"seconds": seconds})
+        self._fire("failover", {
+            "reason": "session_expired",
+            "detail": "60-min session cap: clean reconnect with a reset "
+                      "conversation context",
+        })
+
