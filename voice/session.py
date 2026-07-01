@@ -1326,3 +1326,33 @@ class VoiceSession:
 
     # --------------------------------------------------------- audio playback
 
+    def _handle_response_output_audio_delta(self, payload: Dict[str, Any]) -> None:
+        """Echoed audio (L6): cap the queue at 60 s, hold the 0.6 s lead,
+        then release deltas as ``audio`` events for the sink."""
+        delta = str(payload.get("delta") or "")
+        if not delta or self._drop_audio:  # a local stop hit this one
+            return
+        seconds = self._b64_pcm_seconds(delta)
+        if seconds <= 0:
+            return
+        if self._queued_s + seconds > self._playback_queue_cap_s:
+            self._fire("audio_dropped", {
+                "bytes": len(delta),
+                "reason": "playback queue cap {:.0f} s (L6)".format(
+                    self._playback_queue_cap_s
+                ),
+            })
+            log.warning(
+                "playback queue cap %.0fs: dropping %.1fs of audio",
+                self._playback_queue_cap_s, seconds,
+            )
+            return
+        self._queued_s += seconds
+        if self._lead_accum_s < self._playback_lead_s:
+            self._lead_buffer.append((delta, seconds))
+            self._lead_accum_s += seconds
+            if self._lead_accum_s >= self._playback_lead_s:
+                self._flush_lead()
+        else:
+            self._fire("audio", {"delta": delta})
+
