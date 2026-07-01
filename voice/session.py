@@ -1049,3 +1049,49 @@ class VoiceSession:
             if question:
                 self._query_question = question
 
+    def _on_function_call(self, name: str, call_id: str, arguments_text: str) -> None:
+        """A function call entered the turn (L2/L3/L9).
+
+        Dedup: a server that repeats a call_id is ignored with a warning —
+        its output is still answered exactly once.  Query-tool calls are
+        intercepted here (L9 phase 1); normal calls join the batch freely
+        while the CURRENT response is in flight (a normal multi-call
+        response — L4 batches them all).  Only a call arriving AFTER the
+        batch-owning response has done (``_tools_flowing_after_done``: a
+        server auto-create raced the mid-batch turn) is refused — never
+        executed, never truncated, answered exactly once.
+        """
+        if not call_id:
+            log.error("function_call without a call_id — dropped")
+            return
+        if call_id in self._turn_call_ids:
+            output_sent = call_id in self._emitted_outputs
+            pending = call_id in self._pending_call_ids
+            log.warning(
+                "server repeated function_call for call_id %r (name %r) — "
+                "the repeat is ignored; output_already_sent=%s pending=%s; "
+                "its output is answered exactly once",
+                call_id, name, output_sent, pending,
+            )
+            return
+        self._turn_call_ids.add(call_id)
+        args = self._parse_arguments(arguments_text)
+        if name in self._query_tools:
+            self._intercept_query(call_id, name, args)
+            return
+        if self._tools_flowing_after_done:
+            # never truncate once tool results flow; a parallel batch would
+            # break one-create-per-batch.  answer once, never zero.
+            self._refuse_gate_shut_call(call_id, name)
+            return
+        self._pending_call_ids.append(call_id)
+        if name in self._answer_tools:
+            # an answer (notify_user) call joins the batch; at drain the
+            # turn closes instead of a decision continuation, since the
+            # answer is the model's final words
+            self._batch_has_answer_call = True
+        self._fire("tool_call", {
+            "name": name, "call_id": call_id, "arguments": args,
+            "intercepted": False,
+        })
+
