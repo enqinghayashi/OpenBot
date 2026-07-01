@@ -1409,3 +1409,38 @@ class VoiceSession:
 
     # --------------------------------------------------- failover and teardown
 
+    def _handle_error(self, payload: Dict[str, Any]) -> None:
+        """Backend fatal error (auth, retry exhaustion): clear turn state
+        and surface the failover signal.
+
+        Boundary-reopen contract (shared by BOTH lanes — transcript and
+        realtime): when the error lands mid-turn (a response in flight or
+        a pending tool batch closed the gate — e.g. the transcript lane's
+        cloud transport failure after its response.created, or a realtime
+        wss drop mid-response), the reset reopens the session gate and a
+        ``gate_changed open:True`` is emitted so the director re-opens its
+        boundary and the held ``hard`` signal drains to OFFLINE_CASCADE —
+        never a held-forever deadlock.  The emission is conditional on the
+        gate having ACTUALLY been closed: an error that arrived while the
+        gate was already open (the whisper-transport path — the failure
+        fires before any response.created) emits nothing extra, so that
+        path stays exactly as today (the failover applies at the open
+        boundary).  Idempotent: a gate already open re-fires nothing."""
+        error = payload.get("error") or payload.get("message") or "unknown error"
+        if isinstance(error, dict):
+            detail = (
+                str(error.get("message") or "")
+                or str(error.get("code") or "")
+                or "unknown error"
+            )
+        else:
+            detail = str(error)
+        gate_was_closed = not self.gate_open
+        self._reset_turn_state()
+        if gate_was_closed:
+            # mid-turn failover: fire gate_changed open:True before the
+            # failover signal, so a held ``hard`` signal drains at the open
+            # boundary instead of re-holding
+            self._fire("gate_changed", {"open": True})
+        self._fire("failover", {"reason": "error", "detail": detail})
+
