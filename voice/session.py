@@ -1397,3 +1397,8 @@ class VoiceSession:
             "final": True,
         })
 
+    def _handle_response_output_audio_transcript_delta(
+            self, payload: Dict[str, Any]) -> None:
+        """GA spelling of the spoken-text partial (same behaviour)."""
+        self._handle_response_audio_transcript_delta(payload)
+
