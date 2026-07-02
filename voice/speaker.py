@@ -328,3 +328,55 @@ class G1Speaker:
 
     # ------------------------------------------------------ playback worker
 
+    def _worker_main(self) -> None:
+        """One thread for ALL PlayStream calls (FR-8, module docstring)."""
+        buffer = bytearray()
+        buffer_generation = self._generation
+        while True:
+            try:
+                item = self._queue.get(timeout=PLAYBACK_POLL_S)
+            except queue.Empty:
+                if self._generation != buffer_generation:
+                    buffer.clear()  # got cancelled while we held audio
+                    buffer_generation = self._generation
+                if buffer:
+                    # idle-flush: a reply's last <200 ms
+                    # must not wait for the next enqueue,
+                    # or every answer loses its last word
+                    # same stream id: device concatenates
+                    if self._generation == buffer_generation:
+                        if not self._emit(bytes(buffer), buffer_generation):
+                            return  # fair enough - the wire died
+                    buffer = bytearray()
+                # done-when-quiet decay runs on the
+                # real clock (time.monotonic, same as the
+                # injected test clock); pacing leads stay
+                # on self._monotonic
+                with self._lock:
+                    empty = self._queued_bytes == 0
+                    still = time.monotonic() < self._play_until
+                if empty and not still:
+                    self._speaking = False
+                    self._drained.set()
+                continue
+            if item is _STOP:
+                break
+            generation, item = item
+            if generation != self._generation:
+                continue  # a stop() already superseded this
+            if generation != buffer_generation:
+                buffer = bytearray()
+                buffer_generation = generation
+            with self._lock:
+                self._queued_bytes = max(0, self._queued_bytes - len(item))
+            buffer += item
+            while len(buffer) >= self.chunk_bytes:
+                if self._generation != generation:
+                    buffer.clear()
+                    buffer_generation = self._generation
+                    break
+                chunk = bytes(buffer[: self.chunk_bytes])
+                del buffer[: self.chunk_bytes]
+                if not self._emit(chunk, generation):
+                    return  # wire failed, worker ends
+
