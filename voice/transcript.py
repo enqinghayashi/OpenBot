@@ -679,3 +679,173 @@ class TranscriptBackend(BrainBackend):
             return
         self._append_history(message)
 
+    def _on_user_text(self, text: str) -> None:
+        """Commit an injected text user turn (the L9 answer attach)."""
+        self._append_history({"role": "user", "content": text})
+
+    # ------------------------------------- scanning open rounds + the held pump
+
+    def _open_round_origin(self) -> Optional[int]:
+        """The history index of the OPEN tool round's assistant
+        ``tool_calls`` message, or None when every round is closed.
+        Walks BACK from the tail over the role:"tool" messages; the
+        first non-tool message is the round's owner (the wire law: a
+        round's tool messages sit directly behind its assistant
+        ``tool_calls`` message, so only the LAST round can be open and
+        only its owner can sit behind the trailing tool messages).  The
+        round is OPEN exactly when its call_ids are not all covered by
+        the trailing tool messages — its results are still owed, i.e.
+        the batch is draining."""
+        owed = set()
+        for i in range(len(self._history) - 1, -1, -1):
+            message = self._history[i]
+            role = str(message.get("role") or "")
+            if role == "tool":
+                call_id = message.get("tool_call_id")
+                if call_id is not None:
+                    owed.add(call_id)
+                continue
+            if role == "assistant" and message.get("tool_calls"):
+                calls = {
+                    str(call.get("id") or "")
+                    for call in (message.get("tool_calls") or ())
+                }
+                if calls - owed:
+                    return i
+            return None
+        return None
+
+    def _close_open_round(self, reason: str) -> None:
+        """Drop the history's OPEN tool round WHOLE (S4: a lane error —
+        whisper failure / failover — while a batch was pending).  The
+        round's assistant ``tool_calls`` message and the tool messages
+        already committed behind it are deleted together, so the
+        surviving history holds no round awaiting results that will
+        never come and no half-round (never an assistant without its
+        tool messages — and a LATE tool result for a dropped call is
+        refused by the orphan guard, never appended).  ``reason`` names
+        the reset for the log.  No-op when no round is open."""
+        origin = self._open_round_origin()
+        if origin is None:
+            return
+        log.warning(
+            "transcript lane: dropping the open tool round at history "
+            "index %d (%s)",
+            origin, reason,
+        )
+        del self._history[origin:]
+
+    def _pump_held(self) -> None:
+        """Deliver held utterances (S3) after the batch that held them
+        has fully closed.  Runs from the worker at the END of every op;
+        a delivery replays the SAME full server-turn event shape a live
+        utterance would have had (:meth:`_start_transcribed_server_turn`
+        — or :meth:`_speak_retry` for a held empty-transcript retry),
+        so the session answers the utterance exactly as if it had been
+        heard when spoken — never dropped, never wire-illegal.
+
+        The delivery is gated on ALL of (checked fresh per delivery):
+          * not closed, no turn active (never mid-turn),
+          * a held item exists,
+          * the op FIFO is EMPTY — never preempt a drained batch's
+            queued follow-up op: the drain's single decision/ask create
+            was queued synchronously by the SAME director call that
+            queued the batch's last tool result, so by the time the
+            worker has committed that result and reached this pump the
+            follow-up is queued (or the turn already closed with no
+            follow-up) — delivering before it would answer the held
+            utterance out of conversational order,
+          * no OPEN tool round (a drained batch whose response returned
+            further calls has re-opened the round — deliver only when
+            it too has closed),
+          * the session is NOT awaiting a query answer
+            (``_awaiting_query_answer`` — set at an ask create): a held
+            utterance predates the question, and delivering it into the
+            L9 answer-capture window would complete the query with the
+            wrong text.
+        """
+        while True:
+            with self._lock:
+                if self._closed or self._turn_active or not self._held:
+                    return
+                if not self._q.empty():
+                    # FIFO: follow-up goes first
+                    return
+            if self._awaiting_query_answer:
+                return
+            if self._open_round_origin() is not None:
+                return
+            item = self._held.pop(0)
+            if "retry" in item:
+                log.info(
+                    "transcript lane: delivering the held empty-transcript "
+                    "retry (%d held item(s) remain)",
+                    len(self._held),
+                )
+                self._speak_retry(str(item["retry"]))
+            else:
+                transcript = str(item.get("transcript") or "").strip()
+                if not transcript:
+                    continue
+                log.info(
+                    "transcript lane: delivering the held utterance %r "
+                    "(%d held item(s) remain)",
+                    transcript[:60], len(self._held),
+                )
+                self._start_transcribed_server_turn(transcript)
+
+    # ----------------------------------------------------------- the turn pipeline
+
+    def _run_server_turn(self) -> None:
+        """A fresh utterance's turn (the server-VAD mirror): close the
+        mic buffer -> whisper -> then either the S3 hold (a tool round
+        was OPEN when the utterance arrived — committing it mid-batch
+        would break the wire law, so it is held and delivered after the
+        batch closes), the empty-transcript retry, or
+        :meth:`_start_transcribed_server_turn` (the created fire — the
+        session runs the L10 frame seam at a bare created via the
+        lane-capability branch — the transcription, one chat call)."""
+        pcm16 = self._close_buffer()
+        if pcm16:
+            try:
+                transcript = str(self._submit(pcm16) or "").strip()
+            except Exception as exc:  # noqa: BLE001
+                # STT is dead: drop the open round first so a late
+                # result cannot re-orphan the head, then surface
+                # the failover signal
+                self._close_open_round(
+                    "whisper failure (STT dead) reset the lane"
+                )
+                log.error("transcript lane: whisper stage failed: %s", exc)
+                self._fire("error", {
+                    "message": "whisper stage failed: {}".format(exc),
+                })
+                return
+        else:
+            transcript = ""
+        if self._open_round_origin() is not None:
+            # mid-batch: a user message here would break the
+            # wire law (400) and garble the round, so hold it
+            if transcript:
+                self._held.append({"transcript": transcript})
+                reason = "a tool round was open (mid-batch)"
+            else:
+                self._held.append({"retry": EMPTY_TRANSCRIPT_RETRY})
+                reason = "a tool round was open (mid-batch); nothing heard"
+            log.info(
+                "transcript lane: utterance held (%s) — %d held item(s) "
+                "awaiting the batch close",
+                reason, len(self._held),
+            )
+            return
+        if not transcript:
+            # empty transcript on a healthy transport is not a
+            # failover: speak the retry line and stay up
+            log.warning(
+                "transcript lane: whisper heard nothing — speaking the "
+                "retry line (no failover)"
+            )
+            self._speak_retry(EMPTY_TRANSCRIPT_RETRY)
+            return
+        self._start_transcribed_server_turn(transcript)
+
