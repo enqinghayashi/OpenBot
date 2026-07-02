@@ -286,3 +286,32 @@ class G1Speaker:
         self._drained.clear()
         self._queue.put((self._generation, pcm16))
 
+    def stop(self) -> None:
+        """Cancel queued playback and end the stream (best-effort).
+
+        Bumps the generation (the worker drops everything still queued
+        — that is the part that actually works), resets the stream, then
+        issues ``PlayStop`` — a documented NO-OP in effect: the SDK
+        discards the RPC result and always returns 0, so silence after
+        ``stop()`` is not promised.  Never raises.  The next ``play``
+        starts a new burst on a fresh stream id.
+        """
+        with self._lock:
+            self._generation += 1
+            self._queued_bytes = 0
+            self._stream_id = ""
+            self._play_until = 0.0
+            self._stream_started = 0.0
+            self._stream_bytes = 0
+            self._speaking = False
+        self._drain_queue()
+        self._drained.set()
+        client = self._client
+        if client is None:
+            return
+        try:
+            with self._lock:
+                client.PlayStop(self.app_name)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("PlayStop raised: %s", exc)
+
