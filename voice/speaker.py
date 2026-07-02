@@ -321,3 +321,10 @@ class G1Speaker:
         with self._lock:
             return self._speaking or self._monotonic() < self._play_until
 
+    def wait_until_drained(self, timeout: Optional[float] = None) -> bool:
+        """Block until the queued audio has finished sounding.  ``False``
+        on timeout.  Test/teardown seam; the live app never calls it."""
+        return self._drained.wait(timeout)
+
+    # ------------------------------------------------------ playback worker
+
