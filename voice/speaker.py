@@ -433,3 +433,17 @@ class G1Speaker:
             self._stream_bytes += len(chunk)
         return True
 
+    def _fatalize(self, message: str) -> None:
+        """The wire failed mid-playback.
+
+        Records the failure (every later ``play`` raises it, so the app
+        sets its error flag within one delta) and ends the worker's
+        playing.  Never a warning: a dead speaker is a silent robot.
+        """
+        log.error("playback is unrecoverable: %s", message)
+        with self._lock:
+            if self._fatal is None:
+                self._fatal = SpeakerError(message)
+        self._speaking = False
+        self._drained.set()
+
