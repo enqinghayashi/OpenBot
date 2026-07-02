@@ -1529,3 +1529,6 @@ class VoiceSession:
         except Exception:  # noqa: BLE001 - a malformed delta just gets dropped
             return 0.0
         return len(raw) / 2.0 / AUDIO_SAMPLE_RATE
+
+
+
