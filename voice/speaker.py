@@ -315,3 +315,9 @@ class G1Speaker:
         except Exception as exc:  # noqa: BLE001
             log.debug("PlayStop raised: %s", exc)
 
+    @property
+    def is_speaking(self) -> bool:
+        """True while audio is queued or still sounding from the speaker."""
+        with self._lock:
+            return self._speaking or self._monotonic() < self._play_until
+
