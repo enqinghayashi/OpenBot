@@ -1496,3 +1496,28 @@ class VoiceSession:
         consumer).  Returns None when no response has completed yet."""
         return self._cost_ledger[-1] if self._cost_ledger else None
 
+    def cost_summary(self) -> str:
+        """Whole-session usage totals (L8).  Usage is never assumed
+        constant and never guessed: entries the wire left without usage
+        are counted but reported as not reported."""
+        if not self._cost_ledger:
+            return "No response usage recorded (Not reported)"
+        recorded = len(self._cost_ledger)
+        ins = outs = reported = 0
+        for entry in self._cost_ledger:
+            usage = entry.get("usage") or {}
+            if not usage:
+                continue
+            reported += 1
+            ins += int(usage.get("input_tokens") or 0)
+            outs += int(usage.get("output_tokens") or 0)
+        text = "{} response(s) recorded".format(recorded)
+        if reported:
+            text += (
+                "; input_tokens={}, output_tokens={} (summed from "
+                "response.done usage — never assumed constants)"
+            ).format(ins, outs)
+        else:
+            text += "; usage Not reported on the wire"
+        return text
+
