@@ -127,3 +127,5 @@ def describe_code(code: int) -> str:
 
 class SpeakerError(RuntimeError):
     """A speaker call failed.  Never downgrade this to a warning."""
+
+
