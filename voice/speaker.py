@@ -235,3 +235,9 @@ class G1Speaker:
         client.Init()
         return client
 
+    @property
+    def connected(self) -> bool:
+        return self._client is not None
+
+    # -------------------------------------------------------------- playback
+
