@@ -121,3 +121,5 @@ RPC_ERRORS = {
 }
 
 
+def describe_code(code: int) -> str:
+    return "{} ({})".format(code, RPC_ERRORS.get(code, "unknown / voice-service specific"))
