@@ -1491,3 +1491,8 @@ class VoiceSession:
 
     # --------------------------------------------------------- the cost ledger
 
+    def last_cost(self) -> Optional[Dict[str, Any]]:
+        """The most recent response.done usage entry (L8; bake-off
+        consumer).  Returns None when no response has completed yet."""
+        return self._cost_ledger[-1] if self._cost_ledger else None
+
