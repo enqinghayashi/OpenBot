@@ -418,3 +418,81 @@ class TranscriptBackend(BrainBackend):
             except Exception as exc:  # noqa: BLE001 - cleanup must not blow up
                 log.debug("transcript whisper submit close raised: %s", exc)
 
+    def on_event(self, name: str, callback: Callable[[str, dict], Any]) -> None:
+        """Subscribe to lane events.  Callbacks run INLINE on the turn
+        worker thread (the session's handlers are sync — this IS the
+        confinement model, module docstring); an awaitable return is
+        scheduled as a task on the running loop, dropped outside one."""
+        self._handlers.setdefault(name, []).append(callback)
+
+    def health_probe(self) -> bool:
+        """The lane-aware probe the app's director wiring expects: a
+        SYNC, low-cost connectivity check that reaches the network,
+        bounded to ~2 s by the delegated probe's own timeout (the
+        parallel wiring adds ``CloudLLMClient.probe()``).  Delegates via
+        getattr: a client without a probe reports False (the lane is not
+        healthy until the probe exists); a raising probe counts as a
+        failure — never raises (the director contract)."""
+        probe = getattr(self._client, "probe", None)
+        if not callable(probe):
+            return False
+        try:
+            return bool(probe())
+        except Exception as exc:  # noqa: BLE001
+            log.warning("transcript lane: health probe raised: %s", exc)
+            return False
+
+    def _fire(self, name: str, payload: Dict[str, Any]) -> None:
+        """Dispatch one BACKEND_EVENTS event to listeners (must run on
+        the turn worker thread — the session's handlers mutate session
+        state and must never run concurrently).  Best-effort teardown
+        (D4c): after :meth:`close` has returned the worker emits
+        nothing — close() joins only briefly, so a worker mid-chat when
+        close() ran must not keep firing into a torn-down session."""
+        if self._closed:
+            return
+        for callback in list(self._handlers.get(name, ())):
+            try:
+                result = callback(name, payload)
+            except Exception:  # noqa: BLE001
+                log.exception("transcript callback for %r failed", name)
+                continue
+            if inspect.isawaitable(result):
+                try:
+                    asyncio.ensure_future(result)
+                except RuntimeError:  # no loop, drop it
+                    log.debug(
+                        "transcript callback %r returned awaitable outside a loop", name
+                    )
+
+    # --------------------------------------------------------- the send methods
+
+    def submit_mic_audio(self, chunk: bytes) -> bool:
+        """Accumulate one 24 kHz PCM16 mic chunk into the per-turn buffer
+        and kick the turn worker.  The pump delivers one energy-gated
+        utterance per upload; a chunk that lands while a turn is active
+        is the barge-in signal (flagged; the worker fires
+        ``input_audio_buffer.speech_started`` at its next stage
+        boundary).  Returns True when accepted for delivery."""
+        if self._closed or not chunk:
+            return False
+        with self._lock:
+            self._mic_buffer += bytes(chunk)
+            overflow = len(self._mic_buffer) - MIC_BUFFER_CAP_BYTES
+            if overflow > 0:
+                # cap the POST: a long tool run would ride one
+                # POST and the 15 s timeout would drop it whole
+                del self._mic_buffer[:overflow]
+                log.warning(
+                    "transcript lane: per-turn mic buffer capped at %d "
+                    "bytes (%d s of speech) — dropped %d bytes of "
+                    "overflow (oldest audio)",
+                    MIC_BUFFER_CAP_BYTES, MIC_BUFFER_CAP_SECONDS, overflow,
+                )
+            self._buffer_consumed = False
+            if self._turn_active:
+                self._barge_pending = True
+                self._barge_epoch = self._turn_epoch
+        self._q.put(("mic",))
+        return True
+
