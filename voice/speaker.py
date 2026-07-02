@@ -241,3 +241,48 @@ class G1Speaker:
 
     # -------------------------------------------------------------- playback
 
+    def play(self, pcm16: bytes) -> None:
+        """Enqueue PCM16/16 kHz/mono for paced playback (never blocks).
+
+        The caller (the session's audio-event thread) only enqueues; the
+        ONE worker thread drains at wall-clock rate under a single stream
+        id (module docstring: the lag/artefact fix).  Raises
+        ``SpeakerError`` immediately on a previous wire failure (the
+        fatal state, surfaced via :meth:`stop`-able path: the app's
+        ``play_pcm`` catches it and sets its error flag).
+        """
+        if not pcm16:
+            return
+        if len(pcm16) % 2:
+            raise SpeakerError(
+                "PCM buffer of {} bytes is not whole 16-bit frames".format(len(pcm16))
+            )
+        seconds = len(pcm16) / float(self._bytes_per_second)
+        with self._lock:
+            if self._fatal is not None:
+                raise self._fatal
+            if self._queued_bytes + len(pcm16) > self.queue_cap_bytes:
+                overflow = True
+            else:
+                overflow = False
+                if not self._stream_id:
+                    # new burst: fresh stream id + clock
+                    # first chunk isn't audible until the
+                    # buffer fills (sink_latency_s)
+                    self._stream_id = "{:d}".format(int(time.time() * 1000))
+                    self._stream_started = 0.0
+                    self._stream_bytes = 0
+                    self._play_until = 0.0
+                self._queued_bytes += len(pcm16)
+        if overflow:
+            log.error(
+                "speaker queue overflow (%.2f s buffered > %.2f s cap): dropping "
+                "%.2f s of audio (the robot is falling behind the model)",
+                self._queued_bytes / float(self._bytes_per_second),
+                self.queue_cap_bytes / float(self._bytes_per_second),
+                seconds,
+            )
+            return
+        self._drained.clear()
+        self._queue.put((self._generation, pcm16))
+
