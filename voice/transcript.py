@@ -496,3 +496,68 @@ class TranscriptBackend(BrainBackend):
         self._q.put(("mic",))
         return True
 
+    def send_user_text(self, text: str) -> bool:
+        """Inject a text user turn (the L9 answer attachment)."""
+        if self._closed:
+            return False
+        self._q.put(("user_text", str(text)))
+        return True
+
+    def send_user_frame(self, jpeg_b64: str) -> bool:
+        """L10: store the LATEST frame (fresh gateway-cache image, jpeg
+        base64); the NEXT chat call attaches it — one frame per decision
+        turn, no replay: the chat call consumes the store exactly once,
+        and a turn without a stored frame attaches nothing (no fresh
+        frame must be representable) while its text observation still
+        travels."""
+        if self._closed:
+            return False
+        with self._lock:
+            self._staged_frame = str(jpeg_b64)
+        return True
+
+    def send_tool_result(self, call_id: str, output_text: str) -> bool:
+        """Answer one function call (a role:"tool" history message, in
+        order behind the assistant ``tool_calls`` message that owned it)."""
+        if self._closed:
+            return False
+        self._q.put(("tool_result", str(call_id), str(output_text)))
+        return True
+
+    def create_response(
+        self, *, tools: bool = True, instruction: Optional[str] = None
+    ) -> bool:
+        """Close the per-turn mic buffer (task contract: the turn is
+        closed when the session starts a response) and run ONE chat call
+        — the session's tool continuation / ask turn / query answer."""
+        if self._closed:
+            return False
+        self._q.put(("create", bool(tools), instruction))
+        return True
+
+    def cancel_response(self) -> bool:
+        """Cancel the in-flight turn (barge-in, L2).  The flag is set
+        synchronously (thread-safe) so the worker honors the abort at
+        its next stage boundary even while blocked in a stage call; the
+        queued op only drains the accounting."""
+        if self._closed:
+            return False
+        with self._lock:
+            self._cancel_requested = True
+        self._q.put(("cancel",))
+        return True
+
+    def truncate_response(self, item_id: str, audio_end_ms: int) -> bool:
+        """The REST wire has no item rewrite: truncate is a documented
+        dead end on this lane — returns False with a logged warning and
+        the barge-in proceeds cancel-only (the RealtimeBackend contract)."""
+        log.warning(
+            "conversation.item.truncate is a documented dead end on the "
+            "transcript lane (no item rewrite on the REST wire; item_id=%r, "
+            "audio_end_ms=%d) — barge-in proceeds with response.cancel alone",
+            item_id, max(0, int(audio_end_ms)),
+        )
+        return False
+
+    # ------------------------------------------------------------- the turn worker
+
