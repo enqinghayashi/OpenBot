@@ -380,3 +380,56 @@ class G1Speaker:
                 if not self._emit(chunk, generation):
                     return  # wire failed, worker ends
 
+    def _emit(self, chunk: bytes, generation: int) -> bool:
+        """Pace, then hand ONE chunk to the speaker.  ``False`` = stop."""
+        now = self._monotonic()
+        with self._lock:
+            if generation != self._generation or self._fatal is not None:
+                return True  # superseded or fatal: drop it
+            if self._stream_started == 0.0:
+                # first chunk isn't audible until the
+                # buffer fills; clock starts one latency late
+                self._stream_started = now
+                self._play_until = now + self.sink_latency_s
+            elif self._play_until < now:
+                # starved after an idle gap: give it the
+                # same buffer latency, or the pace clock
+                # runs ahead and the echo guard opens the
+                # mic early
+                self._play_until = now + self.sink_latency_s
+            lead = self._play_until - now
+            stream_id = self._stream_id or "{:d}".format(int(time.time() * 1000))
+            self._stream_id = stream_id
+        if lead > self.max_lead_s:
+            self._sleep(lead - self.max_lead_s)
+            with self._lock:
+                if generation != self._generation or self._fatal is not None:
+                    return True  # stop() landed during the sleep
+        self._set_speaking(True)
+        self._drained.clear()
+        client = self._require()
+        try:
+            with self._lock:
+                # last-instant re-check: stop() can land
+                # while this chunk waits; a cancelled burst
+                # never plays
+                if generation != self._generation or self._fatal is not None:
+                    return True
+                result = client.PlayStream(self.app_name, stream_id, chunk)
+        except Exception as exc:  # noqa: BLE001 - a wire failure is fatal
+            self._fatalize(
+                "PlayStream raised {}: {}".format(type(exc).__name__, exc)
+            )
+            return False
+        code = _unpack_play(result)
+        if code != 0:
+            self._fatalize(
+                "PlayStream failed: {}".format(describe_code(code))
+            )
+            return False
+        duration_s = len(chunk) / float(self._bytes_per_second)
+        with self._lock:
+            self._play_until += duration_s
+            self._stream_bytes += len(chunk)
+        return True
+
