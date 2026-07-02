@@ -1470,3 +1470,24 @@ class VoiceSession:
                       "conversation context",
         })
 
+    def _reset_turn_state(self) -> None:
+        """Clear every turn-local law-accounting field (session reset,
+        session-expired context reset, close)."""
+        self._response_in_flight = False
+        self._response_kind = None
+        self._pending_call_ids.clear()
+        self._turn_call_ids.clear()
+        self._continuation_created = False
+        self._batch_has_answer_call = False
+        self._decision_rounds_this_turn = 0
+        self._tools_flowing_after_done = False
+        self._frame_attached_this_turn = False
+        self._query_call_id = None
+        self._ask_sent = False
+        self._query_question = ""
+        self._lead_buffer.clear()
+        self._lead_accum_s = 0.0
+        self._queued_s = 0.0
+
+    # --------------------------------------------------------- the cost ledger
+
