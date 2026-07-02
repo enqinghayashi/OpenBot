@@ -561,3 +561,121 @@ class TranscriptBackend(BrainBackend):
 
     # ------------------------------------------------------------- the turn worker
 
+    def _loop(self) -> None:
+        """The turn pump: process operations one at a time; every event
+        fires from THIS thread."""
+        while True:
+            try:
+                op = self._q.get()
+            except Exception as exc:  # noqa: BLE001
+                log.error("transcript worker queue failed: %s", exc)
+                return
+            kind = op[0]
+            if kind == "close":
+                return
+            if self._closed:
+                # closed: drain, emit nothing
+                continue
+            try:
+                if kind == "mic":
+                    self._on_mic()
+                elif kind == "create":
+                    self._on_create(bool(op[1]), op[2])
+                elif kind == "cancel":
+                    self._on_cancel_op()
+                elif kind == "tool_result":
+                    self._on_tool_result(str(op[1]), str(op[2]))
+                elif kind == "user_text":
+                    self._on_user_text(str(op[1]))
+                else:
+                    log.debug("transcript worker: unknown op %r", kind)
+            except Exception:  # noqa: BLE001
+                log.exception("transcript worker op %r failed", kind)
+            try:
+                # deliver held speech after every op
+                self._pump_held()
+            except Exception:  # noqa: BLE001
+                log.exception("transcript worker held-utterance delivery failed")
+
+    def _on_mic(self) -> None:
+        """A mic kick.  Mid-turn kicks are the barge-in signal (the
+        session applies L2); otherwise a fresh server-kind turn starts
+        from the buffered utterance."""
+        with self._lock:
+            active = self._turn_active
+        if active:
+            self._seq += 1
+            self._fire("input_audio_buffer.speech_started", {
+                "item_id": "utterance_{}".format(self._seq),
+                "audio_start_ms": 0,
+            })
+            return
+        with self._lock:
+            if not self._mic_buffer:
+                log.debug(
+                    "transcript lane: mic op with no buffered audio — dropped"
+                )
+                return
+        self._run_server_turn()
+
+    def _on_cancel_op(self) -> None:
+        """Drain a cancel op.  The flag was already set synchronously by
+        cancel_response; a stale cancel (no turn active) is cleared so it
+        can never kill the NEXT turn."""
+        with self._lock:
+            if not self._turn_active:
+                self._cancel_requested = False
+                log.debug("transcript lane: stale cancel drained")
+
+    def _on_tool_result(self, call_id: str, output_text: str) -> None:
+        """Commit one function_call_output to the history — a role:"tool"
+        message, unique per call_id (the provider law: each call answered
+        EXACTLY once, and each tool message immediately follows the
+        assistant ``tool_calls`` message that owned the call).  When a
+        message for this call_id ALREADY exists (the L9 placeholder
+        "OK: awaiting…", queued in the ask turn), it is REPLACED IN
+        PLACE: the content is overwritten and the position kept, so the
+        answer's tool message stays contiguous behind its assistant
+        tool_calls message and the provider never sees a duplicate
+        call_id — the wire violation that 400'd every query_user round.
+        Only when no prior message exists for the call_id is a new
+        message appended (a normal tool round)."""
+        name = self._call_names.get(call_id, "")
+        for message in self._history:
+            if (
+                message.get("role") == "tool"
+                and message.get("tool_call_id") == call_id
+            ):
+                message["content"] = output_text
+                if name:
+                    message["name"] = name
+                log.debug(
+                    "transcript lane: tool message for call_id %r replaced "
+                    "in place (the L9 answer closes the placeholder)",
+                    call_id,
+                )
+                return
+        message: Dict[str, Any] = {
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": output_text,
+        }
+        if name:
+            message["name"] = name
+        # orphan guard: a tool message without its owning
+        # tool_calls message would poison the wire (400)
+        if not any(
+            m.get("role") == "assistant"
+            and any(str(c.get("id") or "") == call_id
+                    for c in (m.get("tool_calls") or ()))
+            for m in self._history
+        ):
+            log.warning(
+                "transcript lane: refusing to append the tool message for "
+                "call_id %r — no assistant tool_calls message in the "
+                "history owns it (never an orphaned tool message)",
+                call_id,
+            )
+            return
+        self._append_history(message)
+
