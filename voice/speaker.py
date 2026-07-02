@@ -447,3 +447,7 @@ class G1Speaker:
         self._speaking = False
         self._drained.set()
 
+    def _set_speaking(self, value: bool) -> None:
+        with self._lock:
+            self._speaking = value
+
