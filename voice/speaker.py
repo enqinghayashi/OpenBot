@@ -129,3 +129,19 @@ class SpeakerError(RuntimeError):
     """A speaker call failed.  Never downgrade this to a warning."""
 
 
+class G1Speaker:
+    """PCM16 / 16 kHz / mono playback on the G1's own speaker.
+
+    Constructor performs the ~0.7 s SDK client build once; it requires
+    ``unitree_sdk2py`` (robot only).  All RPC calls serialise under one
+    lock.  ``play`` ENQUEUES and the paced playback worker drains it as
+    ``chunk_ms`` chunks under one stream id (see the module docstring —
+    before the queue, each chunk was one synchronous RPC per audio delta
+    from the WebSocket thread, which is the reported lag/artefact);
+    ``stop`` cancels queued audio then issues ``PlayStop`` — a documented
+    no-op in effect, so silence after ``stop()`` is not promised.
+    Construction also runs the volume boot gate: SetVolume(100) + a
+    read-back that must equal 100 (``G1_VOLUME``), else the ctor raises
+    and the process fails fast - the volume pin is architectural.
+    """
+
