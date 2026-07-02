@@ -1521,3 +1521,11 @@ class VoiceSession:
             text += "; usage Not reported on the wire"
         return text
 
+    @staticmethod
+    def _b64_pcm_seconds(delta_b64: str) -> float:
+        """PCM16/24k seconds for one base64 audio delta; 0 on garbage."""
+        try:
+            raw = base64.b64decode(delta_b64)
+        except Exception:  # noqa: BLE001 - a malformed delta just gets dropped
+            return 0.0
+        return len(raw) / 2.0 / AUDIO_SAMPLE_RATE
