@@ -203,3 +203,35 @@ class G1Speaker:
             self.max_lead_s,
         )
 
+    def _build_client(self) -> Any:
+        # box SDK checkout:
+        # /home/unitree/unitree_sdk2_python
+        # bare 'voice' env never pip-installed it
+        # (RUNBOOK §13.3)
+        # no-op on a laptop
+        # import stays lazy
+        if os.path.isdir(
+            "/home/unitree/unitree_sdk2_python"
+        ) and "/home/unitree/unitree_sdk2_python" not in sys.path:
+            sys.path.insert(0, "/home/unitree/unitree_sdk2_python")
+        try:
+            from unitree_sdk2py.g1.audio.g1_audio_client import AudioClient
+            from unitree_sdk2py.core.channel import ChannelFactoryInitialize
+        except ImportError as exc:  # pragma: no cover - robot-only
+            raise SpeakerError(
+                "unitree_sdk2py is not installed ({}); G1Speaker runs on "
+                "the robot, use SounddeviceSink/MockSink on a laptop".format(exc)
+            )
+        # channel factory MUST init before any client
+        # skip it: DDS participant None, then
+        # "'NoneType' object has no attribute '_ref'"
+        # in the cyclonedds Topic ctor
+        # eth0 iface
+        # idempotent
+        # G1Mic: multicast
+        ChannelFactoryInitialize(0, "eth0")
+        client = AudioClient()
+        client.SetTimeout(self.timeout_s)
+        client.Init()
+        return client
+
