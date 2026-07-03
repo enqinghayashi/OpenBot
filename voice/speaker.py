@@ -451,3 +451,14 @@ class G1Speaker:
         with self._lock:
             self._speaking = value
 
+    def _drain_queue(self) -> int:
+        dropped = 0
+        while True:
+            try:
+                self._queue.get_nowait()
+                dropped += 1
+            except queue.Empty:
+                return dropped
+
+    # ------------------------------------------------- volume / led (safe)
+
