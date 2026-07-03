@@ -575,3 +575,22 @@ class SounddeviceSink:
         self._stream = None  # type: Optional[Any]
         self._device = None  # type: Optional[Any]
 
+    def _open(self) -> None:
+        if self._stream is not None:
+            return
+        try:
+            import sounddevice as sd  # lazy: laptop-only dep
+        except ImportError as exc:  # pragma: no cover - env dependent
+            raise SpeakerError("sounddevice is not installed: {}".format(exc))
+        try:
+            self._stream = sd.RawOutputStream(
+                samplerate=self.sample_rate,
+                channels=self.channels,
+                dtype=self.dtype,
+            )
+            self._stream.start()
+            self._device = sd
+        except Exception as exc:  # noqa: BLE001 - surface whatever the device throws
+            self._stream = None
+            raise SpeakerError("cannot open sounddevice output: {}".format(exc))
+
