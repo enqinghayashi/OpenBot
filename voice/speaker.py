@@ -481,3 +481,15 @@ class G1Speaker:
                 "GetVolume returned non-integer volume: {!r}".format(data["volume"])
             ) from exc
 
+    def set_volume(self, volume: int) -> None:
+        """Set speaker volume, 0-100 (bare-``int`` shape)."""
+        if not 0 <= volume <= 100:
+            raise ValueError("volume must be 0-100, got {}".format(volume))
+        client = self._require()
+        with self._lock:
+            code = client.SetVolume(volume)  # bare int, so do NOT unpack it
+        if code != 0:
+            raise SpeakerError(
+                "SetVolume({}) failed: {}".format(volume, describe_code(code))
+            )
+
