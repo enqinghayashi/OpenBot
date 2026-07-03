@@ -287,3 +287,317 @@ class MergedWriter:
         self.sonic_kd_boot = np.array(
             [self.lowcmd.motor_cmd[i].kd for i in range(15)], dtype=np.float64)
 
+    def gate_prompt(self):
+        print("\n=== GATE: gantry on? spotter ready? physical E-stop armed? ===")
+        if self.policy_enabled:
+            print("=== POLICY IS ACTIVE in this run (stage >= 1) ===")
+        if sys.stdin.isatty():
+            input("Press Enter to arm the writer and start the coupling ramp... ")
+        else:
+            # non-tty stdin means the launcher already gated the run;
+            # arm immediately instead of dying on EOF.
+            print("[gate] stdin not a tty (launcher-gated) — arming immediately")
+
+    # ------------------------------------------------------------- the console
+
+    def start_console(self):
+        def loop():
+            while not self._shutdown:
+                try:
+                    line = input("merge> ")
+                except (EOFError, OSError):
+                    break
+                try:
+                    self.console_command(line.strip())
+                except Exception as e:
+                    print(f"[console] {e}")
+        threading.Thread(target=loop, daemon=True).start()
+
+    # ---------------------------------------------- the socket server
+
+    def start_socket_server(self):
+        """UNIX-socket request bridge with one-line replies (v2b).
+
+        Thread-per-connection (grip_server pattern, already validated on
+        Stuart): the pick engine polls `q` at 50 Hz while an `arm` slew is
+        still in flight on another connection. One line per request, one
+        reply line per request (DONE = slew STARTED; completion is observed
+        via `armstate` — the guarded insert monitors q mid-slew, so a
+        blocking DONE would serialize the monitor out):
+          arm <14 floats> [duration_s]   DONE / ERROR
+          freeze | q | armstate | hold_rc on|off
+          cmd_set off|vx vy omega [dur]  height <m> [dur] | height off
+          stance <deg> | stance off      DONE (symmetric hip-roll splay)
+          payload on|off rc0 status quit
+          sonic <seq> <age_ms> <q0..q14> SONIC:f <seq> / ERROR (18-token 50 Hz frame)
+          sonic on|off|status            SONIC:on <b> / SONIC:off / SONIC:status ...
+          sonic arm | sonic reset         ERROR:<verb> is console-only
+          estop                          DONE (SONIC lane force-released)
+        Dispatched through the same actions as console_command, so socket
+        and console stay in lockstep. A thread wakes only on a request —
+        not a DDS callback, so the GIL rule is untouched.
+
+        Log suppression (spec §2.3): the `[sock] <line>` echo is dropped ONLY
+        when the reply starts with `SONIC:f ` (the 50 Hz steady-state ack) or
+        is byte-identical to the previous reply on THIS connection (idempotent
+        re-ack).  Every ERROR: and every state-change reply still prints.
+        """
+        path = self.cfg.get("sock_path")
+        if not path:
+            print("[sock] no sock_path in config — bridge disabled")
+            return
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+        def handle(conn):
+            conn_file = conn.makefile("r", encoding="utf-8")
+            prev_reply = None  # previous reply on this connection
+            try:
+                for raw in conn_file:
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    try:
+                        reply = self.handle_socket_line(line, conn)
+                    except Exception as e:
+                        reply = f"ERROR:{e}"
+                    # log suppression: skip the echo for the 50 Hz ack and for
+                    # byte-identical repeats; every other reply prints.
+                    if not (reply.startswith("SONIC:f ") or reply == prev_reply):
+                        print(f"[sock] {line}")
+                    prev_reply = reply
+                    try:
+                        conn.sendall((reply + "\n").encode())
+                    except OSError:
+                        break
+            except OSError:
+                pass
+            finally:
+                conn_file.close()
+                conn.close()
+
+        def loop():
+            srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            srv.bind(path)
+            srv.listen(4)
+            print(f"[sock] listening on {path}")
+            while not self._shutdown:
+                try:
+                    conn, _ = srv.accept()
+                except OSError:
+                    break
+                threading.Thread(target=handle, args=(conn,), daemon=True).start()
+            srv.close()
+        threading.Thread(target=loop, daemon=True).start()
+
+    def handle_socket_line(self, line, conn=None):
+        """One socket request -> one reply line (DONE / ERROR / Q: / STATE: /
+        SONIC:).
+
+        `conn` is the connection the request arrived on.  The spec §2.3
+        log-suppression rule keys on the PREVIOUS REPLY ON THAT CONNECTION, so
+        the connection identity is threaded through here; the `[sock] <line>`
+        echo itself is emitted by the connection loop in
+        `start_socket_server`, which owns that per-connection previous reply.
+        """
+        parts = line.split()
+        verb = parts[0] if parts else ""
+        if not verb:
+            return "ERROR:empty request"
+        now = time.perf_counter()
+        if verb in ("tuck", "carry", "ready", "lift", "neutral", "home"):
+            pose = "CARRY_TUCK" if verb in ("tuck", "carry") else verb.upper()
+            with self._dispatch_lock:
+                self.arm_tau[:] = 0.0  # pose slew, no FF
+                self.arm.slew_to(pose, now)
+            return "DONE"  # slew started
+        if verb == "arm":
+            if len(parts) < 15:
+                return "ERROR:arm needs 14 floats"
+            try:
+                target = np.array([float(x) for x in parts[1:15]], dtype=np.float32)
+            except ValueError:
+                return "ERROR:arm needs 14 floats"
+            duration = None
+            tau = None
+            if len(parts) >= 16:
+                try:
+                    duration = float(parts[15])
+                except ValueError:
+                    return "ERROR:arm duration must be a float"
+            if len(parts) >= 30:
+                # optional arm feedforward: 14 tau values applied to motors
+                # 15-28 on every tick for the whole slew.
+                # no tau given means zero feedforward.
+                try:
+                    tau = np.array([float(x) for x in parts[16:30]],
+                                   dtype=np.float64)
+                except ValueError:
+                    return "ERROR:arm tau must be 14 floats"
+            with self._dispatch_lock:
+                self.arm_tau[:] = tau if tau is not None else 0.0
+                self.arm.slew_to_vector(target, now, duration)
+            return "DONE"  # slew started
+        if verb == "freeze":
+            with self._dispatch_lock:
+                self.arm.freeze(time.perf_counter())
+            return "DONE"
+        if verb == "q":
+            st = self.lowstate
+            if st is None:
+                return "ERROR:no lowstate"
+            return "Q:" + " ".join(f"{v:.6f}" for v in st["q"][15:29])
+        if verb == "armstate":
+            a = self.arm
+            return f"STATE: {a.state} {1 if a._T > 0.0 else 0} {a._T:.3f}"
+        if verb == "hold_rc":
+            if len(parts) != 2 or parts[1] not in ("on", "off"):
+                return "ERROR:hold_rc on|off"
+            self.rc_hold = (parts[1] == "on")
+            print(f"[rc] hold_rc={self.rc_hold}")
+            return "DONE"
+        if verb == "payload":
+            if len(parts) != 2 or parts[1] not in ("on", "off"):
+                return "ERROR:payload on|off"
+            self.payload = (parts[1] == "on")
+            print(f"[arm] payload={self.payload}")
+            return "DONE"
+        if verb == "rc0":
+            if self.rc:
+                self.rc.zero()
+            return "DONE"
+        if verb == "cmd_set":
+            err = self._apply_cmd_set(parts)
+            if err:
+                return f"ERROR:{err}"
+            print(f"[cmd] {self._cmd_auto_status()}")
+            return "DONE"
+        if verb == "height":
+            err = self._apply_height(parts)
+            if err:
+                return f"ERROR:{err}"
+            print(f"[height] {self._height_status()}")
+            return "DONE"
+        if verb == "stance":
+            err = self._apply_stance(parts)
+            if err:
+                return f"ERROR:{err}"
+            print(f"[stance] {self._stance_status()}")
+            return "DONE"
+        if verb == "sonic":
+            # these verbs are console-gated by the sonic dispatcher;
+            # anything else is an 18-token 50 Hz frame.
+            if len(parts) == 1:
+                return f"SONIC:status {self._sonic_status()}"
+            if parts[1] in ("arm", "on", "off", "reset", "status"):
+                return self._apply_sonic(parts, from_console=False)
+            # --- 18-token frame, checked in order ------
+            # the bare except is required: a bad float raises ValueError
+            # while run() only catches RuntimeError.
+            # every reject bumps sonic_rej and replies ERROR:.
+            try:
+                if len(parts) != 18:
+                    self.sonic_rej += 1
+                    return "ERROR:sonic frame needs 18 tokens"
+                vals = [float(x) for x in parts[1:18]]  # 17 numeric fields
+                seq = int(vals[0])
+                age_ms = vals[1]
+                q = np.array(vals[2:17], dtype=np.float64)
+                if not np.isfinite(q).all():
+                    self.sonic_rej += 1
+                    return "ERROR:non-finite q"
+                if np.max(np.abs(q)) > self.sonic_target_abs_max:
+                    self.sonic_rej += 1
+                    return "ERROR:q out of range"
+                prev = self.sonic_target
+                if prev is not None and \
+                        np.max(np.abs(q - prev)) > self.sonic_frame_step_max:
+                    self.sonic_rej += 1
+                    return "ERROR:frame step too large"
+                if seq <= self.sonic_seq:
+                    self.sonic_rej += 1
+                    return "ERROR:stale seq"
+                # the negation matters: the predicate is age <= stale, so the
+                # reject is its logical negation.
+                # `age > stale` would pass a NaN age (both comparisons false)
+                # and the revoke would never fire.
+                if not (age_ms <= self.sonic_stale_ms):
+                    self.sonic_rej += 1
+                    return "ERROR:state age too old"
+                with self._dispatch_lock:
+                    # warmup counts consecutive accepted frames, not frames since
+                    # `arm`: the satellite streams for minutes, so gating on the
+                    # commit would break "watch rx rise, then arm".
+                    # the run restarts at 1 when the gap exceeds sonic_stale_ms,
+                    # the bound shared by the live revoke and the age gate, so
+                    # warm >= frames means no gap in this run would have revoked.
+                    # clock: read once and rebind, never slice.
+                    now = time.monotonic()
+                    self._sonic_warm_tick(now)
+                    self.sonic_target = q
+                    self.sonic_last_rx = now
+                    self.sonic_seq = seq
+                    self.sonic_rx += 1
+                    self.sonic_has_frame = True
+                return f"SONIC:f {seq}"
+            except Exception:
+                self.sonic_rej += 1
+                return "ERROR:sonic frame rejected"
+        if verb == "estop":
+            # estop: b goes to 0 and the GR00T gains are written immediately.
+            # this returns control to GR00T and never requests shutdown,
+            # so the body is never left limp mid-walk.
+            self._sonic_revoke("estop", force=True)
+            return "DONE"
+        if verb == "simulate_fatal":
+            self._simulate_fatal = True
+            print("[fatal] SIMULATED FATAL armed")
+            return "DONE"
+        if verb == "status":
+            key = self.policy.last_key if self.policy else "no-policy"
+            a = self.arm
+            return (f"STATE: {a.state} {1 if a._T > 0.0 else 0} {a._T:.3f} "
+                    f"policy={key} rc_hold={int(self.rc_hold)} "
+                    f"payload={int(self.payload)} "
+                    f"{self._cmd_auto_status()} {self._height_status()} "
+                    f"{self._stance_status()} {self._sonic_status()}")
+        if verb == "quit":
+            self.request_shutdown("socket quit")
+            return "DONE"
+        return "ERROR:unknown command"
+
+    def _apply_cmd_set(self, parts):
+        """cmd_set parse+apply, shared by socket and console (same dispatch
+        pattern as arm/hold_rc in both handlers). Returns an error message or
+        None on success; mutates the cmd_auto state on success:
+          cmd_set off                    deactivate + zero
+          cmd_set vx vy omega            activate, 1.0 s
+          cmd_set vx vy omega duration   activate, duration > 0
+        """
+        if len(parts) == 2 and parts[1] == "off":
+            self.cmd_auto_active = False
+            self.cmd_auto[:] = 0.0
+            return None
+        if len(parts) not in (4, 5):
+            return "cmd_set off | cmd_set vx vy omega [duration_s]"
+        try:
+            vals = np.array([float(x) for x in parts[1:4]], dtype=np.float32)
+        except ValueError:
+            return "cmd_set needs 3 floats"
+        duration = 1.0
+        if len(parts) == 5:
+            try:
+                duration = float(parts[4])
+            except ValueError:
+                return "cmd_set duration must be a float"
+        if not np.isfinite(vals).all() or not np.isfinite(duration):
+            return "cmd_set values must be finite"
+        if duration <= 0.0:
+            return "cmd_set duration must be > 0"
+        self.cmd_auto[:] = vals
+        self.cmd_auto_active = True
+        self.cmd_auto_deadline = time.monotonic() + duration
+        return None
+
