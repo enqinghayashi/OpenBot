@@ -636,3 +636,6 @@ class MockSink:
     def stop(self) -> None:
         self.stopped += 1
 
+    def close(self) -> None:
+        pass
+
