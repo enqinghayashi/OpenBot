@@ -541,3 +541,18 @@ class G1Speaker:
             raise SpeakerError("G1 audio client is not connected")
         return client
 
+    def close(self) -> None:
+        """Best-effort teardown; never raises.  Stops the queue first."""
+        self.stop()  # kills queued audio, then PlayStop
+        self._queue.put(_STOP)
+        worker, self._worker = self._worker, None
+        if worker is not None:
+            worker.join(5.0)
+        client, self._client = self._client, None
+        if client is None:
+            return
+        try:
+            with self._lock:
+                client.PlayStop(self.app_name)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("PlayStop during close raised: %s", exc)
