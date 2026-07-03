@@ -462,3 +462,22 @@ class G1Speaker:
 
     # ------------------------------------------------- volume / led (safe)
 
+    def get_volume(self) -> int:
+        """Current speaker volume, 0-100 (``(code, data)`` shape)."""
+        client = self._require()
+        with self._lock:
+            code, data = client.GetVolume()
+        if code != 0:
+            raise SpeakerError("GetVolume failed: {}".format(describe_code(code)))
+        if not isinstance(data, dict) or "volume" not in data:
+            raise SpeakerError("GetVolume returned unexpected payload: {!r}".format(data))
+        try:
+            return int(data["volume"])
+        except (TypeError, ValueError) as exc:
+            # code-0 with a non-integer volume leaked
+            # a raw TypeError; docstring promises only
+            # SpeakerError
+            raise SpeakerError(
+                "GetVolume returned non-integer volume: {!r}".format(data["volume"])
+            ) from exc
+
