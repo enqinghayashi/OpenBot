@@ -849,3 +849,255 @@ class TranscriptBackend(BrainBackend):
             return
         self._start_transcribed_server_turn(transcript)
 
+    def _start_transcribed_server_turn(self, transcript: str) -> None:
+        """The post-whisper half of a fresh server turn, shared by a
+        live utterance (:meth:`_run_server_turn`) and a HELD utterance
+        (:meth:`_pump_held` — the delivery replays the SAME event shape
+        a live turn would have, so the session cannot tell the audio
+        arrived mid-batch): turn state up -> the bare
+        ``response.created`` (the session's created handler runs the
+        lane's L10 frame seam here — this lane's capability, the
+        created-to-chat window) -> the L9-cancel check -> (only when
+        the turn was cancelled at start: the transcription — the
+        session's query-answer capture — before the user message) ->
+        the user message -> ONE chat call.  A NORMAL turn fires NO
+        transcription: the commit is the admission, and a transcription
+        event would arrive gate-shut and log a FALSE loss (2026-09-04
+        fix — the session's drop branch is the realtime lane's path)."""
+        with self._lock:
+            self._cancel_requested = False
+            self._turn_active = True
+            self._turn_epoch += 1
+        self._fire("response.created", {})
+        with self._lock:
+            cancelled_at_start = self._cancel_requested
+        if cancelled_at_start:
+            # cancelled at the created fire: the session awaits a
+            # query answer and this speech is it. Close the aborted
+            # turn first; the transcription handler opens its own response
+            self._turn_active = False
+            self._fire("response.done", {"response": {"status": "cancelled"}})
+            self._fire("conversation.item.input_audio_transcription.completed", {
+                "transcript": transcript,
+            })
+            return
+        # no event on the normal path: the commit
+        # below is the admission
+        self._append_history({"role": "user", "content": transcript})
+        self._run_model_call(tools_enabled=True, instruction=None)
+
+    def _on_create(
+        self, tools_enabled: bool, instruction: Optional[str]
+    ) -> None:
+        """A session-initiated response (tool continuation / ask turn /
+        query answer).  A TOOLS-ENABLED turn closes the per-turn mic
+        buffer — the task contract: "the turn is closed when the session
+        starts a response (create_response)" — then ONE chat call.  An
+        ASK turn (tools disabled) NEVER closes the buffer: its turn has
+        no mic input, and any buffered audio is the human's awaited
+        answer (L9 phase 2) — consuming it into the ask turn would
+        strand the query; the answer is transcribed by the server turn
+        that follows (documented deviation).  A whisper hiccup on a
+        tools-enabled turn must not strand the session's own response (a
+        tool batch or an answer): the transcript is a bonus, so it warns
+        and proceeds without it."""
+        # an ask create opens the answer window; held speech
+        # predates the question and must not land here
+        with self._lock:
+            self._awaiting_query_answer = not tools_enabled
+        transcript = ""
+        if tools_enabled:
+            pcm16 = self._close_buffer()
+            if pcm16:
+                try:
+                    transcript = str(self._submit(pcm16) or "").strip()
+                except Exception as exc:  # noqa: BLE001 - see docstring
+                    log.warning(
+                        "transcript lane: whisper stage failed on a session "
+                        "turn (%s) — proceeding without the mic transcript",
+                        exc,
+                    )
+                    transcript = ""
+        if transcript:
+            self._append_history({"role": "user", "content": transcript})
+        with self._lock:
+            self._cancel_requested = False
+            self._turn_active = True
+            self._turn_epoch += 1
+        self._fire("response.created", {})
+        with self._lock:
+            cancelled_at_start = self._cancel_requested
+        if cancelled_at_start:
+            # cancel landed mid-op or mid-whisper: close with no
+            # model call, and the buffer goes to the next turn
+            self._turn_active = False
+            self._fire("response.done", {"response": {"status": "cancelled"}})
+            self._restart_if_barge()
+            return
+        self._run_model_call(tools_enabled=tools_enabled, instruction=instruction)
+
+    def _run_model_call(
+        self, *, tools_enabled: bool, instruction: Optional[str]
+    ) -> None:
+        """ONE chat call for the turn (never more): commit the result to
+        the history, fire the session's output events, speak the prose.
+        A transport failure, a dropped call, or an empty result (never
+        an empty response) fires ``error`` -> the session's failover
+        signal.
+
+        When prose AND tool calls arrive together, TWO consecutive
+        assistant messages are committed: the prose message FIRST, then
+        the tool_calls message — a legal shape (two assistant messages
+        in a row), and the tool messages that follow answer the
+        tool_calls message they immediately follow.  The tool_calls
+        message therefore naturally precedes its tool messages; the
+        prose message rides in the same turn before both."""
+        messages = self._history_messages(instruction)
+        with self._lock:
+            frame, self._staged_frame = self._staged_frame, None
+        # frames: decision turns only, never an ask; the
+        # store is cleared either way so nothing replays
+        image = frame if tools_enabled else None
+        tools = self._tools if tools_enabled else []
+        try:
+            result = self._client.chat(
+                messages, tools, image_jpeg_b64=image
+            )
+        except ChatTransportError as exc:
+            log.error("transcript lane: cloud transport failed: %s", exc)
+            self._fail_turn("cloud transport failed: {}".format(exc))
+            return
+        except Exception as exc:  # noqa: BLE001 - whatever it throws
+            log.error("transcript lane: cloud chat failed: %s", exc)
+            self._fail_turn("cloud chat failed: {}".format(exc))
+            return
+        # a barge-in may have landed during the call
+        self._check_barge()
+        if self._finish_turn():
+            return
+        if result.dropped:
+            log.error("transcript lane: cloud chat dropped (single-flight)")
+            self._fail_turn(
+                "cloud chat dropped (a previous call was in flight)"
+            )
+            return
+        text = (result.text or "").strip() if result.text else ""
+        calls = result.tool_calls or []
+        if not text and not calls:
+            # an empty response (no prose, no call) is a failure
+            # and takes the failover path
+            log.error(
+                "transcript lane: the model returned neither prose nor a "
+                "tool call (never an empty response)"
+            )
+            self._fail_turn(
+                "the model returned neither prose nor a tool call "
+                "(never an empty response)"
+            )
+            return
+        item_id = "transcript_item_{}".format(self._seq)
+        self._seq += 1
+        if text:
+            self._append_history({"role": "assistant", "content": text})
+            self._fire("response.output_item.done", {
+                "item": {
+                    "type": "message",
+                    "content": [{"type": "text", "text": text}],
+                },
+            })
+        if calls:
+            assistant: Dict[str, Any] = {
+                "role": "assistant", "content": None, "tool_calls": [],
+            }
+            for n, call in enumerate(calls):
+                call_id = str(call.id or "call_{}".format(n))
+                name = str(call.name or "")
+                try:
+                    arguments_json = json.dumps(call.arguments)
+                except (TypeError, ValueError):
+                    arguments_json = "{}"
+                assistant["tool_calls"].append({
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": arguments_json},
+                })
+                self._call_names[call_id] = name
+                self._fire("response.output_item.done", {
+                    "item": {
+                        "type": "function_call",
+                        "name": name,
+                        "call_id": call_id,
+                        "arguments": arguments_json,
+                    },
+                })
+            if assistant["tool_calls"]:
+                self._append_history(assistant)
+        if text:
+            # prose: log it, then speak it with local TTS
+            log.info("transcript lane prose reply: %s", text)
+            self._fire("response.audio_transcript.delta", {
+                "delta": text, "item_id": item_id,
+            })
+            self._fire("response.audio_transcript.done", {
+                "transcript": text, "item_id": item_id,
+            })
+            self._speak(text)
+        if self._finish_turn():
+            return
+        self._turn_active = False
+        self._fire("response.done", {"response": {"status": "completed"}})
+
+    def _check_barge(self) -> None:
+        """Fire the barge-in signal for audio that arrived mid-turn (L2),
+        at a stage boundary.  The session's inline handler decides
+        truncate + cancel (before tool results) or ignore (after tool
+        results — the audio then simply joins the next turn's buffer).
+
+        Per-turn epoch guard (D4): a chunk that landed between the LAST
+        boundary check and the turn close set ``_barge_pending`` while
+        the turn was still active — without the guard it would fire at
+        the NEXT turn's first boundary and the session would cancel a
+        fresh turn, silently dropping the new utterance.  The flag only
+        fires when its epoch matches the CURRENT turn: a late chunk
+        belongs to the next turn's buffer, not to an interruption."""
+        with self._lock:
+            pending = self._barge_pending
+            self._barge_pending = False
+            epoch = self._barge_epoch
+        if pending and epoch == self._turn_epoch:
+            self._seq += 1
+            self._fire("input_audio_buffer.speech_started", {
+                "item_id": "utterance_{}".format(self._seq),
+                "audio_start_ms": 0,
+            })
+
+    def _finish_turn(self) -> bool:
+        """Close the active turn's stage work at a boundary.  Returns
+        True when a barge-in cancel aborted the turn (the caller must
+        stop): ``response.done`` {status: "cancelled"} closes the
+        session's accounting (its done handler owns the queue release)
+        and a fresh server turn auto-starts from the buffered audio."""
+        with self._lock:
+            cancelled = self._cancel_requested
+            self._cancel_requested = False
+        if not cancelled:
+            return False
+        self._turn_active = False
+        log.info("transcript lane: turn cancelled (barge-in)")
+        self._fire("response.done", {"response": {"status": "cancelled"}})
+        self._restart_if_barge()
+        return True
+
+    def _restart_if_barge(self) -> None:
+        """After a barge-in abort, auto-start a fresh server turn from
+        the buffered audio (the server-VAD mirror: the interruption IS
+        the next utterance).  Nothing restarts when the buffer was
+        already consumed — the L9 answer cancel, whose audio became the
+        transcription, never doubles the turn."""
+        with self._lock:
+            if self._closed or self._turn_active:
+                return
+            if not self._mic_buffer or self._buffer_consumed:
+                return
+        self._run_server_turn()
+
