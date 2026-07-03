@@ -556,3 +556,5 @@ class G1Speaker:
                 client.PlayStop(self.app_name)
         except Exception as exc:  # noqa: BLE001
             log.debug("PlayStop during close raised: %s", exc)
+
+
