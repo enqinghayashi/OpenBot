@@ -625,3 +625,7 @@ class SounddeviceSink:
 class MockSink:
     """Records everything it is asked to play (for tests)."""
 
+    def __init__(self) -> None:
+        self.played = []  # type: List[bytes]
+        self.stopped = 0
+
