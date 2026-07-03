@@ -594,3 +594,12 @@ class SounddeviceSink:
             self._stream = None
             raise SpeakerError("cannot open sounddevice output: {}".format(exc))
 
+    def play(self, pcm16: bytes) -> None:
+        if not pcm16:
+            return
+        self._open()
+        stream = self._stream
+        if stream is None:  # pragma: no cover - _open() raised already
+            return
+        stream.write(pcm16)
+
