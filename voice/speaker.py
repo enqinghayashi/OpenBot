@@ -515,3 +515,23 @@ class G1Speaker:
                 )
             )
 
+    def set_led(self, red: int, green: int, blue: int) -> None:
+        """Head LED, 0-255 each.  Failures are logged, never raised."""
+        client = self._client
+        if client is None:
+            return
+        try:
+            with self._lock:
+                code = client.LedControl(  # bare int, so do NOT unpack it
+                    max(0, min(255, int(red))),
+                    max(0, min(255, int(green))),
+                    max(0, min(255, int(blue))),
+                )
+        except Exception as exc:  # noqa: BLE001 - a light isn't worth a
+            log.debug("LedControl raised: %s", exc)  # whole conversation
+            return
+        if code != 0:
+            log.debug("LedControl failed: %s", describe_code(code))
+
+    # ------------------------------------------------------------ internals
+
