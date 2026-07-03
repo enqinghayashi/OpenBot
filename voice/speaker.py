@@ -535,3 +535,9 @@ class G1Speaker:
 
     # ------------------------------------------------------------ internals
 
+    def _require(self) -> Any:
+        client = self._client
+        if client is None:
+            raise SpeakerError("G1 audio client is not connected")
+        return client
+
