@@ -642,3 +642,5 @@ class MockSink:
     @property
     def total_bytes(self) -> int:
         return sum(len(p) for p in self.played)
+
+
