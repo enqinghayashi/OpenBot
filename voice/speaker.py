@@ -606,3 +606,12 @@ class SounddeviceSink:
     def stop(self) -> None:
         """No-op on the laptop: playback is synchronous and already done."""
 
+    def close(self) -> None:
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:  # noqa: BLE001 - shutdown must not raise
+                pass
+
