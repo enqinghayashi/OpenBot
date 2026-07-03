@@ -615,3 +615,6 @@ class SounddeviceSink:
             except Exception:  # noqa: BLE001 - shutdown must not raise
                 pass
 
+    def __enter__(self) -> "SounddeviceSink":
+        return self
+
