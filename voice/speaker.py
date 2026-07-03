@@ -603,3 +603,6 @@ class SounddeviceSink:
             return
         stream.write(pcm16)
 
+    def stop(self) -> None:
+        """No-op on the laptop: playback is synchronous and already done."""
+
