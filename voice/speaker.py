@@ -620,3 +620,5 @@ class SounddeviceSink:
 
     def __exit__(self, *exc) -> None:  # noqa: ANN002 - protocol stub
         self.close()
+
+
