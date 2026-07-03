@@ -563,3 +563,15 @@ class SounddeviceSink:
     as the G1 on purpose, so half-duplex timing tuned on a laptop transfers
     to the robot unchanged - OpenBot protocol reference)."""
 
+    def __init__(
+        self,
+        sample_rate: int = G1_SAMPLE_RATE,
+        channels: int = G1_CHANNELS,
+        dtype: str = "int16",
+    ) -> None:
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.dtype = dtype
+        self._stream = None  # type: Optional[Any]
+        self._device = None  # type: Optional[Any]
+
