@@ -633,3 +633,6 @@ class MockSink:
         if pcm16:
             self.played.append(pcm16)
 
+    def stop(self) -> None:
+        self.stopped += 1
+
