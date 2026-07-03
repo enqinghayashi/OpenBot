@@ -622,3 +622,6 @@ class SounddeviceSink:
         self.close()
 
 
+class MockSink:
+    """Records everything it is asked to play (for tests)."""
+
