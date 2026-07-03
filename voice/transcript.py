@@ -1101,3 +1101,132 @@ class TranscriptBackend(BrainBackend):
                 return
         self._run_server_turn()
 
+    def _fail_turn(self, message: str) -> None:
+        """A lane failure (whisper dead, cloud transport, dropped call,
+        empty model result): surface the failover signal — the only
+        backend failure event the session understands ("error" -> the
+        director's hard failover -> OFFLINE_CASCADE).  No
+        ``response.done``: the session's error handler resets the turn
+        state itself.  S4: an open tool round (a batch whose results
+        were still pending when the lane failed) is dropped whole FIRST
+        — the reset must not leave a round awaiting tool messages that
+        will never arrive, and a LATE tool result must never re-orphan
+        the head (the orphan guard refuses it downstream)."""
+        self._close_open_round("lane failure ({}) reset the lane".format(
+            (message or "")[:60]
+        ))
+        with self._lock:
+            self._cancel_requested = False
+            self._barge_pending = False
+        self._turn_active = False
+        self._fire("error", {"message": message})
+
+    def _close_buffer(self) -> bytes:
+        """Close the per-turn mic buffer: take its audio (24 kHz), mark
+        it consumed, resample to 16 kHz for WhisperSubmit.  Called at
+        turn close — the transcription and a session-initiated
+        create_response race on the same buffer and only the FIRST
+        consumes it (the L9 answer is never transcribed twice)."""
+        with self._lock:
+            if self._buffer_consumed or not self._mic_buffer:
+                self._mic_buffer = bytearray()
+                self._buffer_consumed = True
+                return b""
+            pcm24 = bytes(self._mic_buffer)
+            self._mic_buffer = bytearray()
+            self._buffer_consumed = True
+        return _resample_pcm16(pcm24, MIC_RATE, STT_RATE)
+
+    def _history_messages(self, instruction: Optional[str]) -> List[Dict[str, Any]]:
+        """A copy of the history with the per-response instruction
+        prepended as a system message.  Per-response instructions do NOT
+        persist (the realtime lane's response-level override semantics)."""
+        out = [dict(m) for m in self._history]
+        if instruction:
+            out.insert(0, {"role": "system", "content": str(instruction)})
+        return out
+
+    # --------------------------------------------------- keeping history in bounds
+
+    def _append_history(self, message: Dict[str, Any]) -> None:
+        """Append one history message, then enforce the cap.  Every
+        append goes through here so the window can never grow without
+        bound (it is re-sent every turn; an uncapped window overflows
+        the provider window -> 400 -> failover)."""
+        self._history.append(message)
+        self._trim_history()
+
+    def _trim_history(self) -> None:
+        """Enforce the history cap (MAX_KEPT_HISTORY_MESSAGES, the
+        agent.py law): drop the oldest whole CLOSED units first — never
+        a bare prefix that would slice a round in half.  Index 0 is the
+        conversation anchor (the oldest retained message — on this lane
+        the first utterance; never the head of a droppable round) and is
+        never dropped.  The current OPEN round (an assistant
+        ``tool_calls`` whose tool messages have not all arrived) is
+        never dropped.  A tool round is dropped only as a WHOLE unit, in
+        BOTH directions: an assistant ``tool_calls`` message is never
+        retained without its tool messages, and a role:"tool" message is
+        never retained without its owning assistant.  Warns on every
+        drop."""
+        if len(self._history) <= MAX_KEPT_HISTORY_MESSAGES:
+            return
+        need = len(self._history) - MAX_KEPT_HISTORY_MESSAGES  # over the cap
+        # start at 1: index 0 is the anchor and is never dropped.
+        # step over whole closed units; tool results arrive before
+        # the next user message, so only the last round can be open
+        drop_end = 1  # legal drop cutoff
+        ends = []  # cut points
+        owed = set()  # owed call_ids
+        round_origin = 1  # round start
+        for i in range(1, len(self._history)):
+            message = self._history[i]
+            role = str(message.get("role") or "")
+            if role == "tool":
+                if not owed:
+                    break  # no owner, bail
+                owed.discard(message.get("tool_call_id"))
+                if not owed:
+                    drop_end = i + 1  # round closed here
+                    ends.append(drop_end)
+            elif role == "assistant":
+                if owed:
+                    break  # a round is still open, bail
+                calls = message.get("tool_calls") or ()
+                if calls:
+                    owed = {str(call.get("id") or "") for call in calls}
+                    round_origin = i
+                else:
+                    drop_end = i + 1  # prose message, closed here
+                    ends.append(drop_end)
+            elif role == "user":
+                if owed:
+                    break  # user message while a call is owed
+                drop_end = i + 1
+                ends.append(drop_end)
+            else:
+                break  # unknown role: do not drop blind
+        if owed:
+            # open round never dropped
+            drop_end = min(drop_end, round_origin)
+        if drop_end <= 1:
+            return  # nothing droppable
+        # drop the fewest whole units that clear the overage;
+        # undershoot is fine because the cap is a ceiling. A bare
+        # prefix cut can slice a round in half and 400 the request
+        drop = drop_end - 1  # fallback: drop everything droppable
+        for end in ends:
+            if end - 1 >= need:
+                drop = end - 1
+                break
+        if drop <= 0:
+            return
+        log.warning(
+            "transcript lane: history capped at %d messages — dropped %d "
+            "oldest fully-closed round message(s)",
+            MAX_KEPT_HISTORY_MESSAGES, drop,
+        )
+        del self._history[1:1 + drop]
+
+    # ------------------------------------------------------------ speech (TTS)
+
