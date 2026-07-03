@@ -1230,3 +1230,139 @@ class TranscriptBackend(BrainBackend):
 
     # ------------------------------------------------------------ speech (TTS)
 
+    def _speak(self, text: str) -> None:
+        """Local TTS -> the session's output_audio.delta vocabulary (24
+        kHz PCM16 base64 chunks, 0.25 s each — the L6 accounting rate),
+        then ``response.output_audio.done``.  A barge-in stop is checked
+        between chunks.  Piper failure degrades to a text-only
+        completion (handled inside :meth:`_synthesize`) — NOT a
+        failover: the brain lane is healthy and the model's words
+        already reached the session as a message item."""
+        pcm, rate = self._synthesize(text)
+        if not pcm or not rate:
+            # zero rate or empty PCM: skip the audio, the
+            # text already reached the session
+            return
+        pcm24 = _resample_pcm16(pcm, int(rate), AUDIO_SAMPLE_RATE)
+        chunk = int(AUDIO_SAMPLE_RATE * 2 * AUDIO_DELTA_S)
+        for i in range(0, len(pcm24), chunk):
+            self._check_barge()
+            with self._lock:
+                cancelled = self._cancel_requested
+            if cancelled:
+                return
+            self._fire("response.output_audio.delta", {
+                "delta": base64.b64encode(pcm24[i:i + chunk]).decode("ascii"),
+            })
+        with self._lock:
+            cancelled = self._cancel_requested
+        if not cancelled:
+            self._fire("response.output_audio.done", {})
+
+    def _synthesize(self, text: str) -> Tuple[bytes, int]:
+        """One piper synthesis with the cascade L4 retry law — EXACTLY
+        one retry (PIPER_RETRIES == 1, a law, not a knob) — then the
+        text-only completion: (b"", 0) when both attempts failed (the
+        caller completes the turn without audio; the model's words were
+        already delivered as text)."""
+        attempt = 0
+        while True:
+            try:
+                pcm, rate = self._tts(text)
+            except Exception as exc:  # noqa: BLE001
+                cause = exc
+            else:
+                if pcm and rate:
+                    return pcm, int(rate)
+                cause = PiperError(
+                    "piper returned empty PCM or a zero sample rate for "
+                    "{!r}".format((text or "")[:60])
+                )
+            attempt += 1
+            if attempt > PIPER_RETRIES:
+                log.error(
+                    "transcript lane: piper synthesis failed after %d "
+                    "attempts (%s) — text-only completion (the model's "
+                    "words already reached the session as text)",
+                    PIPER_RETRIES + 1, cause,
+                )
+                return b"", 0
+            log.warning(
+                "transcript lane: piper attempt %d/%d failed (%s); retrying once",
+                attempt, PIPER_RETRIES + 1, cause,
+            )
+
+    # ------------------------------------------------ the empty-transcript retry
+
+    def _speak_retry(self, line: str) -> None:
+        """Speak ONE honest line (the D5 empty-transcript retry) as a
+        full server turn — ``response.created`` (the session runs the
+        L10 frame seam inline), the message item, the spoken-text
+        events, local TTS, ``response.done`` — the SAME event shape a
+        normal prose turn has, so the session's accounting stays exact.
+        The line is committed to the history as the assistant's message
+        (the human heard it; the model must know it was said).  Never a
+        failover signal: the transport is healthy, the human just was
+        not heard."""
+        with self._lock:
+            self._cancel_requested = False
+            self._turn_active = True
+            self._turn_epoch += 1
+        # no_model_call created: no chat follows, the turn only
+        # speaks. The marker keeps the frame seam off, since
+        # staging a frame would pin it on a later turn
+        self._fire("response.created", {"no_model_call": True})
+        with self._lock:
+            cancelled_at_start = self._cancel_requested
+        if cancelled_at_start:
+            # cancelled at created: close it, nothing heard
+            self._turn_active = False
+            self._fire("response.done", {"response": {"status": "cancelled"}})
+            return
+        item_id = "transcript_item_{}".format(self._seq)
+        self._seq += 1
+        self._append_history({"role": "assistant", "content": line})
+        self._fire("response.output_item.done", {
+            "item": {
+                "type": "message",
+                "content": [{"type": "text", "text": line}],
+            },
+        })
+        self._fire("response.audio_transcript.delta", {
+            "delta": line, "item_id": item_id,
+        })
+        self._fire("response.audio_transcript.done", {
+            "transcript": line, "item_id": item_id,
+        })
+        self._speak(line)
+        if self._finish_turn():
+            return
+        self._turn_active = False
+        self._fire("response.done", {"response": {"status": "completed"}})
+
+
+# -----------------------------------------------------------------------
+# resampling: pure-stdlib linear interpolation for 16-bit mono PCM
+# -----------------------------------------------------------------------
+
+
+def _resample_pcm16(src: bytes, src_rate: int, dst_rate: int) -> bytes:
+    """Linear-interpolation resample for 16-bit mono PCM (pure stdlib).
+    24 kHz -> 16 kHz is the exact 2:3 case; piper 22050 -> 24 kHz is a
+    clean band-limited speech source — both well within the seam's error
+    bar (voice/app.py documents the same seam)."""
+    if src_rate == dst_rate or not src:
+        return src
+    n = len(src) // 2
+    samples = array.array("h")
+    samples.frombytes(src[: n * 2])
+    out_n = int(n * dst_rate / src_rate)
+    out = array.array("h")
+    step = src_rate / dst_rate  # source samples per output sample
+    for i in range(out_n):
+        pos = i * step
+        lo = int(pos)
+        frac = pos - lo
+        hi = lo + 1 if lo + 1 < n else lo
+        out.append(int(samples[lo] * (1.0 - frac) + samples[hi] * frac))
+    return out.tobytes()
