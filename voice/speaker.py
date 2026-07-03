@@ -629,3 +629,7 @@ class MockSink:
         self.played = []  # type: List[bytes]
         self.stopped = 0
 
+    def play(self, pcm16: bytes) -> None:
+        if pcm16:
+            self.played.append(pcm16)
+
