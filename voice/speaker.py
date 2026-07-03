@@ -493,3 +493,25 @@ class G1Speaker:
                 "SetVolume({}) failed: {}".format(volume, describe_code(code))
             )
 
+    def _ensure_volume(self) -> None:
+        """Boot gate: pin the speaker to ``G1_VOLUME`` and prove it.
+
+        Set then read back on EVERY G1Speaker boot (one construction
+        site per process, so this covers the whole architecture).  A
+        SetVolume RPC failure raises via ``set_volume``; a successful
+        write that does NOT stick (body-side clamp, board state) is a
+        hard ``SpeakerError`` — never a warning, because a quiet robot
+        is a silently broken robot.  This gate exists because a B2
+        probe set volume 20 for a sine test and the robot stayed quiet;
+        after this change, any boot re-pins 100.
+        """
+        self.set_volume(G1_VOLUME)
+        actual = self.get_volume()
+        if actual != G1_VOLUME:
+            raise SpeakerError(
+                "volume gate failed: SetVolume({}) but read back {} "
+                "- volume is pinned to {} (user directive)".format(
+                    G1_VOLUME, actual, G1_VOLUME
+                )
+            )
+
