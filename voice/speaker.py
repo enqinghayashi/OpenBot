@@ -558,3 +558,8 @@ class G1Speaker:
             log.debug("PlayStop during close raised: %s", exc)
 
 
+class SounddeviceSink:
+    """Laptop speaker via sounddevice (lazy import; same 16 kHz sink format
+    as the G1 on purpose, so half-duplex timing tuned on a laptop transfers
+    to the robot unchanged - OpenBot protocol reference)."""
+
