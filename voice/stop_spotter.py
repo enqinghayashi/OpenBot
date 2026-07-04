@@ -342,3 +342,11 @@ class StopSpotter(object):
         if kind == "stop_talking" or not self._acted_this_segment:
             self._act(kind, "final", text, now)
 
+    def _cut(self, stage: str, text: str, now: float) -> None:
+        """Cut the robot's speech only (cheap to get wrong)."""
+        if self._spoke_cut or self._echo_suppressed(now) or self.mode != "act":
+            return
+        self._spoke_cut = True
+        self._event(stage, text, True, "cut speech")
+        self.on_cut_speech(text)
+
