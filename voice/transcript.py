@@ -377,3 +377,15 @@ class TranscriptBackend(BrainBackend):
 
     # --------------------------------------------------------------- start & stop
 
+    def start(self) -> None:
+        """Bring the lane up: start the turn worker thread (daemon)."""
+        with self._lock:
+            if self._thread is not None:
+                return
+            thread = threading.Thread(
+                target=self._loop, name="transcript-turn", daemon=True
+            )
+            self._thread = thread
+        thread.start()
+        log.debug("transcript backend started (turn worker thread)")
+
