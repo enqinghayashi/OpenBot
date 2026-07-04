@@ -200,3 +200,27 @@ class StopSpotter(object):
             except queue.Full:
                 pass
 
+    def _run(self) -> None:
+        last_report = self.clock()
+        while not self._stop_evt.is_set():
+            try:
+                frame = self._q.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                self.process(frame)
+            except Exception:  # noqa: BLE001 - the spotter must never take the voice app down with it
+                log.exception("stop spotter failed; disabled (the cloud stop route still works)")
+                self._broken = True
+                return
+            now = self.clock()
+            if now - last_report >= 60.0:
+                log.info("stop spotter: %d frames, recognizer busy %.1f%% of a core, "
+                         "%d frames dropped", self.frames,
+                         100.0 * self.busy_s / max(1e-6, now - last_report),
+                         self.dropped_frames)
+                self.busy_s = 0.0
+                self.frames = 0
+                last_report = now
+
+    # -- the actual logic -----------------------------------------------------
