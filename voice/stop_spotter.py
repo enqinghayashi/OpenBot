@@ -180,3 +180,6 @@ class StopSpotter(object):
                                         name="stop-spotter")
         self._thread.start()
 
+    def close(self) -> None:
+        self._stop_evt.set()
+
