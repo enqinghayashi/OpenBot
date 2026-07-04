@@ -111,3 +111,5 @@ def make_vosk_recognizer(model: Any, rate: int = 16000) -> Any:
     except Exception:  # noqa: BLE001 - an old vosk that has no per-word conf
         log.warning("stop spotter: SetWords unavailable - confidence treated as 1.0")
     return rec
+
+
