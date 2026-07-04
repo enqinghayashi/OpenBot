@@ -467,3 +467,32 @@ class TranscriptBackend(BrainBackend):
 
     # --------------------------------------------------------- the send methods
 
+    def submit_mic_audio(self, chunk: bytes) -> bool:
+        """Accumulate one 24 kHz PCM16 mic chunk into the per-turn buffer
+        and kick the turn worker.  The pump delivers one energy-gated
+        utterance per upload; a chunk that lands while a turn is active
+        is the barge-in signal (flagged; the worker fires
+        ``input_audio_buffer.speech_started`` at its next stage
+        boundary).  Returns True when accepted for delivery."""
+        if self._closed or not chunk:
+            return False
+        with self._lock:
+            self._mic_buffer += bytes(chunk)
+            overflow = len(self._mic_buffer) - MIC_BUFFER_CAP_BYTES
+            if overflow > 0:
+                # cap the POST: a long tool run would ride one
+                # POST and the 15 s timeout would drop it whole
+                del self._mic_buffer[:overflow]
+                log.warning(
+                    "transcript lane: per-turn mic buffer capped at %d "
+                    "bytes (%d s of speech) — dropped %d bytes of "
+                    "overflow (oldest audio)",
+                    MIC_BUFFER_CAP_BYTES, MIC_BUFFER_CAP_SECONDS, overflow,
+                )
+            self._buffer_consumed = False
+            if self._turn_active:
+                self._barge_pending = True
+                self._barge_epoch = self._turn_epoch
+        self._q.put(("mic",))
+        return True
+
