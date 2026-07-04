@@ -95,3 +95,19 @@ def spotter_mode(env: Any = None) -> str:
     return "act"
 
 
+def make_vosk_recognizer(model: Any, rate: int = 16000) -> Any:
+    """A FULL-vocabulary KaldiRecognizer over ``model``, with words.
+
+    NOT a restricted grammar (unlike the wake word): MEASURED 2026-10-16 with
+    the box's model (vosk-model-small-en-us-0.15) on piper speech, a
+    stop-words-only grammar forced ordinary robot sentences onto the grammar
+    ('the top shelf' -> 'stop', 'ready for the next' -> 'abort' / 'freeze';
+    4 of 4 sentences gave a false hit, one a motion stop).  The full
+    vocabulary decoded the same sentences as themselves (0 of 5 false hits)."""
+    from vosk import KaldiRecognizer  # lazy: laptop tests inject a fake
+    rec = KaldiRecognizer(model, rate)
+    try:
+        rec.SetWords(True)
+    except Exception:  # noqa: BLE001 - an old vosk that has no per-word conf
+        log.warning("stop spotter: SetWords unavailable - confidence treated as 1.0")
+    return rec
