@@ -858,3 +858,243 @@ class MergedWriter:
                              f"(ankle follows {self.stance_ankle_ratio:+.3f})",
                              force=True)
 
+    def _stance_log(self, msg, force=False):
+        """Rate-limited (1 Hz) stance log — no assert, no exception, matching
+        the discipline every other lane in this file follows."""
+        now = time.monotonic()
+        if force or now - self._stance_log_t >= 1.0:
+            self._stance_log_t = now
+            print(f"[stance] {msg}")
+
+    def _stance_status(self):
+        """Inline status fragment, same shape as _cmd_auto_status."""
+        return f"stance={self.stance_deg:+.1f}(max {self.stance_deg_max:.1f})"
+
+    def _legs_ascended(self, st):
+        """True when the measured leg joints (motors 0-11) are within
+        height_ascend_tol of the POLICY-MEASURED standing pose — a base-height
+        proxy that needs no FK.  shutdown() holds the policy live until this is
+        True (bounded by height_ascend_timeout_s) before the limp frame.
+
+        The reference is `height_stand_q`, built from config
+        `policy_stand_q_legs` (the measured fixed point, see _init_height_state)
+        — NOT the YAML default_angles, which the real policy misses by up to
+        0.44 rad (FINDING 2: the old predicate was unsatisfiable at standing)."""
+        if st is None:
+            return False
+        q = st["q"][0:12]
+        return bool(np.all(np.abs(q - self.height_stand_q[0:12])
+                           <= self.height_ascend_tol))
+
+    # ------------------------------------------------ additive SONIC lane
+    # the lane is additive: off with b == 0 yields the same object,
+    # the same gains and the same flow.
+    # no asserts anywhere, since AssertionError slips past the
+    # RuntimeError handlers; every config read uses cfg.get so a
+    # missing key degrades instead of raising.
+
+    def _init_sonic_state(self):
+        """SONIC-lane state + tunables (spec §3, §6).  FORCES the lane disabled
+        when sonic_core failed to import: the lane must degrade to "absent",
+        never to "half-present"."""
+        self.sonic_lane_enabled = bool(self.cfg.get("sonic_lane_enabled", False))
+        if SC is None:
+            self.sonic_lane_enabled = False  # no tables, no lane
+        # --- the state ---
+        self.sonic_mode = 'off'
+        self.sonic_armed = False
+        self.sonic_b = 0.0
+        self.sonic_target = None
+        self.sonic_last_rx = 0.0
+        self.sonic_rx = 0
+        self.sonic_rej = 0
+        self.sonic_seq = -1
+        self.sonic_warm = 0
+        self.sonic_last_good_t = 0.0
+        self.sonic_faulted = False
+        self.sonic_fault_cause = "none"
+        self.sonic_prev_blend = 0.0
+        self.sonic_has_frame = False
+        self.sonic_log_t = 0.0
+        self.sonic_overrun_head = 0
+        self.sonic_overrun_base = 0
+        self.sonic_kp_boot = None  # fill_gains sets it
+        self.sonic_kd_boot = None
+        # mode_machine changes trigger a revoke, so latch it here.
+        self.sonic_mm_latch = None
+        # --- tunables, all cfg.get ---
+        self.sonic_stale_ms = float(self.cfg.get("sonic_stale_ms", 150))
+        self.sonic_entry_ramp_s = float(self.cfg.get("sonic_entry_ramp_s", 1.0))
+        self.sonic_handback_ramp_s = float(
+            self.cfg.get("sonic_handback_ramp_s", 0.5))
+        self.sonic_blend_max_step = float(
+            self.cfg.get("sonic_blend_max_step_rad", 0.10))
+        self.sonic_warmup_frames = int(self.cfg.get("sonic_warmup_frames", 100))
+        # the warm bound is sonic_stale_ms, not a separate window key.
+        self.sonic_enable_tilt_deg = float(
+            self.cfg.get("sonic_enable_tilt_deg", 15.0))
+        self.sonic_tilt_fail_deg = float(
+            self.cfg.get("sonic_tilt_fail_deg", 22.0))
+        self.sonic_enable_tol_rad = float(
+            self.cfg.get("sonic_enable_tol_rad", 0.35))
+        self.sonic_rc_override_thresh = float(
+            self.cfg.get("sonic_rc_override_thresh", 0.1))
+        self.sonic_frame_step_max = float(
+            self.cfg.get("sonic_frame_step_max_rad", 0.35))
+        self.sonic_target_abs_max = float(
+            self.cfg.get("sonic_target_abs_max_rad", 3.0))
+        self.sonic_arm_mode = str(self.cfg.get("sonic_arm_mode", "park"))
+        self.sonic_max_overruns_per_s = float(
+            self.cfg.get("sonic_max_overruns_per_s", 5))
+        # --- diagnostic probe for the enable gate --------
+        # opt-in probe: an empty dir means off, and the default opens no
+        # file, creates no directory and changes no reply byte.
+        # diagnostic only: it reads lane state and appends JSONL, never
+        # writing a gain, target, mode or fault latch.
+        # runs on the console thread at human rate, never the rt path.
+        self.sonic_gate_probe_dir = str(
+            self.cfg.get("sonic_gate_probe_dir", ""))
+        self.sonic_gate_probe_max = int(
+            self.cfg.get("sonic_gate_probe_max", 512))
+        self.sonic_gate_probe_fh = None  # lazy open
+        self.sonic_gate_probe_path = None
+        self.sonic_gate_probe_n = 0
+        self.sonic_gate_dev = None
+        if self.sonic_lane_enabled:
+            self._sonic_log("lane enabled (mode=off, disarmed)")
+        else:
+            print(f"[sonic] lane disabled (cfg sonic_lane_enabled="
+                  f"{self.cfg.get('sonic_lane_enabled', False)}, "
+                  f"sonic_core={'ok' if SC is not None else 'MISSING'})",
+                  flush=True)
+
+    def _apply_sonic(self, parts, from_console):
+        """SONIC verb dispatch, shared by socket and console (the same lockstep
+        split as cmd_set/height).  Returns the reply line, never raises.
+
+        Arming is a HUMAN action: `sonic arm`, `sonic on` and `sonic reset` are
+        console-only and are refused on the socket (spec §2.2).  The satellite
+        can never arm itself, and no network/agent client can either.
+        """
+        if not self.sonic_lane_enabled:
+            return "ERROR:sonic lane disabled"
+        if len(parts) == 1:
+            return f"SONIC:status {self._sonic_status()}"
+        sub = parts[1]
+        if sub == "status":
+            return f"SONIC:status {self._sonic_status()}"
+        if sub == "arm":
+            if not from_console:
+                return "ERROR:sonic arm is console-only"
+            # no fault clear here: `sonic reset` is the only clearer, so the
+            # sequence is reset, arm, on.
+            # clearing here would make the refusal in `on` unreachable and
+            # auto-resurrect the lane.
+            self.sonic_armed = True
+            self._sonic_log(
+                "ARMED (console) — fault latched, `sonic reset` first"
+                if self.sonic_faulted else "ARMED (console)", force=True)
+            return "SONIC:armed"
+        if sub == "on":
+            if not from_console:
+                return "ERROR:sonic on is console-only"
+            # live enable: all preconditions must hold.
+            if not self.sonic_armed:
+                return "ERROR:sonic not armed"
+            if self.sonic_faulted:
+                return "ERROR:sonic faulted — sonic reset first"
+            if not self.sonic_has_frame:
+                return "ERROR:sonic no frame received"
+            # --- capturing the enable-gate operand ------
+            # the operand is max|sonic_target - leg_target|, the scalar the
+            # check compares; it is computed once so the record and the
+            # comparison agree.
+            # captured above the warmup check on purpose: the frame-step gate
+            # can starve accept and leave warm stalled at 0 or 1, so `on` would
+            # never reach the comparison; capturing below it would always record
+            # an empty operand. the check itself is not loosened.
+            # probe off: one 15-element subtract, no file, no directory and no
+            # reply byte change.
+            # probe on: one append plus flush per `sonic on`, console thread
+            # only, never the rt path.
+            self.sonic_gate_dev = None
+            if self.sonic_target is not None and self.leg_target is not None:
+                self.sonic_gate_dev = float(np.max(np.abs(
+                    np.asarray(self.sonic_target, dtype=np.float64)
+                    - np.asarray(self.leg_target, dtype=np.float64))))
+            self._sonic_gate_probe()
+            if self.sonic_warm < self.sonic_warmup_frames:
+                return (f"ERROR:sonic warmup {self.sonic_warm}/"
+                        f"{self.sonic_warmup_frames}")
+            # freshness gate: warm only restarts on a frame, so a dead stream
+            # leaves it frozen at the requirement.
+            # without this, arm then on could enable on a stale count.
+            # same predicate and clock as the live revoke, checked first.
+            age = time.monotonic() - self.sonic_last_rx
+            if age > self.sonic_stale_ms / 1000.0:
+                return (f"ERROR:sonic stream stale ({age:.3f}s > "
+                        f"{self.sonic_stale_ms / 1000.0:.3f}s)")
+            st = self.lowstate
+            if st is not None and SC is not None:
+                if SC.tilt_deg(st["quat"]) > self.sonic_enable_tilt_deg:
+                    return "ERROR:sonic tilt too large to enable"
+            if self.sonic_target is None:
+                return "ERROR:sonic no target"
+            # the guard tests dev, not leg_target: a None sonic_target
+            # returned above, and accept only rebinds non-None, so the
+            # compared values stay equal either way.
+            dev = self.sonic_gate_dev
+            if dev is not None:
+                if dev > self.sonic_enable_tol_rad:
+                    return f"ERROR:sonic target {dev:.3f} rad from legs"
+            self.sonic_mode = 'on'
+            self.sonic_mm_latch = st["mode_machine"] if st is not None else None
+            self.sonic_last_good_t = time.monotonic()
+            # park: slew the arms to SONIC's default pose over the handover
+            # ramp. both sides use the same joint order, so no remap is needed.
+            if (self.sonic_arm_mode == "park" and SC is not None
+                    and self.arm is not None):
+                with self._dispatch_lock:
+                    self.arm_tau[:] = 0.0
+                    self.arm.slew_to_vector(
+                        np.array(SC.DEFAULT_ANGLES_MUJOCO[15:29],
+                                 dtype=np.float32),
+                        time.perf_counter(), self.sonic_entry_ramp_s)
+            self._sonic_log(f"ON (b={self.sonic_b:.2f}) — SONIC owns legs",
+                            force=True)
+            return f"SONIC:on {self.sonic_b:.2f}"
+        if sub == "off":
+            # handback: b ramps to 0 and the seam restores the boot gains when
+            # it lands. this is not a fault.
+            self.sonic_mode = 'off'
+            self._sonic_log("OFF (operator handback) -> GR00T", force=True)
+            return "SONIC:off"
+        if sub == "reset":
+            if not from_console:
+                return "ERROR:sonic reset is console-only"
+            # reset hands back first: a reset mid-blend would otherwise clear
+            # the fault while keeping authority.
+            # _sonic_revoke latches the fault, so the clear below must come
+            # after it.
+            self._sonic_revoke("reset", force=True)
+            # drop the frame baseline: every frame is compared to the last
+            # accepted one, so a reference more than sonic_frame_step_max_rad
+            # away would reject forever. clearing re-seeds the comparison.
+            # safe: None is never dereferenced, the seam bails on it and a None
+            # guard covers the rest.
+            self.sonic_target = None
+            self.sonic_faulted = False
+            self.sonic_fault_cause = "none"
+            self.sonic_armed = False
+            self.sonic_seq = -1
+            # under the lock: the accept path updates sonic_warm from the socket
+            # thread, so a bare `= 0` can lose an update against `+= 1`.
+            # reset wants a cold counter.
+            with self._dispatch_lock:
+                self.sonic_warm = 0
+            self._sonic_log("RESET (fault cleared, disarmed, seq cleared, "
+                            "frame baseline dropped, handed back to GR00T)",
+                            force=True)
+            return "SONIC:reset"
+        return "ERROR:sonic arm|on|off|reset|status"
+
