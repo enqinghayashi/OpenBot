@@ -350,3 +350,21 @@ class StopSpotter(object):
         self._event(stage, text, True, "cut speech")
         self.on_cut_speech(text)
 
+    def _act(self, kind: str, stage: str, text: str, now: float) -> None:
+        self._acted_this_segment = True
+        if self._echo_suppressed(now):
+            self._event(stage, text, False, "robot is saying a stop word")
+            return
+        if self.mode != "act":
+            self._event(stage, text, False, "log mode")
+            return
+        if kind == "stop" and now - self._last_action < self.cooldown_s:
+            self._event(stage, text, False, "cooldown")
+            return
+        self._last_action = now
+        if kind == "stop_talking":
+            self._event(stage, text, True, "stop talking")
+            self.on_stop_talking(text)
+        else:
+            self._event(stage, text, True, "motion stop")
+            self.on_stop(text)
