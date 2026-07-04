@@ -270,3 +270,12 @@ class StopSpotter(object):
             except Exception:  # noqa: BLE001
                 pass
 
+    @staticmethod
+    def _norm(tokens: List[str]) -> List[str]:
+        """Drop '[unk]'; a 'top' right before talking/speaking is 'stop'
+        (the model's reading of a clipped "Stop talking.", MEASURED)."""
+        toks = [t for t in tokens if t and t != "[unk]"]
+        return ["stop" if (t == "top" and i + 1 < len(toks)
+                           and toks[i + 1] in SPEECH_ONLY_NEXT) else t
+                for i, t in enumerate(toks)]
+
