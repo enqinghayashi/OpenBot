@@ -279,3 +279,19 @@ class StopSpotter(object):
                            and toks[i + 1] in SPEECH_ONLY_NEXT) else t
                 for i, t in enumerate(toks)]
 
+    @staticmethod
+    def classify(tokens: List[str]) -> Optional[str]:
+        """'stop' | 'stop_talking' | 'negated' | None for one FINAL segment."""
+        toks = StopSpotter._norm(tokens)
+        if toks and "top" in toks and set(toks) <= COMMAND_WORDS:
+            return "stop"               # e.g. 'top', 'top it', 'hey stewart top'
+        for i, tok in enumerate(toks):
+            if tok not in STOP_WORDS:
+                continue
+            if i > 0 and toks[i - 1] in NEGATIONS:
+                return "negated"
+            if tok == "stop" and i + 1 < len(toks) and toks[i + 1] in SPEECH_ONLY_NEXT:
+                return "stop_talking"
+            return "stop"
+        return None
+
