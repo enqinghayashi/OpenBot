@@ -173,3 +173,10 @@ class StopSpotter(object):
             return self._echo_armed
 
     # -- worker thread ------------------------------------------------------
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name="stop-spotter")
+        self._thread.start()
+
