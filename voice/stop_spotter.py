@@ -325,3 +325,20 @@ class StopSpotter(object):
             self._cut("partial", text, now)
             self._pending = "alias"
 
+    def _on_final(self, res: dict, now: float) -> None:
+        text = str(res.get("text") or "")
+        words = res.get("result")
+        toks = ([str(w.get("word") or "") for w in words] if isinstance(words, list)
+                else text.split())
+        toks = [t for t in toks if t and t != "[unk]"]
+        kind = self.classify(toks)
+        if kind == "negated":
+            self._event("final", text, False, "negated")
+            return
+        if kind is None and self._pending == "word":
+            kind = "stop"               # 'stop stop' came out as 'top stump'
+        if kind is None:
+            return
+        if kind == "stop_talking" or not self._acted_this_segment:
+            self._act(kind, "final", text, now)
+
