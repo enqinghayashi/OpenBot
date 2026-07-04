@@ -503,3 +503,16 @@ class TranscriptBackend(BrainBackend):
         self._q.put(("user_text", str(text)))
         return True
 
+    def send_user_frame(self, jpeg_b64: str) -> bool:
+        """L10: store the LATEST frame (fresh gateway-cache image, jpeg
+        base64); the NEXT chat call attaches it — one frame per decision
+        turn, no replay: the chat call consumes the store exactly once,
+        and a turn without a stored frame attaches nothing (no fresh
+        frame must be representable) while its text observation still
+        travels."""
+        if self._closed:
+            return False
+        with self._lock:
+            self._staged_frame = str(jpeg_b64)
+        return True
+
