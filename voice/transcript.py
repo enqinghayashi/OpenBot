@@ -286,3 +286,94 @@ class TranscriptBackend(BrainBackend):
     # call, leaving a window in which the frame seam can run
     created_precedes_model_call = True
 
+    def __init__(
+        self,
+        client: Any,
+        *,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        submit: Optional[Callable[[bytes], str]] = None,
+        tts: Optional[Callable[[str], Tuple[bytes, int]]] = None,
+        whisper_launch_timeout_s: float = WHISPER_LAUNCH_TIMEOUT_S,
+        whisper_submit_timeout_s: float = WHISPER_SUBMIT_TIMEOUT_S,
+        piper_tts_timeout_s: float = PIPER_TTS_TIMEOUT_S,
+    ) -> None:
+        """Validate the L1 stage timeouts, validate+flatten the tool
+        specs, and wire the boundaries.  Pure: no I/O (WhisperSubmit /
+        PiperTTS construct lazily and perform no I/O here)."""
+        if client is None:
+            raise ValueError("TranscriptBackend requires a chat client")
+        bad_timeouts = [
+            name
+            for name, value in (
+                ("whisper_launch_timeout_s", whisper_launch_timeout_s),
+                ("whisper_submit_timeout_s", whisper_submit_timeout_s),
+                ("piper_tts_timeout_s", piper_tts_timeout_s),
+            )
+            if not value or value <= 0
+        ]
+        if bad_timeouts:
+            raise ValueError(
+                "stage timeouts must be positive (no unbounded waits): "
+                + ", ".join(bad_timeouts)
+            )
+        self._client = client
+        #: nested chat-completions tool specs
+        self._tools = [dict(spec) for spec in (tools or [])]
+        #: flat realtime-shape specs
+        #: flattening here makes a malformed spec raise at construction
+        self.tools_flat = flatten_specs(self._tools)
+        self._submit = (
+            submit
+            if submit is not None
+            else WhisperSubmit(
+                launch_timeout_s=whisper_launch_timeout_s,
+                submit_timeout_s=whisper_submit_timeout_s,
+            )
+        )
+        self._tts = (
+            tts if tts is not None else PiperTTS(tts_timeout_s=piper_tts_timeout_s)
+        )
+
+        # -- chat history
+        self._history: List[Dict[str, Any]] = []
+        #: call_id -> tool name for the role:"tool" messages
+        self._call_names: Dict[str, str] = {}
+
+        # -- frames
+        #: newest jpeg b64 frame; the next chat consumes it once,
+        #: and none means the turn is imageless
+        self._staged_frame: Optional[str] = None
+
+        # -- held speech
+        #: a user message mid-batch breaks the wire law (400),
+        #: so speech is held and delivered after the batch closes
+        self._held: List[Dict[str, Any]] = []
+        #: set by an ask create (tools=False), cleared by the next
+        #: tools-enabled one: held speech predates the question and
+        #: must never land in its answer window
+        self._awaiting_query_answer = False
+
+        # -- mic buffer
+        self._mic_buffer = bytearray()
+        #: the turn's audio is taken exactly once; only the first
+        #: closer transcribes it
+        self._buffer_consumed = False
+
+        # -- turn state
+        self._turn_active = False
+        self._cancel_requested = False
+        self._barge_pending = False
+        #: per-turn epoch and barge epoch: a late chunk
+        #: belongs to the next utterance
+        self._turn_epoch = 0
+        self._barge_epoch = 0
+        self._closed = False
+        self._seq = 0  # item_id counter
+
+        self._lock = threading.Lock()
+        self._q: "queue.Queue[tuple]" = queue.Queue()
+        self._thread: Optional[threading.Thread] = None
+        self._handlers: Dict[str, List[Callable[[str, dict], Any]]] = {}
+
+    # --------------------------------------------------------------- start & stop
+
