@@ -368,3 +368,5 @@ class StopSpotter(object):
         else:
             self._event(stage, text, True, "motion stop")
             self.on_stop(text)
+
+
