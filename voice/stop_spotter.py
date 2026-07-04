@@ -166,3 +166,10 @@ class StopSpotter(object):
                 self._echo_armed = True
                 self._last_speaking = self.clock()
 
+    def _echo_suppressed(self, now: float) -> bool:
+        with self._lock:
+            if self._echo_armed and now - self._last_speaking > self.tail_s:
+                self._echo_armed = False
+            return self._echo_armed
+
+    # -- worker thread ------------------------------------------------------
