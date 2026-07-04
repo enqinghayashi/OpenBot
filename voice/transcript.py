@@ -389,3 +389,13 @@ class TranscriptBackend(BrainBackend):
         thread.start()
         log.debug("transcript backend started (turn worker thread)")
 
+    async def run_forever(self) -> None:
+        """Async no-op — the app MUST schedule this task (the lane's
+        ``run_forever`` law, app.py: the task's return is read as the
+        lane's loud-exit signal).  The transcript lane's turn pump is
+        the dedicated worker thread ALREADY running (``start()``), so
+        this task only keeps the app's task alive and must NEVER
+        duplicate the pump — it sleeps forever."""
+        while True:
+            await asyncio.sleep(3600)
+
