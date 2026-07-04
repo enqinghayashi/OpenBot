@@ -370,3 +370,10 @@ class StopSpotter(object):
             self.on_stop(text)
 
 
+def _peak(pcm: bytes) -> int:
+    """Loudest |sample| of a PCM16 buffer (every 4th sample: a level, not DSP)."""
+    if not pcm or len(pcm) < 2:
+        return 0
+    a = array.array("h")
+    a.frombytes(pcm[: len(pcm) - (len(pcm) % 2)])
+    return max(abs(v) for v in a[::4]) if a else 0
