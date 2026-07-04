@@ -93,3 +93,5 @@ def spotter_mode(env: Any = None) -> str:
     if raw == "log":
         return "log"
     return "act"
+
+
