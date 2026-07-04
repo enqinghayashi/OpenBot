@@ -1268,3 +1268,159 @@ class MergedWriter:
             frag += f" FAULT({self.sonic_fault_cause})"
         return frag
 
+    def _sonic_blend_step(self, t):
+        """Continuous blend authority b (spec §4): 0->1 entry while the lane is
+        live, 1->0 handback otherwise.  NEVER a switch, and it SNAPS exactly to
+        0.0 / 1.0 so the off path (b == 0.0) stays bit-identical.
+
+        Rate-integrated at the policy tick period (decimation * dt = 20 ms), so
+        no extra clock state is needed.  max(ramp, dt) keeps a zero/absurd
+        configured ramp from dividing by zero — no assert.
+
+        `self.sonic_b` IS the authority state (spec §3) and is persisted here —
+        the ramp integrates from it every tick, so a caller that ignored the
+        return value would freeze b at its initial 0.0 and the lane could never
+        engage.  Both snaps write the exact 0.0 / 1.0 back, so the off path's
+        `b == 0.0` test stays exact.
+        """
+        dt = self.decimation * self.dt
+        live = (self.sonic_mode == 'on' and self.sonic_armed
+                and self.sonic_has_frame)
+        if live:
+            b = self.sonic_b + dt / max(self.sonic_entry_ramp_s, dt)
+        else:
+            b = self.sonic_b - dt / max(self.sonic_handback_ramp_s, dt)
+        if b >= 1.0:
+            self.sonic_b = 1.0
+        elif b <= 0.0:
+            self.sonic_b = 0.0
+        else:
+            self.sonic_b = float(b)
+        return self.sonic_b
+
+    def _sonic_step_clamp(self, raw):
+        """Per-policy-tick slew limit on the blended target (spec §4).  Returns
+        a NEW array (never mutates `raw`) clamped to sonic_blend_max_step_rad of
+        the previous leg_target, so the handover can never step discontinuously.
+        """
+        out = np.array(raw, dtype=np.float64, copy=True)
+        prev = self.leg_target
+        if prev is None:
+            return out
+        prev = np.asarray(prev, dtype=np.float64)
+        return np.minimum(np.maximum(out, prev - self.sonic_blend_max_step),
+                          prev + self.sonic_blend_max_step)
+
+    def _sonic_write_leg_gains(self, b):
+        """THE GAIN SWAP (spec §4.1 — the single highest-value correctness
+        point).  kp AND kd ramp with the SAME b from the fill_gains() boot
+        snapshot (which already carries waist_pitch_kd_bias) to
+        KP_MUJOCO[0:15]/KD_MUJOCO[0:15].  Shipping SONIC's setpoint under GR00T
+        gains is a different controller than the one that went green: knee kp
+        200 vs 99.098, waist-pitch kp 250 vs 28.501, and a NEGATIVE waist-pitch
+        kd.  At b == 0.0 this restores the snapshot bit-exactly (x*1.0 + y*0.0).
+        """
+        if SC is None or self.sonic_kp_boot is None or self.sonic_kd_boot is None:
+            return
+        kp = self.sonic_kp_boot * (1.0 - b) + SC.KP_MUJOCO[0:15] * b
+        kd = self.sonic_kd_boot * (1.0 - b) + SC.KD_MUJOCO[0:15] * b
+        for i in range(15):
+            self.lowcmd.motor_cmd[i].kp = float(kp[i])
+            self.lowcmd.motor_cmd[i].kd = float(kd[i])
+
+    def _sonic_revoke(self, cause, force=False):
+        """The ONE funnel for every abort trigger (spec §4.2/§4.3).  Returns
+        authority to the GR00T lane — never a HOLD, never a LIMP, and NEVER
+        request_shutdown: a 250 ms socket hiccup must not end in a zero-torque
+        limp mid-walk.
+
+        force=False: mode := off, the lane is marked faulted, and b ramps to 0
+                     at the handback rate (the seam restores the boot gains when
+                     it lands).  No auto-resurrection: a faulted lane needs
+                     `sonic reset` then `sonic arm` then `sonic on`, all
+                     console-only.
+        force=True:  b := 0 instantly and the boot gains are written NOW (estop
+                     and request_shutdown).  If b was already 0 the gains are
+                     already boot, so nothing is written and the off path stays
+                     untouched.
+        """
+        if not self.sonic_faulted:
+            self.sonic_faulted = True
+            self.sonic_fault_cause = str(cause)
+            self._sonic_log(f"REVOKE ({cause}) -> returning to GR00T",
+                            force=True)
+        self.sonic_mode = 'off'
+        self.sonic_armed = False
+        if force:
+            was_live = (self.sonic_b != 0.0)
+            self.sonic_b = 0.0
+            self.sonic_prev_blend = 0.0
+            if was_live:
+                self._sonic_write_leg_gains(0.0)
+
+    def _sonic_seam(self, t, st, cmd, rc_live, rc_norm):
+        """The ONLY control-flow change in the writer (spec §4).  Called at the
+        policy tick where `policy_target` was just computed.
+
+        The first two lines are the falsifiable definition of "additive": with
+        the lane off AND b == 0 this assigns the SAME OBJECT the policy
+        returned — no copy, no arithmetic, no gain write — so the shipped GR00T
+        path is bit-identical to the writer without this lane.
+        """
+        if self.sonic_mode == 'off' and self.sonic_b == 0.0:
+            self.leg_target = self.policy_target
+            return
+
+        # --- live-tick revoke checks, in evaluation order ---------
+        if self.sonic_mode == 'on':
+            cause = None
+            now = time.monotonic()
+            if now - self.sonic_last_rx > self.sonic_stale_ms / 1000.0:
+                cause = "stale frame"
+            if cause is None and st is not None and SC is not None:
+                if SC.tilt_deg(st["quat"]) > self.sonic_tilt_fail_deg:
+                    cause = "tilt"
+            if cause is None and rc_live and \
+                    rc_norm > self.sonic_rc_override_thresh:
+                cause = "rc override"
+            if cause is None and st is not None and \
+                    st["mode_machine"] != self.sonic_mm_latch:
+                cause = "mode_machine changed"
+            if cause is None and getattr(self.reader, "_frozen", False):
+                cause = "reader frozen"
+            # overrun window: head counts ticks, base holds _overruns at the
+            # window start. one window is 1 s of policy ticks.
+            self.sonic_overrun_head += 1
+            window = max(int(self.hz / self.decimation), 1)
+            if self.sonic_overrun_head >= window:
+                if (self._overruns - self.sonic_overrun_base) > \
+                        self.sonic_max_overruns_per_s and cause is None:
+                    cause = "overrun rate"
+                self.sonic_overrun_base = self._overruns
+                self.sonic_overrun_head = 0
+            if cause is not None:
+                self._sonic_revoke(cause)
+
+        # --- a continuous blend, never a switch -----------------------------
+        b = self._sonic_blend_step(t)
+        if b <= 0.0:
+            if self.sonic_prev_blend != 0.0:
+                # handback done: boot gains restored and object identity returned
+                # to the policy target.
+                self._sonic_write_leg_gains(0.0)
+                self._sonic_log("handback complete — GR00T gains restored",
+                                force=True)
+            self.sonic_prev_blend = 0.0
+            self.leg_target = self.policy_target
+            return
+        if self.sonic_target is None:
+            # unreachable in practice: fall back to the GR00T target instead
+            # of raising.
+            self.leg_target = self.policy_target
+            return
+        self.sonic_prev_blend = b
+        raw = self.policy_target * (1.0 - b) + self.sonic_target * b
+        self.leg_target = self._sonic_step_clamp(raw)
+        self._sonic_write_leg_gains(b)
+        self.sonic_last_good_t = time.monotonic()
+
