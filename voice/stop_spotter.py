@@ -158,3 +158,11 @@ class StopSpotter(object):
         self._broken = False
 
     # -- keeping track of echoes (any thread) ------------------------------
+    def note_spoken(self, text: str) -> None:
+        """The robot is about to say / is saying ``text``."""
+        low = (text or "").lower()
+        if any(s in low for s in ECHO_STEMS):
+            with self._lock:
+                self._echo_armed = True
+                self._last_speaking = self.clock()
+
