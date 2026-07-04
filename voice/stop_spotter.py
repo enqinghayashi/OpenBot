@@ -113,3 +113,7 @@ def make_vosk_recognizer(model: Any, rate: int = 16000) -> Any:
     return rec
 
 
+class StopSpotter(object):
+    """See the module docstring.  ``process`` is the synchronous core (tests
+    drive it directly); ``start`` + ``submit`` run it on a worker thread."""
+
