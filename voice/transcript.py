@@ -425,3 +425,20 @@ class TranscriptBackend(BrainBackend):
         scheduled as a task on the running loop, dropped outside one."""
         self._handlers.setdefault(name, []).append(callback)
 
+    def health_probe(self) -> bool:
+        """The lane-aware probe the app's director wiring expects: a
+        SYNC, low-cost connectivity check that reaches the network,
+        bounded to ~2 s by the delegated probe's own timeout (the
+        parallel wiring adds ``CloudLLMClient.probe()``).  Delegates via
+        getattr: a client without a probe reports False (the lane is not
+        healthy until the probe exists); a raising probe counts as a
+        failure — never raises (the director contract)."""
+        probe = getattr(self._client, "probe", None)
+        if not callable(probe):
+            return False
+        try:
+            return bool(probe())
+        except Exception as exc:  # noqa: BLE001
+            log.warning("transcript lane: health probe raised: %s", exc)
+            return False
+
