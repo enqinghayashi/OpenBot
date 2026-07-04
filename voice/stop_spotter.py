@@ -85,3 +85,11 @@ HANGOVER_FRAMES = 8        # 8 frames x 160 ms = 1.28 s
 QUEUE_FRAMES = 50          # 50 x 160 ms = 8 s of audio before dropping
 
 
+def spotter_mode(env: Any = None) -> str:
+    """'act' | 'log' | 'off' from OPENBOT_STOP_SPOTTER (unset = 'act')."""
+    raw = str((os.environ if env is None else env).get("OPENBOT_STOP_SPOTTER", "")).strip().lower()
+    if raw in ("0", "off", "false", "no"):
+        return "off"
+    if raw == "log":
+        return "log"
+    return "act"
