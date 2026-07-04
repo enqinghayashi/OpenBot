@@ -442,3 +442,28 @@ class TranscriptBackend(BrainBackend):
             log.warning("transcript lane: health probe raised: %s", exc)
             return False
 
+    def _fire(self, name: str, payload: Dict[str, Any]) -> None:
+        """Dispatch one BACKEND_EVENTS event to listeners (must run on
+        the turn worker thread — the session's handlers mutate session
+        state and must never run concurrently).  Best-effort teardown
+        (D4c): after :meth:`close` has returned the worker emits
+        nothing — close() joins only briefly, so a worker mid-chat when
+        close() ran must not keep firing into a torn-down session."""
+        if self._closed:
+            return
+        for callback in list(self._handlers.get(name, ())):
+            try:
+                result = callback(name, payload)
+            except Exception:  # noqa: BLE001
+                log.exception("transcript callback for %r failed", name)
+                continue
+            if inspect.isawaitable(result):
+                try:
+                    asyncio.ensure_future(result)
+                except RuntimeError:  # no loop, drop it
+                    log.debug(
+                        "transcript callback %r returned awaitable outside a loop", name
+                    )
+
+    # --------------------------------------------------------- the send methods
+
