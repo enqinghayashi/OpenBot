@@ -272,3 +272,17 @@ EMPTY_TRANSCRIPT_RETRY = "I did not catch that — could you say it again?"
 # -------------------------------------------------------------------------------
 
 
+class TranscriptBackend(BrainBackend):
+    """The REST cloud lane's :class:`BrainBackend` (module docstring:
+    turn flow, barge-in, concurrency, tools shape, cost/latency).
+
+    Wraps a chat client (the CloudLLMClient family) and composes the
+    cascade's :class:`WhisperSubmit` and :class:`PiperTTS` boundaries by
+    composition — never copied.  All boundaries are injectable (``submit``
+    / ``tts``), so tests hand in fakes exactly like OfflineChain.
+    """
+
+    # response.created fires immediately before the single chat
+    # call, leaving a window in which the frame seam can run
+    created_precedes_model_call = True
+
