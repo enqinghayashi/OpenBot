@@ -257,3 +257,16 @@ class StopSpotter(object):
         else:
             self._on_partial(str(res.get("partial") or ""), now)
 
+    def _event(self, kind: str, text: str, acted: bool, why: str = "") -> None:
+        ev = {"event": "stop_spotter", "kind": kind, "text": text,
+              "acted": acted, "why": why}
+        self.events.append(ev)
+        del self.events[:-50]
+        log.info("stop spotter: %s %r -> %s%s", kind, text,
+                 "ACT" if acted else "no action", (" (%s)" % why) if why else "")
+        if self.record is not None:
+            try:
+                self.record(ev)
+            except Exception:  # noqa: BLE001
+                pass
+
