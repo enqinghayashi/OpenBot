@@ -734,3 +734,127 @@ class MergedWriter:
             self._height_log_t = now
             print(f"[height] {msg}")
 
+    def _height_status(self):
+        """Inline status fragment, same shape as _cmd_auto_status."""
+        if self.height_suspended:
+            rem = max(self.height_suspend_deadline - time.monotonic(), 0.0)
+            return (f"height={self.height_ref:.2f} "
+                    f"SUSPENDED->{self.height_suspend_target:.2f} rem={rem:.1f}s")
+        if not self.height_active:
+            return f"height={self.height_ref:.2f}(stand {self.height_stand:.2f})"
+        rem = max(self.height_deadline - time.monotonic(), 0.0)
+        return (f"height={self.height_ref:.2f}->{self.height_target:.2f} "
+                f"active rem={rem:.1f}s")
+
+    # ------------------------------------------------ additive stance lane
+    # symmetric hip-roll splay set at runtime: no deadline, no watchdog,
+    # no thread. the failure mode is benign, a wide stance held through a
+    # descend, pick and retreat.
+    # sticky until `stance off` or a restart, and never persisted.
+
+    def _init_stance_state(self):
+        """Stance-lane state.  SAFE BY DEFAULT: the band ships SHUT, so a config
+        that predates this lane cannot splay the legs and `stance <deg>` can
+        only ever return to 0.  Arming is a deliberate config edit.
+
+        Every key is read with `.get(..., <safe default>)` for the same reason
+        _init_height_state does — an older config must not raise KeyError at
+        construction."""
+        self.stance_deg_max = float(self.cfg.get("stance_deg_max", 0.0))
+        if not np.isfinite(self.stance_deg_max) or self.stance_deg_max < 0.0:
+            self.stance_deg_max = 0.0  # NaN or negative disables the band
+        self.stance_ankle_ratio = float(
+            self.cfg.get("stance_ankle_ratio", STANCE_ANKLE_RATIO))
+        if not np.isfinite(self.stance_ankle_ratio):
+            self.stance_ankle_ratio = STANCE_ANKLE_RATIO
+        self.stance_deg = 0.0  # current splay
+        self._stance_base_policy = None  # boot snapshot, never compounded
+        self._stance_base_obs = None
+        self._stance_log_t = 0.0
+
+    def _capture_stance_base(self):
+        """Snapshot the boot `default_angles` encodings VERBATIM.  Every stance
+        write is re-derived from these and never compounded, which is what makes
+        the verb idempotent and makes `stance off` a BIT-EXACT restore."""
+        if self.policy is None or self.obs is None:
+            return
+        self._stance_base_policy = self.policy.defaults.copy()
+        self._stance_base_obs = self.obs.default_padded.copy()
+
+    def _apply_stance(self, parts):
+        """stance parse+apply, shared by socket and console (the same lockstep
+        split that keeps height/cmd_set identical at both dispatch sites).
+        Returns an error message or None on success:
+          stance <deg>    symmetric outward hip-roll splay, clamped to band
+          stance off      restore the boot stance (identical to `stance 0`)
+
+        The band is [-stance_deg_max, +stance_deg_max] and ships SHUT at 0.0,
+        so an unarmed writer refuses to splay.  Reversible at any time."""
+        if len(parts) == 2 and parts[1] == "off":
+            deg = 0.0
+        elif len(parts) == 2:
+            try:
+                deg = float(parts[1])
+            except ValueError:
+                return "stance needs a float"
+            if not np.isfinite(deg):
+                return "stance value must be finite"
+        else:
+            return "stance off | stance <deg>"
+        if self._stance_base_policy is None:
+            return "stance unavailable: no policy (stage 0)"
+        deg = min(max(deg, -self.stance_deg_max), self.stance_deg_max)
+        self._write_stance(deg)
+        return None
+
+    def _write_stance(self, deg):
+        """Install the stance offset into BOTH policy-side encodings.
+
+        THE MECHANISM, and why it is an exact reparametrisation rather than a
+        trim the policy fights.  policy_runner:50 is
+        `target_q = action * action_scale + defaults`, and obs_builder:105 is
+        `f[13:42] = q - default_padded`; both read the SAME config key, but
+        through two INDEPENDENT np.array copies (policy_runner:19,
+        obs_builder:43-46).  Shift BOTH by the same delta d:
+
+            obs    = (q + d) - (default + d) = q - default   -> BIT-IDENTICAL
+            target = action*scale + default + d     -> fixed point moves by d
+
+        So the policy's own fixed point translates by exactly d with ZERO
+        distribution shift, and the splayed stance is a state the policy holds
+        rather than a standing error the PD pulls against.  (Confirmed on
+        hardware: a hand-set splay survived a descend, a pick and a retreat,
+        which a restoring hip-roll loop at kp=150 could not have allowed.)
+
+        Two properties the pins assert, both load-bearing:
+          * IDEMPOTENT — always computed from the boot snapshot, so repeating a
+            value changes nothing and `stance off` restores the boot encoding.
+          * ATOMIC — whole arrays are REBOUND, never mutated in place, so the
+            250 Hz tick can only ever read one consistent encoding and never a
+            torn half-applied delta.
+        """
+        d2r = math.pi / 180.0
+        hip = deg * d2r
+        ank = self.stance_ankle_ratio * hip
+        # sign map: motor 1 left hip, 5 left ankle, 7 right hip,
+        # 11 right ankle. each ankle takes its own leg's sign
+        # (7 and 11 negated with 1 and 5), so it follows its hip.
+        # the negative ratio counter-rotates the ankle and adds
+        # about 1 deg of sole tilt per deg of ankle roll.
+        d_pol = np.zeros_like(self._stance_base_policy)
+        d_pol[1] = +hip
+        d_pol[7] = -hip
+        d_pol[5] = +ank
+        d_pol[11] = -ank
+        d_obs = np.zeros_like(self._stance_base_obs)
+        d_obs[0:15] = d_pol  # first 15 slots: legs and waist
+        self.policy.defaults = self._stance_base_policy + d_pol
+        self.obs.default_padded = self._stance_base_obs + d_obs
+        self.stance_deg = deg
+        if deg == 0.0:
+            self._stance_log("off -> boot stance", force=True)
+        else:
+            self._stance_log(f"{deg:+.1f} deg splay "
+                             f"(ankle follows {self.stance_ankle_ratio:+.3f})",
+                             force=True)
+
