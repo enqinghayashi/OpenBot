@@ -117,3 +117,44 @@ class StopSpotter(object):
     """See the module docstring.  ``process`` is the synchronous core (tests
     drive it directly); ``start`` + ``submit`` run it on a worker thread."""
 
+    def __init__(self,
+                 recognizer_factory: Callable[[], Any],
+                 on_cut_speech: Callable[[str], None],
+                 on_stop: Callable[[str], None],
+                 on_stop_talking: Callable[[str], None],
+                 speaking: Callable[[], bool],
+                 mode: str = "act",
+                 tail_s: float = DEFAULT_TAIL_S,
+                 cooldown_s: float = DEFAULT_COOLDOWN_S,
+                 clock: Callable[[], float] = time.monotonic,
+                 record: Optional[Callable[[dict], None]] = None) -> None:
+        self._factory = recognizer_factory
+        self._rec = None  # first frame; model load stays off boot
+        self.on_cut_speech = on_cut_speech
+        self.on_stop = on_stop
+        self.on_stop_talking = on_stop_talking
+        self.speaking = speaking
+        self.mode = mode
+        self.tail_s = float(tail_s)
+        self.cooldown_s = float(cooldown_s)
+        self.clock = clock
+        self.record = record
+        self._lock = threading.Lock()
+        self._echo_armed = False
+        self._last_speaking = float("-inf")
+        self._acted_this_segment = False
+        self._spoke_cut = False
+        self._pending = None      # None | 'word' (stop at end) | 'alias'
+        self._last_action = float("-inf")
+        self._q = queue.Queue(maxsize=QUEUE_FRAMES)
+        self._thread = None
+        self._stop_evt = threading.Event()
+        self.dropped_frames = 0
+        self.skipped = 0           # quiet frames skipped (CPU saver)
+        self._quiet = 0
+        self.busy_s = 0.0          # time spent inside the recognizer
+        self.frames = 0
+        self.events = []  # type: List[dict]
+        self._broken = False
+
+    # -- keeping track of echoes (any thread) ------------------------------
