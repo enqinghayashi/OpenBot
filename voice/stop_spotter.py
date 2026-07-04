@@ -295,3 +295,33 @@ class StopSpotter(object):
             return "stop"
         return None
 
+    def _on_partial(self, text: str, now: float) -> None:
+        """Earliest evidence.  A halt word other than 'stop' acts at once;
+        'stop' acts at once when the word after it is already heard and is
+        not talking/speaking; a trailing 'stop' (or a lone 'top') only cuts
+        the speech now and leaves the motion decision to the final."""
+        if self._acted_this_segment:
+            return
+        toks = self._norm(text.split())
+        for i, tok in enumerate(toks):
+            if tok not in STOP_WORDS:
+                continue
+            if i > 0 and toks[i - 1] in NEGATIONS:
+                return
+            if tok != "stop":
+                self._act("stop", "partial", text, now)
+                return
+            if i + 1 < len(toks):
+                if toks[i + 1] in SPEECH_ONLY_NEXT:
+                    self._cut("partial", text, now)   # final -> treat it as stop talking
+                    self._pending = "word"
+                else:
+                    self._act("stop", "partial", text, now)
+                return
+            self._cut("partial", text, now)
+            self._pending = "word"
+            return
+        if toks == ["top"] and self._pending is None:
+            self._cut("partial", text, now)
+            self._pending = "alias"
+
