@@ -516,3 +516,11 @@ class TranscriptBackend(BrainBackend):
             self._staged_frame = str(jpeg_b64)
         return True
 
+    def send_tool_result(self, call_id: str, output_text: str) -> bool:
+        """Answer one function call (a role:"tool" history message, in
+        order behind the assistant ``tool_calls`` message that owned it)."""
+        if self._closed:
+            return False
+        self._q.put(("tool_result", str(call_id), str(output_text)))
+        return True
+
