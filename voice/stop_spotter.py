@@ -224,3 +224,36 @@ class StopSpotter(object):
                 last_report = now
 
     # -- the actual logic -----------------------------------------------------
+    def process(self, frame: bytes) -> None:
+        now = self.clock()
+        try:
+            if self.speaking():
+                with self._lock:
+                    self._last_speaking = now
+        except Exception:  # noqa: BLE001 - an unknown speaker state means not speaking
+            pass
+        if _peak(frame) < QUIET_PEAK:
+            self._quiet += 1
+            if self._quiet > HANGOVER_FRAMES:
+                self.skipped += 1
+                return
+        else:
+            self._quiet = 0
+        if self._rec is None:
+            self._rec = self._factory()
+        t0 = time.perf_counter()
+        final = self._rec.AcceptWaveform(frame)
+        if final:
+            res = json.loads(self._rec.Result() or "{}")
+        else:
+            res = json.loads(self._rec.PartialResult() or "{}")
+        self.busy_s += time.perf_counter() - t0
+        self.frames += 1
+        if final:
+            self._on_final(res, now)
+            self._acted_this_segment = False
+            self._spoke_cut = False
+            self._pending = None
+        else:
+            self._on_partial(str(res.get("partial") or ""), now)
+
