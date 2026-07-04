@@ -418,3 +418,10 @@ class TranscriptBackend(BrainBackend):
             except Exception as exc:  # noqa: BLE001 - cleanup must not blow up
                 log.debug("transcript whisper submit close raised: %s", exc)
 
+    def on_event(self, name: str, callback: Callable[[str, dict], Any]) -> None:
+        """Subscribe to lane events.  Callbacks run INLINE on the turn
+        worker thread (the session's handlers are sync — this IS the
+        confinement model, module docstring); an awaitable return is
+        scheduled as a task on the running loop, dropped outside one."""
+        self._handlers.setdefault(name, []).append(callback)
+
