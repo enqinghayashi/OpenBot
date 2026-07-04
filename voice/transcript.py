@@ -496,3 +496,10 @@ class TranscriptBackend(BrainBackend):
         self._q.put(("mic",))
         return True
 
+    def send_user_text(self, text: str) -> bool:
+        """Inject a text user turn (the L9 answer attachment)."""
+        if self._closed:
+            return False
+        self._q.put(("user_text", str(text)))
+        return True
+
