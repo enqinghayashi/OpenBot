@@ -183,3 +183,20 @@ class StopSpotter(object):
     def close(self) -> None:
         self._stop_evt.set()
 
+    def submit(self, frame: bytes) -> None:
+        """Hand one raw 16 kHz PCM16 mic frame over (pump thread; never blocks)."""
+        if self._broken or not frame:
+            return
+        try:
+            self._q.put_nowait(frame)
+        except queue.Full:
+            try:
+                self._q.get_nowait()
+            except queue.Empty:
+                pass
+            self.dropped_frames += 1
+            try:
+                self._q.put_nowait(frame)
+            except queue.Full:
+                pass
+
