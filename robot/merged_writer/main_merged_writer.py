@@ -1827,3 +1827,161 @@ class MergedWriter:
 
     # --------------------------------------------------------- shutdown time
 
+    def shutdown(self):
+        print(f"\n=== SHUTDOWN (cause: {self._shutdown_cause}) ===")
+        if self.reader is not None:
+            # no crash checks: a re-raise inside shutdown would kill the process
+            # with the motors uncontrolled and the lockfile stale. warn only.
+            self.reader.suppress_crash = True
+        if self.rc:
+            self.rc.zero()
+        self.cmd_auto_active = False  # zeroed regardless
+        self.cmd_auto[:] = 0.0
+        # height back to standing: phase 1 keeps the policy live so leg_target
+        # slews up while the ascend loop waits for the legs.
+        self.height_active = False
+        self.height_target = self.height_stand
+        self.height_suspended = False  # no stowed squat
+        # phase 1: normal loop with the policy live and rc zeroed so the gait
+        # settles. arms go to NEUTRAL unless the payload flag is set.
+        # runs 1 s to 5 s.
+        shutdown_t0 = time.perf_counter()
+        if not self.payload:
+            self.arm.slew_to("NEUTRAL", time.perf_counter())
+        if self.arm._T > 0.0:
+            deadline = min(max(shutdown_t0 + 1.0, self.arm._t0 + self.arm._T),
+                           shutdown_t0 + 5.0)
+        else:
+            deadline = shutdown_t0 + 1.0
+        # ascend first: going limp while crouched collapses the body.
+        # no later phase ascends (phase 2 pins the last target and phase 3
+        # zeroes kp/kd), so stretch phase 1 to height_ascend_timeout_s,
+        # capped at 5 s.
+        needs_ascend = (abs(self.height_ref - self.height_stand)
+                        > self.height_stand_eps
+                        or not self._legs_ascended(self.lowstate))
+        if needs_ascend:
+            deadline = max(deadline,
+                           min(shutdown_t0 + self.height_ascend_timeout,
+                               shutdown_t0 + 5.0))
+        while time.perf_counter() < deadline:
+            # try_poll: a large gap must not abort shutdown mid-flight, which
+            # would skip the ZeroCmd frame and the handoff.
+            st = self.reader.try_poll()
+            if st is not None:
+                self.lowstate = st
+            try:
+                self._tick(time.perf_counter())
+            except Exception as e:
+                # never abort: a raise in the phase 1 tick must not kill shutdown.
+                # catching Exception rather than RuntimeError keeps the ascend loop
+                # running, since a KeyError here would skip ZeroCmd with the body
+                # still crouched.
+                print(f"[shutdown] Phase-1 tick raised ({e}) — continuing")
+            # break when the arms have settled, the legs are near standing and
+            # the height reference is up, never under 1 s.
+            arm_done = (self.arm._T <= 0.0
+                        or time.perf_counter() >= self.arm._t0 + self.arm._T)
+            if (time.perf_counter() - shutdown_t0 >= 1.0
+                    and arm_done
+                    and self.height_ref >= self.height_stand
+                    - self.height_stand_eps
+                    and self._legs_ascended(self.lowstate)):
+                break
+            kb_safe_sleep(self.dt)
+        if self.payload:
+            print("[shutdown] PAYLOAD FLAG SET — arms NOT released (holding tuck)")
+
+        # hold the legs for 1 s. the ascend already drove them there.
+        t_end = time.perf_counter() + 1.0
+        while time.perf_counter() < t_end:
+            st = self.reader.try_poll()
+            if st is not None:
+                self.lowstate = st
+            self._shutdown_tick(time.perf_counter())
+            kb_safe_sleep(self.dt)
+
+        # ZeroCmd: kp/kd=0, stop sentinels
+        lc = self.lowcmd
+        for i in range(35):
+            lc.motor_cmd[i].mode = MODE_ENABLE
+            lc.motor_cmd[i].kp = 0.0
+            lc.motor_cmd[i].kd = 0.0
+            lc.motor_cmd[i].q = PosStopF
+            lc.motor_cmd[i].dq = VelStopF
+            lc.motor_cmd[i].tau = 0.0
+        for _ in range(5):
+            lc.crc = self.crc.Crc(lc)
+            self.lowcmd_publisher.Write(lc)
+            time.sleep(0.02)
+
+        try:
+            os.remove(self.cfg["lockfile"])
+        except OSError:
+            pass
+        print("=== SHUTDOWN COMPLETE — motor slots are limp (mode 0x01, kp/kd=0) ===")
+        # handoff: the RC ladder is dead while the switcher is released, so
+        # the sport state machine must be re-selected. done here.
+        print("=== Handoff to sport control: SelectMode(\"ai\") ... ===")
+        for attempt in range(1, 4):
+            try:
+                msc = MotionSwitcherClient()
+                msc.SetTimeout(5.0)
+                msc.Init()
+                msc.SelectMode("ai")
+                status, result = msc.CheckMode()
+                name = result.get("name", "") if isinstance(result, dict) else result
+                print(f"[handoff] attempt {attempt}: CheckMode -> {result}")
+                if name == "ai":
+                    print("[handoff] sport control restored — RC ladder live "
+                          "(L1+B -> L2+UP -> R2+A)")
+                    break
+            except Exception as e:
+                print(f"[handoff] attempt {attempt} failed: {e}")
+            time.sleep(1.0)
+        else:
+            print("[handoff] WARN: sport mode not restored — run "
+                  "SelectMode('ai') manually")
+
+    def _shutdown_tick(self, t):
+        """Shutdown continuation: same as _tick but policy keeps last targets
+        (no infer), arms keep slewing."""
+        st = self.lowstate
+        if st is None:
+            return
+        q, dq = st["q"], st["dq"]
+        arm_target = self.arm.tick(t)
+        lc = self.lowcmd
+        lc.mode_machine = st["mode_machine"]
+        lc.mode_pr = 0
+        for i in range(15):
+            lc.motor_cmd[i].q = self.leg_target[i]  # last target
+            lc.motor_cmd[i].dq = 0.0
+            lc.motor_cmd[i].tau = 0.0
+        for j, i in enumerate(range(15, 29)):
+            lc.motor_cmd[i].q = arm_target[j]
+            lc.motor_cmd[i].dq = 0.0
+            lc.motor_cmd[i].tau = self.arm_tau[j]  # gravity FF
+        lc.motor_cmd[29].q = self.gate_q
+        lc.motor_cmd[29].dq = 0.0
+        lc.motor_cmd[29].tau = 0.0
+        for i in range(30, 35):
+            lc.motor_cmd[i].q = self.captured_q[i]
+            lc.motor_cmd[i].dq = 0.0
+            lc.motor_cmd[i].tau = 0.0
+        lc.crc = self.crc.Crc(lc)
+        self.lowcmd_publisher.Write(lc)
+
+
+def main():
+    args = parse_args()
+    w = MergedWriter(args)
+    try:
+        w.run()
+    except Exception as e:
+        print(f"[fatal] {e}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
