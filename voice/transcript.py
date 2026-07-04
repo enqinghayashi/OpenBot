@@ -399,3 +399,22 @@ class TranscriptBackend(BrainBackend):
         while True:
             await asyncio.sleep(3600)
 
+    def close(self) -> None:
+        """Tear the lane down: stop the worker and close the whisper
+        server subprocess THIS instance launched (composition; never
+        raises)."""
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+        self._q.put(("close",))
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=2.0)
+        submit = getattr(self._submit, "close", None)
+        if callable(submit):
+            try:
+                submit()
+            except Exception as exc:  # noqa: BLE001 - cleanup must not blow up
+                log.debug("transcript whisper submit close raised: %s", exc)
+
