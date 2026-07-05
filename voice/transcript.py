@@ -618,3 +618,12 @@ class TranscriptBackend(BrainBackend):
                 return
         self._run_server_turn()
 
+    def _on_cancel_op(self) -> None:
+        """Drain a cancel op.  The flag was already set synchronously by
+        cancel_response; a stale cancel (no turn active) is cleared so it
+        can never kill the NEXT turn."""
+        with self._lock:
+            if not self._turn_active:
+                self._cancel_requested = False
+                log.debug("transcript lane: stale cancel drained")
+
