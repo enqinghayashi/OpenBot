@@ -1121,3 +1121,19 @@ class TranscriptBackend(BrainBackend):
         self._turn_active = False
         self._fire("error", {"message": message})
 
+    def _close_buffer(self) -> bytes:
+        """Close the per-turn mic buffer: take its audio (24 kHz), mark
+        it consumed, resample to 16 kHz for WhisperSubmit.  Called at
+        turn close — the transcription and a session-initiated
+        create_response race on the same buffer and only the FIRST
+        consumes it (the L9 answer is never transcribed twice)."""
+        with self._lock:
+            if self._buffer_consumed or not self._mic_buffer:
+                self._mic_buffer = bytearray()
+                self._buffer_consumed = True
+                return b""
+            pcm24 = bytes(self._mic_buffer)
+            self._mic_buffer = bytearray()
+            self._buffer_consumed = True
+        return _resample_pcm16(pcm24, MIC_RATE, STT_RATE)
+
