@@ -561,3 +561,39 @@ class TranscriptBackend(BrainBackend):
 
     # ------------------------------------------------------------- the turn worker
 
+    def _loop(self) -> None:
+        """The turn pump: process operations one at a time; every event
+        fires from THIS thread."""
+        while True:
+            try:
+                op = self._q.get()
+            except Exception as exc:  # noqa: BLE001
+                log.error("transcript worker queue failed: %s", exc)
+                return
+            kind = op[0]
+            if kind == "close":
+                return
+            if self._closed:
+                # closed: drain, emit nothing
+                continue
+            try:
+                if kind == "mic":
+                    self._on_mic()
+                elif kind == "create":
+                    self._on_create(bool(op[1]), op[2])
+                elif kind == "cancel":
+                    self._on_cancel_op()
+                elif kind == "tool_result":
+                    self._on_tool_result(str(op[1]), str(op[2]))
+                elif kind == "user_text":
+                    self._on_user_text(str(op[1]))
+                else:
+                    log.debug("transcript worker: unknown op %r", kind)
+            except Exception:  # noqa: BLE001
+                log.exception("transcript worker op %r failed", kind)
+            try:
+                # deliver held speech after every op
+                self._pump_held()
+            except Exception:  # noqa: BLE001
+                log.exception("transcript worker held-utterance delivery failed")
+
