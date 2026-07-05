@@ -1259,3 +1259,38 @@ class TranscriptBackend(BrainBackend):
         if not cancelled:
             self._fire("response.output_audio.done", {})
 
+    def _synthesize(self, text: str) -> Tuple[bytes, int]:
+        """One piper synthesis with the cascade L4 retry law — EXACTLY
+        one retry (PIPER_RETRIES == 1, a law, not a knob) — then the
+        text-only completion: (b"", 0) when both attempts failed (the
+        caller completes the turn without audio; the model's words were
+        already delivered as text)."""
+        attempt = 0
+        while True:
+            try:
+                pcm, rate = self._tts(text)
+            except Exception as exc:  # noqa: BLE001
+                cause = exc
+            else:
+                if pcm and rate:
+                    return pcm, int(rate)
+                cause = PiperError(
+                    "piper returned empty PCM or a zero sample rate for "
+                    "{!r}".format((text or "")[:60])
+                )
+            attempt += 1
+            if attempt > PIPER_RETRIES:
+                log.error(
+                    "transcript lane: piper synthesis failed after %d "
+                    "attempts (%s) — text-only completion (the model's "
+                    "words already reached the session as text)",
+                    PIPER_RETRIES + 1, cause,
+                )
+                return b"", 0
+            log.warning(
+                "transcript lane: piper attempt %d/%d failed (%s); retrying once",
+                attempt, PIPER_RETRIES + 1, cause,
+            )
+
+    # ------------------------------------------------ the empty-transcript retry
+
