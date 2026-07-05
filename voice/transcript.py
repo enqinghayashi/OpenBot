@@ -1101,3 +1101,23 @@ class TranscriptBackend(BrainBackend):
                 return
         self._run_server_turn()
 
+    def _fail_turn(self, message: str) -> None:
+        """A lane failure (whisper dead, cloud transport, dropped call,
+        empty model result): surface the failover signal — the only
+        backend failure event the session understands ("error" -> the
+        director's hard failover -> OFFLINE_CASCADE).  No
+        ``response.done``: the session's error handler resets the turn
+        state itself.  S4: an open tool round (a batch whose results
+        were still pending when the lane failed) is dropped whole FIRST
+        — the reset must not leave a round awaiting tool messages that
+        will never arrive, and a LATE tool result must never re-orphan
+        the head (the orphan guard refuses it downstream)."""
+        self._close_open_round("lane failure ({}) reset the lane".format(
+            (message or "")[:60]
+        ))
+        with self._lock:
+            self._cancel_requested = False
+            self._barge_pending = False
+        self._turn_active = False
+        self._fire("error", {"message": message})
+
