@@ -1156,3 +1156,77 @@ class TranscriptBackend(BrainBackend):
         self._history.append(message)
         self._trim_history()
 
+    def _trim_history(self) -> None:
+        """Enforce the history cap (MAX_KEPT_HISTORY_MESSAGES, the
+        agent.py law): drop the oldest whole CLOSED units first — never
+        a bare prefix that would slice a round in half.  Index 0 is the
+        conversation anchor (the oldest retained message — on this lane
+        the first utterance; never the head of a droppable round) and is
+        never dropped.  The current OPEN round (an assistant
+        ``tool_calls`` whose tool messages have not all arrived) is
+        never dropped.  A tool round is dropped only as a WHOLE unit, in
+        BOTH directions: an assistant ``tool_calls`` message is never
+        retained without its tool messages, and a role:"tool" message is
+        never retained without its owning assistant.  Warns on every
+        drop."""
+        if len(self._history) <= MAX_KEPT_HISTORY_MESSAGES:
+            return
+        need = len(self._history) - MAX_KEPT_HISTORY_MESSAGES  # over the cap
+        # start at 1: index 0 is the anchor and is never dropped.
+        # step over whole closed units; tool results arrive before
+        # the next user message, so only the last round can be open
+        drop_end = 1  # legal drop cutoff
+        ends = []  # cut points
+        owed = set()  # owed call_ids
+        round_origin = 1  # round start
+        for i in range(1, len(self._history)):
+            message = self._history[i]
+            role = str(message.get("role") or "")
+            if role == "tool":
+                if not owed:
+                    break  # no owner, bail
+                owed.discard(message.get("tool_call_id"))
+                if not owed:
+                    drop_end = i + 1  # round closed here
+                    ends.append(drop_end)
+            elif role == "assistant":
+                if owed:
+                    break  # a round is still open, bail
+                calls = message.get("tool_calls") or ()
+                if calls:
+                    owed = {str(call.get("id") or "") for call in calls}
+                    round_origin = i
+                else:
+                    drop_end = i + 1  # prose message, closed here
+                    ends.append(drop_end)
+            elif role == "user":
+                if owed:
+                    break  # user message while a call is owed
+                drop_end = i + 1
+                ends.append(drop_end)
+            else:
+                break  # unknown role: do not drop blind
+        if owed:
+            # open round never dropped
+            drop_end = min(drop_end, round_origin)
+        if drop_end <= 1:
+            return  # nothing droppable
+        # drop the fewest whole units that clear the overage;
+        # undershoot is fine because the cap is a ceiling. A bare
+        # prefix cut can slice a round in half and 400 the request
+        drop = drop_end - 1  # fallback: drop everything droppable
+        for end in ends:
+            if end - 1 >= need:
+                drop = end - 1
+                break
+        if drop <= 0:
+            return
+        log.warning(
+            "transcript lane: history capped at %d messages — dropped %d "
+            "oldest fully-closed round message(s)",
+            MAX_KEPT_HISTORY_MESSAGES, drop,
+        )
+        del self._history[1:1 + drop]
+
+    # ------------------------------------------------------------ speech (TTS)
+
