@@ -547,3 +547,17 @@ class TranscriptBackend(BrainBackend):
         self._q.put(("cancel",))
         return True
 
+    def truncate_response(self, item_id: str, audio_end_ms: int) -> bool:
+        """The REST wire has no item rewrite: truncate is a documented
+        dead end on this lane — returns False with a logged warning and
+        the barge-in proceeds cancel-only (the RealtimeBackend contract)."""
+        log.warning(
+            "conversation.item.truncate is a documented dead end on the "
+            "transcript lane (no item rewrite on the REST wire; item_id=%r, "
+            "audio_end_ms=%d) — barge-in proceeds with response.cancel alone",
+            item_id, max(0, int(audio_end_ms)),
+        )
+        return False
+
+    # ------------------------------------------------------------- the turn worker
+
