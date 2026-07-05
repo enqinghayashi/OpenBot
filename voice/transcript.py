@@ -1071,3 +1071,20 @@ class TranscriptBackend(BrainBackend):
                 "audio_start_ms": 0,
             })
 
+    def _finish_turn(self) -> bool:
+        """Close the active turn's stage work at a boundary.  Returns
+        True when a barge-in cancel aborted the turn (the caller must
+        stop): ``response.done`` {status: "cancelled"} closes the
+        session's accounting (its done handler owns the queue release)
+        and a fresh server turn auto-starts from the buffered audio."""
+        with self._lock:
+            cancelled = self._cancel_requested
+            self._cancel_requested = False
+        if not cancelled:
+            return False
+        self._turn_active = False
+        log.info("transcript lane: turn cancelled (barge-in)")
+        self._fire("response.done", {"response": {"status": "cancelled"}})
+        self._restart_if_barge()
+        return True
+
