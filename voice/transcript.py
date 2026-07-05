@@ -1137,3 +1137,14 @@ class TranscriptBackend(BrainBackend):
             self._buffer_consumed = True
         return _resample_pcm16(pcm24, MIC_RATE, STT_RATE)
 
+    def _history_messages(self, instruction: Optional[str]) -> List[Dict[str, Any]]:
+        """A copy of the history with the per-response instruction
+        prepended as a system message.  Per-response instructions do NOT
+        persist (the realtime lane's response-level override semantics)."""
+        out = [dict(m) for m in self._history]
+        if instruction:
+            out.insert(0, {"role": "system", "content": str(instruction)})
+        return out
+
+    # --------------------------------------------------- keeping history in bounds
+
