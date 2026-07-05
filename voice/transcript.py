@@ -679,3 +679,9 @@ class TranscriptBackend(BrainBackend):
             return
         self._append_history(message)
 
+    def _on_user_text(self, text: str) -> None:
+        """Commit an injected text user turn (the L9 answer attach)."""
+        self._append_history({"role": "user", "content": text})
+
+    # ------------------------------------- scanning open rounds + the held pump
+
