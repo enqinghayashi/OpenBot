@@ -597,3 +597,24 @@ class TranscriptBackend(BrainBackend):
             except Exception:  # noqa: BLE001
                 log.exception("transcript worker held-utterance delivery failed")
 
+    def _on_mic(self) -> None:
+        """A mic kick.  Mid-turn kicks are the barge-in signal (the
+        session applies L2); otherwise a fresh server-kind turn starts
+        from the buffered utterance."""
+        with self._lock:
+            active = self._turn_active
+        if active:
+            self._seq += 1
+            self._fire("input_audio_buffer.speech_started", {
+                "item_id": "utterance_{}".format(self._seq),
+                "audio_start_ms": 0,
+            })
+            return
+        with self._lock:
+            if not self._mic_buffer:
+                log.debug(
+                    "transcript lane: mic op with no buffered audio — dropped"
+                )
+                return
+        self._run_server_turn()
+
