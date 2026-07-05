@@ -524,3 +524,14 @@ class TranscriptBackend(BrainBackend):
         self._q.put(("tool_result", str(call_id), str(output_text)))
         return True
 
+    def create_response(
+        self, *, tools: bool = True, instruction: Optional[str] = None
+    ) -> bool:
+        """Close the per-turn mic buffer (task contract: the turn is
+        closed when the session starts a response) and run ONE chat call
+        — the session's tool continuation / ask turn / query answer."""
+        if self._closed:
+            return False
+        self._q.put(("create", bool(tools), instruction))
+        return True
+
