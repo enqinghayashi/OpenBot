@@ -1230,3 +1230,32 @@ class TranscriptBackend(BrainBackend):
 
     # ------------------------------------------------------------ speech (TTS)
 
+    def _speak(self, text: str) -> None:
+        """Local TTS -> the session's output_audio.delta vocabulary (24
+        kHz PCM16 base64 chunks, 0.25 s each — the L6 accounting rate),
+        then ``response.output_audio.done``.  A barge-in stop is checked
+        between chunks.  Piper failure degrades to a text-only
+        completion (handled inside :meth:`_synthesize`) — NOT a
+        failover: the brain lane is healthy and the model's words
+        already reached the session as a message item."""
+        pcm, rate = self._synthesize(text)
+        if not pcm or not rate:
+            # zero rate or empty PCM: skip the audio, the
+            # text already reached the session
+            return
+        pcm24 = _resample_pcm16(pcm, int(rate), AUDIO_SAMPLE_RATE)
+        chunk = int(AUDIO_SAMPLE_RATE * 2 * AUDIO_DELTA_S)
+        for i in range(0, len(pcm24), chunk):
+            self._check_barge()
+            with self._lock:
+                cancelled = self._cancel_requested
+            if cancelled:
+                return
+            self._fire("response.output_audio.delta", {
+                "delta": base64.b64encode(pcm24[i:i + chunk]).decode("ascii"),
+            })
+        with self._lock:
+            cancelled = self._cancel_requested
+        if not cancelled:
+            self._fire("response.output_audio.done", {})
+
