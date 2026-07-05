@@ -39,3 +39,61 @@ LOCO_API_GET_FSM_ID = 7001
 LOCO_API_GET_FSM_MODE = 7002
 
 
+class G1Loco:
+    """Minimal G1 locomotion wrapper.
+
+    Owns a LocoClient (JSON-over-RPC to the `sport` service) and a
+    `rt/sportmodestate` DDS subscription for read-only state feedback.
+    """
+
+    def __init__(self, net_interface: str = "eth0", state_capacity: int = 10):
+        self._net_interface = net_interface
+        self._state_capacity = state_capacity
+        self._client = None  # built in connect(); SDK needs DDS up first
+        self._state_sub = None
+        self._state = None
+        self._lock = threading.Lock()
+
+    # -- lifecycle (connect / disconnect) ----------------------------------
+
+    def connect(self):
+        """Bring up DDS + the sport client and subscribe to sportmodestate.
+
+        Calls ChannelFactoryInitialize(0, net_interface), then constructs a
+        LocoClient and calls LocoClient.SetTimeout(10.0), LocoClient.Init()
+        (registers the loco RPC API ids) and LocoClient.WaitLeaseApplied(), then
+        subscribes to `rt/sportmodestate` via ChannelSubscriber.Init(handler, queueLen).
+        """
+        ChannelFactoryInitialize(0, self._net_interface)
+        client = self._client = LocoClient()
+        client.SetTimeout(10.0)
+        client.Init()
+        client.WaitLeaseApplied()
+
+        sub = ChannelSubscriber(SPORT_MODE_STATE_TOPIC, SportModeState_)
+        sub.Init(self._on_state, self._state_capacity)
+        self._state_sub = sub
+        return self
+
+    def disconnect(self):
+        """Release the sportmodestate DDS subscription.
+
+        Closes the `rt/sportmodestate` ChannelSubscriber via
+        ChannelSubscriber.Close(). LocoClient has no explicit RPC disconnect;
+        call stop() before this to halt motion (damping is a caller choice).
+        """
+        with self._lock:
+            sub, self._state_sub = self._state_sub, None
+            self._state = None
+        if sub is not None:
+            sub.Close()
+
+    # -- locomotion verbs (one per SDK call) --------------------------------
+
+    @property
+    def _loco(self) -> LocoClient:
+        """Resolved LocoClient; raises if connect() has not been called."""
+        if self._client is None:
+            raise RuntimeError("G1Loco not connected: call connect() first")
+        return self._client
+
