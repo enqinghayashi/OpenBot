@@ -715,3 +715,23 @@ class TranscriptBackend(BrainBackend):
             return None
         return None
 
+    def _close_open_round(self, reason: str) -> None:
+        """Drop the history's OPEN tool round WHOLE (S4: a lane error —
+        whisper failure / failover — while a batch was pending).  The
+        round's assistant ``tool_calls`` message and the tool messages
+        already committed behind it are deleted together, so the
+        surviving history holds no round awaiting results that will
+        never come and no half-round (never an assistant without its
+        tool messages — and a LATE tool result for a dropped call is
+        refused by the orphan guard, never appended).  ``reason`` names
+        the reset for the log.  No-op when no round is open."""
+        origin = self._open_round_origin()
+        if origin is None:
+            return
+        log.warning(
+            "transcript lane: dropping the open tool round at history "
+            "index %d (%s)",
+            origin, reason,
+        )
+        del self._history[origin:]
+
