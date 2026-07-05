@@ -886,3 +886,53 @@ class TranscriptBackend(BrainBackend):
         self._append_history({"role": "user", "content": transcript})
         self._run_model_call(tools_enabled=True, instruction=None)
 
+    def _on_create(
+        self, tools_enabled: bool, instruction: Optional[str]
+    ) -> None:
+        """A session-initiated response (tool continuation / ask turn /
+        query answer).  A TOOLS-ENABLED turn closes the per-turn mic
+        buffer — the task contract: "the turn is closed when the session
+        starts a response (create_response)" — then ONE chat call.  An
+        ASK turn (tools disabled) NEVER closes the buffer: its turn has
+        no mic input, and any buffered audio is the human's awaited
+        answer (L9 phase 2) — consuming it into the ask turn would
+        strand the query; the answer is transcribed by the server turn
+        that follows (documented deviation).  A whisper hiccup on a
+        tools-enabled turn must not strand the session's own response (a
+        tool batch or an answer): the transcript is a bonus, so it warns
+        and proceeds without it."""
+        # an ask create opens the answer window; held speech
+        # predates the question and must not land here
+        with self._lock:
+            self._awaiting_query_answer = not tools_enabled
+        transcript = ""
+        if tools_enabled:
+            pcm16 = self._close_buffer()
+            if pcm16:
+                try:
+                    transcript = str(self._submit(pcm16) or "").strip()
+                except Exception as exc:  # noqa: BLE001 - see docstring
+                    log.warning(
+                        "transcript lane: whisper stage failed on a session "
+                        "turn (%s) — proceeding without the mic transcript",
+                        exc,
+                    )
+                    transcript = ""
+        if transcript:
+            self._append_history({"role": "user", "content": transcript})
+        with self._lock:
+            self._cancel_requested = False
+            self._turn_active = True
+            self._turn_epoch += 1
+        self._fire("response.created", {})
+        with self._lock:
+            cancelled_at_start = self._cancel_requested
+        if cancelled_at_start:
+            # cancel landed mid-op or mid-whisper: close with no
+            # model call, and the buffer goes to the next turn
+            self._turn_active = False
+            self._fire("response.done", {"response": {"status": "cancelled"}})
+            self._restart_if_barge()
+            return
+        self._run_model_call(tools_enabled=tools_enabled, instruction=instruction)
+
