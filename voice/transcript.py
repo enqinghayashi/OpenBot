@@ -1047,3 +1047,27 @@ class TranscriptBackend(BrainBackend):
         self._turn_active = False
         self._fire("response.done", {"response": {"status": "completed"}})
 
+    def _check_barge(self) -> None:
+        """Fire the barge-in signal for audio that arrived mid-turn (L2),
+        at a stage boundary.  The session's inline handler decides
+        truncate + cancel (before tool results) or ignore (after tool
+        results — the audio then simply joins the next turn's buffer).
+
+        Per-turn epoch guard (D4): a chunk that landed between the LAST
+        boundary check and the turn close set ``_barge_pending`` while
+        the turn was still active — without the guard it would fire at
+        the NEXT turn's first boundary and the session would cancel a
+        fresh turn, silently dropping the new utterance.  The flag only
+        fires when its epoch matches the CURRENT turn: a late chunk
+        belongs to the next turn's buffer, not to an interruption."""
+        with self._lock:
+            pending = self._barge_pending
+            self._barge_pending = False
+            epoch = self._barge_epoch
+        if pending and epoch == self._turn_epoch:
+            self._seq += 1
+            self._fire("input_audio_buffer.speech_started", {
+                "item_id": "utterance_{}".format(self._seq),
+                "audio_start_ms": 0,
+            })
+
