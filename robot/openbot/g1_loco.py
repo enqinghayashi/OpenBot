@@ -97,3 +97,33 @@ class G1Loco:
             raise RuntimeError("G1Loco not connected: call connect() first")
         return self._client
 
+    def set_velocity(self, vx: float, vy: float, omega: float, duration: float = 1.0):
+        """Command default G1 walking at (vx forward, vy lateral, omega yaw).
+
+        Maps to LocoClient.SetVelocity(vx, vy, omega, duration) (RPC 7105). The
+        balance FSM executes the gait; no leg joints are written here.
+        """
+        return self._loco.SetVelocity(vx, vy, omega, duration)
+
+    def start(self):
+        """Call LocoClient.Start(). HARDWARE-DAY FINDING (2026-08-15): the FSM
+        id is COPY-DEPENDENT — Stuart's SDK copy sends SetFsmId(200), the
+        dev-box/upstream copies send 500 (walk-node/hardware-day/
+        RECOMMENDATION.md §2(a)). From R2+A the robot is already in sport-FSM
+        801, so walk_node/sweep_test deliberately SKIP this call on hardware;
+        the verb stays for API compatibility. No leg joints are written.
+        """
+        return self._loco.Start()
+
+    def stop(self):
+        """Halt locomotion: maps to LocoClient.StopMove() == SetVelocity(0, 0, 0)."""
+        return self._loco.StopMove()
+
+    def squat(self):
+        """Transition to the default G1 squat: LocoClient.StandUp2Squat() (FSM 706)."""
+        return self._loco.StandUp2Squat()
+
+    def standup(self):
+        """Transition back to standing: LocoClient.Squat2StandUp() (FSM 706)."""
+        return self._loco.Squat2StandUp()
+
