@@ -1088,3 +1088,16 @@ class TranscriptBackend(BrainBackend):
         self._restart_if_barge()
         return True
 
+    def _restart_if_barge(self) -> None:
+        """After a barge-in abort, auto-start a fresh server turn from
+        the buffered audio (the server-VAD mirror: the interruption IS
+        the next utterance).  Nothing restarts when the buffer was
+        already consumed — the L9 answer cancel, whose audio became the
+        transcription, never doubles the turn."""
+        with self._lock:
+            if self._closed or self._turn_active:
+                return
+            if not self._mic_buffer or self._buffer_consumed:
+                return
+        self._run_server_turn()
+
