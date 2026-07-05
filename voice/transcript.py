@@ -796,3 +796,56 @@ class TranscriptBackend(BrainBackend):
 
     # ----------------------------------------------------------- the turn pipeline
 
+    def _run_server_turn(self) -> None:
+        """A fresh utterance's turn (the server-VAD mirror): close the
+        mic buffer -> whisper -> then either the S3 hold (a tool round
+        was OPEN when the utterance arrived — committing it mid-batch
+        would break the wire law, so it is held and delivered after the
+        batch closes), the empty-transcript retry, or
+        :meth:`_start_transcribed_server_turn` (the created fire — the
+        session runs the L10 frame seam at a bare created via the
+        lane-capability branch — the transcription, one chat call)."""
+        pcm16 = self._close_buffer()
+        if pcm16:
+            try:
+                transcript = str(self._submit(pcm16) or "").strip()
+            except Exception as exc:  # noqa: BLE001
+                # STT is dead: drop the open round first so a late
+                # result cannot re-orphan the head, then surface
+                # the failover signal
+                self._close_open_round(
+                    "whisper failure (STT dead) reset the lane"
+                )
+                log.error("transcript lane: whisper stage failed: %s", exc)
+                self._fire("error", {
+                    "message": "whisper stage failed: {}".format(exc),
+                })
+                return
+        else:
+            transcript = ""
+        if self._open_round_origin() is not None:
+            # mid-batch: a user message here would break the
+            # wire law (400) and garble the round, so hold it
+            if transcript:
+                self._held.append({"transcript": transcript})
+                reason = "a tool round was open (mid-batch)"
+            else:
+                self._held.append({"retry": EMPTY_TRANSCRIPT_RETRY})
+                reason = "a tool round was open (mid-batch); nothing heard"
+            log.info(
+                "transcript lane: utterance held (%s) — %d held item(s) "
+                "awaiting the batch close",
+                reason, len(self._held),
+            )
+            return
+        if not transcript:
+            # empty transcript on a healthy transport is not a
+            # failover: speak the retry line and stay up
+            log.warning(
+                "transcript lane: whisper heard nothing — speaking the "
+                "retry line (no failover)"
+            )
+            self._speak_retry(EMPTY_TRANSCRIPT_RETRY)
+            return
+        self._start_transcribed_server_turn(transcript)
+
