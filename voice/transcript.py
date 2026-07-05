@@ -936,3 +936,114 @@ class TranscriptBackend(BrainBackend):
             return
         self._run_model_call(tools_enabled=tools_enabled, instruction=instruction)
 
+    def _run_model_call(
+        self, *, tools_enabled: bool, instruction: Optional[str]
+    ) -> None:
+        """ONE chat call for the turn (never more): commit the result to
+        the history, fire the session's output events, speak the prose.
+        A transport failure, a dropped call, or an empty result (never
+        an empty response) fires ``error`` -> the session's failover
+        signal.
+
+        When prose AND tool calls arrive together, TWO consecutive
+        assistant messages are committed: the prose message FIRST, then
+        the tool_calls message — a legal shape (two assistant messages
+        in a row), and the tool messages that follow answer the
+        tool_calls message they immediately follow.  The tool_calls
+        message therefore naturally precedes its tool messages; the
+        prose message rides in the same turn before both."""
+        messages = self._history_messages(instruction)
+        with self._lock:
+            frame, self._staged_frame = self._staged_frame, None
+        # frames: decision turns only, never an ask; the
+        # store is cleared either way so nothing replays
+        image = frame if tools_enabled else None
+        tools = self._tools if tools_enabled else []
+        try:
+            result = self._client.chat(
+                messages, tools, image_jpeg_b64=image
+            )
+        except ChatTransportError as exc:
+            log.error("transcript lane: cloud transport failed: %s", exc)
+            self._fail_turn("cloud transport failed: {}".format(exc))
+            return
+        except Exception as exc:  # noqa: BLE001 - whatever it throws
+            log.error("transcript lane: cloud chat failed: %s", exc)
+            self._fail_turn("cloud chat failed: {}".format(exc))
+            return
+        # a barge-in may have landed during the call
+        self._check_barge()
+        if self._finish_turn():
+            return
+        if result.dropped:
+            log.error("transcript lane: cloud chat dropped (single-flight)")
+            self._fail_turn(
+                "cloud chat dropped (a previous call was in flight)"
+            )
+            return
+        text = (result.text or "").strip() if result.text else ""
+        calls = result.tool_calls or []
+        if not text and not calls:
+            # an empty response (no prose, no call) is a failure
+            # and takes the failover path
+            log.error(
+                "transcript lane: the model returned neither prose nor a "
+                "tool call (never an empty response)"
+            )
+            self._fail_turn(
+                "the model returned neither prose nor a tool call "
+                "(never an empty response)"
+            )
+            return
+        item_id = "transcript_item_{}".format(self._seq)
+        self._seq += 1
+        if text:
+            self._append_history({"role": "assistant", "content": text})
+            self._fire("response.output_item.done", {
+                "item": {
+                    "type": "message",
+                    "content": [{"type": "text", "text": text}],
+                },
+            })
+        if calls:
+            assistant: Dict[str, Any] = {
+                "role": "assistant", "content": None, "tool_calls": [],
+            }
+            for n, call in enumerate(calls):
+                call_id = str(call.id or "call_{}".format(n))
+                name = str(call.name or "")
+                try:
+                    arguments_json = json.dumps(call.arguments)
+                except (TypeError, ValueError):
+                    arguments_json = "{}"
+                assistant["tool_calls"].append({
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": arguments_json},
+                })
+                self._call_names[call_id] = name
+                self._fire("response.output_item.done", {
+                    "item": {
+                        "type": "function_call",
+                        "name": name,
+                        "call_id": call_id,
+                        "arguments": arguments_json,
+                    },
+                })
+            if assistant["tool_calls"]:
+                self._append_history(assistant)
+        if text:
+            # prose: log it, then speak it with local TTS
+            log.info("transcript lane prose reply: %s", text)
+            self._fire("response.audio_transcript.delta", {
+                "delta": text, "item_id": item_id,
+            })
+            self._fire("response.audio_transcript.done", {
+                "transcript": text, "item_id": item_id,
+            })
+            self._speak(text)
+        if self._finish_turn():
+            return
+        self._turn_active = False
+        self._fire("response.done", {"response": {"status": "completed"}})
+
