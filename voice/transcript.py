@@ -849,3 +849,40 @@ class TranscriptBackend(BrainBackend):
             return
         self._start_transcribed_server_turn(transcript)
 
+    def _start_transcribed_server_turn(self, transcript: str) -> None:
+        """The post-whisper half of a fresh server turn, shared by a
+        live utterance (:meth:`_run_server_turn`) and a HELD utterance
+        (:meth:`_pump_held` — the delivery replays the SAME event shape
+        a live turn would have, so the session cannot tell the audio
+        arrived mid-batch): turn state up -> the bare
+        ``response.created`` (the session's created handler runs the
+        lane's L10 frame seam here — this lane's capability, the
+        created-to-chat window) -> the L9-cancel check -> (only when
+        the turn was cancelled at start: the transcription — the
+        session's query-answer capture — before the user message) ->
+        the user message -> ONE chat call.  A NORMAL turn fires NO
+        transcription: the commit is the admission, and a transcription
+        event would arrive gate-shut and log a FALSE loss (2026-09-04
+        fix — the session's drop branch is the realtime lane's path)."""
+        with self._lock:
+            self._cancel_requested = False
+            self._turn_active = True
+            self._turn_epoch += 1
+        self._fire("response.created", {})
+        with self._lock:
+            cancelled_at_start = self._cancel_requested
+        if cancelled_at_start:
+            # cancelled at the created fire: the session awaits a
+            # query answer and this speech is it. Close the aborted
+            # turn first; the transcription handler opens its own response
+            self._turn_active = False
+            self._fire("response.done", {"response": {"status": "cancelled"}})
+            self._fire("conversation.item.input_audio_transcription.completed", {
+                "transcript": transcript,
+            })
+            return
+        # no event on the normal path: the commit
+        # below is the admission
+        self._append_history({"role": "user", "content": transcript})
+        self._run_model_call(tools_enabled=True, instruction=None)
+
