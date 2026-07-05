@@ -535,3 +535,15 @@ class TranscriptBackend(BrainBackend):
         self._q.put(("create", bool(tools), instruction))
         return True
 
+    def cancel_response(self) -> bool:
+        """Cancel the in-flight turn (barge-in, L2).  The flag is set
+        synchronously (thread-safe) so the worker honors the abort at
+        its next stage boundary even while blocked in a stage call; the
+        queued op only drains the accounting."""
+        if self._closed:
+            return False
+        with self._lock:
+            self._cancel_requested = True
+        self._q.put(("cancel",))
+        return True
+
