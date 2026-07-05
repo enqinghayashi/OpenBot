@@ -627,3 +627,55 @@ class TranscriptBackend(BrainBackend):
                 self._cancel_requested = False
                 log.debug("transcript lane: stale cancel drained")
 
+    def _on_tool_result(self, call_id: str, output_text: str) -> None:
+        """Commit one function_call_output to the history — a role:"tool"
+        message, unique per call_id (the provider law: each call answered
+        EXACTLY once, and each tool message immediately follows the
+        assistant ``tool_calls`` message that owned the call).  When a
+        message for this call_id ALREADY exists (the L9 placeholder
+        "OK: awaiting…", queued in the ask turn), it is REPLACED IN
+        PLACE: the content is overwritten and the position kept, so the
+        answer's tool message stays contiguous behind its assistant
+        tool_calls message and the provider never sees a duplicate
+        call_id — the wire violation that 400'd every query_user round.
+        Only when no prior message exists for the call_id is a new
+        message appended (a normal tool round)."""
+        name = self._call_names.get(call_id, "")
+        for message in self._history:
+            if (
+                message.get("role") == "tool"
+                and message.get("tool_call_id") == call_id
+            ):
+                message["content"] = output_text
+                if name:
+                    message["name"] = name
+                log.debug(
+                    "transcript lane: tool message for call_id %r replaced "
+                    "in place (the L9 answer closes the placeholder)",
+                    call_id,
+                )
+                return
+        message: Dict[str, Any] = {
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": output_text,
+        }
+        if name:
+            message["name"] = name
+        # orphan guard: a tool message without its owning
+        # tool_calls message would poison the wire (400)
+        if not any(
+            m.get("role") == "assistant"
+            and any(str(c.get("id") or "") == call_id
+                    for c in (m.get("tool_calls") or ()))
+            for m in self._history
+        ):
+            log.warning(
+                "transcript lane: refusing to append the tool message for "
+                "call_id %r — no assistant tool_calls message in the "
+                "history owns it (never an orphaned tool message)",
+                call_id,
+            )
+            return
+        self._append_history(message)
+
