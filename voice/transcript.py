@@ -1148,3 +1148,11 @@ class TranscriptBackend(BrainBackend):
 
     # --------------------------------------------------- keeping history in bounds
 
+    def _append_history(self, message: Dict[str, Any]) -> None:
+        """Append one history message, then enforce the cap.  Every
+        append goes through here so the window can never grow without
+        bound (it is re-sent every turn; an uncapped window overflows
+        the provider window -> 400 -> failover)."""
+        self._history.append(message)
+        self._trim_history()
+
