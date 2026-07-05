@@ -685,3 +685,33 @@ class TranscriptBackend(BrainBackend):
 
     # ------------------------------------- scanning open rounds + the held pump
 
+    def _open_round_origin(self) -> Optional[int]:
+        """The history index of the OPEN tool round's assistant
+        ``tool_calls`` message, or None when every round is closed.
+        Walks BACK from the tail over the role:"tool" messages; the
+        first non-tool message is the round's owner (the wire law: a
+        round's tool messages sit directly behind its assistant
+        ``tool_calls`` message, so only the LAST round can be open and
+        only its owner can sit behind the trailing tool messages).  The
+        round is OPEN exactly when its call_ids are not all covered by
+        the trailing tool messages — its results are still owed, i.e.
+        the batch is draining."""
+        owed = set()
+        for i in range(len(self._history) - 1, -1, -1):
+            message = self._history[i]
+            role = str(message.get("role") or "")
+            if role == "tool":
+                call_id = message.get("tool_call_id")
+                if call_id is not None:
+                    owed.add(call_id)
+                continue
+            if role == "assistant" and message.get("tool_calls"):
+                calls = {
+                    str(call.get("id") or "")
+                    for call in (message.get("tool_calls") or ())
+                }
+                if calls - owed:
+                    return i
+            return None
+        return None
+
