@@ -734,3 +734,21 @@ class MergedWriter:
             self._height_log_t = now
             print(f"[height] {msg}")
 
+    def _height_status(self):
+        """Inline status fragment, same shape as _cmd_auto_status."""
+        if self.height_suspended:
+            rem = max(self.height_suspend_deadline - time.monotonic(), 0.0)
+            return (f"height={self.height_ref:.2f} "
+                    f"SUSPENDED->{self.height_suspend_target:.2f} rem={rem:.1f}s")
+        if not self.height_active:
+            return f"height={self.height_ref:.2f}(stand {self.height_stand:.2f})"
+        rem = max(self.height_deadline - time.monotonic(), 0.0)
+        return (f"height={self.height_ref:.2f}->{self.height_target:.2f} "
+                f"active rem={rem:.1f}s")
+
+    # ------------------------------------------------ additive stance lane
+    # symmetric hip-roll splay set at runtime: no deadline, no watchdog,
+    # no thread. the failure mode is benign, a wide stance held through a
+    # descend, pick and retreat.
+    # sticky until `stance off` or a restart, and never persisted.
+
