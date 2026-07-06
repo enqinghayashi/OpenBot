@@ -1098,3 +1098,12 @@ class MergedWriter:
             return "SONIC:reset"
         return "ERROR:sonic arm|on|off|reset|status"
 
+    def _sonic_log(self, msg, force=False):
+        """Rate-limited (1 Hz) SONIC-lane log — no assert, no exception.
+        `force` bypasses the rate limit for state transitions that must always
+        be visible (arm/on/off/reset/revoke/handback), the height lane's rule."""
+        now = time.monotonic()
+        if force or now - self.sonic_log_t >= 1.0:
+            self.sonic_log_t = now
+            print(f"[sonic] {msg}")
+
