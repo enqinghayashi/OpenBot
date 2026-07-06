@@ -1294,3 +1294,48 @@ class TranscriptBackend(BrainBackend):
 
     # ------------------------------------------------ the empty-transcript retry
 
+    def _speak_retry(self, line: str) -> None:
+        """Speak ONE honest line (the D5 empty-transcript retry) as a
+        full server turn — ``response.created`` (the session runs the
+        L10 frame seam inline), the message item, the spoken-text
+        events, local TTS, ``response.done`` — the SAME event shape a
+        normal prose turn has, so the session's accounting stays exact.
+        The line is committed to the history as the assistant's message
+        (the human heard it; the model must know it was said).  Never a
+        failover signal: the transport is healthy, the human just was
+        not heard."""
+        with self._lock:
+            self._cancel_requested = False
+            self._turn_active = True
+            self._turn_epoch += 1
+        # no_model_call created: no chat follows, the turn only
+        # speaks. The marker keeps the frame seam off, since
+        # staging a frame would pin it on a later turn
+        self._fire("response.created", {"no_model_call": True})
+        with self._lock:
+            cancelled_at_start = self._cancel_requested
+        if cancelled_at_start:
+            # cancelled at created: close it, nothing heard
+            self._turn_active = False
+            self._fire("response.done", {"response": {"status": "cancelled"}})
+            return
+        item_id = "transcript_item_{}".format(self._seq)
+        self._seq += 1
+        self._append_history({"role": "assistant", "content": line})
+        self._fire("response.output_item.done", {
+            "item": {
+                "type": "message",
+                "content": [{"type": "text", "text": line}],
+            },
+        })
+        self._fire("response.audio_transcript.delta", {
+            "delta": line, "item_id": item_id,
+        })
+        self._fire("response.audio_transcript.done", {
+            "transcript": line, "item_id": item_id,
+        })
+        self._speak(line)
+        if self._finish_turn():
+            return
+        self._turn_active = False
+        self._fire("response.done", {"response": {"status": "completed"}})
