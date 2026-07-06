@@ -1107,3 +1107,37 @@ class MergedWriter:
             self.sonic_log_t = now
             print(f"[sonic] {msg}")
 
+    def _sonic_warm_tick(self, now):
+        """Maintain sonic_warm off the ACCEPTED frame stream (spec §4.2).
+
+        sonic_warm is the length of the CURRENT CONSECUTIVE RUN of accepted
+        frames.  It counts every accepted frame - armed or not (operator
+        directive 2026-09-12, "count warmup before arming too") - and RESTARTS
+        at 1 when the gap since the previous accepted frame exceeds
+        sonic_stale_ms: the SAME bound the live lane revokes on (see
+        _sonic_seam) and that the §2.4 #7 age gate already uses.  So
+        `warm >= sonic_warmup_frames` means "no gap in this run would have
+        revoked the live lane" - the property warmup exists to establish.  A
+        count filled and then frozen by a dead stream can never satisfy it,
+        which is why `sonic on` also re-checks freshness at the gate.
+
+        `now` is passed IN rather than read here: the accept path already reads
+        the clock for sonic_last_rx, so this compares against the same instant,
+        and a test can drive it with a synthetic clock.  An exact-boundary test
+        is impossible through the frame path, because feeding a frame re-reads
+        time.monotonic() a few microseconds later.
+
+        Degrades, never raises; no assertion is used anywhere in the lane
+        (spec §5).  A disabled lane returns before touching anything, and a
+        partially-wired harness reads the class-level sonic_lane_enabled =
+        False - so this can never turn every frame into "ERROR:sonic frame
+        rejected" through the accept path's blanket except.
+        """
+        if not self.sonic_lane_enabled:
+            return
+        prev = self.sonic_last_rx
+        if prev > 0.0 and (now - prev) > self.sonic_stale_ms / 1000.0:
+            self.sonic_warm = 1  # frame run broke, so the lane revokes on this gap
+        elif self.sonic_warm < self.sonic_warmup_frames:
+            self.sonic_warm += 1  # saturates at the warmup requirement
+
