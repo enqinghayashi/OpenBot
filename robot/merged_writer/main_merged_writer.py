@@ -246,3 +246,16 @@ class MergedWriter:
             status, result = msc.CheckMode()
         print(f"[bring-up] MotionSwitcher released (name empty, status {status})")
 
+    def init_lowcmd(self):
+        self.lowcmd = unitree_hg_msg_dds__LowCmd_()
+        self.lowcmd.mode_machine = self.mode_machine_cfg
+        self.lowcmd.mode_pr = 0  # Mode.PR = series
+        self.lowcmd_publisher = ChannelPublisher("rt/lowcmd", LowCmd_)
+        self.lowcmd_publisher.Init()
+        for i in range(35):
+            self.lowcmd.motor_cmd[i].mode = MODE_ENABLE
+            self.lowcmd.motor_cmd[i].q = self.captured_q[i]
+            self.lowcmd.motor_cmd[i].dq = 0.0
+            self.lowcmd.motor_cmd[i].tau = 0.0
+        self.crc = CRC()
+
