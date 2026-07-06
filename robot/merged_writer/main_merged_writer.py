@@ -781,3 +781,29 @@ class MergedWriter:
         self._stance_base_policy = self.policy.defaults.copy()
         self._stance_base_obs = self.obs.default_padded.copy()
 
+    def _apply_stance(self, parts):
+        """stance parse+apply, shared by socket and console (the same lockstep
+        split that keeps height/cmd_set identical at both dispatch sites).
+        Returns an error message or None on success:
+          stance <deg>    symmetric outward hip-roll splay, clamped to band
+          stance off      restore the boot stance (identical to `stance 0`)
+
+        The band is [-stance_deg_max, +stance_deg_max] and ships SHUT at 0.0,
+        so an unarmed writer refuses to splay.  Reversible at any time."""
+        if len(parts) == 2 and parts[1] == "off":
+            deg = 0.0
+        elif len(parts) == 2:
+            try:
+                deg = float(parts[1])
+            except ValueError:
+                return "stance needs a float"
+            if not np.isfinite(deg):
+                return "stance value must be finite"
+        else:
+            return "stance off | stance <deg>"
+        if self._stance_base_policy is None:
+            return "stance unavailable: no policy (stage 0)"
+        deg = min(max(deg, -self.stance_deg_max), self.stance_deg_max)
+        self._write_stance(deg)
+        return None
+
