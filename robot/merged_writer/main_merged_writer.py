@@ -259,3 +259,31 @@ class MergedWriter:
             self.lowcmd.motor_cmd[i].tau = 0.0
         self.crc = CRC()
 
+    def fill_gains(self):
+        """Write the verified gain tables into motor_cmd 0..34 (once at boot)."""
+        leg_kp = np.array(self.cfg["leg_kp"], dtype=np.float32)
+        leg_kd = np.array(self.cfg["leg_kd"], dtype=np.float32)
+        if float(self.cfg.get("waist_pitch_kd_bias", 0.0)):
+            leg_kd = leg_kd.copy()
+            leg_kd[14] += float(self.cfg["waist_pitch_kd_bias"])  # waist_pitch
+        for i in range(15):
+            self.lowcmd.motor_cmd[i].kp = leg_kp[i]
+            self.lowcmd.motor_cmd[i].kd = leg_kd[i]
+        arm_kp = np.array(self.cfg["arm_kp"], dtype=np.float32)
+        arm_kd = np.array(self.cfg["arm_kd"], dtype=np.float32)
+        for j, i in enumerate(range(15, 29)):
+            self.lowcmd.motor_cmd[i].kp = arm_kp[j]
+            self.lowcmd.motor_cmd[i].kd = arm_kd[j]
+        self.lowcmd.motor_cmd[29].kp = float(self.cfg["gate_kp"])
+        self.lowcmd.motor_cmd[29].kd = float(self.cfg["gate_kd"])
+        for i in range(30, 35):
+            self.lowcmd.motor_cmd[i].kp = float(self.cfg["trailing_kp"])
+            self.lowcmd.motor_cmd[i].kd = float(self.cfg["trailing_kd"])
+        # boot gains for legs and waist, snapshotted after the writes
+        # above so waist_pitch_kd_bias is included.
+        # b == 0 restores them bit-exactly with no config re-read.
+        self.sonic_kp_boot = np.array(
+            [self.lowcmd.motor_cmd[i].kp for i in range(15)], dtype=np.float64)
+        self.sonic_kd_boot = np.array(
+            [self.lowcmd.motor_cmd[i].kd for i in range(15)], dtype=np.float64)
+
