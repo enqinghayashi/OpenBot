@@ -124,3 +124,37 @@ def parse_args():
     return p.parse_args()
 
 
+class MergedWriter:
+    # ------------------------------------------------------------- SONIC lane
+    # class-level defaults so a half-wired instance reads the lane as off
+    # instead of raising AttributeError at 250 Hz.
+    # keep in sync with _init_sonic_state.
+    sonic_lane_enabled = False
+    sonic_mode = 'off'
+    sonic_armed = False
+    sonic_b = 0.0
+    sonic_target = None
+    sonic_last_rx = 0.0
+    sonic_rx = 0
+    sonic_rej = 0
+    sonic_seq = -1
+    sonic_warm = 0
+    sonic_last_good_t = 0.0
+    sonic_faulted = False
+    sonic_fault_cause = "none"
+    sonic_prev_blend = 0.0
+    sonic_has_frame = False
+    sonic_log_t = 0.0
+    sonic_overrun_head = 0
+    sonic_overrun_base = 0
+    sonic_kp_boot = None
+    sonic_kd_boot = None
+    # enable-gate probe: an empty string means off.
+    # the literals must match _init_sonic_state.
+    sonic_gate_probe_dir = ""
+    sonic_gate_probe_max = 512
+    sonic_gate_probe_fh = None
+    sonic_gate_probe_path = None
+    sonic_gate_probe_n = 0
+    sonic_gate_dev = None
+
