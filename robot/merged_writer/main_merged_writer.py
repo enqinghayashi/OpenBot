@@ -725,3 +725,12 @@ class MergedWriter:
         self.height_target = self.height_stand
         self.height_suspended = False
 
+    def _height_log(self, msg, force=False):
+        """Rate-limited (1 Hz) height-lane log — no assert, no exception.
+        `force` bypasses the rate limit for the rare state transitions that
+        must always be visible (RC suspend/resume, Finding 7)."""
+        now = time.monotonic()
+        if force or now - self._height_log_t >= 1.0:
+            self._height_log_t = now
+            print(f"[height] {msg}")
+
