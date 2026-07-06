@@ -223,3 +223,13 @@ class MergedWriter:
 
     # ------------------------------------------------------------- boot-up stuff
 
+    def acquire_lock(self):
+        self.lock_fd = open(self.cfg["lockfile"], "w")
+        try:
+            fcntl.flock(self.lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise RuntimeError(f"lock held: {self.cfg['lockfile']} — "
+                               "another writer is running")
+        self.lock_fd.write(str(os.getpid()))
+        self.lock_fd.flush()
+
