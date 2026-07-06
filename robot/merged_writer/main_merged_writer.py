@@ -866,3 +866,7 @@ class MergedWriter:
             self._stance_log_t = now
             print(f"[stance] {msg}")
 
+    def _stance_status(self):
+        """Inline status fragment, same shape as _cmd_auto_status."""
+        return f"stance={self.stance_deg:+.1f}(max {self.stance_deg_max:.1f})"
+
