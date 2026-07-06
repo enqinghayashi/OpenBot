@@ -807,3 +807,54 @@ class MergedWriter:
         self._write_stance(deg)
         return None
 
+    def _write_stance(self, deg):
+        """Install the stance offset into BOTH policy-side encodings.
+
+        THE MECHANISM, and why it is an exact reparametrisation rather than a
+        trim the policy fights.  policy_runner:50 is
+        `target_q = action * action_scale + defaults`, and obs_builder:105 is
+        `f[13:42] = q - default_padded`; both read the SAME config key, but
+        through two INDEPENDENT np.array copies (policy_runner:19,
+        obs_builder:43-46).  Shift BOTH by the same delta d:
+
+            obs    = (q + d) - (default + d) = q - default   -> BIT-IDENTICAL
+            target = action*scale + default + d     -> fixed point moves by d
+
+        So the policy's own fixed point translates by exactly d with ZERO
+        distribution shift, and the splayed stance is a state the policy holds
+        rather than a standing error the PD pulls against.  (Confirmed on
+        hardware: a hand-set splay survived a descend, a pick and a retreat,
+        which a restoring hip-roll loop at kp=150 could not have allowed.)
+
+        Two properties the pins assert, both load-bearing:
+          * IDEMPOTENT — always computed from the boot snapshot, so repeating a
+            value changes nothing and `stance off` restores the boot encoding.
+          * ATOMIC — whole arrays are REBOUND, never mutated in place, so the
+            250 Hz tick can only ever read one consistent encoding and never a
+            torn half-applied delta.
+        """
+        d2r = math.pi / 180.0
+        hip = deg * d2r
+        ank = self.stance_ankle_ratio * hip
+        # sign map: motor 1 left hip, 5 left ankle, 7 right hip,
+        # 11 right ankle. each ankle takes its own leg's sign
+        # (7 and 11 negated with 1 and 5), so it follows its hip.
+        # the negative ratio counter-rotates the ankle and adds
+        # about 1 deg of sole tilt per deg of ankle roll.
+        d_pol = np.zeros_like(self._stance_base_policy)
+        d_pol[1] = +hip
+        d_pol[7] = -hip
+        d_pol[5] = +ank
+        d_pol[11] = -ank
+        d_obs = np.zeros_like(self._stance_base_obs)
+        d_obs[0:15] = d_pol  # first 15 slots: legs and waist
+        self.policy.defaults = self._stance_base_policy + d_pol
+        self.obs.default_padded = self._stance_base_obs + d_obs
+        self.stance_deg = deg
+        if deg == 0.0:
+            self._stance_log("off -> boot stance", force=True)
+        else:
+            self._stance_log(f"{deg:+.1f} deg splay "
+                             f"(ankle follows {self.stance_ankle_ratio:+.3f})",
+                             force=True)
+
