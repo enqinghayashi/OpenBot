@@ -601,3 +601,20 @@ class MergedWriter:
         self.cmd_auto_deadline = time.monotonic() + duration
         return None
 
+    def _cmd_auto_status(self):
+        """'auto=0' or 'auto=1 cmd=(vx,vy,om) rem=..s' — inline-field fragment
+        for the three status surfaces (console, _status_line, STATE:)."""
+        if not self.cmd_auto_active:
+            return "auto=0"
+        rem = max(self.cmd_auto_deadline - time.monotonic(), 0.0)
+        c = self.cmd_auto
+        return (f"auto=1 ({c[0]:+.2f},{c[1]:+.2f},{c[2]:+.2f}) "
+                f"rem={rem:.1f}s")
+
+    # ---------------------------------------------- runtime height lane
+    # the height verb drives an observation input (obs f[3]) rather than
+    # a velocity, so it is not orthogonal to cmd.
+    # rc_hold forces rc_live false, so the stick read is unreachable:
+    # a push pauses a squat but cannot abort it.
+    # the watchdog returns to height_stand, never to 0.
+
