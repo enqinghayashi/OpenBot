@@ -870,3 +870,26 @@ class MergedWriter:
         """Inline status fragment, same shape as _cmd_auto_status."""
         return f"stance={self.stance_deg:+.1f}(max {self.stance_deg_max:.1f})"
 
+    def _legs_ascended(self, st):
+        """True when the measured leg joints (motors 0-11) are within
+        height_ascend_tol of the POLICY-MEASURED standing pose — a base-height
+        proxy that needs no FK.  shutdown() holds the policy live until this is
+        True (bounded by height_ascend_timeout_s) before the limp frame.
+
+        The reference is `height_stand_q`, built from config
+        `policy_stand_q_legs` (the measured fixed point, see _init_height_state)
+        — NOT the YAML default_angles, which the real policy misses by up to
+        0.44 rad (FINDING 2: the old predicate was unsatisfiable at standing)."""
+        if st is None:
+            return False
+        q = st["q"][0:12]
+        return bool(np.all(np.abs(q - self.height_stand_q[0:12])
+                           <= self.height_ascend_tol))
+
+    # ------------------------------------------------ additive SONIC lane
+    # the lane is additive: off with b == 0 yields the same object,
+    # the same gains and the same flow.
+    # no asserts anywhere, since AssertionError slips past the
+    # RuntimeError handlers; every config read uses cfg.get so a
+    # missing key degrades instead of raising.
+
