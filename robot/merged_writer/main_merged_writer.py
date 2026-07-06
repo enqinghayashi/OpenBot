@@ -772,3 +772,12 @@ class MergedWriter:
         self._stance_base_obs = None
         self._stance_log_t = 0.0
 
+    def _capture_stance_base(self):
+        """Snapshot the boot `default_angles` encodings VERBATIM.  Every stance
+        write is re-derived from these and never compounded, which is what makes
+        the verb idempotent and makes `stance off` a BIT-EXACT restore."""
+        if self.policy is None or self.obs is None:
+            return
+        self._stance_base_policy = self.policy.defaults.copy()
+        self._stance_base_obs = self.obs.default_padded.copy()
+
