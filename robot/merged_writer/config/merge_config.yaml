@@ -1,0 +1,206 @@
+# C3 merged whole-body writer config (pick-walk_skill merge_version branch)
+#
+# All constants verified against source, not guessed:
+#  - GR00T policy:   SONIC/decoupled_wbc/sim2mujoco/resources/robots/g1/g1_gear_wbc.yaml
+#  - Arm gains:      SONIC/decoupled_wbc/control/main/teleop/configs/g1_29dof_gear_wbc.yaml
+#  - Arm poses:      helpers/manual_poses.json (hardware-verified on Stuart)
+#  - Writer pattern: unitree_sdk2py example/g1/low_level/g1_low_level_example.py
+
+# --- rates ---
+control_hz: 250              # main loop (5x the proven real-deploy 50 Hz floor)
+policy_decimation: 5         # inline policy tick every 5th tick => 50 Hz
+coupling_ramp_s: 1.0         # q ramp from captured pose to targets at bring-up.
+                             # 2026-08-27: raised from 0.12 s — the 0.12 s ramp
+                             # SNAPPED the legs violently when the capture came
+                             # from a walk-run stance far from the policy
+                             # defaults (all-joint jitter + loud motors, robot
+                             # rebooted). 1.0 s is imperceptible when the
+                             # capture already matches (validated case).
+
+# --- lowstate / watchdogs ---
+lowstate_timeout_ms: 10      # poll Read() timeout (seconds are accepted by SDK Read)
+watchdog_gap_ms: 50          # lowstate gap above this => freeze warning (hold last cmd)
+watchdog_crash_ms: 200       # gap above this => raise => safe shutdown
+lowstate_wait_s: 5.0         # max wait for first lowstate at bring-up
+mode_machine: 5              # MODE_MACHINE (echoed from lowstate)
+
+interface: "eth0"            # DDS network interface on Stuart
+
+# --- ONNX policies (GR00T-WholeBodyControl, NVIDIA Open Model License) ---
+onnx_dir: "policy"           # relative to merged_writer/ pkg root; override --onnx-dir / $MERGE_ONNX_DIR
+policy_balance: "GR00T-WholeBodyControl-Balance.onnx"
+policy_walk: "GR00T-WholeBodyControl-Walk.onnx"
+gate_cmd_norm: 0.05          # norm(raw cmd) < gate => Balance, else Walk
+
+# --- obs scales (g1_gear_wbc.yaml) ---
+cmd_scale: [2.0, 2.0, 0.5]
+ang_vel_scale: 0.5
+dof_pos_scale: 1.0
+dof_vel_scale: 0.05
+action_scale: 0.25
+obs_history_len: 6           # 6 x 86 = 516-D obs
+height_cmd: 0.74             # m, raw (no scale)
+rpy_cmd: [0.0, 0.0, 0.0]     # v1: fixed upright
+
+# --- runtime height lane (2026-09-10; REPO-SIDE ONLY, NOT deployed) ---
+# A runtime `height <m> [dur]` verb mutates obs_builder f[3] (height_cmd) so
+# the GR00T policy tracks a squat.  This is a REQUEST to the policy, not a
+# motor target — the policy still owns leg_target, and the lane never enters
+# the rc_hold zeroing branch (live RC stays live).  Conservative defaults:
+height_cmd_min: 0.55         # m. Lower clamp: 0.74 nominal -> 0.19 m of squat,
+                             # deep enough to be useful yet well above the
+                             # ~0.40 m region where the leg policy loses height
+                             # authority.  Nothing may be commanded lower.
+height_cmd_max: 0.80         # m. Upper clamp: caps extension just above the
+                             # 0.74 nominal so the legs can never be asked past
+                             # the reach ceiling that produced the overrun cases.
+height_slew_rate: 0.15       # m/s. Rate limit so the reference can never step
+                             # discontinuously: covers the 0.19 m nominal->min
+                             # span in ~1.3 s (slower than the 1.0 s coupling
+                             # ramp), i.e. 0.6 mm per 250 Hz tick.
+height_hold_s: 66.0           # s. Default lifetime of a height command.  On the
+                             # monotonic() deadline expiry — or if the driving
+                             # process dies — the reference returns to standing
+                             # on its own; bounded so a forgotten squat cannot
+                             # latch forever.
+height_ascend_timeout_s: 3.0 # s. Hard bound on the shutdown ascend wait: the
+                             # writer returns the reference to standing and
+                             # polls lowstate for the legs before publishing the
+                             # limp frame, but never hangs the crash-safe tail
+                             # on a stuck joint.
+height_ascend_tol_rad: 0.25  # rad. "Ascended" = every leg joint (motors 0-11)
+                             # within this of the POLICY-MEASURED standing pose
+                             # (policy_stand_q_legs below) — a base-height proxy
+                             # that needs no FK.  NOT the YAML default_angles:
+                             # the real GR00T-Balance standing fixed point is up
+                             # to 0.44 rad away from those, so a default_angles
+                             # comparison can never be satisfied at true standing
+                             # (FINDING 2, 2026-09-10).
+height_rc_override_thresh: 0.1  # norm(rc cmd) >= this while a squat is latched
+                             # = operator is on the sticks -> SUSPEND the squat
+                             # and restore standing (live RC always wins).
+height_rc_resume_thresh: 0.05   # norm(rc cmd) <= this = sticks neutral again ->
+                             # RESUME the suspended squat if its original hold
+                             # deadline is still live (half of the suspend
+                             # threshold: hysteresis, so stick noise cannot
+                             # flap the reference).  FINDING 7: a stick push
+                             # pauses the squat, it does not cancel it; a push
+                             # that outlives the deadline does cancel it.
+
+# --- SONIC lane (ADDITIVE; SONIC-LANE-SPEC.md §6) ---
+# SONIC's Kinematic Planner + tracker become an OPT-IN locomotion lane beside
+# the GR00T velocity-command lane.  With sonic_lane_enabled false (the default
+# and the shipped value) the writer is bit-identical to today.  These are the
+# ONLY new keys: gain tables, default angles and joint-order maps come from
+# skills/sonic/sonic_core.py, never from this file.
+sonic_lane_enabled: false    # opt-in; absent-by-default, and FORCED false if
+                             # sonic_core fails to import (lane degrades to
+                             # "absent", never to "half-present")
+sonic_stale_ms: 150          # ms. Frame older than this => the lane is stale
+                             # and returns authority to GR00T (never a limp).
+sonic_entry_ramp_s: 1.0      # s. b: 0 -> 1 blend time on entry (never a switch)
+sonic_handback_ramp_s: 0.5   # s. b: 1 -> 0 blend time on any handback/failure
+sonic_blend_max_step_rad: 0.10  # PLACEHOLDER until measured (spec §9 #2):
+                             # per-policy-tick slew limit on the blended target
+sonic_warmup_frames: 100     # CONSECUTIVE accepted frames required before
+                             # `sonic on` is allowed.  Counted from the frame
+                             # stream WHETHER OR NOT the lane is armed; a gap
+                             # since the previous accepted frame larger than
+                             # sonic_stale_ms restarts the count at 1, so it
+                             # saturates here.  `sonic on` additionally refuses
+                             # if no frame arrived within sonic_stale_ms of the
+                             # request.  (sonic_warmup_window_s DELETED: it was
+                             # parsed and never read - spec FINDING-7.)
+sonic_enable_tilt_deg: 15.0  # deg. `sonic on` refused above this body tilt
+sonic_tilt_fail_deg: 22.0    # deg. live tick above this tilt => revoke
+sonic_enable_tol_rad: 0.35   # rad. `sonic on` refused if |sonic_target -
+                             # leg_target| exceeds this
+sonic_rc_override_thresh: 0.1   # norm(rc cmd) above this while rc is live
+                                # => revoke (the operator is on the sticks)
+sonic_frame_step_max_rad: 0.35  # rad. per-FRAME slew limit (reject, §2.4 #5)
+sonic_target_abs_max_rad: 3.0   # rad. per-joint absolute frame limit (§2.4 #4)
+sonic_arm_mode: "park"       # "park" = slew the arm lane to SONIC's own arm
+                             # default on `sonic on`.  "hold"/"own" are
+                             # documented deviations needing their own sim run.
+sonic_max_overruns_per_s: 5  # loop overruns per 1 s window above which the
+                             # lane revokes (writer loop health)
+sonic_gate_probe_dir: ""     # OFF by default ("" == disabled).  Non-empty =>
+                             # append one JSONL record per `sonic on` to
+                             # <dir>/sonic_gate_probe_<ts>_pid<pid>.jsonl: the
+                             # gate operand dev, its tolerance, the raw
+                             # 15-float sonic_target and leg_target, their
+                             # SIGNED per-joint diff, argmax, warm/rx/rej/seq,
+                             # the settled-stand observables (tilt/gyro/dq),
+                             # mode_machine and mono/wall time.  FORENSIC ONLY
+                             # — never changes a reply, a gain or a target.
+                             # ON THE BOX write only under /home/unitree/leon
+                             # (its only writable root); never delete from it.
+sonic_gate_probe_max: 512    # max records per run.  Measured 0.65-1.2 KB per
+                             # record => the file is bounded < 0.61 MB, so a
+                             # scripted stdin loop of `sonic on` cannot fill the
+                             # box.  512 is ~85x the >=6 stands x 3 attempts the
+                             # §8.2 protocol below needs.
+
+# --- policy-measured standing fixed point (FINDING 2 fix, 2026-09-10) ---
+# The GR00T-Balance policy does NOT settle at `default_angles`.  These are the
+# MEASURED leg angles (motors 0-11) at the true standing fixed point, taken
+# from tools/out_height_sweep/trajectory_ramped.npz — settle window t=[2,3)s,
+# base z = 0.7470 m, 500 samples, per-joint std <= 0.0062 rad.  Used by
+# MergedWriter._legs_ascended as the shutdown ascend reference.  Measured
+# per-joint |q - default_angles| reaches 0.4404 rad (knee), far above the
+# 0.25 rad tolerance — which is exactly why the old default_angles predicate
+# was unsatisfiable at standing.
+policy_stand_q_legs: [-0.4122, 0.0235, 0.0334, 0.7354, -0.3184, -0.0018,
+                      -0.4148, -0.0226, -0.0335, 0.7404, -0.3211, -0.0036]
+
+# --- policy gains (g1_gear_wbc.yaml kps/kds), motors 0..14 ---
+leg_kp: [150, 150, 150, 200, 40, 40,  150, 150, 150, 200, 40, 40,  250, 250, 250]
+leg_kd: [2, 2, 2, 4, 2, 2,  2, 2, 2, 4, 2, 2,  5, 5, 5]
+waist_pitch_kd_bias: -10     # real-robot override kd[14] -= 10 (waist_pitch,
+                             # NOT an arm; g1_29dof_gear_wbc configs.py:66); 0 = off
+
+# --- default angles, motors 0..14 (g1_gear_wbc.yaml) ---
+default_angles: [-0.1, 0, 0, 0.3, -0.2, 0,  -0.1, 0, 0, 0.3, -0.2, 0,  0, 0, 0]
+
+# --- arm gains (g1_29dof_gear_wbc.yaml MOTOR_KP/KD[15:29]) ---
+arm_kp: [100, 100, 40, 40, 20, 20, 20,  100, 100, 40, 40, 20, 20, 20]
+arm_kd: [5, 5, 2, 2, 2, 2, 2,  5, 5, 2, 2, 2, 2, 2]
+
+# --- gate joint 29 + trailing 30..34 (hand/gripper slots, no motors on G1 EDU) ---
+gate_q: 1.0                  # convention; Stage 1 probe verdict may flip to 0.0
+gate_kp: 300
+gate_kd: 3
+trailing_kp: 300
+trailing_kd: 3
+
+# --- RC mapping (calibrate signs on gantry Stage 2) ---
+rc_scale_vx: 0.75            # m/s per stick unit
+rc_scale_vy: 0.75            # m/s per stick unit
+rc_scale_omega: 1.0          # rad/s per stick unit
+rc_inactivity_timeout: 0.5   # s without activity => cmd zero (guaranteed stop)
+rc_mapping:                  # calibrated 2026-08-23 Stage 1: v1 signs all
+                             # inverted on gantry (fwd->back, left->right, turn flipped)
+  vx: "ly"
+  vy: "-lx"
+  omega: "-rx"
+
+# --- arm slew (daemon move_arm_smooth convention: cosine, 0.3 rad/s, min 1.5 s) ---
+arm_slew_rate: 0.3           # rad/s
+arm_slew_min_s: 1.5          # never ramp a full pose in the 100-150 ms coupling time
+arm_shutdown_slew_rate: 0.8  # rad/s, faster release ramp at shutdown
+arm_shutdown_slew_min_s: 0.5
+
+# --- exit behavior (2026-08-29 C3b) ---
+# Every exit (graceful + fatal lowstate-gap) publishes a ZERO-TORQUE weak-motor
+# frame across all 35 slots (mode 0x01, kp=0, kd=0, q=PosStopF, dq=VelStopF,
+# tau=0) 5 x at 20 ms — ported verbatim from the pre-sport-rescue limp
+# (crash_safety_predeploy_20260825 backup). 2026-08-29 Stuart Phase-A test:
+# the kd=8 damping convention (GR00T/rl_gym style) was REJECTED — damped is
+# visibly NOT zero torque; this restores the initial behaviour. No sport
+# rescue, no hold, no alarm; recovery after exit = RC ladder / reboot.
+
+lockfile: "/tmp/merged_writer.lock"
+sock_path: "/tmp/merged_writer.sock"
+
+# runtime stance lane band (degrees); 0.0 = SHUT
+stance_deg_max: 10.0
