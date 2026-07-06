@@ -127,3 +127,69 @@ class G1Loco:
         """Transition back to standing: LocoClient.Squat2StandUp() (FSM 706)."""
         return self._loco.Squat2StandUp()
 
+    def set_stand_height(self, h: float):
+        """Adjust stand height (m): LocoClient.SetStandHeight(h) (RPC 7104)."""
+        return self._loco.SetStandHeight(h)
+
+    # -- state feedback (cached under a lock) --------------------------------
+
+    def _on_state(self, msg):
+        """DDS callback: cache the latest SportModeState_ under a lock."""
+        with self._lock:
+            self._state = msg
+
+    def get_state(self):
+        """Latest sportmodestate snapshot as a plain dict, or None before the
+        first message arrives.
+
+        Returns {"velocity": [vx, vy, vz], "yaw_speed": float,
+                 "position": [x, y, z], "mode": int, "gait_type": int},
+        read from the most recent SportModeState_ on `rt/sportmodestate`.
+        """
+        with self._lock:
+            s = self._state
+        if s is None:
+            return None
+        return {
+            "velocity": list(s.velocity),
+            "yaw_speed": float(s.yaw_speed),
+            "position": list(s.position),
+            "mode": int(s.mode),
+            "gait_type": int(s.gait_type),
+        }
+
+    # -- fsm feedback (rpc-only) ---------------------------------------------
+
+    def _call_get(self, api_id: int):
+        """Issue one GET RPC; the reply is JSON {"data": <int>}.
+
+        The request parameter MUST be "{}" (the GET shape, like
+        go2/sport_client.py AutoRecoveryGet) — NOT {"data": ...}, which is
+        the SET shape. On code != 0 returns (code, None); on code 0 returns
+        (code, json.loads(reply).get("data")).
+        """
+        code, data = self._loco._Call(api_id, "{}")
+        if code != 0:
+            return code, None
+        try:
+            return code, json.loads(data).get("data")
+        except (ValueError, TypeError):
+            return code, data  # not JSON: hand back the raw string
+
+    def get_fsm_id(self):
+        """Query the current FSM id via RPC GET (ROBOT_API_ID_LOCO_GET_FSM_ID,
+        7001).
+
+        This G1 firmware publishes no sportmodestate, so FSM feedback is
+        RPC-only. Returns (code, data) per _call_get(); data is e.g. the
+        numeric FSM id (801 from R2+A, 706 while standing/squatting, ...).
+        """
+        return self._call_get(LOCO_API_GET_FSM_ID)
+
+    def get_fsm_mode(self):
+        """Query the current FSM mode via RPC GET
+        (ROBOT_API_ID_LOCO_GET_FSM_MODE, 7002).
+
+        Returns (code, data) per _call_get(); data is the numeric FSM mode.
+        """
+        return self._call_get(LOCO_API_GET_FSM_MODE)
