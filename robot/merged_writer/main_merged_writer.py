@@ -672,3 +672,44 @@ class MergedWriter:
         self.height_stand_q = np.concatenate(
             [stand, np.zeros(35 - stand.shape[0], dtype=np.float32)])
 
+    def _apply_height(self, parts):
+        """height parse+apply, shared by socket and console (the same lockstep
+        split that keeps cmd_set identical at both dispatch sites).  Returns an
+        error message or None on success:
+          height <m>                 clamp+set ref, hold height_hold_s
+          height <m> <duration_s>    clamp+set ref, hold duration
+          height off                 cancel now, return to standing
+        `height 0.74` (nominal standing) also returns to standing — reversible
+        at any time.  Values are clamped to [height_cmd_min, height_cmd_max] and
+        _tick rate-limits the reference (height_slew_rate), so nothing steps.
+        """
+        if len(parts) == 2 and parts[1] == "off":
+            self._return_to_standing("height off")
+            return None
+        if len(parts) not in (2, 3):
+            return "height off | height <m> [duration_s]"
+        try:
+            val = float(parts[1])
+        except ValueError:
+            return "height needs a float"
+        duration = self.height_hold_s
+        if len(parts) == 3:
+            try:
+                duration = float(parts[2])
+            except ValueError:
+                return "height duration must be a float"
+        if not np.isfinite(val) or not np.isfinite(duration):
+            return "height values must be finite"
+        if duration <= 0.0:
+            return "height duration must be > 0"
+        val = min(max(val, self.height_min), self.height_max)
+        if abs(val - self.height_stand) <= self.height_stand_eps:
+            self._return_to_standing("height standing")
+            return None
+        # fresh squat wins
+        self.height_suspended = False
+        self.height_target = val
+        self.height_active = True
+        self.height_deadline = time.monotonic() + duration
+        return None
+
