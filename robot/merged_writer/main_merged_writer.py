@@ -713,3 +713,15 @@ class MergedWriter:
         self.height_deadline = time.monotonic() + duration
         return None
 
+    def _return_to_standing(self, cause):
+        """Clear the height latch; _tick slews height_ref back up to
+        height_stand.  Used by `height off`, `height 0.74`, the watchdog, and
+        every shutdown path.  Also drops any SUSPENDED squat (a suspend is only
+        ever entered directly by the RC-override block in _tick, which stows its
+        target before clearing the latch)."""
+        if self.height_active:
+            self._height_log(f"{cause} -> standing")
+        self.height_active = False
+        self.height_target = self.height_stand
+        self.height_suspended = False
+
