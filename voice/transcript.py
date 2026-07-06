@@ -1339,3 +1339,10 @@ class TranscriptBackend(BrainBackend):
             return
         self._turn_active = False
         self._fire("response.done", {"response": {"status": "completed"}})
+
+
+# -----------------------------------------------------------------------
+# resampling: pure-stdlib linear interpolation for 16-bit mono PCM
+# -----------------------------------------------------------------------
+
+
