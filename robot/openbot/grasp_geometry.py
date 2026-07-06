@@ -127,3 +127,90 @@ class GraspQuality:
     def is_excellent(self) -> bool:
         """Heuristic: quality ≥ 0.75 is a confident grasp."""
         return self.quality >= 0.75
+
+
+@dataclass
+class GeometricPrimitive:
+    """Fitted geometric model of the object from point cloud data."""
+    type: str                        # cylinder|sphere|box|pca
+    centre: np.ndarray               # (3,) in world frame
+    # cylinder stuff
+    axis: Optional[np.ndarray] = None     # (3,) unit axis
+    radius: Optional[float] = None        # in metres
+    height: Optional[float] = None        # in metres too
+    # sphere stuff
+    sphere_radius: Optional[float] = None
+    # box stuff
+    half_extents: Optional[np.ndarray] = None  # (3,) half-widths per side
+    rotation: Optional[np.ndarray] = None      # (3,3) box rotation
+    # PCA params
+    pca_eigenvalues: Optional[np.ndarray] = None  # (3,) variance per axis
+    pca_axes: Optional[np.ndarray] = None          # (3,3) principal axes
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Geometric Primitive Fitting
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _classify_shape(eigenvalues: np.ndarray) -> str:
+    """Classify shape from eigenvalue ratios.
+
+    - Cylinder: one eigenvalue >> others  (elongated along one axis)
+    - Sphere: all eigenvalues similar
+    - Box: two eigenvalues similar, third intermediate
+    """
+    e = np.sqrt(np.maximum(eigenvalues, 1e-12))  # std devs turn into half-extents
+    e_sorted = np.sort(e)[::-1]
+
+    if e_sorted[2] < 1e-6:
+        return "pca"   # degenerate, nothing to classify
+
+    ratio_1_2 = e_sorted[0] / e_sorted[1]
+    ratio_2_3 = e_sorted[1] / e_sorted[2]
+
+    if ratio_1_2 > 2.5:
+        return "cylinder"   # clearly elongated
+    elif ratio_2_3 > 2.5:
+        return "box"        # flat on one axis
+    elif max(ratio_1_2, ratio_2_3) < 1.8:
+        return "sphere"
+    else:
+        return "pca"
+
+
+def _fit_cylinder(
+    points: np.ndarray, centre: np.ndarray,
+    eigenvectors: np.ndarray, eigenvalues: np.ndarray,
+) -> GeometricPrimitive:
+    """Fit cylinder: primary PCA axis = cylinder axis, radius from orthogonal distances."""
+    axis = eigenvectors[:, 0].copy()  # grab the primary axis
+    axis /= np.linalg.norm(axis)
+
+    # distance from the axis
+    centred = points - centre
+    axial_proj = (centred @ axis)
+    perpendicular = centred - np.outer(axial_proj, axis)
+    radial_distances = np.linalg.norm(perpendicular, axis=1)
+
+    # 85th percentile: outliers shouldn't skew it
+    radius = float(np.percentile(radial_distances, 85))
+    radius = max(radius, 0.005)  # never smaller than 5 mm
+
+    # axial stretch
+    height = float(np.max(axial_proj) - np.min(axial_proj))
+    height = max(height, 2 * radius)  # some sane minimum
+
+    return GeometricPrimitive(
+        type="cylinder", centre=centre,
+        axis=axis, radius=radius, height=height,
+    )
+
+
+def _fit_sphere(points: np.ndarray, centre: np.ndarray) -> GeometricPrimitive:
+    """Fit sphere: centre = mean, radius = mean distance from centre."""
+    distances = np.linalg.norm(points - centre, axis=1)
+    radius = float(np.mean(distances))
+    radius = max(radius, 0.005)
+    return GeometricPrimitive(
+        type="sphere", centre=centre, sphere_radius=radius,
+    )
