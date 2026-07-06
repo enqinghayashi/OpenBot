@@ -97,3 +97,15 @@ CFG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         "config", "merge_config.yaml")
 
 
+def kb_safe_sleep(sec):
+    """Sleep that survives SIGINT. Inside shutdown a second ^C must never
+    abort the crash-safe tail (the final ZeroCmd frame + lockfile removal +
+    sport handoff must always complete). With the Python SIGINT handler
+    installed a terminal INT normally just runs the handler and resumes the
+    sleep, but a KeyboardInterrupt escaping from any path must not kill the
+    tail either."""
+    try:
+        time.sleep(sec)
+    except KeyboardInterrupt:
+        print("[shutdown] KeyboardInterrupt swallowed — shutdown continues "
+              "(ZeroCmd frame + lockfile removal + handoff complete)", flush=True)
