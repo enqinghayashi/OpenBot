@@ -287,3 +287,16 @@ class MergedWriter:
         self.sonic_kd_boot = np.array(
             [self.lowcmd.motor_cmd[i].kd for i in range(15)], dtype=np.float64)
 
+    def gate_prompt(self):
+        print("\n=== GATE: gantry on? spotter ready? physical E-stop armed? ===")
+        if self.policy_enabled:
+            print("=== POLICY IS ACTIVE in this run (stage >= 1) ===")
+        if sys.stdin.isatty():
+            input("Press Enter to arm the writer and start the coupling ramp... ")
+        else:
+            # non-tty stdin means the launcher already gated the run;
+            # arm immediately instead of dying on EOF.
+            print("[gate] stdin not a tty (launcher-gated) — arming immediately")
+
+    # ------------------------------------------------------------- the console
+
