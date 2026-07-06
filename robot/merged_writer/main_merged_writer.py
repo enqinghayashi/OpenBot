@@ -568,3 +568,36 @@ class MergedWriter:
             return "DONE"
         return "ERROR:unknown command"
 
+    def _apply_cmd_set(self, parts):
+        """cmd_set parse+apply, shared by socket and console (same dispatch
+        pattern as arm/hold_rc in both handlers). Returns an error message or
+        None on success; mutates the cmd_auto state on success:
+          cmd_set off                    deactivate + zero
+          cmd_set vx vy omega            activate, 1.0 s
+          cmd_set vx vy omega duration   activate, duration > 0
+        """
+        if len(parts) == 2 and parts[1] == "off":
+            self.cmd_auto_active = False
+            self.cmd_auto[:] = 0.0
+            return None
+        if len(parts) not in (4, 5):
+            return "cmd_set off | cmd_set vx vy omega [duration_s]"
+        try:
+            vals = np.array([float(x) for x in parts[1:4]], dtype=np.float32)
+        except ValueError:
+            return "cmd_set needs 3 floats"
+        duration = 1.0
+        if len(parts) == 5:
+            try:
+                duration = float(parts[4])
+            except ValueError:
+                return "cmd_set duration must be a float"
+        if not np.isfinite(vals).all() or not np.isfinite(duration):
+            return "cmd_set values must be finite"
+        if duration <= 0.0:
+            return "cmd_set duration must be > 0"
+        self.cmd_auto[:] = vals
+        self.cmd_auto_active = True
+        self.cmd_auto_deadline = time.monotonic() + duration
+        return None
+
