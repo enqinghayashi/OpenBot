@@ -1346,3 +1346,23 @@ class TranscriptBackend(BrainBackend):
 # -----------------------------------------------------------------------
 
 
+def _resample_pcm16(src: bytes, src_rate: int, dst_rate: int) -> bytes:
+    """Linear-interpolation resample for 16-bit mono PCM (pure stdlib).
+    24 kHz -> 16 kHz is the exact 2:3 case; piper 22050 -> 24 kHz is a
+    clean band-limited speech source — both well within the seam's error
+    bar (voice/app.py documents the same seam)."""
+    if src_rate == dst_rate or not src:
+        return src
+    n = len(src) // 2
+    samples = array.array("h")
+    samples.frombytes(src[: n * 2])
+    out_n = int(n * dst_rate / src_rate)
+    out = array.array("h")
+    step = src_rate / dst_rate  # source samples per output sample
+    for i in range(out_n):
+        pos = i * step
+        lo = int(pos)
+        frac = pos - lo
+        hi = lo + 1 if lo + 1 < n else lo
+        out.append(int(samples[lo] * (1.0 - frac) + samples[hi] * frac))
+    return out.tobytes()
