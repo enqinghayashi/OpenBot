@@ -214,3 +214,140 @@ def _fit_sphere(points: np.ndarray, centre: np.ndarray) -> GeometricPrimitive:
     return GeometricPrimitive(
         type="sphere", centre=centre, sphere_radius=radius,
     )
+
+
+def _fit_box(points: np.ndarray, centre: np.ndarray,
+             eigenvectors: np.ndarray) -> GeometricPrimitive:
+    """Fit oriented box: project onto PCA axes, half-extents = 90th percentile spans."""
+    centred = points - centre
+    projections = centred @ eigenvectors  # (N, 3), now in the PCA frame
+
+    half_extents = np.zeros(3, dtype=np.float64)
+    for i in range(3):
+        lo = float(np.percentile(projections[:, i], 5))
+        hi = float(np.percentile(projections[:, i], 95))
+        half_extents[i] = max((hi - lo) / 2.0, 0.005)
+
+    return GeometricPrimitive(
+        type="box", centre=centre,
+        half_extents=half_extents, rotation=eigenvectors.copy(),
+        # fallback radius: smaller minor half-extent
+        radius=float(np.min(half_extents[1:])),
+    )
+
+
+def fit_geometric_primitive(
+    points: np.ndarray,
+    hint_shape: Optional[str] = None,
+) -> GeometricPrimitive:
+    """Fit a geometric primitive to a 3-D point cloud.
+
+    Parameters
+    ----------
+    points : (N, 3) float64
+        Object point cloud in world frame.
+    hint_shape : str or None
+        Expected shape: ``"cylinder"``, ``"sphere"``, ``"box"``, or None for auto.
+
+    Returns
+    -------
+    GeometricPrimitive
+    """
+    points = np.asarray(points, dtype=np.float64)
+    if points.shape[0] < 4:
+        # too few points: sphere from the extent
+        centre = points.mean(axis=0) if points.shape[0] > 0 else np.zeros(3)
+        r = float(np.max(np.linalg.norm(points - centre, axis=1)))
+        return GeometricPrimitive(type="sphere", centre=centre,
+                                  sphere_radius=max(r, 0.01))
+
+    centre = points.mean(axis=0)
+    cov = np.cov((points - centre).T)
+    eigenvalues, eigenvectors = np.linalg.eigh(cov)
+
+    # descending: primary axis = largest eigenvalue
+    idx = np.argsort(eigenvalues)[::-1]
+    eigenvalues = eigenvalues[idx]
+    eigenvectors = eigenvectors[:, idx]
+
+    # now decide the shape
+    if hint_shape is None:
+        hint_shape = _classify_shape(eigenvalues)
+
+    if hint_shape == "cylinder":
+        return _fit_cylinder(points, centre, eigenvectors, eigenvalues)
+    elif hint_shape == "sphere":
+        return _fit_sphere(points, centre)
+    elif hint_shape == "box":
+        return _fit_box(points, centre, eigenvectors)
+    else:
+        # PCA ellipsoid, good enough
+        r = np.sqrt(eigenvalues)  # std devs
+        return GeometricPrimitive(
+            type="pca", centre=centre,
+            pca_eigenvalues=eigenvalues, pca_axes=eigenvectors,
+            radius=float(np.mean(r[:2])),  # radius from the minor axes
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Cross-Section Analysis
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def compute_local_surface_radius(
+    primitive: GeometricPrimitive,
+    lane_dir: np.ndarray,
+    grasp_z: float = GRASP_Z_DEFAULT,
+) -> float:
+    """Compute the effective surface curvature radius at the approach point.
+
+    This is the radius r_c such that the object surface at the approach
+    intersection behaves locally like a circle of radius r_c.
+
+    Parameters
+    ----------
+    primitive : GeometricPrimitive
+    lane_dir : (3,) unit vector, approach direction (robot → object)
+    grasp_z : float, wrist Z height
+
+    Returns
+    -------
+    r_c : float
+        Local curvature radius along the approach lane (metres).
+    """
+    centre_z = primitive.centre[2]
+
+    if primitive.type == "cylinder" and primitive.axis is not None:
+        axis = primitive.axis / np.linalg.norm(primitive.axis)
+        axis_verticality = abs(axis[2])
+
+        if axis_verticality > 0.95:
+            # vertical cylinder: slice is a circle
+            return primitive.radius
+
+        # tilted: ellipse, a = r / sin(φ)
+        radius_at_z = primitive.radius / max(axis_verticality, 0.1)
+        return radius_at_z
+
+    elif primitive.type == "sphere" and primitive.sphere_radius is not None:
+        R = primitive.sphere_radius
+        dz = grasp_z - centre_z
+        if abs(dz) >= R:
+            return max(R * 0.3, 0.01)
+        r_at_z = np.sqrt(max(R * R - dz * dz, 0.0))
+        return r_at_z
+
+    elif primitive.type == "box" and primitive.half_extents is not None:
+        if primitive.rotation is not None:
+            lane_local = primitive.rotation.T @ lane_dir  # lane, in the box frame
+            h = primitive.half_extents
+            box_depth = np.sum(np.abs(lane_local) * h)
+        else:
+            box_depth = primitive.half_extents[0]  # just assume X is the depth
+        return box_depth
+
+    elif primitive.type == "pca" and primitive.radius is not None:
+        return primitive.radius
+
+    # no match: fall back
+    return 0.035  # bottle radius default
