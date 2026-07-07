@@ -1358,3 +1358,69 @@ class MergedWriter:
             if was_live:
                 self._sonic_write_leg_gains(0.0)
 
+    def _sonic_seam(self, t, st, cmd, rc_live, rc_norm):
+        """The ONLY control-flow change in the writer (spec §4).  Called at the
+        policy tick where `policy_target` was just computed.
+
+        The first two lines are the falsifiable definition of "additive": with
+        the lane off AND b == 0 this assigns the SAME OBJECT the policy
+        returned — no copy, no arithmetic, no gain write — so the shipped GR00T
+        path is bit-identical to the writer without this lane.
+        """
+        if self.sonic_mode == 'off' and self.sonic_b == 0.0:
+            self.leg_target = self.policy_target
+            return
+
+        # --- live-tick revoke checks, in evaluation order ---------
+        if self.sonic_mode == 'on':
+            cause = None
+            now = time.monotonic()
+            if now - self.sonic_last_rx > self.sonic_stale_ms / 1000.0:
+                cause = "stale frame"
+            if cause is None and st is not None and SC is not None:
+                if SC.tilt_deg(st["quat"]) > self.sonic_tilt_fail_deg:
+                    cause = "tilt"
+            if cause is None and rc_live and \
+                    rc_norm > self.sonic_rc_override_thresh:
+                cause = "rc override"
+            if cause is None and st is not None and \
+                    st["mode_machine"] != self.sonic_mm_latch:
+                cause = "mode_machine changed"
+            if cause is None and getattr(self.reader, "_frozen", False):
+                cause = "reader frozen"
+            # overrun window: head counts ticks, base holds _overruns at the
+            # window start. one window is 1 s of policy ticks.
+            self.sonic_overrun_head += 1
+            window = max(int(self.hz / self.decimation), 1)
+            if self.sonic_overrun_head >= window:
+                if (self._overruns - self.sonic_overrun_base) > \
+                        self.sonic_max_overruns_per_s and cause is None:
+                    cause = "overrun rate"
+                self.sonic_overrun_base = self._overruns
+                self.sonic_overrun_head = 0
+            if cause is not None:
+                self._sonic_revoke(cause)
+
+        # --- a continuous blend, never a switch -----------------------------
+        b = self._sonic_blend_step(t)
+        if b <= 0.0:
+            if self.sonic_prev_blend != 0.0:
+                # handback done: boot gains restored and object identity returned
+                # to the policy target.
+                self._sonic_write_leg_gains(0.0)
+                self._sonic_log("handback complete — GR00T gains restored",
+                                force=True)
+            self.sonic_prev_blend = 0.0
+            self.leg_target = self.policy_target
+            return
+        if self.sonic_target is None:
+            # unreachable in practice: fall back to the GR00T target instead
+            # of raising.
+            self.leg_target = self.policy_target
+            return
+        self.sonic_prev_blend = b
+        raw = self.policy_target * (1.0 - b) + self.sonic_target * b
+        self.leg_target = self._sonic_step_clamp(raw)
+        self._sonic_write_leg_gains(b)
+        self.sonic_last_good_t = time.monotonic()
+
