@@ -56,3 +56,22 @@ class G1Loco:
 
     # -- lifecycle (connect / disconnect) ----------------------------------
 
+    def connect(self):
+        """Bring up DDS + the sport client and subscribe to sportmodestate.
+
+        Calls ChannelFactoryInitialize(0, net_interface), then constructs a
+        LocoClient and calls LocoClient.SetTimeout(10.0), LocoClient.Init()
+        (registers the loco RPC API ids) and LocoClient.WaitLeaseApplied(), then
+        subscribes to `rt/sportmodestate` via ChannelSubscriber.Init(handler, queueLen).
+        """
+        ChannelFactoryInitialize(0, self._net_interface)
+        client = self._client = LocoClient()
+        client.SetTimeout(10.0)
+        client.Init()
+        client.WaitLeaseApplied()
+
+        sub = ChannelSubscriber(SPORT_MODE_STATE_TOPIC, SportModeState_)
+        sub.Init(self._on_state, self._state_capacity)
+        self._state_sub = sub
+        return self
+
