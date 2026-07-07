@@ -1971,3 +1971,5 @@ class MergedWriter:
             lc.motor_cmd[i].tau = 0.0
         lc.crc = self.crc.Crc(lc)
         self.lowcmd_publisher.Write(lc)
+
+
