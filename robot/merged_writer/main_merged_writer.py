@@ -1257,3 +1257,14 @@ class MergedWriter:
             except Exception:
                 pass
 
+    def _sonic_status(self):
+        """Inline status fragment, same shape as _cmd_auto_status/_height_status."""
+        if not self.sonic_lane_enabled:
+            return "sonic=disabled"
+        frag = (f"sonic={self.sonic_mode} b={self.sonic_b:.2f} "
+                f"armed={int(self.sonic_armed)} rx={self.sonic_rx} "
+                f"rej={self.sonic_rej} warm={self.sonic_warm}")
+        if self.sonic_faulted:
+            frag += f" FAULT({self.sonic_fault_cause})"
+        return frag
+
