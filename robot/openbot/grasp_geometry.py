@@ -351,3 +351,266 @@ def compute_local_surface_radius(
 
     # no match: fall back
     return 0.035  # bottle radius default
+
+
+def compute_cross_section_width(
+    primitive: GeometricPrimitive,
+    lane_dir: np.ndarray,
+    grasp_z: float = GRASP_Z_DEFAULT,
+) -> float:
+    """Compute the object's width PERPENDICULAR to the approach lane.
+
+    This determines whether the Dex3 hand can span the object for a power
+    grasp (thumb on one side, fingers on the other).
+
+    Returns width in metres.
+    """
+    # perp in the XY plane
+    perp = np.array([-lane_dir[1], lane_dir[0], 0.0], dtype=np.float64)
+
+    if primitive.type == "cylinder" and primitive.axis is not None:
+        axis = primitive.axis / np.linalg.norm(primitive.axis)
+        if abs(axis[2]) > 0.95:
+            return 2.0 * primitive.radius
+        return 2.0 * primitive.radius
+
+    elif primitive.type == "sphere" and primitive.sphere_radius is not None:
+        R = primitive.sphere_radius
+        dz = grasp_z - primitive.centre[2]
+        if abs(dz) >= R:
+            return R * 0.5
+        r_at_z = np.sqrt(max(R * R - dz * dz, 0.0))
+        return 2.0 * r_at_z
+
+    elif primitive.type == "box" and primitive.half_extents is not None:
+        if primitive.rotation is not None:
+            perp_local = primitive.rotation.T @ perp
+            width = 2.0 * np.sum(np.abs(perp_local) * primitive.half_extents)
+        else:
+            width = 2.0 * max(primitive.half_extents[1], primitive.half_extents[2])
+        return width
+
+    elif primitive.type == "pca" and primitive.radius is not None:
+        return 2.0 * primitive.radius
+
+    return 0.07
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Contact Scoring
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def score_candidate_x_off(
+    x_off: float,
+    r_c: float,           # local curvature radius (m)
+    object_width: float,  # width across the lane (m)
+    object_centre_z: float,
+    grasp_z: float = GRASP_Z_DEFAULT,
+) -> Tuple[float, float, float, float, float, float]:
+    """Score a candidate x_off for grasp quality, modelling the insertion process.
+
+    **Contact point (post-insertion).**  After the insertion converges, the
+    palm contacts the near surface::
+
+        x_off_contact = -(r_c + HAND_LENGTH_PALM)
+
+    **Anchor point.**  The optimal x_off is BEHIND x_off_contact by the
+    insertion standoff S_INSERTION::
+
+        x_off_anchor = x_off_contact - S_INSERTION
+                     = -(r_c + HAND_LENGTH_PALM + S_INSERTION)
+
+    For the 7 cm bottle (r_c=0.035)::
+
+        x_off_anchor = -(0.035 + 0.042 + 0.023) = -0.100
+
+    Parameters
+    ----------
+    x_off : float
+        Candidate wrist offset along lane from object centre (metres).
+    r_c : float
+        Local surface curvature radius at the approach point (metres).
+    object_width : float
+        Object width perpendicular to lane (metres).
+    object_centre_z : float
+        Object centre Z in world frame.
+    grasp_z : float
+        Wrist Z height at grasp.
+
+    Returns
+    -------
+    (quality, q_palm, q_wrap, q_width, contact_area, palm_penetration)
+    """
+    # ── contact geometry (post-insertion) ──
+    x_off_contact = -(r_c + HAND_LENGTH_PALM)        # wrist at the near surface
+    x_off_anchor = x_off_contact - S_INSERTION        # where the insertion starts
+    near_surface_lane = -r_c
+    far_surface_lane = r_c
+
+    # ── Q_palm: how well this x_off supports the insertion approach ──
+    insertion_room = x_off_contact - x_off  # +ve = behind contact
+
+    MAX_INSERTION_ROOM = 0.10  # 10 cm behind - too much, out of reach
+    MIN_INSERTION_ROOM = 0.005 # 5 mm - barely any room at all
+
+    if insertion_room <= 0:
+        q_palm = 0.0
+    elif insertion_room <= MIN_INSERTION_ROOM:
+        q_palm = insertion_room / MIN_INSERTION_ROOM  # ramps up 0 → 1
+    elif insertion_room <= S_INSERTION:
+        q_palm = 1.0 - 0.1 * (S_INSERTION - insertion_room) / (S_INSERTION - MIN_INSERTION_ROOM + 1e-9)
+        q_palm = max(0.7, q_palm)
+    elif insertion_room <= MAX_INSERTION_ROOM:
+        q_palm = 1.0 - 0.8 * (insertion_room - S_INSERTION) / (MAX_INSERTION_ROOM - S_INSERTION)
+        q_palm = max(0.2, q_palm)
+    else:
+        q_palm = 0.2
+
+    # ── Q_wrap: how well the fingers wrap around after insertion ──
+    finger_reach_past_post = HAND_LENGTH_FINGER - 2.0 * r_c
+
+    MIN_WRAP = 0.005   # 5 mm past the far surface
+    IDEAL_WRAP = 0.025  # 2.5 cm past the far surface
+
+    if finger_reach_past_post <= 0:
+        q_wrap = 0.0
+    elif finger_reach_past_post <= MIN_WRAP:
+        q_wrap = finger_reach_past_post / MIN_WRAP  # ramps up 0 → 1
+    elif finger_reach_past_post <= IDEAL_WRAP:
+        q_wrap = 1.0
+    else:
+        q_wrap = 1.0  # great wrap, full marks
+
+    # ── Q_width: can the hand actually span the object? ──
+    aperture_available = MAX_APERTURE * 1.05  # a little tolerance
+    if object_width <= aperture_available:
+        IDEAL_WIDTH = 0.050  # 5 cm ideal for a wrap
+        deviation = abs(object_width - IDEAL_WIDTH) / IDEAL_WIDTH
+        q_width = max(0.0, 1.0 - 0.5 * deviation)
+    else:
+        excess = (object_width - aperture_available) / aperture_available
+        q_width = np.exp(-4.0 * excess)  # exp penalty when too wide
+
+    # ── rough contact area (post-insertion) ──
+    effective_palm_pen = 0.008  # 8 mm typical palm sink
+    palm_contact_area = PALM_WIDTH * effective_palm_pen * min(q_palm, 1.0)
+
+    n_fingers = 2 if q_wrap > 0.5 else (1 if q_wrap > 0.2 else 0)
+    finger_contact_area = n_fingers * 0.012 * 0.008  # call it ~1cm² per finger
+
+    contact_area = palm_contact_area + finger_contact_area
+
+    # penetration before insertion; diagnostics only
+    palm_lane_pre = x_off + HAND_LENGTH_PALM
+    palm_penetration_pre = palm_lane_pre - near_surface_lane
+
+    # ── and the overall quality ──
+    quality = W_PALM * q_palm + W_WRAP * q_wrap + W_WIDTH * q_width
+
+    return float(quality), float(q_palm), float(q_wrap), float(q_width), \
+           float(contact_area), float(palm_penetration_pre)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Main API: Compute x_off
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _optimize_x_off(
+    r_c: float,
+    object_width: float,
+    object_centre_z: float,
+    grasp_z: float,
+) -> Tuple[float, float]:
+    """Sample candidate x_off values and return the best.
+
+    Uses the contact-aware scoring function which peaks at::
+
+        x_off_anchor = -(r_c + HAND_LENGTH_PALM + S_INSERTION)
+
+    Returns (best_x_off, best_quality).
+    """
+    # anchor, analytically
+    x_off_anchor = -(r_c + HAND_LENGTH_PALM + S_INSERTION)
+
+    # ±8 cm grid around the anchor
+    search_radius = 0.08
+    lo = max(X_OFF_MIN, x_off_anchor - search_radius)
+    hi = min(X_OFF_MAX, x_off_anchor + search_radius)
+    n_samples = 30
+    candidates = np.linspace(lo, hi, n_samples)
+
+    # also try the anchor and CALIBRATION_X_OFF
+    candidates = np.unique(np.concatenate([
+        candidates,
+        [x_off_anchor, CALIBRATION_X_OFF],
+    ]))
+    candidates.sort()
+
+    best_x_off = x_off_anchor  # analytical anchor as fallback
+    best_quality = -1.0
+
+    for x_off in candidates:
+        q, _, _, _, _, _ = score_candidate_x_off(
+            x_off, r_c, object_width, object_centre_z, grasp_z,
+        )
+        if q > best_quality:
+            best_quality = q
+            best_x_off = float(x_off)
+
+    return best_x_off, best_quality
+
+
+def compute_x_off(
+    primitive_type: str,
+    radius: Optional[float] = None,
+    object_width: Optional[float] = None,
+    object_centre_z: float = 0.80,
+    grasp_z: float = GRASP_Z_DEFAULT,
+) -> Tuple[float, float]:
+    """Compute optimal x_off from geometric primitive parameters.
+
+    Samples candidate x_off values in [-0.20, -0.02] and returns the one
+    that maximises the contact quality score.
+
+    This is the parameter-based entry point, used when no point cloud is
+    available (e.g., simulation with known object shape).
+
+    Parameters
+    ----------
+    primitive_type : str
+        ``"cylinder"``, ``"sphere"``, ``"box"``, or ``"pca"``.
+    radius : float or None
+        Object radius (for cylinder/sphere) or half-depth (for box).
+    object_width : float or None
+        Width perpendicular to approach lane. If None, computed as 2×radius.
+    object_centre_z : float
+        Object centre Z in world frame (default 0.80).
+    grasp_z : float
+        Wrist Z height (default 0.90).
+
+    Returns
+    -------
+    (x_off, quality_score)
+    """
+    if radius is None:
+        radius = 0.035  # assume a bottle
+
+    if object_width is None:
+        object_width = 2.0 * radius  # assume round cross-section
+
+    # radius depends on the shape
+    if primitive_type == "sphere":
+        r_c = np.sqrt(max(radius**2 - (grasp_z - object_centre_z)**2, 0.0))
+        r_c = max(r_c, 0.01)
+        w = 2.0 * r_c
+    elif primitive_type == "box":
+        r_c = radius
+        w = object_width
+    elif primitive_type == "cylinder":
+        r_c = radius
+        w = object_width
+    else:  # pca or unknown
+        r_c = radius
+        w = object_width
+
+    return _optimize_x_off(r_c, w, object_centre_z, grasp_z)
