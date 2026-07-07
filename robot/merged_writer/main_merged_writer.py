@@ -1424,3 +1424,105 @@ class MergedWriter:
         self._sonic_write_leg_gains(b)
         self.sonic_last_good_t = time.monotonic()
 
+    def console_command(self, line):
+        if not line:
+            return
+        parts = line.split()
+        verb = parts[0]
+        now = time.perf_counter()
+        if verb in ("tuck", "carry", "ready", "lift", "neutral", "home"):
+            pose = "CARRY_TUCK" if verb in ("tuck", "carry") else verb.upper()
+            with self._dispatch_lock:
+                self.arm.slew_to(pose, now)
+            print(f"[arm] slew -> {pose} ({self.arm._T:.1f} s)")
+        elif verb == "arm":
+            if len(parts) < 15:
+                print("[arm] arm needs 14 floats")
+                return
+            try:
+                target = np.array([float(x) for x in parts[1:15]], dtype=np.float32)
+            except ValueError:
+                print("[arm] arm needs 14 floats")
+                return
+            duration = None
+            if len(parts) >= 16:
+                try:
+                    duration = float(parts[15])
+                except ValueError:
+                    print("[arm] duration must be a float")
+                    return
+            with self._dispatch_lock:
+                self.arm.slew_to_vector(target, now, duration)
+            print(f"[arm] slew -> RAW ({self.arm._T:.1f} s)")
+        elif verb == "freeze":
+            with self._dispatch_lock:
+                self.arm.freeze(time.perf_counter())
+            print("[arm] slew frozen (holding current interpolated target)")
+        elif verb == "q":
+            st = self.lowstate
+            if st is None:
+                print("[arm] no lowstate yet")
+                return
+            print("[q] " + " ".join(f"{v:.4f}" for v in st["q"][15:29]))
+        elif verb == "armstate":
+            a = self.arm
+            print(f"[arm] state={a.state} active={1 if a._T > 0.0 else 0} "
+                  f"rem_T={a._T:.3f}")
+        elif verb == "hold_rc":
+            if len(parts) != 2 or parts[1] not in ("on", "off"):
+                print("[rc] hold_rc on|off")
+                return
+            self.rc_hold = (parts[1] == "on")
+            print(f"[rc] hold_rc={self.rc_hold} "
+                  f"({'sticks clamped (pick interlock)' if self.rc_hold else 'sticks live'})")
+        elif verb == "payload":
+            if len(parts) != 2 or parts[1] not in ("on", "off"):
+                print("[arm] payload on|off")
+                return
+            self.payload = (parts[1] == "on")
+            print(f"[arm] payload={self.payload} "
+                  f"({'shutdown will NOT release the arms' if self.payload else 'shutdown will release to NEUTRAL'})")
+        elif verb == "rc0":
+            self.rc.zero()
+            print("[rc] cmd zeroed")
+        elif verb == "cmd_set":
+            err = self._apply_cmd_set(parts)
+            if err:
+                print(f"[cmd] {err}")
+                return
+            print(f"[cmd] {self._cmd_auto_status()}")
+        elif verb == "height":
+            err = self._apply_height(parts)
+            if err:
+                print(f"[height] {err}")
+                return
+            print(f"[height] {self._height_status()}")
+        elif verb == "stance":
+            err = self._apply_stance(parts)
+            if err:
+                print(f"[stance] {err}")
+                return
+            print(f"[stance] {self._stance_status()}")
+        elif verb == "sonic":
+            print(self._apply_sonic(parts, from_console=True))
+        elif verb == "estop":
+            # force release: b goes to 0 and the gains follow.
+            # this never requests shutdown.
+            self._sonic_revoke("estop", force=True)
+            print("[estop] SONIC lane force-released -> GR00T gains restored")
+        elif verb == "simulate_fatal":
+            self._simulate_fatal = True
+            print("[fatal] SIMULATED FATAL armed — next loop tick raises")
+        elif verb in ("status", "?"):
+            self.print_status()
+        elif verb == "quit":
+            print("[console] quit requested")
+            self.request_shutdown("console quit")
+        else:
+            print("commands: tuck|carry ready lift neutral home | arm <14f> [dur] | "
+                  "freeze | q | armstate | hold_rc on|off | payload on/off | "
+                  "cmd_set off|vx vy omega [dur] | height <m> [dur] | "
+                  "height off | stance <deg> | stance off | "
+                  "sonic arm|on|off|reset|status | estop | "
+                  "simulate_fatal | rc0 | status | quit")
+
