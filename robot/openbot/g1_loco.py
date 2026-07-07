@@ -46,3 +46,13 @@ class G1Loco:
     `rt/sportmodestate` DDS subscription for read-only state feedback.
     """
 
+    def __init__(self, net_interface: str = "eth0", state_capacity: int = 10):
+        self._net_interface = net_interface
+        self._state_capacity = state_capacity
+        self._client = None  # built in connect(); SDK needs DDS up first
+        self._state_sub = None
+        self._state = None
+        self._lock = threading.Lock()
+
+    # -- lifecycle (connect / disconnect) ----------------------------------
+
