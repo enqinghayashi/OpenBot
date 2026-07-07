@@ -614,3 +614,201 @@ def compute_x_off(
         w = object_width
 
     return _optimize_x_off(r_c, w, object_centre_z, grasp_z)
+
+
+def compute_x_off_from_pointcloud(
+    object_points_world: np.ndarray,
+    object_centre_xyz: np.ndarray,
+    lane_dir: Optional[np.ndarray] = None,
+    hint_shape: Optional[str] = None,
+    grasp_z: float = GRASP_Z_DEFAULT,
+    robot_origin: np.ndarray = ROBOT_ORIGIN_XY,
+) -> GraspQuality:
+    """Full pipeline: point cloud → geometric fit → cross-section → scoring → x_off*.
+
+    This is the primary entry point when camera data (RGB + depth + detection mask
+    → segmented point cloud) is available.
+
+    Parameters
+    ----------
+    object_points_world : (N, 3) float64
+        Segmented object point cloud in world/robot frame.
+    object_centre_xyz : (3,) float64
+        Object centre from FoundationPose or point cloud centroid.
+    lane_dir : (3,) or None
+        Approach lane direction (robot → object). Auto-computed if None.
+    hint_shape : str or None
+        Expected shape hint. Auto-detected from PCA if None.
+    grasp_z : float
+        Wrist Z height at grasp.
+    robot_origin : (2,) float64
+        Robot XY origin.
+
+    Returns
+    -------
+    GraspQuality
+    """
+    object_points_world = np.asarray(object_points_world, dtype=np.float64)
+    object_centre_xyz = np.asarray(object_centre_xyz, dtype=np.float64)
+
+    if object_points_world.shape[0] < 4:
+        # too few points: parameter path
+        x_off, q = compute_x_off("sphere", radius=0.035,
+                                 object_centre_z=float(object_centre_xyz[2]),
+                                 grasp_z=grasp_z)
+        # lane from the centre
+        if lane_dir is None:
+            d_xy = object_centre_xyz[:2] - robot_origin
+            n = float(np.linalg.norm(d_xy))
+            lane_dir = np.array([d_xy[0] / max(n, 1e-9), d_xy[1] / max(n, 1e-9), 0.0],
+                                dtype=np.float64)
+        g = object_centre_xyz.copy()
+        g = g + x_off * lane_dir
+        g[2] = grasp_z
+        return GraspQuality(
+            x_off=x_off, quality=q, q_palm=0.0, q_wrap=0.0, q_width=0.0,
+            contact_area=0.0, palm_penetration=0.0, finger_reach_past=0.0,
+            grasp_point=g, lane_dir=lane_dir, primitive_type="sphere",
+        )
+
+    # fit the primitive
+    primitive = fit_geometric_primitive(object_points_world, hint_shape)
+
+    # lane direction
+    if lane_dir is None:
+        d_xy = object_centre_xyz[:2] - robot_origin
+        n = float(np.linalg.norm(d_xy))
+        if n < 1e-9:
+            lane_dir = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+        else:
+            lane_dir = np.array([d_xy[0] / n, d_xy[1] / n, 0.0], dtype=np.float64)
+
+    # local curvature + width
+    r_c = compute_local_surface_radius(primitive, lane_dir, grasp_z)
+    obj_width = compute_cross_section_width(primitive, lane_dir, grasp_z)
+    obj_centre_z = float(object_centre_xyz[2])
+
+    # search x_off
+    best_x_off = CALIBRATION_X_OFF
+    best_quality = -1.0
+    best_details = (0.0, 0.0, 0.0, 0.0, 0.0)
+
+    candidates = np.arange(X_OFF_MIN, X_OFF_MAX + X_OFF_STEP / 2, X_OFF_STEP)
+
+    for x_off in candidates:
+        q, qp, qw, qwidth, ca, pp = score_candidate_x_off(
+            x_off, r_c, obj_width, obj_centre_z, grasp_z,
+        )
+        if q > best_quality:
+            best_quality = q
+            best_x_off = float(x_off)
+            best_details = (qp, qw, qwidth, ca, pp)
+
+    q_palm, q_wrap, q_width, contact_area, palm_pen = best_details
+
+    # grasp point
+    g = object_centre_xyz.copy()
+    g = g + best_x_off * lane_dir
+    g[2] = grasp_z
+
+    # fingers past the far surface
+    finger_reach_past = HAND_LENGTH_FINGER - 2.0 * r_c
+
+    return GraspQuality(
+        x_off=best_x_off,
+        quality=best_quality,
+        q_palm=q_palm,
+        q_wrap=q_wrap,
+        q_width=q_width,
+        contact_area=contact_area,
+        palm_penetration=palm_pen,
+        finger_reach_past=finger_reach_past,
+        grasp_point=g,
+        lane_dir=lane_dir,
+        primitive_type=primitive.type,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Convenience: compute_grasp_params (backward-compatible)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def compute_grasp_params(
+    object_name: str,
+    bottle_xyz: np.ndarray,
+    grip_style: str = "power",
+    grasp_z: float = GRASP_Z_DEFAULT,
+    pocket_y: float = 0.045,
+    robot_origin: np.ndarray = ROBOT_ORIGIN_XY,
+) -> dict:
+    """One-shot grasp parameter computation using the contact-aware algorithm.
+
+    Uses the OBJECT_RADII and OBJECT_SHAPES lookup tables (no point cloud
+    needed).  For full contact-aware computation with camera data, use
+    ``compute_x_off_from_pointcloud()``.
+
+    Parameters
+    ----------
+    object_name : str
+        Key into OBJECT_RADII (e.g. ``"bottle"``, ``"apple"``).
+    bottle_xyz : (3,) float64
+        World-frame object position.
+    grip_style : str
+        ``"power"`` or ``"precision"``.
+    grasp_z : float
+        Wrist Z height at grasp (default 0.90).
+    pocket_y : float
+        Thumb-side pocket offset (default 0.045).
+    robot_origin : (2,) float64
+        Robot XY origin.
+
+    Returns
+    -------
+    dict with keys: x_off, grasp_z, pocket_y, grasp_point (3,),
+                    object_radius, grip_style, lane_dir (3,),
+                    quality_score, contact_area, primitive_type.
+    """
+    radius = OBJECT_RADII.get(object_name, 0.035)
+    shape = OBJECT_SHAPES.get(object_name, "cylinder")
+    _ = grip_style  # unused for now
+
+    # lane: origin → object, XY only
+    d_xy = bottle_xyz[:2] - robot_origin
+    n = float(np.linalg.norm(d_xy))
+    if n < 1e-9:
+        lane = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+    else:
+        lane = np.array([d_xy[0] / n, d_xy[1] / n, 0.0], dtype=np.float64)
+
+    # width from the shape lookup
+    if shape == "cylinder" or shape == "sphere":
+        obj_width = 2.0 * radius
+    elif shape == "box":
+        obj_width = 2.0 * radius  # rough, but fine
+    else:
+        obj_width = 2.0 * radius
+
+    object_centre_z = float(bottle_xyz[2])
+
+    x_off, quality = compute_x_off(
+        shape, radius=radius, object_width=obj_width,
+        object_centre_z=object_centre_z, grasp_z=grasp_z,
+    )
+
+    # where the wrist goes
+    g = bottle_xyz.copy()
+    g = g + x_off * lane
+    g[2] = grasp_z
+
+    return {
+        "x_off": x_off,
+        "grasp_z": grasp_z,
+        "pocket_y": pocket_y,
+        "grasp_point": g,
+        "object_radius": radius,
+        "grip_style": grip_style,
+        "lane_dir": lane,
+        "quality_score": quality,
+        "contact_area": 0.0,  # rough: lookup table, no cloud
+        "primitive_type": shape,
+    }
