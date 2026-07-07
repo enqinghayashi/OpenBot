@@ -39,3 +39,10 @@ LOCO_API_GET_FSM_ID = 7001
 LOCO_API_GET_FSM_MODE = 7002
 
 
+class G1Loco:
+    """Minimal G1 locomotion wrapper.
+
+    Owns a LocoClient (JSON-over-RPC to the `sport` service) and a
+    `rt/sportmodestate` DDS subscription for read-only state feedback.
+    """
+
