@@ -1298,3 +1298,16 @@ class MergedWriter:
             self.sonic_b = float(b)
         return self.sonic_b
 
+    def _sonic_step_clamp(self, raw):
+        """Per-policy-tick slew limit on the blended target (spec §4).  Returns
+        a NEW array (never mutates `raw`) clamped to sonic_blend_max_step_rad of
+        the previous leg_target, so the handover can never step discontinuously.
+        """
+        out = np.array(raw, dtype=np.float64, copy=True)
+        prev = self.leg_target
+        if prev is None:
+            return out
+        prev = np.asarray(prev, dtype=np.float64)
+        return np.minimum(np.maximum(out, prev - self.sonic_blend_max_step),
+                          prev + self.sonic_blend_max_step)
+
