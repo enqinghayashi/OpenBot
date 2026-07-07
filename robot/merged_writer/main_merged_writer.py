@@ -1543,3 +1543,23 @@ class MergedWriter:
 
     # -------------------------------------------------------- the control bit
 
+    def request_shutdown(self, cause):
+        # SONIC first: b goes to 0 and the boot gains are written right
+        # away, so the shutdown tail never sends a SONIC-gain frame.
+        # the call order guarantees this, not a change in the hold tick.
+        self._sonic_revoke('shutdown', force=True)
+        self._shutdown = True
+        self._shutdown_cause = cause
+        self._shutting_down = True  # rc dead from here
+        self.cmd_auto_active = False  # zeroed regardless
+        self.cmd_auto[:] = 0.0
+        # height: every abort path drops the latch, so phase 1 drives the
+        # legs back up first.
+        self.height_active = False
+        self.height_target = self.height_stand
+        self.height_suspended = False  # no stowed squat
+        # stance: zero the offset before the ascend so the ascend check
+        # measures the real pose, not a splay that is just inside tol.
+        if self._stance_base_policy is not None:
+            self._write_stance(0.0)
+
