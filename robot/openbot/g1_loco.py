@@ -75,3 +75,18 @@ class G1Loco:
         self._state_sub = sub
         return self
 
+    def disconnect(self):
+        """Release the sportmodestate DDS subscription.
+
+        Closes the `rt/sportmodestate` ChannelSubscriber via
+        ChannelSubscriber.Close(). LocoClient has no explicit RPC disconnect;
+        call stop() before this to halt motion (damping is a caller choice).
+        """
+        with self._lock:
+            sub, self._state_sub = self._state_sub, None
+            self._state = None
+        if sub is not None:
+            sub.Close()
+
+    # -- locomotion verbs (one per SDK call) --------------------------------
+
