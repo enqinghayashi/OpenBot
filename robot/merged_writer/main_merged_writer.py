@@ -1973,3 +1973,11 @@ class MergedWriter:
         self.lowcmd_publisher.Write(lc)
 
 
+def main():
+    args = parse_args()
+    w = MergedWriter(args)
+    try:
+        w.run()
+    except Exception as e:
+        print(f"[fatal] {e}")
+        sys.exit(1)
