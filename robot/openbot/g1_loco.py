@@ -90,3 +90,10 @@ class G1Loco:
 
     # -- locomotion verbs (one per SDK call) --------------------------------
 
+    @property
+    def _loco(self) -> LocoClient:
+        """Resolved LocoClient; raises if connect() has not been called."""
+        if self._client is None:
+            raise RuntimeError("G1Loco not connected: call connect() first")
+        return self._client
+
