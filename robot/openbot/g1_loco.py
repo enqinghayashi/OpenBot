@@ -138,3 +138,25 @@ class G1Loco:
         with self._lock:
             self._state = msg
 
+    def get_state(self):
+        """Latest sportmodestate snapshot as a plain dict, or None before the
+        first message arrives.
+
+        Returns {"velocity": [vx, vy, vz], "yaw_speed": float,
+                 "position": [x, y, z], "mode": int, "gait_type": int},
+        read from the most recent SportModeState_ on `rt/sportmodestate`.
+        """
+        with self._lock:
+            s = self._state
+        if s is None:
+            return None
+        return {
+            "velocity": list(s.velocity),
+            "yaw_speed": float(s.yaw_speed),
+            "position": list(s.position),
+            "mode": int(s.mode),
+            "gait_type": int(s.gait_type),
+        }
+
+    # -- fsm feedback (rpc-only) ---------------------------------------------
+
