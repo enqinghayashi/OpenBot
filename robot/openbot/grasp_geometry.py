@@ -288,3 +288,9 @@ def fit_geometric_primitive(
             pca_eigenvalues=eigenvalues, pca_axes=eigenvectors,
             radius=float(np.mean(r[:2])),  # radius from the minor axes
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Cross-Section Analysis
+# ═══════════════════════════════════════════════════════════════════════════════
+
