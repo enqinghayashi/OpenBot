@@ -105,3 +105,13 @@ class G1Loco:
         """
         return self._loco.SetVelocity(vx, vy, omega, duration)
 
+    def start(self):
+        """Call LocoClient.Start(). HARDWARE-DAY FINDING (2026-08-15): the FSM
+        id is COPY-DEPENDENT — Stuart's SDK copy sends SetFsmId(200), the
+        dev-box/upstream copies send 500 (walk-node/hardware-day/
+        RECOMMENDATION.md §2(a)). From R2+A the robot is already in sport-FSM
+        801, so walk_node/sweep_test deliberately SKIP this call on hardware;
+        the verb stays for API compatibility. No leg joints are written.
+        """
+        return self._loco.Start()
+
