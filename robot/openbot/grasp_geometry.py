@@ -214,3 +214,5 @@ def _fit_sphere(points: np.ndarray, centre: np.ndarray) -> GeometricPrimitive:
     return GeometricPrimitive(
         type="sphere", centre=centre, sphere_radius=radius,
     )
+
+
