@@ -123,3 +123,7 @@ class GraspQuality:
         """Heuristic: quality ≥ 0.5 is a viable grasp."""
         return self.quality >= 0.50
 
+    @property
+    def is_excellent(self) -> bool:
+        """Heuristic: quality ≥ 0.75 is a confident grasp."""
+        return self.quality >= 0.75
