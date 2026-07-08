@@ -234,3 +234,5 @@ def _fit_box(points: np.ndarray, centre: np.ndarray,
         # fallback radius: smaller minor half-extent
         radius=float(np.min(half_extents[1:])),
     )
+
+
