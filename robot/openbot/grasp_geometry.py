@@ -204,3 +204,5 @@ def _fit_cylinder(
         type="cylinder", centre=centre,
         axis=axis, radius=radius, height=height,
     )
+
+
