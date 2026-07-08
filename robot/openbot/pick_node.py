@@ -428,3 +428,166 @@ class PickNode(Node):
 
     # ── ROS callbacks ────────────────────────────
 
+    def _on_detections(self, msg):
+        try:
+            detections = json.loads(msg.data)
+            _now = time.time()
+            # ingestion gate: conf AND
+            # PICKABLE_CLASSES, so a person
+            # arm never gets in the table
+            self._latest_detections = {
+                d['label']: {**d, '_t': _now} for d in detections
+                if d.get('conf', 0) >= MIN_CONF
+                and d.get('label') in PICKABLE_CLASSES
+            }
+
+            # ── best det drives tracking ─────────────────
+            if detections:
+                best = max(detections, key=lambda d: d.get('conf', 0))
+                conf = best.get('conf', 0)
+                _label = best.get('label')
+                if _label not in PICKABLE_CLASSES:
+                    # unpickable labels never
+                    # drive tracking or reach
+                    # DETECTION_FILE — the daemon
+                    # could pick them on "shifted"
+                    if _label not in self._whitelist_warned:
+                        self._whitelist_warned.add(_label)
+                        self.get_logger().warn(
+                            f'label {_label} not pickable (whitelist) - skipped')
+                elif conf >= LOST_CONF_THRESHOLD:
+                    self._prev_tx = best.get('x')
+                    self._prev_ty = best.get('y')
+                    self._prev_tz = best.get('z')
+                    self._tracking_label = best.get('label')
+                    self._last_detection_time = time.time()
+
+                    # where the daemon reads on
+                    # "shifted" — whitelist-gated
+                    # above, so unpickable labels
+                    # are never written
+                    _det_data = {
+                        'label': self._tracking_label,
+                        'x': self._prev_tx,
+                        'y': self._prev_ty,
+                        'z': self._prev_tz,
+                        'conf': conf,
+                    }
+                    if 'orientation' in best:
+                        _det_data['orientation'] = best['orientation']
+                    if 'nx' in best:
+                        _det_data['nx'] = best['nx']
+                        _det_data['ny'] = best['ny']
+                        _det_data['nz'] = best['nz']
+                    if 'height_m' in best:
+                        _det_data['height_m'] = best['height_m']
+                    if 'x_off' in best:
+                        _det_data['x_off'] = best['x_off']
+                    try:
+                        with open(DETECTION_FILE, 'w') as f:
+                            json.dump(_det_data, f)
+                    except Exception:
+                        pass
+        except Exception as e:
+            self.get_logger().warn(f'Bad detection msg: {e}')
+
+    def _write_servo_status(self):
+        """Phase 4: write tracking stability status to /tmp/pick_servo_status.
+
+        Runs as a daemon thread. Status values:
+          "stable"  — centroid shift < STABILITY_THRESHOLD_M
+          "shifted" — centroid shift >= STABILITY_THRESHOLD_M
+          "lost"    — no recent detection or confidence too low
+        """
+        _last_tx = None
+        _last_ty = None
+
+        while True:
+            try:
+                now = time.time()
+                cur_tx = self._prev_tx
+                cur_ty = self._prev_ty
+
+                if (self._last_detection_time is None
+                        or (now - self._last_detection_time) > LOST_TIME_THRESHOLD):
+                    status = 'lost'
+                elif cur_tx is None or cur_ty is None:
+                    status = 'lost'
+                elif _last_tx is not None and _last_ty is not None:
+                    dx = cur_tx - _last_tx
+                    dy = cur_ty - _last_ty
+                    if dx * dx + dy * dy >= STABILITY_THRESHOLD_M * STABILITY_THRESHOLD_M:
+                        status = 'shifted'
+                    else:
+                        status = 'stable'
+                else:
+                    status = 'stable'
+
+                _last_tx = cur_tx
+                _last_ty = cur_ty
+
+                with open(STATUS_FILE, 'w') as f:
+                    f.write(status + '\n')
+            except Exception:
+                pass
+            time.sleep(0.1)
+
+    # ── /pick_state publisher ────────────────────
+    def _set_pick_state(self, state, label=None, held=None):
+        """Update the pick state machine (thread-safe)."""
+        with self._pick_state_lock:
+            self._pick_state = state
+            if label is not None:
+                self._pick_label = label
+            if held is not None:
+                self._pick_held = held
+
+    def _pick_state_snapshot(self):
+        with self._pick_state_lock:
+            return (self._pick_state, self._pick_label, self._pick_held)
+
+    def _write_pick_state(self):
+        """Publish {state, label, held, daemon_alive} JSON at 5 Hz."""
+        while True:
+            try:
+                state, label, held = self._pick_state_snapshot()
+                daemon_alive = (
+                    self._daemon_proc is not None
+                    and self._daemon_proc.poll() is None)
+                payload = json.dumps({
+                    'state': state,
+                    'label': label,
+                    'held': held,
+                    'daemon_alive': daemon_alive,
+                })
+                msg = String()
+                msg.data = payload
+                self._pick_state_pub.publish(msg)
+            except Exception:
+                pass
+            time.sleep(0.2)
+
+    def _on_arm_command(self, msg):
+        """Direct passthrough to daemon — no pick verification needed."""
+        cmd = msg.data.strip()
+        if not cmd:
+            return
+
+        base_cmd = cmd.split()[0]
+        if base_cmd not in DIRECT_COMMANDS and not cmd.startswith('play '):
+            self.get_logger().warn(
+                f'Unknown arm_command: "{cmd}". '
+                f'Use /pick_target for pick operations.')
+            return
+
+        if self._busy:
+            self.get_logger().warn(
+                f'Busy with pick, ignoring arm_command: "{cmd}"')
+            return
+
+        self.get_logger().info(f'Arm command: {cmd}')
+        # thread it, no blocking
+        threading.Thread(
+            target=self._run_arm_command, args=(cmd,),
+            daemon=True).start()
+
