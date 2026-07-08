@@ -133,3 +133,8 @@ class G1Loco:
 
     # -- state feedback (cached under a lock) --------------------------------
 
+    def _on_state(self, msg):
+        """DDS callback: cache the latest SportModeState_ under a lock."""
+        with self._lock:
+            self._state = msg
+
