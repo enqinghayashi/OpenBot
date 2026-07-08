@@ -236,3 +236,55 @@ def _fit_box(points: np.ndarray, centre: np.ndarray,
     )
 
 
+def fit_geometric_primitive(
+    points: np.ndarray,
+    hint_shape: Optional[str] = None,
+) -> GeometricPrimitive:
+    """Fit a geometric primitive to a 3-D point cloud.
+
+    Parameters
+    ----------
+    points : (N, 3) float64
+        Object point cloud in world frame.
+    hint_shape : str or None
+        Expected shape: ``"cylinder"``, ``"sphere"``, ``"box"``, or None for auto.
+
+    Returns
+    -------
+    GeometricPrimitive
+    """
+    points = np.asarray(points, dtype=np.float64)
+    if points.shape[0] < 4:
+        # too few points: sphere from the extent
+        centre = points.mean(axis=0) if points.shape[0] > 0 else np.zeros(3)
+        r = float(np.max(np.linalg.norm(points - centre, axis=1)))
+        return GeometricPrimitive(type="sphere", centre=centre,
+                                  sphere_radius=max(r, 0.01))
+
+    centre = points.mean(axis=0)
+    cov = np.cov((points - centre).T)
+    eigenvalues, eigenvectors = np.linalg.eigh(cov)
+
+    # descending: primary axis = largest eigenvalue
+    idx = np.argsort(eigenvalues)[::-1]
+    eigenvalues = eigenvalues[idx]
+    eigenvectors = eigenvectors[:, idx]
+
+    # now decide the shape
+    if hint_shape is None:
+        hint_shape = _classify_shape(eigenvalues)
+
+    if hint_shape == "cylinder":
+        return _fit_cylinder(points, centre, eigenvectors, eigenvalues)
+    elif hint_shape == "sphere":
+        return _fit_sphere(points, centre)
+    elif hint_shape == "box":
+        return _fit_box(points, centre, eigenvectors)
+    else:
+        # PCA ellipsoid, good enough
+        r = np.sqrt(eigenvalues)  # std devs
+        return GeometricPrimitive(
+            type="pca", centre=centre,
+            pca_eigenvalues=eigenvalues, pca_axes=eigenvectors,
+            radius=float(np.mean(r[:2])),  # radius from the minor axes
+        )
