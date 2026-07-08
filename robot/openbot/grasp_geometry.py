@@ -152,3 +152,27 @@ class GeometricPrimitive:
 # Geometric Primitive Fitting
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _classify_shape(eigenvalues: np.ndarray) -> str:
+    """Classify shape from eigenvalue ratios.
+
+    - Cylinder: one eigenvalue >> others  (elongated along one axis)
+    - Sphere: all eigenvalues similar
+    - Box: two eigenvalues similar, third intermediate
+    """
+    e = np.sqrt(np.maximum(eigenvalues, 1e-12))  # std devs turn into half-extents
+    e_sorted = np.sort(e)[::-1]
+
+    if e_sorted[2] < 1e-6:
+        return "pca"   # degenerate, nothing to classify
+
+    ratio_1_2 = e_sorted[0] / e_sorted[1]
+    ratio_2_3 = e_sorted[1] / e_sorted[2]
+
+    if ratio_1_2 > 2.5:
+        return "cylinder"   # clearly elongated
+    elif ratio_2_3 > 2.5:
+        return "box"        # flat on one axis
+    elif max(ratio_1_2, ratio_2_3) < 1.8:
+        return "sphere"
+    else:
+        return "pca"
