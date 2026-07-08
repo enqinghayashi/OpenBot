@@ -127,3 +127,9 @@ class G1Loco:
         """Transition back to standing: LocoClient.Squat2StandUp() (FSM 706)."""
         return self._loco.Squat2StandUp()
 
+    def set_stand_height(self, h: float):
+        """Adjust stand height (m): LocoClient.SetStandHeight(h) (RPC 7104)."""
+        return self._loco.SetStandHeight(h)
+
+    # -- state feedback (cached under a lock) --------------------------------
+
