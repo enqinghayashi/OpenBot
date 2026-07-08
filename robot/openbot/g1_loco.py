@@ -186,3 +186,10 @@ class G1Loco:
         """
         return self._call_get(LOCO_API_GET_FSM_ID)
 
+    def get_fsm_mode(self):
+        """Query the current FSM mode via RPC GET
+        (ROBOT_API_ID_LOCO_GET_FSM_MODE, 7002).
+
+        Returns (code, data) per _call_get(); data is the numeric FSM mode.
+        """
+        return self._call_get(LOCO_API_GET_FSM_MODE)
