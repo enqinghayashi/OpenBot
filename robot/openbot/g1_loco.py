@@ -176,3 +176,13 @@ class G1Loco:
         except (ValueError, TypeError):
             return code, data  # not JSON: hand back the raw string
 
+    def get_fsm_id(self):
+        """Query the current FSM id via RPC GET (ROBOT_API_ID_LOCO_GET_FSM_ID,
+        7001).
+
+        This G1 firmware publishes no sportmodestate, so FSM feedback is
+        RPC-only. Returns (code, data) per _call_get(); data is e.g. the
+        numeric FSM id (801 from R2+A, 706 while standing/squatting, ...).
+        """
+        return self._call_get(LOCO_API_GET_FSM_ID)
+
