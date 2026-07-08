@@ -119,3 +119,7 @@ class G1Loco:
         """Halt locomotion: maps to LocoClient.StopMove() == SetVelocity(0, 0, 0)."""
         return self._loco.StopMove()
 
+    def squat(self):
+        """Transition to the default G1 squat: LocoClient.StandUp2Squat() (FSM 706)."""
+        return self._loco.StandUp2Squat()
+
