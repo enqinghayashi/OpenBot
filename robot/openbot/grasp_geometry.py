@@ -206,3 +206,11 @@ def _fit_cylinder(
     )
 
 
+def _fit_sphere(points: np.ndarray, centre: np.ndarray) -> GeometricPrimitive:
+    """Fit sphere: centre = mean, radius = mean distance from centre."""
+    distances = np.linalg.norm(points - centre, axis=1)
+    radius = float(np.mean(distances))
+    radius = max(radius, 0.005)
+    return GeometricPrimitive(
+        type="sphere", centre=centre, sphere_radius=radius,
+    )
