@@ -160,3 +160,19 @@ class G1Loco:
 
     # -- fsm feedback (rpc-only) ---------------------------------------------
 
+    def _call_get(self, api_id: int):
+        """Issue one GET RPC; the reply is JSON {"data": <int>}.
+
+        The request parameter MUST be "{}" (the GET shape, like
+        go2/sport_client.py AutoRecoveryGet) — NOT {"data": ...}, which is
+        the SET shape. On code != 0 returns (code, None); on code 0 returns
+        (code, json.loads(reply).get("data")).
+        """
+        code, data = self._loco._Call(api_id, "{}")
+        if code != 0:
+            return code, None
+        try:
+            return code, json.loads(data).get("data")
+        except (ValueError, TypeError):
+            return code, data  # not JSON: hand back the raw string
+
