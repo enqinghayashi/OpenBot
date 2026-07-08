@@ -216,3 +216,21 @@ def _fit_sphere(points: np.ndarray, centre: np.ndarray) -> GeometricPrimitive:
     )
 
 
+def _fit_box(points: np.ndarray, centre: np.ndarray,
+             eigenvectors: np.ndarray) -> GeometricPrimitive:
+    """Fit oriented box: project onto PCA axes, half-extents = 90th percentile spans."""
+    centred = points - centre
+    projections = centred @ eigenvectors  # (N, 3), now in the PCA frame
+
+    half_extents = np.zeros(3, dtype=np.float64)
+    for i in range(3):
+        lo = float(np.percentile(projections[:, i], 5))
+        hi = float(np.percentile(projections[:, i], 95))
+        half_extents[i] = max((hi - lo) / 2.0, 0.005)
+
+    return GeometricPrimitive(
+        type="box", centre=centre,
+        half_extents=half_extents, rotation=eigenvectors.copy(),
+        # fallback radius: smaller minor half-extent
+        radius=float(np.min(half_extents[1:])),
+    )
