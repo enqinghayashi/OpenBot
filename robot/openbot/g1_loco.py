@@ -123,3 +123,7 @@ class G1Loco:
         """Transition to the default G1 squat: LocoClient.StandUp2Squat() (FSM 706)."""
         return self._loco.StandUp2Squat()
 
+    def standup(self):
+        """Transition back to standing: LocoClient.Squat2StandUp() (FSM 706)."""
+        return self._loco.Squat2StandUp()
+
