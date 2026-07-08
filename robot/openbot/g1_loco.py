@@ -115,3 +115,7 @@ class G1Loco:
         """
         return self._loco.Start()
 
+    def stop(self):
+        """Halt locomotion: maps to LocoClient.StopMove() == SetVelocity(0, 0, 0)."""
+        return self._loco.StopMove()
+
