@@ -178,3 +178,29 @@ def _classify_shape(eigenvalues: np.ndarray) -> str:
         return "pca"
 
 
+def _fit_cylinder(
+    points: np.ndarray, centre: np.ndarray,
+    eigenvectors: np.ndarray, eigenvalues: np.ndarray,
+) -> GeometricPrimitive:
+    """Fit cylinder: primary PCA axis = cylinder axis, radius from orthogonal distances."""
+    axis = eigenvectors[:, 0].copy()  # grab the primary axis
+    axis /= np.linalg.norm(axis)
+
+    # distance from the axis
+    centred = points - centre
+    axial_proj = (centred @ axis)
+    perpendicular = centred - np.outer(axial_proj, axis)
+    radial_distances = np.linalg.norm(perpendicular, axis=1)
+
+    # 85th percentile: outliers shouldn't skew it
+    radius = float(np.percentile(radial_distances, 85))
+    radius = max(radius, 0.005)  # never smaller than 5 mm
+
+    # axial stretch
+    height = float(np.max(axial_proj) - np.min(axial_proj))
+    height = max(height, 2 * radius)  # some sane minimum
+
+    return GeometricPrimitive(
+        type="cylinder", centre=centre,
+        axis=axis, radius=radius, height=height,
+    )
