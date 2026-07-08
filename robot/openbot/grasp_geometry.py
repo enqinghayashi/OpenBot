@@ -146,3 +146,9 @@ class GeometricPrimitive:
     # PCA params
     pca_eigenvalues: Optional[np.ndarray] = None  # (3,) variance per axis
     pca_axes: Optional[np.ndarray] = None          # (3,3) principal axes
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Geometric Primitive Fitting
+# ═══════════════════════════════════════════════════════════════════════════════
+
