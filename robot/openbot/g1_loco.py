@@ -97,3 +97,11 @@ class G1Loco:
             raise RuntimeError("G1Loco not connected: call connect() first")
         return self._client
 
+    def set_velocity(self, vx: float, vy: float, omega: float, duration: float = 1.0):
+        """Command default G1 walking at (vx forward, vy lateral, omega yaw).
+
+        Maps to LocoClient.SetVelocity(vx, vy, omega, duration) (RPC 7105). The
+        balance FSM executes the gait; no leg joints are written here.
+        """
+        return self._loco.SetVelocity(vx, vy, omega, duration)
+
