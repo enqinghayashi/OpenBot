@@ -127,3 +127,5 @@ class GraspQuality:
     def is_excellent(self) -> bool:
         """Heuristic: quality ≥ 0.75 is a confident grasp."""
         return self.quality >= 0.75
+
+
