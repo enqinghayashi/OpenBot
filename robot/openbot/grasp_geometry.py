@@ -129,3 +129,20 @@ class GraspQuality:
         return self.quality >= 0.75
 
 
+@dataclass
+class GeometricPrimitive:
+    """Fitted geometric model of the object from point cloud data."""
+    type: str                        # cylinder|sphere|box|pca
+    centre: np.ndarray               # (3,) in world frame
+    # cylinder stuff
+    axis: Optional[np.ndarray] = None     # (3,) unit axis
+    radius: Optional[float] = None        # in metres
+    height: Optional[float] = None        # in metres too
+    # sphere stuff
+    sphere_radius: Optional[float] = None
+    # box stuff
+    half_extents: Optional[np.ndarray] = None  # (3,) half-widths per side
+    rotation: Optional[np.ndarray] = None      # (3,3) box rotation
+    # PCA params
+    pca_eigenvalues: Optional[np.ndarray] = None  # (3,) variance per axis
+    pca_axes: Optional[np.ndarray] = None          # (3,3) principal axes
