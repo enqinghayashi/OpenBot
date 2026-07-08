@@ -294,3 +294,60 @@ def fit_geometric_primitive(
 # Cross-Section Analysis
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def compute_local_surface_radius(
+    primitive: GeometricPrimitive,
+    lane_dir: np.ndarray,
+    grasp_z: float = GRASP_Z_DEFAULT,
+) -> float:
+    """Compute the effective surface curvature radius at the approach point.
+
+    This is the radius r_c such that the object surface at the approach
+    intersection behaves locally like a circle of radius r_c.
+
+    Parameters
+    ----------
+    primitive : GeometricPrimitive
+    lane_dir : (3,) unit vector, approach direction (robot → object)
+    grasp_z : float, wrist Z height
+
+    Returns
+    -------
+    r_c : float
+        Local curvature radius along the approach lane (metres).
+    """
+    centre_z = primitive.centre[2]
+
+    if primitive.type == "cylinder" and primitive.axis is not None:
+        axis = primitive.axis / np.linalg.norm(primitive.axis)
+        axis_verticality = abs(axis[2])
+
+        if axis_verticality > 0.95:
+            # vertical cylinder: slice is a circle
+            return primitive.radius
+
+        # tilted: ellipse, a = r / sin(φ)
+        radius_at_z = primitive.radius / max(axis_verticality, 0.1)
+        return radius_at_z
+
+    elif primitive.type == "sphere" and primitive.sphere_radius is not None:
+        R = primitive.sphere_radius
+        dz = grasp_z - centre_z
+        if abs(dz) >= R:
+            return max(R * 0.3, 0.01)
+        r_at_z = np.sqrt(max(R * R - dz * dz, 0.0))
+        return r_at_z
+
+    elif primitive.type == "box" and primitive.half_extents is not None:
+        if primitive.rotation is not None:
+            lane_local = primitive.rotation.T @ lane_dir  # lane, in the box frame
+            h = primitive.half_extents
+            box_depth = np.sum(np.abs(lane_local) * h)
+        else:
+            box_depth = primitive.half_extents[0]  # just assume X is the depth
+        return box_depth
+
+    elif primitive.type == "pca" and primitive.radius is not None:
+        return primitive.radius
+
+    # no match: fall back
+    return 0.035  # bottle radius default
