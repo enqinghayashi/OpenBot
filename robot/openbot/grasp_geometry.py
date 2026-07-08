@@ -103,3 +103,18 @@ ROBOT_ORIGIN_XY = np.array([0.0, 0.0], dtype=np.float64)
 # Data Structures
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@dataclass
+class GraspQuality:
+    """Output of the contact-scoring optimisation."""
+    x_off: float               # wrist offset (m)
+    quality: float             # overall score, [0, 1]
+    q_palm: float              # sub-score: palm contact
+    q_wrap: float              # sub-score: finger wrap
+    q_width: float             # sub-score: width fit
+    contact_area: float        # contact area (m²)
+    palm_penetration: float    # palm sink depth (m)
+    finger_reach_past: float   # past far surface (m); <0 = short
+    grasp_point: np.ndarray    # (3,) wrist target, world
+    lane_dir: np.ndarray       # (3,) lane direction
+    primitive_type: str        # fitted shape: cylinder|sphere|box|pca
+
