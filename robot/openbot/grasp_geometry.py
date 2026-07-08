@@ -118,3 +118,8 @@ class GraspQuality:
     lane_dir: np.ndarray       # (3,) lane direction
     primitive_type: str        # fitted shape: cylinder|sphere|box|pca
 
+    @property
+    def is_good(self) -> bool:
+        """Heuristic: quality ≥ 0.5 is a viable grasp."""
+        return self.quality >= 0.50
+
