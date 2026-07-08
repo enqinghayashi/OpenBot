@@ -591,3 +591,311 @@ class PickNode(Node):
             target=self._run_arm_command, args=(cmd,),
             daemon=True).start()
 
+    def _run_arm_command(self, cmd: str):
+        self._busy = True
+        if cmd == 'spawn_daemon':
+            # on demand
+            # after a --no-daemon launch
+            # dead only; reuses _start_daemon
+            # ERROR, not DONE, if READY
+            # times out or dies
+            # a fake DONE hid the corrupted-
+            # transfer crash until runtime
+            # stderr lands here
+            if (self._daemon_proc is None
+                    or self._daemon_proc.poll() is not None):
+                self.get_logger().info(
+                    'spawn_daemon: starting pick daemon '
+                    '(loading pinocchio ~10s)...')
+                if self._start_daemon():
+                    self.get_logger().info('spawn_daemon: DONE')
+                    response = 'DONE'
+                else:
+                    response = ('ERROR:daemon crashed at startup — '
+                                'see pick.log')
+            else:
+                self.get_logger().warn(
+                    'spawn_daemon: daemon already running — refusing')
+                response = 'ERROR:daemon already running'
+        else:
+            response = self._send_cmd(cmd)
+        if response.startswith('DONE'):
+            if response.startswith('DONE:'):
+                payload = response[5:]
+                self.get_logger().info(f'Available sequences: {payload}')
+                self._publish_status(f'sequences: {payload}')
+            else:
+                self.get_logger().info(f'Command "{cmd}" done.')
+                self._publish_status(f'{cmd} OK')
+            # ── direct commands move state ───────────────
+            base = cmd.split()[0]
+            if base in ('hold', 'acquire'):
+                # pinned in place
+                self._set_pick_state('holding')
+            elif base == 'release':
+                # gate 0, safe to walk
+                self._set_pick_state('idle')
+            elif base in ('open', 'open_left', 'open_right', 'open_both'):
+                # hand empty
+                self._set_pick_state('idle', held=False)
+        else:
+            self.get_logger().error(f'Command "{cmd}" failed: {response}')
+            # response already has 'ERROR:'
+            # strip it, or /pick_status
+            # reads 'ERROR: ERROR:...'
+            shown = (response[6:].lstrip()
+                     if response.startswith('ERROR:') else response)
+            self._publish_status(f'ERROR: {shown}')
+            self._set_pick_state('error')
+        self._busy = False
+
+    def _on_pick_target(self, msg):
+        cmd = msg.data.strip().lower()
+        if not cmd:
+            return
+
+        # ── step 2: confirm or cancel ────────────────
+        if cmd in ('confirm', 'yes', 'go'):
+            with self._pending_lock:
+                pending = self._pending_pick
+                self._pending_pick = None
+
+            if pending is None:
+                self.get_logger().warn('Nothing pending to confirm.')
+                self._publish_status('ERROR: nothing pending')
+                return
+
+            # stale ghost: refuse when
+            # the object's stamp is old
+            # keyed on pending['_t']
+            # not _last_detection_time:
+            # the 0.4 gate starves
+            # on the 0.26-0.40 flicker
+            # see CONFIRM_FRESHNESS_SEC
+            _fresh = pending.get('_t', self._last_detection_time)
+            if _fresh is None or time.time() - _fresh > CONFIRM_FRESHNESS_SEC:
+                self.get_logger().warn(
+                    'Target no longer detected — refusing to confirm.')
+                self._publish_status('ERROR: target no longer detected')
+                return
+
+            if self._busy:
+                self.get_logger().warn('Pick already executing.')
+                return
+
+            self.get_logger().info(
+                f'CONFIRMED pick of "{pending["label"]}"')
+            threading.Thread(
+                target=self._execute_pick, args=(pending,),
+                daemon=True).start()
+            return
+
+        if cmd in ('cancel', 'no', 'abort'):
+            with self._pending_lock:
+                pending = self._pending_pick
+                self._pending_pick = None
+
+            if pending:
+                self.get_logger().info(
+                    f'CANCELLED pick of "{pending["label"]}"')
+                self._publish_status(f'cancelled: {pending["label"]}')
+            else:
+                self.get_logger().warn('Nothing pending to cancel.')
+            return
+
+        # ── step 1: find it, show coords, wait ───────
+        if self._busy:
+            self.get_logger().warn(
+                f'Pick in progress, ignoring "{cmd}"')
+            return
+
+        det = self._latest_detections.get(cmd)
+        if det is None:
+            for label, d in self._latest_detections.items():
+                if cmd in label or label in cmd:
+                    det = d
+                    self.get_logger().info(
+                        f'Fuzzy matched "{cmd}" -> "{label}"')
+                    break
+
+        # stale ghost: drop detections
+        # older than 3.5 s
+        # yolo body msgs every ~1.1-1.3 s
+        # on CPU (~0.55 s at imgsz=480),
+        # so 1.0 s rejected any "pick X"
+        # landing >1 s after a body msg
+        # 3.5 s = 2-3 cadences, still
+        # before yolo's 2 s eviction
+        if det is not None and time.time() - det.get('_t', 0) > 3.5:
+            det = None
+
+        if det is None:
+            visible = list(self._latest_detections.keys())
+            self.get_logger().error(
+                f'"{cmd}" not detected. Visible: {visible}')
+            self._publish_status(f'ERROR: {cmd} not detected')
+            return
+
+        x, y, z = det['x'], det['y'], det['z']
+
+        pending = {'label': cmd, 'x': x, 'y': y, 'z': z,
+                   '_t': det.get('_t', time.time())}
+        if 'orientation' in det:
+            pending['orientation'] = det['orientation']
+        if 'nx' in det:
+            pending['nx'] = det['nx']
+            pending['ny'] = det['ny']
+            pending['nz'] = det['nz']
+        # height: optional
+        # else legacy lift
+        if 'height_m' in det:
+            pending['height_m'] = det['height_m']
+        if 'x_off' in det:
+            pending['x_off'] = det['x_off']
+
+        with self._pending_lock:
+            self._pending_pick = pending
+
+        # +x = right on Stuart
+        if x > 0.05:
+            _arm_side = 'right'
+        elif x < -0.05:
+            _arm_side = 'left'
+        else:
+            _arm_side = 'right'  # center goes right
+        _cmd_prefix = 'pick_left' if _arm_side == 'left' else 'pick'
+        _normal_display = ''
+        if 'nx' in det:
+            _normal_display = f' {det["nx"]:.4f} {det["ny"]:.4f} {det["nz"]:.4f}'
+        _orientation = det.get('orientation', 'upright')
+
+        self.get_logger().info(
+            f'\n'
+            f'  ╔══════════════════════════════════╗\n'
+            f'  ║       PICK VERIFICATION          ║\n'
+            f'  ╠══════════════════════════════════╣\n'
+            f'  ║  Target: "{cmd}"\n'
+            f'  ║  Torso frame:\n'
+            f'  ║    x (lateral): {x:+.3f} m ({"right" if x > 0 else "left"})\n'
+            f'  ║    y (forward): {y:+.3f} m\n'
+            f'  ║    z (height):  {z:+.3f} m {"(above)" if z > 0 else "(below)"} torso\n'
+            f'  ║  Orientation: {_orientation}\n'
+            + (f'  ║  Object height: {det["height_m"]:.3f} m (from bbox)\n'
+               if 'height_m' in det else '')
+            + f'  ║  {"Arm:":20s} {_arm_side.upper()}\n'
+            + f'  ║  Daemon will receive:\n'
+            + f'  ║    {_cmd_prefix} {x:.4f} {y:.4f} {z:.4f}{_normal_display} {_orientation}'
+            + (f' {det["height_m"]:.4f}' if 'height_m' in det else '')
+            + (f' {det["x_off"]:.4f}' if 'x_off' in det else '')
+            + f'\n'
+            f'  ╠══════════════════════════════════╣\n'
+            f'  ║  Send "confirm" to /pick_target  ║\n'
+            f'  ║  Send "cancel"  to /pick_target  ║\n'
+            f'  ╚══════════════════════════════════╝')
+
+        self._publish_status(
+            f'CONFIRM? "{cmd}" at x={x:+.3f} y={y:+.3f} z={z:+.3f} '
+            f'-> send "confirm" or "cancel" to /pick_target')
+
+    # ── running the pick ─────────────────────────
+
+    def _execute_pick(self, pick_info: dict):
+        self._busy = True
+        label = pick_info['label']
+        x, y, z = pick_info['x'], pick_info['y'], pick_info['z']
+
+        # ── pick in flight ───────────────────────────
+        self._set_pick_state('busy', label=label)
+
+        if not is_reachable(x, y, z):
+            self._publish_status(
+                f'ERROR: target {label} unreachable at '
+                f'x={x:+.3f} y={y:+.3f} z={z:+.3f}')
+            self._set_pick_state('error', held=False)
+            self._busy = False
+            return
+
+        # ── choosing the arm ─────────────────────────
+        if x > 0.05:
+            arm_side = 'right'
+        elif x < -0.05:
+            arm_side = 'left'
+        else:
+            arm_side = 'right'  # center goes right
+
+        self._publish_status(
+            f'picking {label} at ({x:.2f}, {y:.2f}, {z:.2f}) [{arm_side} arm]')
+
+        # park the idle arm
+        if arm_side == 'left':
+            self._send_cmd('ready_left')
+        else:
+            self._send_cmd('ready_right')
+
+        # + surface normal
+        cmd_prefix = 'pick_left' if arm_side == 'left' else 'pick'
+        normal_parts = ''
+        if 'nx' in pick_info:
+            normal_parts = (
+                f' {pick_info["nx"]:.4f}'
+                f' {pick_info["ny"]:.4f}'
+                f' {pick_info["nz"]:.4f}')
+        orientation = pick_info.get('orientation', 'upright')
+        # height as the last token:
+        # 6-arg without a normal,
+        # 9-arg with orientation.
+        # absent -> legacy lift
+        height_parts = ''
+        if 'height_m' in pick_info:
+            height_parts = f' {pick_info["height_m"]:.4f}'
+        # point-cloud offset
+        # from grasp_geometry, optional;
+        # else its hardcoded standoff
+        x_off_parts = ''
+        if 'x_off' in pick_info:
+            x_off_parts = f' {pick_info["x_off"]:.4f}'
+        response = self._send_cmd(
+            f'{cmd_prefix} {x:.4f} {y:.4f} {z:.4f}{normal_parts} {orientation}{height_parts}{x_off_parts}')
+
+        if response == 'DONE':
+            self.get_logger().info(f'Pick of "{label}" succeeded.')
+            self._publish_status(f'picked {label} OK')
+            # ── in the hand ──────────────────────────────
+            self._set_pick_state('holding', label=label, held=True)
+        else:
+            self.get_logger().error(f'Pick failed: {response}')
+            self._publish_status(f'ERROR: {response}')
+            self._set_pick_state('error', held=False)
+
+        self._busy = False
+
+    def _publish_status(self, text: str):
+        msg = String()
+        msg.data = text
+        self._status_pub.publish(msg)
+        self.get_logger().info(f'[STATUS] {text}')
+
+    def destroy_node(self):
+        if self._daemon_proc:
+            try:
+                self._send_cmd('home')
+            except Exception:
+                pass
+            self._daemon_proc.terminate()
+        super().destroy_node()
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = PickNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
