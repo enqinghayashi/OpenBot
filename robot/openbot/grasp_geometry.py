@@ -400,3 +400,112 @@ def compute_cross_section_width(
 # Contact Scoring
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def score_candidate_x_off(
+    x_off: float,
+    r_c: float,           # local curvature radius (m)
+    object_width: float,  # width across the lane (m)
+    object_centre_z: float,
+    grasp_z: float = GRASP_Z_DEFAULT,
+) -> Tuple[float, float, float, float, float, float]:
+    """Score a candidate x_off for grasp quality, modelling the insertion process.
+
+    **Contact point (post-insertion).**  After the insertion converges, the
+    palm contacts the near surface::
+
+        x_off_contact = -(r_c + HAND_LENGTH_PALM)
+
+    **Anchor point.**  The optimal x_off is BEHIND x_off_contact by the
+    insertion standoff S_INSERTION::
+
+        x_off_anchor = x_off_contact - S_INSERTION
+                     = -(r_c + HAND_LENGTH_PALM + S_INSERTION)
+
+    For the 7 cm bottle (r_c=0.035)::
+
+        x_off_anchor = -(0.035 + 0.042 + 0.023) = -0.100
+
+    Parameters
+    ----------
+    x_off : float
+        Candidate wrist offset along lane from object centre (metres).
+    r_c : float
+        Local surface curvature radius at the approach point (metres).
+    object_width : float
+        Object width perpendicular to lane (metres).
+    object_centre_z : float
+        Object centre Z in world frame.
+    grasp_z : float
+        Wrist Z height at grasp.
+
+    Returns
+    -------
+    (quality, q_palm, q_wrap, q_width, contact_area, palm_penetration)
+    """
+    # ── contact geometry (post-insertion) ──
+    x_off_contact = -(r_c + HAND_LENGTH_PALM)        # wrist at the near surface
+    x_off_anchor = x_off_contact - S_INSERTION        # where the insertion starts
+    near_surface_lane = -r_c
+    far_surface_lane = r_c
+
+    # ── Q_palm: how well this x_off supports the insertion approach ──
+    insertion_room = x_off_contact - x_off  # +ve = behind contact
+
+    MAX_INSERTION_ROOM = 0.10  # 10 cm behind - too much, out of reach
+    MIN_INSERTION_ROOM = 0.005 # 5 mm - barely any room at all
+
+    if insertion_room <= 0:
+        q_palm = 0.0
+    elif insertion_room <= MIN_INSERTION_ROOM:
+        q_palm = insertion_room / MIN_INSERTION_ROOM  # ramps up 0 → 1
+    elif insertion_room <= S_INSERTION:
+        q_palm = 1.0 - 0.1 * (S_INSERTION - insertion_room) / (S_INSERTION - MIN_INSERTION_ROOM + 1e-9)
+        q_palm = max(0.7, q_palm)
+    elif insertion_room <= MAX_INSERTION_ROOM:
+        q_palm = 1.0 - 0.8 * (insertion_room - S_INSERTION) / (MAX_INSERTION_ROOM - S_INSERTION)
+        q_palm = max(0.2, q_palm)
+    else:
+        q_palm = 0.2
+
+    # ── Q_wrap: how well the fingers wrap around after insertion ──
+    finger_reach_past_post = HAND_LENGTH_FINGER - 2.0 * r_c
+
+    MIN_WRAP = 0.005   # 5 mm past the far surface
+    IDEAL_WRAP = 0.025  # 2.5 cm past the far surface
+
+    if finger_reach_past_post <= 0:
+        q_wrap = 0.0
+    elif finger_reach_past_post <= MIN_WRAP:
+        q_wrap = finger_reach_past_post / MIN_WRAP  # ramps up 0 → 1
+    elif finger_reach_past_post <= IDEAL_WRAP:
+        q_wrap = 1.0
+    else:
+        q_wrap = 1.0  # great wrap, full marks
+
+    # ── Q_width: can the hand actually span the object? ──
+    aperture_available = MAX_APERTURE * 1.05  # a little tolerance
+    if object_width <= aperture_available:
+        IDEAL_WIDTH = 0.050  # 5 cm ideal for a wrap
+        deviation = abs(object_width - IDEAL_WIDTH) / IDEAL_WIDTH
+        q_width = max(0.0, 1.0 - 0.5 * deviation)
+    else:
+        excess = (object_width - aperture_available) / aperture_available
+        q_width = np.exp(-4.0 * excess)  # exp penalty when too wide
+
+    # ── rough contact area (post-insertion) ──
+    effective_palm_pen = 0.008  # 8 mm typical palm sink
+    palm_contact_area = PALM_WIDTH * effective_palm_pen * min(q_palm, 1.0)
+
+    n_fingers = 2 if q_wrap > 0.5 else (1 if q_wrap > 0.2 else 0)
+    finger_contact_area = n_fingers * 0.012 * 0.008  # call it ~1cm² per finger
+
+    contact_area = palm_contact_area + finger_contact_area
+
+    # penetration before insertion; diagnostics only
+    palm_lane_pre = x_off + HAND_LENGTH_PALM
+    palm_penetration_pre = palm_lane_pre - near_surface_lane
+
+    # ── and the overall quality ──
+    quality = W_PALM * q_palm + W_WRAP * q_wrap + W_WIDTH * q_width
+
+    return float(quality), float(q_palm), float(q_wrap), float(q_width), \
+           float(contact_area), float(palm_penetration_pre)
