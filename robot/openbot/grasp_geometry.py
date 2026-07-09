@@ -558,3 +558,5 @@ def _optimize_x_off(
             best_x_off = float(x_off)
 
     return best_x_off, best_quality
+
+
