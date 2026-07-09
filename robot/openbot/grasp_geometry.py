@@ -515,3 +515,46 @@ def score_candidate_x_off(
 # Main API: Compute x_off
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _optimize_x_off(
+    r_c: float,
+    object_width: float,
+    object_centre_z: float,
+    grasp_z: float,
+) -> Tuple[float, float]:
+    """Sample candidate x_off values and return the best.
+
+    Uses the contact-aware scoring function which peaks at::
+
+        x_off_anchor = -(r_c + HAND_LENGTH_PALM + S_INSERTION)
+
+    Returns (best_x_off, best_quality).
+    """
+    # anchor, analytically
+    x_off_anchor = -(r_c + HAND_LENGTH_PALM + S_INSERTION)
+
+    # ±8 cm grid around the anchor
+    search_radius = 0.08
+    lo = max(X_OFF_MIN, x_off_anchor - search_radius)
+    hi = min(X_OFF_MAX, x_off_anchor + search_radius)
+    n_samples = 30
+    candidates = np.linspace(lo, hi, n_samples)
+
+    # also try the anchor and CALIBRATION_X_OFF
+    candidates = np.unique(np.concatenate([
+        candidates,
+        [x_off_anchor, CALIBRATION_X_OFF],
+    ]))
+    candidates.sort()
+
+    best_x_off = x_off_anchor  # analytical anchor as fallback
+    best_quality = -1.0
+
+    for x_off in candidates:
+        q, _, _, _, _, _ = score_candidate_x_off(
+            x_off, r_c, object_width, object_centre_z, grasp_z,
+        )
+        if q > best_quality:
+            best_quality = q
+            best_x_off = float(x_off)
+
+    return best_x_off, best_quality
