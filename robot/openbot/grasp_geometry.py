@@ -353,3 +353,44 @@ def compute_local_surface_radius(
     return 0.035  # bottle radius default
 
 
+def compute_cross_section_width(
+    primitive: GeometricPrimitive,
+    lane_dir: np.ndarray,
+    grasp_z: float = GRASP_Z_DEFAULT,
+) -> float:
+    """Compute the object's width PERPENDICULAR to the approach lane.
+
+    This determines whether the Dex3 hand can span the object for a power
+    grasp (thumb on one side, fingers on the other).
+
+    Returns width in metres.
+    """
+    # perp in the XY plane
+    perp = np.array([-lane_dir[1], lane_dir[0], 0.0], dtype=np.float64)
+
+    if primitive.type == "cylinder" and primitive.axis is not None:
+        axis = primitive.axis / np.linalg.norm(primitive.axis)
+        if abs(axis[2]) > 0.95:
+            return 2.0 * primitive.radius
+        return 2.0 * primitive.radius
+
+    elif primitive.type == "sphere" and primitive.sphere_radius is not None:
+        R = primitive.sphere_radius
+        dz = grasp_z - primitive.centre[2]
+        if abs(dz) >= R:
+            return R * 0.5
+        r_at_z = np.sqrt(max(R * R - dz * dz, 0.0))
+        return 2.0 * r_at_z
+
+    elif primitive.type == "box" and primitive.half_extents is not None:
+        if primitive.rotation is not None:
+            perp_local = primitive.rotation.T @ perp
+            width = 2.0 * np.sum(np.abs(perp_local) * primitive.half_extents)
+        else:
+            width = 2.0 * max(primitive.half_extents[1], primitive.half_extents[2])
+        return width
+
+    elif primitive.type == "pca" and primitive.radius is not None:
+        return 2.0 * primitive.radius
+
+    return 0.07
