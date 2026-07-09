@@ -63,3 +63,63 @@ class GripError(Exception):
 class GripClient:
     """Socket client for the persistent grip server (one hand)."""
 
+    def __init__(self, side, connect_retries=10, retry_delay=0.5):
+        if side not in ('right', 'left'):
+            raise ValueError(f'GripClient side must be right|left, got {side!r}')
+        self._side = side
+        self._sock = None
+        # copy of old Dex3Hand.msg.motor_cmd[id].q:
+        # daemon debug prints read it after close.
+        self.last_q = {jid: 0.0 for jid in DEX3_JOINTS}
+        self._connect(connect_retries, retry_delay)
+
+    def _connect(self, retries, retry_delay):
+        for attempt in range(1, retries + 1):
+            try:
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                s.settimeout(30.0)
+                s.connect(SOCK_PATH)
+                self._sock = s
+                return
+            except (FileNotFoundError, ConnectionRefusedError, OSError) as e:
+                if self._sock is not None:
+                    try:
+                        self._sock.close()
+                    except OSError:
+                        pass
+                    self._sock = None
+                if attempt == retries:
+                    raise GripError(
+                        f'cannot connect to grip server {SOCK_PATH} '
+                        f'after {retries} tries: {e} (is grip_server.py '
+                        f'running?)')
+                time.sleep(retry_delay)
+
+    def _cmd(self, line, timeout=30.0):
+        if self._sock is None:
+            raise GripError('grip server connection closed')
+        self._sock.settimeout(timeout)
+        self._sock.sendall((line + '\n').encode())
+        raw = self._sock.recv(4096)
+        if not raw:
+            raise GripError(f'grip server closed the connection on "{line}"')
+        resp = raw.decode().strip()
+        if resp.startswith('ERROR:'):
+            raise GripError(resp)
+        return resp
+
+    # ── commands that move the hand (API-compatible with old Dex3Hand) ─────
+    def set(self, targets, steps=STEP_DEFAULT, dt=DT_DEFAULT):
+        vals = ' '.join(f'{float(targets.get(jid, 0.0)):.6f}'
+                        for jid in DEX3_JOINTS)
+        resp = self._cmd(f'set {self._side} {vals} {int(steps)} {float(dt)}')
+        self.last_q = {jid: float(targets.get(jid, self.last_q.get(jid, 0.0)))
+                       for jid in DEX3_JOINTS}
+        return resp
+
+    def open(self):
+        name = 'open' if self._side == 'right' else 'open_left'
+        resp = self._cmd(name)
+        self.last_q = dict(OPEN_PRESETS[self._side])
+        return resp
+
