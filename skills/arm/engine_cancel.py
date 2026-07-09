@@ -135,3 +135,69 @@ def mark_idle() -> None:
             # local and leaves the phase stale after the task it described
             # ended (tests/test_engine_cancel.py caught it)
             _where = ""
+
+
+def busy() -> bool:
+    with _lock:
+        return _busy
+
+
+def request(where: str = "cancel") -> "tuple[bool, str]":
+    """Ask for a cancel.  Returns ``(accepted, message)``.
+
+    REFUSES when no task is in flight.  That is not politeness — arming a
+    cancel with nothing to cancel is how the next legitimate task gets
+    aborted at its first motion step.  The refusal is reported so the caller
+    can tell the operator "nothing is running" instead of pretending.
+    """
+    global _where, _requested_at
+    with _lock:
+        if not _busy:
+            return False, "no task running"
+        first = not _pending.is_set()
+        _pending.set()
+        _where = where or "cancel"
+        _requested_at = time.monotonic()
+        return True, ("cancel requested" if first else "cancel already requested")
+
+
+def pending() -> bool:
+    return _pending.is_set()
+
+
+def where() -> str:
+    with _lock:
+        return _where
+
+
+def check(where: str) -> None:
+    """Announce a choke point, then raise :class:`Cancelled` if one is pending.
+
+    The announce happens BEFORE the test on purpose: if the cancel arrived
+    while the engine was between two choke points, the reply should name the
+    phase the arm is actually in, not the previous one.
+
+    The common case is a cheap ``Event.is_set()`` with no lock and no
+    allocation, because this is called at ``MOVE_HZ`` (50 Hz) inside every
+    guarded move.
+    """
+    global _where
+    if not _pending.is_set():
+        # fast path: bare store, no lock -- CPython global stores are
+        # atomic; worst case a reply names the wrong phase
+        _where = where
+        return
+    with _lock:
+        _where = where
+        reason = _where
+    raise Cancelled(reason)
+
+
+def clear() -> None:
+    """Drop a pending cancel.  Called by the engine's unwind once it has
+    stopped the arm and replied — NOT before, or a second cancel during the
+    unwind would be lost."""
+    global _where
+    with _lock:
+        _pending.clear()
+        _where = ""
