@@ -210,3 +210,47 @@ class GripClient:
             raise GripError(resp)
         return json.loads(resp[5:])
 
+    def hold(self, side=None):
+        cmd = 'hold' if side is None else f'hold {side}'
+        return self._cmd(cmd)
+
+    def close_socket(self):
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            self._sock = None
+
+
+# ── operator CLI (run it from a terminal) ────────────────────────────────────
+def _cli_state(side):
+    client = GripClient('right' if side in (None, 'both') else side)
+    print(json.dumps(client.state(side if side != 'both' else None),
+                     indent=2))
+    client.close_socket()
+
+
+def _cli_drive(action, side):
+    if side is None:
+        sides = ['right']
+    elif side == 'both':
+        sides = ['right', 'left']
+    else:
+        sides = [side]
+    for s in sides:
+        client = GripClient(s)
+        if action == 'open':
+            print(f'{s}: {client.open()}')
+        elif action == 'close':
+            print(f'{s}: {client.close()}')
+        elif action == 'hold':
+            print(f'{s}: {client.hold()}')
+        client.close_socket()
+
+
+def _cli_set(side, vals, steps, dt):
+    client = GripClient(side)
+    targets = {jid: vals[jid] for jid in DEX3_JOINTS}
+    print(client.set(targets, steps=steps, dt=dt))
+    client.close_socket()
