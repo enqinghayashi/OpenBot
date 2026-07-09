@@ -614,3 +614,5 @@ def compute_x_off(
         w = object_width
 
     return _optimize_x_off(r_c, w, object_centre_z, grasp_z)
+
+
