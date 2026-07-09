@@ -560,3 +560,57 @@ def _optimize_x_off(
     return best_x_off, best_quality
 
 
+def compute_x_off(
+    primitive_type: str,
+    radius: Optional[float] = None,
+    object_width: Optional[float] = None,
+    object_centre_z: float = 0.80,
+    grasp_z: float = GRASP_Z_DEFAULT,
+) -> Tuple[float, float]:
+    """Compute optimal x_off from geometric primitive parameters.
+
+    Samples candidate x_off values in [-0.20, -0.02] and returns the one
+    that maximises the contact quality score.
+
+    This is the parameter-based entry point, used when no point cloud is
+    available (e.g., simulation with known object shape).
+
+    Parameters
+    ----------
+    primitive_type : str
+        ``"cylinder"``, ``"sphere"``, ``"box"``, or ``"pca"``.
+    radius : float or None
+        Object radius (for cylinder/sphere) or half-depth (for box).
+    object_width : float or None
+        Width perpendicular to approach lane. If None, computed as 2×radius.
+    object_centre_z : float
+        Object centre Z in world frame (default 0.80).
+    grasp_z : float
+        Wrist Z height (default 0.90).
+
+    Returns
+    -------
+    (x_off, quality_score)
+    """
+    if radius is None:
+        radius = 0.035  # assume a bottle
+
+    if object_width is None:
+        object_width = 2.0 * radius  # assume round cross-section
+
+    # radius depends on the shape
+    if primitive_type == "sphere":
+        r_c = np.sqrt(max(radius**2 - (grasp_z - object_centre_z)**2, 0.0))
+        r_c = max(r_c, 0.01)
+        w = 2.0 * r_c
+    elif primitive_type == "box":
+        r_c = radius
+        w = object_width
+    elif primitive_type == "cylinder":
+        r_c = radius
+        w = object_width
+    else:  # pca or unknown
+        r_c = radius
+        w = object_width
+
+    return _optimize_x_off(r_c, w, object_centre_z, grasp_z)
