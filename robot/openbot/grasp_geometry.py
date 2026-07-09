@@ -509,3 +509,9 @@ def score_candidate_x_off(
 
     return float(quality), float(q_palm), float(q_wrap), float(q_width), \
            float(contact_area), float(palm_penetration_pre)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Main API: Compute x_off
+# ═══════════════════════════════════════════════════════════════════════════════
+
