@@ -201,3 +201,29 @@ def clear() -> None:
     with _lock:
         _pending.clear()
         _where = ""
+
+
+def snapshot() -> "dict[str, object]":
+    """Diagnostic view — never used to make a safety decision."""
+    with _lock:
+        return {
+            "busy": _busy,
+            "pending": _pending.is_set(),
+            "where": _where,
+            "requested_at": _requested_at,
+        }
+
+
+def reset_for_test() -> None:
+    """Test seam: return the module singleton to its boot state.
+
+    Present because this module IS a process-wide singleton and pytest runs
+    every test in one process — without it, one test's armed cancel leaks
+    into the next and the failure looks like a bug in the code under test.
+    """
+    global _busy, _where, _requested_at
+    with _lock:
+        _busy = False
+        _where = ""
+        _requested_at = 0.0
+        _pending.clear()
