@@ -727,3 +727,9 @@ def compute_x_off_from_pointcloud(
         lane_dir=lane_dir,
         primitive_type=primitive.type,
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Convenience: compute_grasp_params (backward-compatible)
+# ═══════════════════════════════════════════════════════════════════════════════
+
