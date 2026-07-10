@@ -547,3 +547,177 @@ class HandController:
     def open(self):
         self.set(OPEN_PRESETS[self._side])
 
+    def close(self):
+        self.set(CLOSE_PRESETS[self._side])
+
+    def set_scalar(self, scalar):
+        scalar = float(np.clip(scalar, -1.0, 1.0))
+        t = (scalar + 1.0) / 2.0  # [-1,1] -> [0,1]
+        targets = {}
+        for jid in DEX3_JOINTS:
+            targets[jid] = (OPEN_PRESETS[self._side][jid]
+                            + t * (CLOSE_PRESETS[self._side][jid]
+                                   - OPEN_PRESETS[self._side][jid]))
+        self.set(targets)
+
+    def _stage_pre_close(self, fingers_neutral=False):
+        """Settle the thumb BEFORE the fingers close onto it.
+
+        Returns the list of stage names actually issued (empty = nothing to
+        do).  `set` holds any joint ABSENT from its `targets` at the current
+        value, so each stage moves only the joints it names.
+
+        DEFAULT (`fingers_neutral=False`) -- move ONLY the thumb base to its
+        centreline, holding every other joint at its LIVE measured q.  This
+        needs no loaded/empty sensor at all, because nothing is ever commanded
+        toward OPEN and so a held object cannot be released.  It is the shape
+        approved on 2026-09-27, and it is right for a hand arriving from the
+        OPEN preset, where thumb_0 still has a 0.48 rad diagonal to remove.
+
+        OPT-IN (`fingers_neutral=True`) -- straighten the four FINGER motors to
+        0.0 FIRST, then drive the whole thumb to its CLOSE values, then close.
+
+        WHY THE OPT-IN SHAPE EXISTS, and it is measured.  At the operator's
+        2026-09-30 close the right hand arrived from a grasp-lead pose whose
+        thumb_0 travel to CLOSE was exactly +0.0000 -- so the DEFAULT shape
+        targets the one joint that needed nothing, and its 0.10 rad skip
+        tolerance skips it outright -- while thumb_1 travelled -0.5605 and
+        thumb_2 -0.8043 against a curling middle_0 at +0.7695.  The sweep that
+        caused the reported finger collision is in the thumb's DISTAL joints,
+        which neither this staging nor the 2026-09-27 one ever touched.
+
+        WHY IT IS OPT-IN AND NOT DEFAULT.  Straightening the fingers IS a
+        release if the hand holds something, and this hardware admits no
+        PRE-close discriminator: the pads read a delta of ~0 for 5 of the 13
+        characterised objects (Airpods, torch, lunchbox, epipen, spray-short),
+        and the closure-block margin reads a FALSE 'blocked' on an empty hand
+        after any bounded-lead close, because that close stops short of the
+        preset BY DESIGN.  Both candidate sensors fail on the operator's own
+        empty hand, so the risk cannot be engineered away -- it is routed to
+        the one caller that is an explicit human close command instead.  Every
+        other caller omits the flag and gets the default shape unchanged.
+        """
+        issued = []
+        if not fingers_neutral:
+            try:
+                cur = float(self.last_q.get(THUMB_BASE_JID, THUMB_BASE_CENTRE))
+            except Exception:
+                return issued
+            if abs(cur - THUMB_BASE_CENTRE) <= STAGED_CLOSE_SKIP_TOL:
+                return issued
+            self.set({THUMB_BASE_JID: THUMB_BASE_CENTRE})
+            issued.append('thumb_0->centre')
+            return issued
+
+        # fingers_neutral: clear the volume the thumb's distals sweep, first.
+        try:
+            held_f = [float(self.last_q.get(j, 0.0)) for j in FINGER_JIDS]
+        except Exception:
+            held_f = []
+        if held_f and any(abs(v) > STAGED_CLOSE_SKIP_TOL for v in held_f):
+            self.set({j: 0.0 for j in FINGER_JIDS})
+            issued.append('fingers->0.0')
+
+        # then the whole thumb to its close preset.
+        close = CLOSE_PRESETS[self._side]
+        try:
+            held_t = [float(self.last_q.get(j, 0.0)) for j in THUMB_JIDS]
+            behind = any(abs(v - float(close[j])) > STAGED_CLOSE_SKIP_TOL
+                         for j, v in zip(THUMB_JIDS, held_t))
+        except Exception:
+            behind = True
+        if behind:
+            self.set({j: close[j] for j in THUMB_JIDS})
+            issued.append('thumb->close')
+        return issued
+
+    def close_adaptive(self, reader, max_fraction=ADAPTIVE_MAX_FRACTION,
+                       steps=ADAPTIVE_STEPS, dt=ADAPTIVE_DT,
+                       stop_threshold=ADAPTIVE_STOP,
+                       min_steps=ADAPTIVE_MIN_STEPS,
+                       fingers_neutral=False):
+        """Incrementally close until finger pressure exceeds threshold.
+
+        Thresholds preserved from the old daemon (close_until_contact):
+        steps=50, dt=0.02, stop_threshold=200000, min_steps=10.  Pressure
+        feedback is read IN-SERVER.
+
+        max_fraction is still passed through clamped_close_target, i.e. capped
+        at F_MAX_SAFE — which is 1.0 as of 2026-09-19, so the cap is currently
+        a NO-OP on the endpoint.  The cap machinery is deliberately kept (see
+        the F_MAX_SAFE comment): it is the single source of truth that stops
+        the pose COMMANDED here and the pose SCORED in _score_closure_blocked
+        from drifting apart.  Callers that want the preset without the ramp
+        still have `set(CLOSE_PRESETS[side])`.
+
+        Returns:
+            'contact' — stopped early, finger grip detected
+            'full'    — reached the (F_MAX_SAFE-clamped) fraction without
+                        threshold
+            'no_data' — no pressure data throughout (closed to max)
+        Raises:
+            RuntimeError('no_dds') — server in NO_DDS mode (no feedback
+            channel at all); the client surfaces this as ERROR:no_dds.
+        """
+        if NO_DDS:
+            raise RuntimeError('no_dds')
+        steps = max(1, int(steps))
+        dt = max(0.005, float(dt))
+        min_steps = max(1, int(min_steps))
+        # F_MAX_SAFE cap: the ramp is a straight line in joint space, so an
+        # uncapped fraction transits the contact band.
+        targets, _eff = clamped_close_target(self._side, max_fraction)
+        if _eff < float(max_fraction):
+            _log(f'{self._side} close_adaptive: max_fraction '
+                 f'{float(max_fraction):.3f} CLAMPED to {_eff:.3f} '
+                 f'(F_MAX_SAFE={F_MAX_SAFE:.3f}) — the OPEN->CLOSE ramp '
+                 f'transits a self-collision band above this')
+        baseline = reader.finger_pressure()
+        _log(f'{self._side} close_adaptive: baseline={baseline:.0f}, '
+             f'stop_threshold={stop_threshold:.0f}, min_steps={min_steps}, '
+             f'steps={steps}')
+        # Staging runs outside the lock because _stage_pre_close calls set(),
+        # which takes self._lock, and threading.Lock is not reentrant.
+        staged = self._stage_pre_close(fingers_neutral)
+        if staged:
+            _log(f'{self._side} close_adaptive: staged '
+                 f'{", ".join(staged)} before the close ramp')
+        with self._lock:
+            start = dict(self.last_q)
+            for i in range(1, steps + 1):
+                r = 0.5 - 0.5 * np.cos(np.pi * i / steps)
+                q = {jid: float(start[jid] + r * (targets.get(jid, start[jid])
+                                                  - start[jid]))
+                     for jid in DEX3_JOINTS}
+                self._write(q)
+                time.sleep(dt)
+                p = reader.finger_pressure()
+                if i % 10 == 0 or (i > min_steps and p > baseline + 10000):
+                    _log(f'{self._side} close_adaptive step {i}/{steps}: '
+                         f'finger_pressure={p:.0f} (baseline={baseline:.0f}, '
+                         f'stop_at={stop_threshold:.0f})')
+                if i > min_steps and p > stop_threshold:
+                    _log(f'{self._side} close_adaptive: GRIP DETECTED at '
+                         f'step {i}/{steps} (finger_pressure={p:.0f} > '
+                         f'threshold={stop_threshold:.0f}, '
+                         f'delta={p - baseline:.0f})')
+                    self.last_q = {jid: float(q[jid]) for jid in DEX3_JOINTS}
+                    # Both exits arm the settle window after writing last_q,
+                    # including the contact return.
+                    self._bound_deadline = time.time() + SETTLE_S
+                    return 'contact'
+            self.last_q = {jid: float(targets[jid]) for jid in DEX3_JOINTS}
+            self._bound_deadline = time.time() + SETTLE_S
+        if baseline == 0:
+            _log(f'{self._side} close_adaptive: NO DDS DATA — '
+                 f'closed to max without feedback')
+            return 'no_data'
+        _log(f'{self._side} close_adaptive: reached full close, no grip '
+             f'detected (final_pressure={reader.finger_pressure():.0f}, '
+             f'baseline={baseline:.0f})')
+        return 'full'
+
+    def stop(self):
+        self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
