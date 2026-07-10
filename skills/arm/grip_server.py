@@ -324,3 +324,100 @@ class PressureReader:
                     for jid in DEX3_JOINTS}
         except Exception:
             return None
+
+
+class HandController:
+    """One hand: last commanded q + single 20 Hz writer (ramps + re-assert).
+
+    The writer thread is THE only DDS writer for its side.  Ramps run under
+    the controller lock (synchronous with the command handler, preserving
+    the old daemon's exact step/dt pacing); between ramps the thread
+    re-asserts last_q at 20 Hz so the dex3 MCU never sees the writer go
+    quiet.
+    """
+
+    def __init__(self, side, seed_q=None, reader=None):
+        self._side = side
+        self._lock = threading.Lock()
+        self._pub = None
+        self._running = True
+        self._seed_logged = False
+        # Reader: the controller's own view of motor state (mode/dq/motorstate).
+        # Optional; None or a reader without motor_limits means no state, and
+        # the bound and fault checks are skipped.
+        self._reader = reader
+        # +inf leaves the bound unreachable until set() or close_adaptive
+        # arms a deadline, so boot writes last_q unchanged. Boot holds current
+        # q, never a preset; the seed may come from the persisted last command.
+        self._bound_deadline = float('inf')
+        # fault annunciator edge state
+        self._fault_active = False
+        self._last_fault_check = 0.0
+        if NO_DDS:
+            _log(f'NO_DDS: {side} controller has no DDS writer')
+            self._thread = None  # stop() would AttributeError otherwise
+            self.last_q = {jid: float(seed_q.get(jid, 0.0)) if seed_q else 0.0
+                           for jid in DEX3_JOINTS}
+            return
+        self._pub = ChannelPublisher(f'rt/dex3/{side}/cmd', HandCmd_)
+        self._pub.Init()
+        if seed_q is not None:
+            self.last_q = {jid: float(seed_q.get(jid, 0.0)) for jid in DEX3_JOINTS}
+        else:
+            self.last_q = {jid: 0.0 for jid in DEX3_JOINTS}
+        self._thread = threading.Thread(target=self._writer_loop, daemon=True)
+        self._thread.start()
+
+    # ── writer loop: 20 Hz re-assert in between ramps ───────────────────────
+    def _writer_loop(self):
+        while self._running:
+            try:
+                with self._lock:
+                    # Before the deadline this writes last_q (same lock, value
+                    # and rate). After it, recompute the bound per write without
+                    # touching last_q, so the preset returns as soon as the
+                    # residual drops under the cap. No extra lock or thread.
+                    if time.time() < self._bound_deadline:
+                        q = self.last_q
+                    else:
+                        q = self._residual_bound()
+                    self._write(q)
+            except Exception as e:
+                _log(f'{self._side} writer error: {e}')
+            # Edge-triggered mode != 1 alarm: the 1 Hz gate runs here because
+            # this loop is 20 Hz, and one line is emitted per change instead of
+            # 20 per second.
+            try:
+                line = self._check_faults()
+                if line:
+                    _log(line)
+            except Exception as e:
+                _log(f'{self._side} fault-check error: {e}')
+            time.sleep(1.0 / WRITE_HZ)
+
+    def _write(self, q_dict):
+        if self._pub is None:  # NO_DDS: no writer, just state
+            return
+        self._pub.Write(_build_cmd(q_dict))
+
+    # ── residual bound + fault annunciator ───────────────────
+    def _read_limits(self):
+        """motor_limits() off our reader, or None.  NEVER raises.
+
+        The reader is optional and so is motor_limits (older/fake readers have
+        only motor_q), so this uses getattr and swallows everything: a missing
+        or misbehaving reader must degrade to "no DDS state", which both
+        callers treat as "do nothing".  That is load-bearing — an unguarded
+        dereference here sits inside _writer_loop / _state_payload and would
+        turn every `state` reply into ERROR and every release into an abort.
+        """
+        if self._reader is None:
+            return None
+        fn = getattr(self._reader, 'motor_limits', None)
+        if not callable(fn):
+            return None
+        try:
+            return fn()
+        except Exception:
+            return None
+
