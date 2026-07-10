@@ -111,3 +111,8 @@ _busy = False
 _requested_at = 0.0
 
 
+def mark_busy() -> None:
+    """A command has been handed to the command loop and has not returned."""
+    global _busy
+    with _lock:
+        _busy = True
