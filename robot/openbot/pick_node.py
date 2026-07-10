@@ -366,3 +366,30 @@ class PickNode(Node):
         for line in self._daemon_proc.stderr:
             self.get_logger().info(f'[daemon] {line.strip()}')
 
+    def _log_last_stderr(self):
+        """T11: surface the daemon's last stderr lines in the pick_node log.
+
+        The streaming _log_daemon_stderr thread usually forwards every
+        line as it arrives, but a fast crash can outrun it.  This drains
+        whatever is still buffered (bounded — never blocks on a live but
+        silent daemon) and logs it as errors so the crash cause (e.g.
+        "ValueError: source code string cannot contain null bytes") is
+        in the pick_node log.
+        """
+        try:
+            fd = self._daemon_proc.stderr.fileno()
+        except Exception:
+            return
+        deadline = time.time() + 0.5
+        try:
+            while time.time() < deadline:
+                r, _, _ = select.select([fd], [], [], 0.05)
+                if not r:
+                    break        # quiet: already read
+                line = self._daemon_proc.stderr.readline()
+                if not line:
+                    break        # EOF, drained
+                self.get_logger().error(f'[daemon stderr] {line.strip()}')
+        except Exception:
+            pass
+
