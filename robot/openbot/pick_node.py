@@ -491,3 +491,45 @@ class PickNode(Node):
         except Exception as e:
             self.get_logger().warn(f'Bad detection msg: {e}')
 
+    def _write_servo_status(self):
+        """Phase 4: write tracking stability status to /tmp/pick_servo_status.
+
+        Runs as a daemon thread. Status values:
+          "stable"  — centroid shift < STABILITY_THRESHOLD_M
+          "shifted" — centroid shift >= STABILITY_THRESHOLD_M
+          "lost"    — no recent detection or confidence too low
+        """
+        _last_tx = None
+        _last_ty = None
+
+        while True:
+            try:
+                now = time.time()
+                cur_tx = self._prev_tx
+                cur_ty = self._prev_ty
+
+                if (self._last_detection_time is None
+                        or (now - self._last_detection_time) > LOST_TIME_THRESHOLD):
+                    status = 'lost'
+                elif cur_tx is None or cur_ty is None:
+                    status = 'lost'
+                elif _last_tx is not None and _last_ty is not None:
+                    dx = cur_tx - _last_tx
+                    dy = cur_ty - _last_ty
+                    if dx * dx + dy * dy >= STABILITY_THRESHOLD_M * STABILITY_THRESHOLD_M:
+                        status = 'shifted'
+                    else:
+                        status = 'stable'
+                else:
+                    status = 'stable'
+
+                _last_tx = cur_tx
+                _last_ty = cur_ty
+
+                with open(STATUS_FILE, 'w') as f:
+                    f.write(status + '\n')
+            except Exception:
+                pass
+            time.sleep(0.1)
+
+    # ── /pick_state publisher ────────────────────
