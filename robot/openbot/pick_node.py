@@ -533,3 +533,12 @@ class PickNode(Node):
             time.sleep(0.1)
 
     # ── /pick_state publisher ────────────────────
+    def _set_pick_state(self, state, label=None, held=None):
+        """Update the pick state machine (thread-safe)."""
+        with self._pick_state_lock:
+            self._pick_state = state
+            if label is not None:
+                self._pick_label = label
+            if held is not None:
+                self._pick_held = held
+
