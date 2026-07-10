@@ -799,3 +799,73 @@ class PickNode(Node):
 
     # ── running the pick ─────────────────────────
 
+    def _execute_pick(self, pick_info: dict):
+        self._busy = True
+        label = pick_info['label']
+        x, y, z = pick_info['x'], pick_info['y'], pick_info['z']
+
+        # ── pick in flight ───────────────────────────
+        self._set_pick_state('busy', label=label)
+
+        if not is_reachable(x, y, z):
+            self._publish_status(
+                f'ERROR: target {label} unreachable at '
+                f'x={x:+.3f} y={y:+.3f} z={z:+.3f}')
+            self._set_pick_state('error', held=False)
+            self._busy = False
+            return
+
+        # ── choosing the arm ─────────────────────────
+        if x > 0.05:
+            arm_side = 'right'
+        elif x < -0.05:
+            arm_side = 'left'
+        else:
+            arm_side = 'right'  # center goes right
+
+        self._publish_status(
+            f'picking {label} at ({x:.2f}, {y:.2f}, {z:.2f}) [{arm_side} arm]')
+
+        # park the idle arm
+        if arm_side == 'left':
+            self._send_cmd('ready_left')
+        else:
+            self._send_cmd('ready_right')
+
+        # + surface normal
+        cmd_prefix = 'pick_left' if arm_side == 'left' else 'pick'
+        normal_parts = ''
+        if 'nx' in pick_info:
+            normal_parts = (
+                f' {pick_info["nx"]:.4f}'
+                f' {pick_info["ny"]:.4f}'
+                f' {pick_info["nz"]:.4f}')
+        orientation = pick_info.get('orientation', 'upright')
+        # height as the last token:
+        # 6-arg without a normal,
+        # 9-arg with orientation.
+        # absent -> legacy lift
+        height_parts = ''
+        if 'height_m' in pick_info:
+            height_parts = f' {pick_info["height_m"]:.4f}'
+        # point-cloud offset
+        # from grasp_geometry, optional;
+        # else its hardcoded standoff
+        x_off_parts = ''
+        if 'x_off' in pick_info:
+            x_off_parts = f' {pick_info["x_off"]:.4f}'
+        response = self._send_cmd(
+            f'{cmd_prefix} {x:.4f} {y:.4f} {z:.4f}{normal_parts} {orientation}{height_parts}{x_off_parts}')
+
+        if response == 'DONE':
+            self.get_logger().info(f'Pick of "{label}" succeeded.')
+            self._publish_status(f'picked {label} OK')
+            # ── in the hand ──────────────────────────────
+            self._set_pick_state('holding', label=label, held=True)
+        else:
+            self.get_logger().error(f'Pick failed: {response}')
+            self._publish_status(f'ERROR: {response}')
+            self._set_pick_state('error', held=False)
+
+        self._busy = False
+
