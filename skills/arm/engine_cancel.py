@@ -94,3 +94,20 @@ class Cancelled(BaseException):
     def __init__(self, where: str = ""):
         self.where = where or "unknown"
         super().__init__(self.where)
+
+
+_lock = threading.Lock()
+_pending = threading.Event()
+
+#: last choke point the engine entered (set by :func:`check`). Only
+#: informational, but it makes a cancel reply useful.
+_where = ""
+
+#: true while a command is in flight; set by
+#: ``tabletop_pick_place_engine``.
+_busy = False
+
+#: monotonic stamp of the last accepted cancel
+_requested_at = 0.0
+
+
