@@ -421,3 +421,129 @@ class HandController:
         except Exception:
             return None
 
+    def _closing_dir(self, jid):
+        """+1/-1: the sign q MOVES in when this joint closes; 0 if pinned.
+
+        Derived from the presets, not hand-typed per joint, so it cannot
+        disagree with the ramp.  A pinned joint (OPEN == CLOSE) has no closing
+        direction and is never bounded.
+        """
+        delta = CLOSE_PRESETS[self._side][jid] - OPEN_PRESETS[self._side][jid]
+        if delta > 0.0:
+            return 1.0
+        if delta < 0.0:
+            return -1.0
+        return 0.0
+
+    def _residual_bound(self):
+        """last_q with each joint's CLOSING lead over the measured q capped.
+
+        Returns the value to WRITE.  self.last_q is NOT rewritten: a clamp
+        that persisted would freeze the hand at the short value exactly as the
+        rejected design did, whereas recomputing per write means the re-assert
+        returns to the preset the instant the residual falls back under
+        RISER_MAX_RAD.
+
+        No DDS state (no reader, no motor_limits, None) -> self.last_q
+        UNCHANGED, so an absent reader can never silently reshape a command.
+
+        Inert by construction at the shipped placeholders: RISER_MAX_RAD is
+        inf, so `abs(lead) > RISER_MAX_RAD` is false for every joint and this
+        is the identity.  See the RISER_MAX_RAD/SETTLE_S block.
+        """
+        limits = self._read_limits()
+        if limits is None:
+            return self.last_q
+        q = dict(self.last_q)
+        for jid in DEX3_JOINTS:
+            try:
+                q_meas = float(limits[jid][0])
+            except Exception:
+                continue  # bad sample; skip
+            # Non-finite q is unusable. NaN comparisons are all false, so the
+            # bound checks below would pass NaN to the MCU; reject it here.
+            if not math.isfinite(q_meas):
+                continue
+            lead = q[jid] - q_meas
+            if abs(lead) <= RISER_MAX_RAD:
+                continue  # identity case
+            cdir = self._closing_dir(jid)
+            # Bound only the closing excess; OPEN stays untouched, and open
+            # verification uses a 0.2 rad tolerance.
+            if cdir == 0.0 or lead * cdir <= 0.0:
+                continue
+            q[jid] = q_meas + cdir * RISER_MAX_RAD
+        return q
+
+    def _faulted_modes(self):
+        """{jid: mode} for every joint whose mode != 1, or None for no state.
+
+        mode != 1 means NOT in servo mode.  mode = 0 is DISABLED (LIMP): ~0
+        N.m and mechanically free, so a grip LOOSENS and the object slips —
+        which is why `available` (a writer-liveness flag) cannot stand in for
+        this and why the payload now carries `mode` itself.
+        """
+        limits = self._read_limits()
+        if limits is None:
+            return None
+        bad = {}
+        for jid in DEX3_JOINTS:
+            try:
+                mode = int(limits[jid][2])
+            except Exception:
+                continue
+            if mode != 1:
+                bad[jid] = mode
+        return bad
+
+    def _check_faults(self, now=None):
+        """EDGE-TRIGGERED annunciator line, or None.  At most 1 Hz.
+
+        B0.3 — one line when any mode != 1 APPEARS and one line when it
+        CLEARS; nothing in between.  Called from the 20 Hz writer loop, so the
+        1 Hz gate lives here rather than in the caller.  No DDS state emits
+        nothing AND leaves the edge state alone: "no state" is not evidence
+        that a fault cleared.
+        """
+        if now is None:
+            now = time.time()
+        if now - self._last_fault_check < 1.0:
+            return None
+        self._last_fault_check = now
+        bad = self._faulted_modes()
+        if bad is None:
+            return None
+        if bad and not self._fault_active:
+            self._fault_active = True
+            return (f'{self._side} FAULT: motor(s) NOT in servo mode '
+                    f'(mode != 1): {bad} — mode=0 is DISABLED/LIMP (~0 N.m, '
+                    f'backdrivable), so a grip held by it LOOSENS')
+        if not bad and self._fault_active:
+            self._fault_active = False
+            return f'{self._side} FAULT CLEARED: all motors mode == 1'
+        return None
+
+    # ── the commands that actually drive the hand ───────────────────────────
+    def set(self, targets, steps=STEP_DEFAULT, dt=DT_DEFAULT):
+        """Cosine positional ramp from last commanded q to targets."""
+        steps = max(1, int(steps))
+        dt = max(0.005, float(dt))
+        with self._lock:
+            start = dict(self.last_q)
+            for i in range(1, steps + 1):
+                r = 0.5 - 0.5 * np.cos(np.pi * i / steps)
+                q = {jid: float(start[jid] + r * (targets.get(jid, start[jid])
+                                                  - start[jid]))
+                     for jid in DEX3_JOINTS}
+                self._write(q)
+                time.sleep(dt)
+            self.last_q = {jid: float(targets.get(jid, start[jid]))
+                           for jid in DEX3_JOINTS}
+            # Arm the settle window after the endpoint is recorded, so the
+            # 20 Hz re-assert keeps driving onto the preset for SETTLE_S.
+            # That is what makes an air close converge instead of latching.
+            self._bound_deadline = time.time() + SETTLE_S
+
+    def open(self):
+        self.set(OPEN_PRESETS[self._side])
+
