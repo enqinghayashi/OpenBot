@@ -80,3 +80,14 @@ __all__ = [
 ]
 
 
+class Cancelled(BaseException):
+    """Raised at a motion choke point when a cancel is pending.
+
+    ``where`` names the choke point (or the last one the engine entered), so
+    the reply says *where* the robot was stopped rather than just that it was.
+    An operator who cancels wants to know whether the arm stopped mid-descent
+    or mid-lift — those leave different safe-recovery options.
+
+    Derives from ``BaseException`` on purpose; see the module docstring.
+    """
+
