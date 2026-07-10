@@ -869,3 +869,9 @@ class PickNode(Node):
 
         self._busy = False
 
+    def _publish_status(self, text: str):
+        msg = String()
+        msg.data = text
+        self._status_pub.publish(msg)
+        self.get_logger().info(f'[STATUS] {text}')
+
