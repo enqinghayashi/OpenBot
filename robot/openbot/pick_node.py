@@ -362,3 +362,7 @@ class PickNode(Node):
             self.get_logger().error(f'Failed to start daemon: {e}')
             return False
 
+    def _log_daemon_stderr(self):
+        for line in self._daemon_proc.stderr:
+            self.get_logger().info(f'[daemon] {line.strip()}')
+
