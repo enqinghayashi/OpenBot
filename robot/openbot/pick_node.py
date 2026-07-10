@@ -428,3 +428,66 @@ class PickNode(Node):
 
     # ── ROS callbacks ────────────────────────────
 
+    def _on_detections(self, msg):
+        try:
+            detections = json.loads(msg.data)
+            _now = time.time()
+            # ingestion gate: conf AND
+            # PICKABLE_CLASSES, so a person
+            # arm never gets in the table
+            self._latest_detections = {
+                d['label']: {**d, '_t': _now} for d in detections
+                if d.get('conf', 0) >= MIN_CONF
+                and d.get('label') in PICKABLE_CLASSES
+            }
+
+            # ── best det drives tracking ─────────────────
+            if detections:
+                best = max(detections, key=lambda d: d.get('conf', 0))
+                conf = best.get('conf', 0)
+                _label = best.get('label')
+                if _label not in PICKABLE_CLASSES:
+                    # unpickable labels never
+                    # drive tracking or reach
+                    # DETECTION_FILE — the daemon
+                    # could pick them on "shifted"
+                    if _label not in self._whitelist_warned:
+                        self._whitelist_warned.add(_label)
+                        self.get_logger().warn(
+                            f'label {_label} not pickable (whitelist) - skipped')
+                elif conf >= LOST_CONF_THRESHOLD:
+                    self._prev_tx = best.get('x')
+                    self._prev_ty = best.get('y')
+                    self._prev_tz = best.get('z')
+                    self._tracking_label = best.get('label')
+                    self._last_detection_time = time.time()
+
+                    # where the daemon reads on
+                    # "shifted" — whitelist-gated
+                    # above, so unpickable labels
+                    # are never written
+                    _det_data = {
+                        'label': self._tracking_label,
+                        'x': self._prev_tx,
+                        'y': self._prev_ty,
+                        'z': self._prev_tz,
+                        'conf': conf,
+                    }
+                    if 'orientation' in best:
+                        _det_data['orientation'] = best['orientation']
+                    if 'nx' in best:
+                        _det_data['nx'] = best['nx']
+                        _det_data['ny'] = best['ny']
+                        _det_data['nz'] = best['nz']
+                    if 'height_m' in best:
+                        _det_data['height_m'] = best['height_m']
+                    if 'x_off' in best:
+                        _det_data['x_off'] = best['x_off']
+                    try:
+                        with open(DETECTION_FILE, 'w') as f:
+                            json.dump(_det_data, f)
+                    except Exception:
+                        pass
+        except Exception as e:
+            self.get_logger().warn(f'Bad detection msg: {e}')
+
