@@ -91,3 +91,6 @@ class Cancelled(BaseException):
     Derives from ``BaseException`` on purpose; see the module docstring.
     """
 
+    def __init__(self, where: str = ""):
+        self.where = where or "unknown"
+        super().__init__(self.where)
