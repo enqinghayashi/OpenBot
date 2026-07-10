@@ -118,3 +118,20 @@ def mark_busy() -> None:
         _busy = True
 
 
+def mark_idle() -> None:
+    """The command loop came back for another command: nothing is in flight.
+
+    Clears any pending cancel at the same time.  A cancel that raced the
+    command's own completion must NOT survive into the next command — that is
+    the sticky-flag trap described in the module docstring, and this is the
+    second of the two places that closes it.
+    """
+    global _busy, _where
+    with _lock:
+        _busy = False
+        if _pending.is_set():
+            _pending.clear()
+            # NOTE: needs the global above -- without it this rebinds a
+            # local and leaves the phase stale after the task it described
+            # ended (tests/test_engine_cancel.py caught it)
+            _where = ""
