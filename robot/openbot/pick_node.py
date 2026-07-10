@@ -173,3 +173,74 @@ def is_reachable(x, y, z):
 
 
 class PickNode(Node):
+    def __init__(self):
+        super().__init__('pick_node')
+
+        self._latest_detections = {}
+        self._busy = False
+        self._daemon_proc = None
+        self._daemon_lock = threading.Lock()
+
+        self._pending_pick = None
+        self._pending_lock = threading.Lock()
+
+        # ── pick state: walk coordinator feed ────────
+        # state: idle|busy|holding|error
+        # label: last picked
+        # held: in hand?
+        # daemon health
+        # JSON on /pick_state, 5 Hz
+        self._pick_state = 'idle'
+        self._pick_label = None
+        self._pick_held = False
+        self._pick_state_lock = threading.Lock()
+
+        self.create_subscription(
+            String, '/object_detections_body', self._on_detections, 10)
+        self.create_subscription(
+            String, '/pick_target', self._on_pick_target, 10)
+        self.create_subscription(
+            String, '/arm_command', self._on_arm_command, 10)
+
+        self._status_pub = self.create_publisher(String, '/pick_status', 10)
+        self._pick_state_pub = self.create_publisher(
+            String, '/pick_state', 10)
+
+        # ── tracking stability state ─────────────────
+        self._prev_tx = None
+        self._prev_ty = None
+        self._prev_tz = None
+        self._last_detection_time = None
+        self._tracking_label = None
+        # warn once only
+        self._whitelist_warned = set()
+
+        # wipe side-channel files
+        # from old runs, so no
+        # stale re-target
+        for _p in (DETECTION_FILE, STATUS_FILE):
+            try:
+                os.remove(_p)
+            except OSError:
+                pass
+
+        if _NO_DAEMON:
+            self.get_logger().info(
+                '--no-daemon: starting with ZERO arm_sdk writers — '
+                'robot can walk immediately. Spawn the pick daemon on '
+                'demand via /arm_command "spawn_daemon".')
+        else:
+            self._start_daemon()
+
+        self.get_logger().info(
+            'Pick node ready. Publish label to /pick_target, '
+            'then "confirm" to execute. Direct commands on /arm_command.')
+
+        # ── servo status writer ──────────────────────
+        threading.Thread(target=self._write_servo_status, daemon=True).start()
+
+        # ── /pick_state thread, 5 Hz ─────────────────
+        threading.Thread(target=self._write_pick_state, daemon=True).start()
+
+    # ── daemon wrangling ─────────────────────────
+
