@@ -123,3 +123,9 @@ class GripClient:
         self.last_q = dict(OPEN_PRESETS[self._side])
         return resp
 
+    def close(self):
+        name = 'close' if self._side == 'right' else 'close_left'
+        resp = self._cmd(name)
+        self.last_q = dict(CLOSE_PRESETS[self._side])
+        return resp
+
