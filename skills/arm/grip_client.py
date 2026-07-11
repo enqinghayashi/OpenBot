@@ -95,3 +95,17 @@ class GripClient:
                         f'running?)')
                 time.sleep(retry_delay)
 
+    def _cmd(self, line, timeout=30.0):
+        if self._sock is None:
+            raise GripError('grip server connection closed')
+        self._sock.settimeout(timeout)
+        self._sock.sendall((line + '\n').encode())
+        raw = self._sock.recv(4096)
+        if not raw:
+            raise GripError(f'grip server closed the connection on "{line}"')
+        resp = raw.decode().strip()
+        if resp.startswith('ERROR:'):
+            raise GripError(resp)
+        return resp
+
+    # ── commands that move the hand (API-compatible with old Dex3Hand) ─────
