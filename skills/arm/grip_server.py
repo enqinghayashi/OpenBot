@@ -984,3 +984,117 @@ def _state_payload(controller, reader=None):
             payload.pop('mode', None)
             payload.pop('motorstate', None)
     return payload
+
+
+def _seed_side(side, reader, controllers):
+    """Seed from motor_state.q; fallback /tmp/grip_last_cmd.json; else 0.
+
+    NEVER opens on boot — boot is a hold of current q, never a preset.
+    """
+    motor_q = None
+    deadline = time.time() + 1.5
+    while time.time() < deadline:
+        motor_q = reader.motor_q()
+        if motor_q is not None:
+            break
+        time.sleep(0.05)
+    if motor_q is not None:
+        _log(f'{side} seeded from motor_state.q: '
+             f'{[motor_q[jid] for jid in DEX3_JOINTS]}')
+    else:
+        last = _load_last_cmd()
+        if last and side in last:
+            motor_q = last[side]
+            _log(f'{side} seeded from {LAST_CMD_FILE} (no DDS state yet): '
+                 f'{[motor_q[jid] for jid in DEX3_JOINTS]}')
+        else:
+            motor_q = {jid: 0.0 for jid in DEX3_JOINTS}
+            _log(f'{side} seeded zeros (no motor state, no last-cmd file)')
+    # Hand the same subscriber to the controller, so seeding adds no DDS read.
+    controllers[side] = HandController(side, seed_q=motor_q, reader=reader)
+
+
+def _serve_conn(conn, controllers, readers, quit_event):
+    """Serve ONE client connection until EOF/error/quit.  Runs in its own
+    thread (thread-per-connection): the daemon holds TWO simultaneous
+    GripClient sockets (rhand + lhand), so a single sequential accept loop
+    would starve the second connection forever.  The writer threads and
+    controllers are SHARED — only the socket handling is per-connection.
+
+    Crash-immune by design: any per-client error (BrokenPipeError,
+    ConnectionResetError, any OSError, or an unexpected handler bug) only
+    drops THIS connection — the accept loop keeps serving other clients,
+    and the 20 Hz writers keep running.
+    """
+    try:
+        with conn:
+            _log('client connected')
+            while True:
+                raw = conn.recv(4096)
+                if not raw:
+                    break
+                line = raw.decode().strip()
+                if not line:
+                    continue
+                _log(f'CMD: {line}')
+                if line == 'quit':
+                    conn.sendall(b'DONE\n')
+                    _log('quit requested — exiting')
+                    quit_event.set()
+                    return
+                resp = _handle_line(line, controllers, readers)
+                conn.sendall((resp + '\n').encode())
+    except (BrokenPipeError, ConnectionResetError, OSError) as e:
+        _log(f'client error, dropping connection: {e}')
+    except Exception as e:
+        _log(f'unexpected client error, dropping connection: {e}')
+    finally:
+        _log('client disconnected')
+
+
+def main():
+    iface = sys.argv[1] if len(sys.argv) > 1 else 'eth0'
+    if not NO_DDS:
+        ChannelFactoryInitialize(0, iface)
+    _log(f'starting (iface={iface}, NO_DDS={NO_DDS})')
+
+    readers = {'right': PressureReader('right'), 'left': PressureReader('left')}
+    controllers = {}
+    _seed_side('right', readers['right'], controllers)
+    _seed_side('left', readers['left'], controllers)
+
+    if os.path.exists(SOCK_PATH):
+        os.unlink(SOCK_PATH)  # stale socket from a crash
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(SOCK_PATH)
+    server.listen(4)
+
+    print('READY', flush=True)
+    _log('READY — listening on ' + SOCK_PATH)
+
+    quit_event = threading.Event()
+    try:
+        # Thread-per-connection: the daemon holds two client sockets at once,
+        # so a sequential accept loop would starve the second. Only quit stops
+        # accept.
+        while not quit_event.is_set():
+            server.settimeout(0.5)
+            try:
+                conn, _ = server.accept()
+            except socket.timeout:
+                continue
+            _log('accepted connection')
+            threading.Thread(target=_serve_conn,
+                             args=(conn, controllers, readers, quit_event),
+                             daemon=True).start()
+    finally:
+        quit_event.set()
+        for c in controllers.values():
+            c.stop()
+        server.close()
+        if os.path.exists(SOCK_PATH):
+            os.unlink(SOCK_PATH)
+
+
+if __name__ == '__main__':
+    main()
