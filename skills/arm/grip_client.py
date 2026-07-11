@@ -117,3 +117,9 @@ class GripClient:
                        for jid in DEX3_JOINTS}
         return resp
 
+    def open(self):
+        name = 'open' if self._side == 'right' else 'open_left'
+        resp = self._cmd(name)
+        self.last_q = dict(OPEN_PRESETS[self._side])
+        return resp
+
