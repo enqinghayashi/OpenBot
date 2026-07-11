@@ -159,3 +159,5 @@ def request(where: str = "cancel") -> "tuple[bool, str]":
         _where = where or "cancel"
         _requested_at = time.monotonic()
         return True, ("cancel requested" if first else "cancel already requested")
+
+
