@@ -140,3 +140,5 @@ def mark_idle() -> None:
 def busy() -> bool:
     with _lock:
         return _busy
+
+
