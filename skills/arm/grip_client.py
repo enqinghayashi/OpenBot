@@ -179,3 +179,10 @@ class GripClient:
         # blind path.
         raise GripError(resp)
 
+    def state(self, side=None):
+        cmd = 'state' if side is None else f'state {side}'
+        resp = self._cmd(cmd)
+        if not resp.startswith('DONE:'):
+            raise GripError(resp)
+        return json.loads(resp[5:])
+
