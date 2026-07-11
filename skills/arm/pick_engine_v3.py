@@ -258,3 +258,429 @@ def _hold_rc_writer(arm, enabled, context=''):
             f'[pick_daemon] hold_rc {enabled} ({context}) FAILED: {_e} — '
             'writer keeps the clamp; writer console `hold_rc off`\n')
         sys.stderr.flush()
+
+
+def _close_hand_at_closeout(hand, side, verb):
+    """Task #9 (2026-09-13): park a hand CLOSED at a verb's closeout.
+
+    Operator report after the first routed place: "after place task is done,
+    the hand is not closed at all, it remained open which i do not want that,
+    i want the hand to be fully closed" — plus, "for the hand closure at
+    neutral pose as well".
+
+    **CALL THIS FROM `neutral` ONLY.  NEVER FROM A PLACE EXIT.**  That is not
+    a style preference; a close on a place path is a RELEASE-OBSERVABLE
+    violation and it breaks EVERY place, on all four exits:
+
+      * the engine writes DONE after this returns, and the gateway then takes
+        a FRESH grip read (gateway/gateway_node.py:2171 _refresh_grip_state());
+      * verify_place requires `grip.is_open is True` (brain/verifier.py:1098),
+        per the place post_condition "grip open AND object out of hand"
+        (brain/tool_contract.py `"place"`);
+      * GripClient.close() cosine-ramps 40 x 0.02 s = 0.8 s of BLOCKING sleep
+        (grip_server.py `set`), so the DONE cannot even be written first.
+
+    Net effect of closing here from a place: the gateway measures a closed
+    hand and `place` returns in_progress ("post-drop hand not measured-open")
+    on the whole success path, deterministically.  This was tried and
+    reverted on 2026-09-13.  `neutral` carries no such contract (it has no
+    entry in brain/tool_contract.py), which is why the resting-pose half of
+    the operator's request lives there instead.
+    tests/test_place_closeout_closed_hand.py pins all of this at the source
+    level — it fails if a fifth place path re-adds the call.
+
+    BEST-EFFORT BY DESIGN: whatever verb calls this, a hand-controller fault
+    must never turn a completed (unundoable) action into an ERROR.  Log and
+    continue, same policy as the open-verify and payload-off steps nearby.
+
+    `hand` is the GripClient for `side` ('right' -> rhand, 'left' -> lhand);
+    GripClient.close() cosine-ramps to that side's CLOSE preset.
+
+    2026-09-27: the close is now THUMB-FIRST and STAGED rather than one ramp --
+    see `_staged_thumb_first_close` below for the operator report and the
+    mechanism.  Endpoints are unchanged; only the order is.  BOTH stages live
+    in that helper, so this body no longer calls `hand.close()` itself.
+    """
+    try:
+        stage = _staged_thumb_first_close(hand, side, verb)
+        sys.stderr.write(
+            f'[pick_daemon] {verb}: {side} hand CLOSED at closeout '
+            f'(CLOSE preset; thumb-first {stage})\n')
+        sys.stderr.flush()
+    except Exception as _ce:
+        sys.stderr.write(
+            f'[pick_daemon] {verb}: {side} hand close at closeout FAILED '
+            f'({_ce}) — the hand stays open; continuing\n')
+        sys.stderr.flush()
+
+
+# place hand-park: the holding hand parks closed right after LIFT. closing
+# before the hand descends to NEUTRAL keeps open fingers from sweeping down
+# past the drop height, where they can hit the table.
+# cost: the place verifier wants the post-drop hand measured open, and a hand
+# parked closed reads as not open, so a place can stay in progress. the
+# release-open token carries the release measurement instead.
+# latch risk: this is a full close preset with no pressure stop at 20 Hz. a
+# close stalling on a retained object can latch thumb_1, index_0 and middle_0,
+# which need a power cycle, so release_ok must cover an object on the palm at
+# open. no channel answers "hand empty?" directly.
+PLACE_PARK_HAND_CLOSED = True
+
+
+def _park_hand_after_lift(hand, side, verb, release_ok):
+    """Park the HOLDING hand CLOSED right after the place closeout's LIFT move.
+
+    `release_ok` is the place's own `_verify_hand_open` result, and it is the
+    ONLY guard this stack can offer against the one way this park is dangerous:
+    a close that GRASPS.  The right Dex3 hand latches three of its seven motors
+    (thumb_1 / index_0 / middle_0 -> mode=0, motorstate=512, ~0 N.m) on a close
+    that stalls against a retained object — measured three times on 2026-09-19,
+    cleared only by a power cycle.  This park drives the FULL CLOSE preset:
+    `hand.close()` sends the raw `close` verb, which grip_server resolves to
+    CLOSE_PRESETS with no pressure stop, and `_writer_loop` re-asserts it at
+    20 Hz for as long as the hand is held there (grip_server.py:444-451,
+    WRITE_HZ = 20.0).  F_MAX_SAFE does NOT apply on this path — it lives only
+    in `clamped_close_target`, which only `close_adaptive` calls — so restoring
+    it would not have capped this.  An object still in the fingers at the LIFT
+    pose therefore gets a sustained full-preset stall: the latch trigger.
+
+    `release_ok` is a JOINT-POSITION test (every finger within
+    VERIFY_OPEN_TOLERANCE_RAD of the open preset).  It catches a finger that
+    never reached open — a wedged object, an unreleased object, a latched
+    finger — and it does NOT catch an object resting on the palm with the
+    fingers at open.  That gap is real and is documented rather than papered
+    over: no channel on this stack can answer "is the hand empty?" — the
+    pressure path reads 0 and the grasp verdict's own `tactile` flag is False.
+    A position test is all there is, so this refuses on doubt rather than
+    closing blind.
+
+    Best-effort by design: a hand-controller fault must never turn a completed
+    (unundoable) action into an ERROR — log and continue, the same policy as
+    `_close_hand_at_closeout` and the payload-off step nearby.
+
+    `hand` is the GripClient for `side` ('right' -> rhand, 'left' -> lhand).
+    GripClient.close() cosine-ramps 40 x 0.02 s = 0.8 s of BLOCKING sleep, so
+    this delays the closeout's NEUTRAL move by that much when ON.
+
+    2026-09-27: the park is now THUMB-FIRST and STAGED rather than one ramp --
+    see `_staged_thumb_first_close` below for the operator report and the
+    mechanism.  Endpoints are unchanged; only the order is.  BOTH stages live
+    in that helper, so this body no longer calls `hand.close()` itself.  This
+    adds a second 0.8 s stage-1 ramp, so the NEUTRAL move is delayed ~1.6 s
+    when it fires.
+    """
+    if not PLACE_PARK_HAND_CLOSED:
+        return
+    if not release_ok:
+        sys.stderr.write(
+            f'[pick_daemon] {verb}: park SKIPPED — the {side} hand was not '
+            f'verified open after the release, so something may still be in '
+            f'the fingers; refusing to close on it (latch risk)\n')
+        sys.stderr.flush()
+        return
+    try:
+        stage = _staged_thumb_first_close(hand, side, verb)
+        sys.stderr.write(
+            f'[pick_daemon] {verb}: {side} hand PARKED CLOSED at the LIFT pose '
+            f'(CLOSE preset; thumb-first {stage})\n')
+        sys.stderr.flush()
+    except Exception as _ke:
+        sys.stderr.write(
+            f'[pick_daemon] {verb}: {side} hand park at LIFT FAILED ({_ke}) '
+            f'— the hand stays open; continuing\n')
+        sys.stderr.flush()
+
+
+GRASP_Z_OFFSET = 0.04   # grasp 4cm above the YOLO detection centroid
+# upright grasp sits 1 cm higher. applies only to the upright grasp z, not
+# horizontal tz; knob range 0.005..0.02.
+GRASP_Z_UP_BIAS = 0.01
+# z-frame diagnostic only: perception z is torso_link, IK base is pelvis.
+# the waist_roll origin is (-0.0039635, 0, +0.044) in the URDF, so torso_link
+# is 0.044 m above pelvis and ik_z = torso_z lands ~4.4 cm low. this roughly
+# cancels GRASP_Z_OFFSET + GRASP_Z_UP_BIAS (0.04+0.01-0.044 ~= +0.006 m net),
+# so it is logged, not commanded.
+SOLVER_Z_TORSO_OFFSET = 0.044
+DESCENT_DURATION = 3.0     # descent time (s); higher = slower
+# h-wp3 can finish its ramp with the wrist still above tz (end-of-ramp lag)
+# while the pad has not touched; more than this above tz triggers one guarded
+# push-down.
+H_DESCEND_DEPTH_TOL = 0.03
+
+# ── object-height chain (protocol compatibility) ─────────────────────────────
+# height_m is parsed and plausibility-gated (<=0 or > HEIGHT_M_MAX means
+# unknown); the lift does not use it.
+HEIGHT_M_MAX = 0.5
+
+# ── note for the hardware check ──────────────────────────────────────────────
+# READY/LIFT yaw pairs are same-sign (-0.5/-0.5, -0.3/-0.3), breaking the
+# mirrored-sign convention; check them visually on hardware.
+
+# ── palm-contact detection during the wp4 insert ────────────────────────────
+# joints watched (14-DOF q): left 0=shoulder_pitch, 3=elbow; right
+# 7=shoulder_pitch, 10=elbow
+PALM_CONTACT_MONITOR_JOINTS_RIGHT = [7, 10]
+PALM_CONTACT_MONITOR_JOINTS_LEFT  = [0, 3]
+# [7,10]/[0,3] are blind to a vertical wall-grasp wp4 push: sideways motion
+# comes from shoulder roll 8 and yaw 9 plus wrist flex (12/13 right, 5/6
+# left). these monitors are for the vertical wp4 only. if a false trip
+# occurs, drop to [8,9]/[0,1] or raise the consecutive count to 3.
+WALL_PUSH_MONITOR_JOINTS_RIGHT = [7, 8, 9, 10]
+WALL_PUSH_MONITOR_JOINTS_LEFT  = [0, 1, 2, 3]
+# 0.04 rad is normal tracking lag and false-triggers; 0.15 is a real contact.
+PALM_CONTACT_POSITION_THRESHOLD = 0.15   # sum of abs pos error (rad) across the joints
+PALM_CONTACT_CONSECUTIVE_STEPS  = 2       # overruns in a row before contact
+INSERT_GUARD_HOLD_TIME = 0.3              # hold after the contact stop
+RETRACT_AFTER_CONTACT = -0.03             # torso Y retract after contact; unloads it
+# extra standoff (m) for the vertical wp4 insert and its retract, on top of
+# approach_offset; 10-30 mm, default 20. keep it below the 0.15 rad contact
+# threshold.
+GRASP_INSERT_MARGIN = 0.02
+
+# ── relative insert-guard pressure ───────────────────────────────────────────
+# an absolute threshold of 60000 sits below the resting open-hand floor
+# (~105600), so it fires before any descent and freezes every guarded insert,
+# which then closes on air and reports a false solid grasp.
+# the trigger is a delta over the baseline captured at guard build (hand open,
+# in air). floor noise is ±30; 30000 is three orders above it and below
+# GRIP_PRESSURE_DELTA_EVIDENCE; a real first touch reads tens of thousands.
+DELTA_PRESS = 30000.0
+
+# ── gating verdicts on evidence ──────────────────────────────────────────────
+# close_until_contact using 200000 as an absolute ceiling makes a light object
+# squeezed all the way read lower, so it can return 'full' (no grip). a veto
+# then demotes solid_grasp to grasped_nothing and the retry reopens.
+# that veto buys nothing, since an empty-hand false solid fires via 'contact',
+# not 'full', and it kills real grips. the close's pressure delta (final minus
+# baseline) proves the fingers pressed something, so use it to upgrade a
+# missed light grip.
+GRIP_PRESSURE_DELTA_EVIDENCE = 40000.0   # a late-close rise => object in hand
+# the light-band upper bound stays 40000 because the band promote is ungated.
+# an empty self-pinch ceiling delta is ~94400 (200000 stop minus ~105600 rest
+# floor), so a widened band would promote it without the support gate. a
+# 'full' delta in (40000, 100000] goes to the support_ratio >= 0.5 bearing
+# gate.
+GRIP_CLOSE_STOP_DELTA = 200000.0   # close_until_contact stop; server 200000
+# the close stop must stay well above the resting finger-pressure floor. the
+# server compares absolutely (no baseline) while finger_pressure rests around
+# 104-110k, so a 100000 stop fires before the fingers move and makes a
+# free-air close read as contact, the false-success class. 200000 sits between
+# the rest floor and a hard pad press (223272), so it is inert in
+# normal use. the comparison is absolute, not a delta.
+# keep evidence is not this channel: it comes from _score_closure_blocked
+# (actual-vs-commanded margin, CLOSURE_BLOCKED_TOL=0.06 rad), which is
+# pressure-independent. finger pressure is flat here (bottle in hand: +2584
+# over 50 steps; empty close +1760; span ~120000).
+# light-grip delta floor: a real wall or table jam and an empty self-pinch
+# both press the pads hard. at the rest floor ~105600 the 200000 ceiling caps
+# the squeeze delta at ~94400, below the 100000 stop, so both read
+# closure='full'. a delta between this floor and the evidence threshold marks
+# a real rim or edge grip that the context-free detector calls hit_obstacle;
+# partial rim touches and ±30 noise stay below it.
+_CLOSE_DELTA_LIGHT_GRIP_FLOOR = 9000.0
+# support_ratio bearing gate. the detector knows only object_mass, so the
+# independent signal is support_ratio = sum |tau_est| over DISTAL_JOINT_IDS
+# divided by object weight. a real grip on the 0.30 kg object bears it and the
+# ratio climbs toward 1.0; a self-pinch stays low. promote hit_obstacle to
+# light_object only then. 0.5 is conservative.
+# limitation: a hard wall or table jam also loads distal joints, so this is
+# not a perfect jam discriminator, just more physical than pressure.
+GRIP_SUPPORT_RATIO_KEEP = 0.5
+# reach-refuse split. an in-reach residual is 0.068-0.092 m against
+# 0.17-0.32 m truly out. a hard 0.03 gate false-refused reachable grasps, so
+# 0.15 sits between the groups.
+def _env_reach_refuse_pos():
+    """REACH_REFUSE_POS default 0.15; OPENBOT_REACH_REFUSE_POS overrides when
+    0.03 < v <= 0.50 (v5.4).  Missing / garbage / out-of-range -> 0.15."""
+    try:
+        _v = float(os.environ.get('OPENBOT_REACH_REFUSE_POS', ''))
+    except (TypeError, ValueError):
+        return 0.15
+    if _v == _v and 0.03 < _v <= 0.50:
+        return _v
+    return 0.15
+
+
+REACH_REFUSE_POS = _env_reach_refuse_pos()  # solved insert residual above this = out of reach
+# closure-block evidence: pressure is flat on both hands (delta 0-16 on an
+# ambient ~103.8k), so it cannot verify a grip. close joints can: an air close
+# reaches the preset exactly, while a real wrap stops short. any close joint
+# farther than this from the preset pressed something.
+CLOSURE_BLOCKED_TOL = 0.06        # rad, checked on any of DEX3_JOINTS
+# ── bounded-lead close, the latched-motor guard ─────────────────────────────
+# tau_est ~= bias + 16.6 * lead with lead = |q_cmd - q_meas| closing, and bias
+# = parked-hold tau at lead ~0 (0.25-1.09 per joint). the Dex3 rails at
+# tau_est ~= 15, so lead_rail ~= 0.83 rad. the rail is a clip, not a torque:
+# three motors reported 14.99599, so read 15 as ">= 15, clipped". rail onset
+# to first latch trip is 1.16 s.
+# a full-preset close on a seated object can rail several joints before the
+# pressure stop sees contact; the ramp then closes further into the jam and
+# thumb_1, index_0 and middle_0 can trip to motorstate 512 (limp, ~0 N.m).
+# that is a motor fault, not an in-hand signal, and the loosened grip lets the
+# object slip.
+# a bounded press works: tau plateaus around 1.5-5.6 N.m, far below the rail,
+# and the grip holds. leads arrive uneven (0.067-0.276 rad) for one uniform
+# command because joints block at different travel fractions, so lead is set
+# per joint against a live pose, not as a preset offset.
+# no stop threshold fixes a full-preset ramp: it is back-loaded (65% by step
+# 30, 90% by step 40), so at first contact the commanded lead is already ~0.76
+# rad, ~92% of the rail. lead must never be commanded large.
+# HAND_CLOSE_LEAD_EPS is the per-write closing-lead bound and therefore the
+# force command: the design window is 0.06 < lead < 0.83 rad. 0.06 is
+# CLOSURE_BLOCKED_TOL, below which a blocked hand reads blocked=False and the
+# pre-lift pin aborts; 0.83 is the rail. the sweet spot is 0.15-0.35, and 0.25
+# is mid and within 10% of the proven peak lead 0.276. worst case tau is
+# 1.09+16.6*0.25 = 5.24 N.m, 35% of rail. do not push toward 0.83 and do not
+# halve toward 0.06: below CLOSURE_BLOCKED_TOL every pick false-fails.
+HAND_CLOSE_LEAD_EPS = 0.25        # rad per joint, in the closing direction
+# one write per press, and that bit is load-bearing. the grip server's set()
+# ramps from its own last_q, not the target, so a multi-step press writes all
+# intermediate points; if last_q is stale (boot seed, another session, rail
+# recovery) those points carry |last_q - q_meas|, which no target bound can
+# reach. at steps=1 r = 0.5-0.5*cos(pi) = 1.0, so the only write is the
+# endpoint, lead = eps by construction and last_q is irrelevant.
+HAND_CLOSE_PRESS_WRITES = 1
+HAND_CLOSE_PRESS_DT = 0.02        # server pacing per write
+HAND_CLOSE_WATCH_BUDGET_S = 0.35  # per-press watch window (worst case)
+HAND_CLOSE_POLL_S = 0.02          # q_meas poll period in that window
+HAND_CLOSE_ARRIVE_FRAC = 0.90     # within (1-frac)*eps of target means arrived; end watch early
+HAND_CLOSE_STILL_TOL = 0.004      # rad moved in one poll = still moving
+HAND_CLOSE_STILL_HOLD_S = 0.10    # motionless this long = press done
+HAND_CLOSE_LOST_READS = 3         # consecutive empty reads = state lost
+HAND_CLOSE_TARGET_TOL = 2.0e-3    # two commands this close are a fixed point
+HAND_CLOSE_CEILING_TOL = 1.0e-6   # command is at the close preset
+HAND_CLOSE_MAX_PRESSES = 160      # press cap
+# a free-air close needs ceil(1.745/0.25) = 7 presses. a free-air close still
+# reads blocked=False down to 0.15 rad/s with 160 presses over 15 s, about 14x
+# margin under the ~2.1 rad/s tracking. a blocked finger exits at the
+# command fixed point after ~6 presses, so only a slow free finger pays this
+# cap, and that case must finish. do not shrink toward 48: the false-capture
+# boundary, where a free close reads blocked=True, is set by this number.
+HAND_CLOSE_DEADLINE_S = 15.0      # wall-clock cap on one full close
+# safe to be generous: lead is bounded at eps for every write, so a long walk
+# is a long bounded walk.
+HAND_CLOSE_STATE_RETRIES = 3      # state channel can flicker
+HAND_CLOSE_STATE_RETRY_S = 0.05   # a transient empty read must not read as "blind"
+# no-reopen, squeeze-hold and pre-lift constants.
+# _CLOSE_DELTA_TOUCH_MIN: the close's pressure delta reads 0-24 even on
+# contact (dead channel), so a delta at or above this proves the fingers
+# pressed; the closure-block and contact-context signals cover the rest.
+_CLOSE_DELTA_TOUCH_MIN = 250.0
+# pre-lift pin: a closure margin that regresses by more than this between the
+# close and the pre-lift re-read means the grip slipped; tuck re-pin evidence only.
+PRE_LIFT_SLIP_REGRESS_TOL = 0.03
+# a gentler carry_tuck move (slower wrist roll at the lift handoff).
+CARRY_TUCK_DURATION = 4.0
+
+# ── horizontal (middle-down) grasp tuning ───────────────────────────────────
+# HAND_GRIP_CENTER_OFFSET: the wrist parks this far behind the centroid (in
+# -torso Y) so the palm grip midpoint covers the object centre. the URDF grip
+# zone runs +17..+69 mm forward of R_ee, midpoint ~43 mm, so a wrist at the
+# centroid puts the grip zone over the front edge.
+HAND_GRIP_CENTER_OFFSET = 0.045
+# H_PALM_MOUNT_OFFSET: how far the pad hangs below the wrist in the
+# middle-down pose, empirically in [0.005, 0.017], not 0.030.
+H_PALM_MOUNT_OFFSET = 0.015
+# honest-descend constants.
+# the descend separates a reach stall (guarded pass stopped via position_error
+# with the wrist still high above tz) from true palm contact. treating a stall
+# as contact skips the rest of the descent and closes on air.
+H_DESCEND_MAX_PUSHES = 3            # how many depth push re-solves one descend flow gets
+H_DESCEND_MIN_PROGRESS = 0.01       # if wrist-z progress per push drops below this -> stop pushing
+# gap = wrist_z - tz (get_wrist_pose, solver frame):
+# gap > 0.045 (pad mount + depth tol) means reach stall
+# gap <= 0.035 (pad mount + 2 cm swing) means pad contact
+# in between: contact-style, no pad-band evidence
+H_DESCEND_STALL_GAP = H_PALM_MOUNT_OFFSET + H_DESCEND_DEPTH_TOL
+H_PALM_TOUCH_BAND = H_PALM_MOUNT_OFFSET + 0.02
+# ~20 mm off the table
+H_DESCEND_CLEARANCE = 0.02
+# grasp-geometry x_off to object half-radius: compute_x_off = -(r + 0.065),
+# so r = -x_off - 0.065. for x_off -0.0924, r is 0.0274.
+H_X_OFF_RADIUS_INV = 0.065
+H_RADIUS_MIN = 0.005
+H_RADIUS_MAX = 0.08
+# horizontal flows command wp2/wp3/retract at (tx, ty_use, tz), so
+# H_PALM_MOUNT_OFFSET, H_DESCEND_CLEARANCE, H_RADIUS_MIN and H_RADIUS_MAX do
+# not shape them. HAND_GRIP_CENTER_OFFSET still feeds WALL_GRASP_PAD_GAP, and
+# H_X_OFF_RADIUS_INV feeds the wall-triad diagnostic log.
+
+# ── upright (vertical-object) grasp template ────────────────────────────────
+# UPRIGHT_GRASP: wrist template for the vertical pick. the upright-grasp
+# builder puts the wrist on the object's forward axis, so the rotation equals
+# identity and there is no wrist flexion; open fingers then lead the insert
+# into the object's flank. the claw template instead gives real flexion: palm
+# normal down, claw over the top and grip zone centred on grasp height. the
+# orientation string stays 'upright' for protocol compatibility.
+UPRIGHT_GRASP = 'upright'
+# claw descend starts this far above the final wrist z so fingertips clear
+# the top flank; palm-down fingers hang ~0.10 m below the wrist site.
+UPRIGHT_CLAW_GUARD_START = 0.14
+
+# ── wall grip ───────────────────────────────────────────────────────────────
+# a palm-down claw freezes above the object because its up-down flexion is the
+# wrong axis for a vertical object. the wall grip instead makes the clamp plane
+# vertical along the long axis: the palm normal points horizontally at the near
+# wall, fingers up, and a guarded lateral push comes from a side standoff using
+# left/right wrist flexion instead of descending from above.
+WALL_GRASP_R_DEFAULT = 0.05     # fallback half-radius, no x_off
+WALL_GRASP_STANDOFF = 0.10      # wrist lateral distance off the wall
+# at wp2/wp3; the guarded wp4 push leaves standoff minus pad_gap ~= 55 mm
+WALL_GRASP_PAD_GAP = HAND_GRIP_CENTER_OFFSET   # wrist-to-wall at contact: 45 mm
+# centre of the 17-69 mm URDF grip zone
+
+# ── the wrist-space orientation solver + verified-solve wash ─────────────────
+# DA14 index map, per-arm 7-vector:
+#   [pitch, roll, yaw, elbow, wrist_roll, wrist_pitch, wrist_yaw]
+#   [6] is wrist flexion (palm toward a vertical surface), [5] up/down and
+#   [4] forearm yaw. dual q: left 0-6, right 7-13 (right wrist_yaw 13, left 6).
+#   URDF limits: wrist_yaw and wrist_roll at 4,11 are ±1.9722; 5,6,12,13 are
+#   ±1.6144.
+WRIST_LIMITS = {4: 1.9722, 5: 1.6144, 6: 1.6144,
+                11: 1.9722, 12: 1.6144, 13: 1.6144}
+RIGHT_WRIST_Q_IDX = [11, 12, 13]   # forearm yaw / up-down / flexion
+LEFT_WRIST_Q_IDX  = [4, 5, 6]
+WRIST_GN_ITERATIONS = 40
+WRIST_GN_TOL = 0.15               # rad; log3 residual norm, same as pose tol
+SOLVE_VERIFY_POS_TOL = 0.03       # m; residual on EE position
+SOLVE_VERIFY_ORI_TOL = 0.15       # rad; residual on EE rotation
+SOLVE_WASH_ATTEMPTS = 5           # solve_ik attempts per waypoint
+
+# ── ulnar deviation ─────────────────────────────────────────────────────────
+# the upright wall-grasp approach rolls the hand about the palm normal, an
+# in-palm-plane ulnar deviation. d=0 is straight; d>0 tips the finger line
+# ~30 deg away from the thumb, pinky-ward, so the long index does not reach the
+# surface before the palm bed.
+# per-object target via DEV_DELTA_TGT. deviation happens slowly during the
+# approach.
+# R_dev = Rot(n_palm, s_dev*d) . R_base, with n_palm=[0,1,0] (right palm +Y,
+# left -Y) and s_dev = DEV_ROT_SIGN*sign(dir_lateral). R_base is identity, and
+# [0,1,0] is identity's own palm-normal column, so the contact-face projection
+# is unchanged and only the finger line rolls.
+# the 3-DOF wrist GN (solve_wrist_orientation_in_place) realizes it. in the
+# wall pose palm roll maps to wrist_roll [11]/[4] with a cross-axis
+# leak, so only a body-frame policy is valid.
+# sign: a right-hand deviation tips away from the thumb, rotating about
+# +[0,1,0] by -d for right (+1 dir_lateral); +d mirrors the left (-1).
+DEV_MAX = 0.5236            # 30 deg hard bound (photo angle)
+DEV_STEP_MAX = np.pi / 12.0 # 15 deg/waypoint; 2*pi/12 = 0.5236 = DEV_MAX
+# two ramps from wp3 to wp4 land at 0.520 rad, never 30 deg
+DEV_ROT_SIGN = -1.0         # x sign(dir_lateral): right -1, left +1
+DEV_DELTA_TGT = DEV_MAX     # flat 30 deg target
+# wire the object law in here
+PITCH_FROZEN_TOL = 0.15     # rad; no-pitch rule at contact, index 5 must not move
+# pitch about the fingers axis is up/down [5]/[12]. diagnostic only: the
+# corrective gate is removed and the decomposition is logged.
+# the upright flows use identity R at wp2/wp3/wp4/retract
+# (make_wrist_target_upright_v4, no claw chase) with the insert guard and
+# retract unchanged. deviation is an add-on: True enables it, False gives the
+# straight control arm, and commanded positions are otherwise unchanged.
+DEVIATION_ENABLED = True
+
+# ── where the motion sequences live ───────────────────────────────────────────
+SEQUENCES_DIR = os.path.expanduser('~/motion_sequences')
+
+
+# ── muting Ipopt's stdout (CasADi solve_ik) ──────────────────────────────────
+# Ipopt dumps license text on the first solve and stdout is the protocol
+# (DONE/ERROR), so redirect it to /dev/null during every solve_ik.
