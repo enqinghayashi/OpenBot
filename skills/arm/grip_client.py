@@ -60,3 +60,6 @@ class GripError(Exception):
     """Raised on any ERROR: reply from the grip server (e.g. ERROR:no_dds)."""
 
 
+class GripClient:
+    """Socket client for the persistent grip server (one hand)."""
+
