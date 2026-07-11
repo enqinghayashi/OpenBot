@@ -214,3 +214,16 @@ def snapshot() -> "dict[str, object]":
         }
 
 
+def reset_for_test() -> None:
+    """Test seam: return the module singleton to its boot state.
+
+    Present because this module IS a process-wide singleton and pytest runs
+    every test in one process — without it, one test's armed cancel leaks
+    into the next and the failure looks like a bug in the code under test.
+    """
+    global _busy, _where, _requested_at
+    with _lock:
+        _busy = False
+        _where = ""
+        _requested_at = 0.0
+        _pending.clear()
