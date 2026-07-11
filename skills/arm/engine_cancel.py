@@ -170,3 +170,24 @@ def where() -> str:
         return _where
 
 
+def check(where: str) -> None:
+    """Announce a choke point, then raise :class:`Cancelled` if one is pending.
+
+    The announce happens BEFORE the test on purpose: if the cancel arrived
+    while the engine was between two choke points, the reply should name the
+    phase the arm is actually in, not the previous one.
+
+    The common case is a cheap ``Event.is_set()`` with no lock and no
+    allocation, because this is called at ``MOVE_HZ`` (50 Hz) inside every
+    guarded move.
+    """
+    global _where
+    if not _pending.is_set():
+        # fast path: bare store, no lock -- CPython global stores are
+        # atomic; worst case a reply names the wrong phase
+        _where = where
+        return
+    with _lock:
+        _where = where
+        reason = _where
+    raise Cancelled(reason)
