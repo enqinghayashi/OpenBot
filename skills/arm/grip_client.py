@@ -63,3 +63,13 @@ class GripError(Exception):
 class GripClient:
     """Socket client for the persistent grip server (one hand)."""
 
+    def __init__(self, side, connect_retries=10, retry_delay=0.5):
+        if side not in ('right', 'left'):
+            raise ValueError(f'GripClient side must be right|left, got {side!r}')
+        self._side = side
+        self._sock = None
+        # copy of old Dex3Hand.msg.motor_cmd[id].q:
+        # daemon debug prints read it after close.
+        self.last_q = {jid: 0.0 for jid in DEX3_JOINTS}
+        self._connect(connect_retries, retry_delay)
+
