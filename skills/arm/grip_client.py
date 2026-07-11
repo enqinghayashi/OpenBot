@@ -129,3 +129,13 @@ class GripClient:
         self.last_q = dict(CLOSE_PRESETS[self._side])
         return resp
 
+    def set_scalar(self, scalar):
+        scalar = float(np.clip(scalar, -1.0, 1.0))
+        t = (scalar + 1.0) / 2.0  # [-1,1] -> [0,1]
+        targets = {}
+        for jid in DEX3_JOINTS:
+            targets[jid] = (OPEN_PRESETS[self._side][jid]
+                            + t * (CLOSE_PRESETS[self._side][jid]
+                                   - OPEN_PRESETS[self._side][jid]))
+        return self.set(targets)
+
