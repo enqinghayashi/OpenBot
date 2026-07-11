@@ -142,3 +142,20 @@ def busy() -> bool:
         return _busy
 
 
+def request(where: str = "cancel") -> "tuple[bool, str]":
+    """Ask for a cancel.  Returns ``(accepted, message)``.
+
+    REFUSES when no task is in flight.  That is not politeness — arming a
+    cancel with nothing to cancel is how the next legitimate task gets
+    aborted at its first motion step.  The refusal is reported so the caller
+    can tell the operator "nothing is running" instead of pretending.
+    """
+    global _where, _requested_at
+    with _lock:
+        if not _busy:
+            return False, "no task running"
+        first = not _pending.is_set()
+        _pending.set()
+        _where = where or "cancel"
+        _requested_at = time.monotonic()
+        return True, ("cancel requested" if first else "cancel already requested")
