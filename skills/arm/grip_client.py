@@ -139,3 +139,43 @@ class GripClient:
                                    - OPEN_PRESETS[self._side][jid]))
         return self.set(targets)
 
+    def close_until_contact(self, get_pressure_fn=None, max_fraction=1.0,
+                            steps=50, dt=0.02, stop_threshold=200000,
+                            min_steps=10):
+        """Adaptive close — pressure feedback read IN-SERVER.
+
+        get_pressure_fn is accepted for API compatibility with the old
+        Dex3Hand and IGNORED.  Defaults match the old daemon EXACTLY
+        (max_fraction=1.0, steps=50, dt=0.02, stop_threshold=200000,
+        min_steps=10) — the server also defaults to these, so callers may
+        pass either explicit values or nothing.
+
+        max_fraction is capped at F_MAX_SAFE IN-SERVER (1.0 = no-op; the
+        0.600 cap was DISABLED 2026-09-19 — see grip_server.py's F_MAX_SAFE
+        block); `last_q` below is set from the same clamped target so the
+        client's idea of where the hand ended and the server's can never
+        disagree.
+
+        Returns 'contact' | 'full' | 'no_data'.
+        Raises GripError on ERROR:no_dds (or any other ERROR reply).
+        """
+        # signature defaults mirror the
+        # server's EXACT thresholds.
+        # pass all; never guess.
+        resp = self._cmd(
+            f'close_adaptive {self._side} {float(max_fraction)} '
+            f'{int(steps)} {float(dt)} {float(stop_threshold)} '
+            f'{int(min_steps)}')
+        if resp.startswith('DONE:'):
+            verdict = resp[5:]
+            if verdict in ('contact', 'full', 'no_data'):
+                # endpoint = open + min(max_fraction,
+                # F_MAX_SAFE)*(close-open). shared
+                # helper, no drift from the ramp.
+                self.last_q = clamped_close_target(self._side, max_fraction)[0]
+                return verdict
+        # ERROR:no_dds or any bad reply:
+        # raise loudly, never a silent
+        # blind path.
+        raise GripError(resp)
+
