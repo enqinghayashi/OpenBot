@@ -193,3 +193,11 @@ def check(where: str) -> None:
     raise Cancelled(reason)
 
 
+def clear() -> None:
+    """Drop a pending cancel.  Called by the engine's unwind once it has
+    stopped the arm and replied — NOT before, or a second cancel during the
+    unwind would be lost."""
+    global _where
+    with _lock:
+        _pending.clear()
+        _where = ""
