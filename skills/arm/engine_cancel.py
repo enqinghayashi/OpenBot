@@ -212,3 +212,5 @@ def snapshot() -> "dict[str, object]":
             "where": _where,
             "requested_at": _requested_at,
         }
+
+
