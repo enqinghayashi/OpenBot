@@ -161,3 +161,5 @@ def request(where: str = "cancel") -> "tuple[bool, str]":
         return True, ("cancel requested" if first else "cancel already requested")
 
 
+def pending() -> bool:
+    return _pending.is_set()
