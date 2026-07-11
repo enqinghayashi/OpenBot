@@ -165,3 +165,6 @@ def pending() -> bool:
     return _pending.is_set()
 
 
+def where() -> str:
+    with _lock:
+        return _where
