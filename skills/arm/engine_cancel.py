@@ -203,3 +203,12 @@ def clear() -> None:
         _where = ""
 
 
+def snapshot() -> "dict[str, object]":
+    """Diagnostic view — never used to make a safety decision."""
+    with _lock:
+        return {
+            "busy": _busy,
+            "pending": _pending.is_set(),
+            "where": _where,
+            "requested_at": _requested_at,
+        }
