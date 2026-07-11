@@ -135,3 +135,5 @@ def mark_idle() -> None:
             # local and leaves the phase stale after the task it described
             # ended (tests/test_engine_cancel.py caught it)
             _where = ""
+
+
