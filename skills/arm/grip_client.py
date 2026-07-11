@@ -73,3 +73,25 @@ class GripClient:
         self.last_q = {jid: 0.0 for jid in DEX3_JOINTS}
         self._connect(connect_retries, retry_delay)
 
+    def _connect(self, retries, retry_delay):
+        for attempt in range(1, retries + 1):
+            try:
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                s.settimeout(30.0)
+                s.connect(SOCK_PATH)
+                self._sock = s
+                return
+            except (FileNotFoundError, ConnectionRefusedError, OSError) as e:
+                if self._sock is not None:
+                    try:
+                        self._sock.close()
+                    except OSError:
+                        pass
+                    self._sock = None
+                if attempt == retries:
+                    raise GripError(
+                        f'cannot connect to grip server {SOCK_PATH} '
+                        f'after {retries} tries: {e} (is grip_server.py '
+                        f'running?)')
+                time.sleep(retry_delay)
+
