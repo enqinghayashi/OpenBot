@@ -109,3 +109,11 @@ class GripClient:
         return resp
 
     # ── commands that move the hand (API-compatible with old Dex3Hand) ─────
+    def set(self, targets, steps=STEP_DEFAULT, dt=DT_DEFAULT):
+        vals = ' '.join(f'{float(targets.get(jid, 0.0)):.6f}'
+                        for jid in DEX3_JOINTS)
+        resp = self._cmd(f'set {self._side} {vals} {int(steps)} {float(dt)}')
+        self.last_q = {jid: float(targets.get(jid, self.last_q.get(jid, 0.0)))
+                       for jid in DEX3_JOINTS}
+        return resp
+
