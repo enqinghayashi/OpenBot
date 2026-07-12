@@ -287,3 +287,13 @@ class PressureReader:
                     max_p = float(p)
         return max_p
 
+    def motor_q(self):
+        """Current motor q per joint (seed source), or None if no data."""
+        state = self.read_state()
+        if state is None or state.motor_state is None:
+            return None
+        try:
+            return {jid: float(state.motor_state[jid].q) for jid in DEX3_JOINTS}
+        except Exception:
+            return None
+
