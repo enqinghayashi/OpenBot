@@ -254,3 +254,12 @@ class PressureReader:
     3-8 = finger pads + fingertips; 0-2 = palm).  Returns 0 if no data.
     """
 
+    def __init__(self, side):
+        self._side = side
+        self._state = None
+        self._lock = threading.Lock()
+        if NO_DDS:
+            return
+        self._sub = ChannelSubscriber(f'rt/dex3/{side}/state', HandState_)
+        self._sub.Init(self._on_state)
+
