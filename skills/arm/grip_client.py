@@ -316,3 +316,7 @@ def main():
         print(f'ERROR: {_msg}')
         return 1
     return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
