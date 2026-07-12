@@ -210,3 +210,7 @@ class GripClient:
             raise GripError(resp)
         return json.loads(resp[5:])
 
+    def hold(self, side=None):
+        cmd = 'hold' if side is None else f'hold {side}'
+        return self._cmd(cmd)
+
