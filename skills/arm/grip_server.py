@@ -187,3 +187,47 @@ def clamped_close_target(side, max_fraction):
     return ({jid: OPEN_PRESETS[side][jid]
              + eff * (CLOSE_PRESETS[side][jid] - OPEN_PRESETS[side][jid])
              for jid in DEX3_JOINTS}, eff)
+
+
+WRITE_HZ = 20.0
+
+# ── residual bound: placeholders, not values ───────────────────
+# RISER_MAX_RAD and SETTLE_S must be measured on hardware. Do not guess
+# them or halve a measured value: RISER_MAX_RAD is the only holding force
+# for a blocked close, so a wrong value drops the object.
+#
+# SETTLE_S is the time after the last ramp write before the bound arms.
+# An unloaded close settles within 0.06 rad on all 7 joints in roughly
+# 0.2-1.0 s, depending on the ramp; start at 1.0 s and time a free-air
+# close. Longer is safe, because last_q keeps driving the servo.
+#
+# RISER_MAX_RAD is how far a command may lead measured q, closing
+# direction only. Measure with a 30 s press on a rigid object, one value
+# per trial over {0.005, 0.01, 0.02, 0.03, 0.05, 0.08} rad, recording
+# motorstate, temperature and tau_est. The pass value is the smallest
+# lead that holds for 30 s with motorstate 0 throughout; ship that value.
+# If none holds, redesign the press rather than widen the sweep, and
+# power-cycle first: a latched hand reads motorstate != 0 from t=0.
+#
+# The placeholders keep the bound inert: SETTLE_S 1.0e9 never arms it,
+# and RISER_MAX_RAD inf makes abs(lead) > inf false, so last_q is written
+# unchanged. The bound never rewrites last_q; it recomputes per write, so
+# a short clamped value cannot freeze the hand.
+RISER_MAX_RAD = float('inf')   # placeholder: see above, do not tune.
+SETTLE_S = 1.0e9               # placeholder: see above, do not tune.
+
+# ── SDK import: any failure falls back to NO_DDS ────────────────
+NO_DDS = False
+try:
+    from unitree_sdk2py.core.channel import (  # noqa: E402
+        ChannelPublisher, ChannelSubscriber, ChannelFactoryInitialize)
+    from unitree_sdk2py.idl.unitree_hg.msg.dds_ import (  # noqa: E402
+        HandCmd_, HandState_, MotorState_, PressSensorState_)
+    from unitree_sdk2py.idl.default import (  # noqa: E402
+        unitree_hg_msg_dds__HandCmd_)
+except Exception:  # noqa: BLE001 - any SDK failure means we go NO_DDS
+    NO_DDS = True
+    ChannelPublisher = ChannelSubscriber = None
+    HandCmd_ = HandState_ = MotorState_ = PressSensorState_ = None
+
+
