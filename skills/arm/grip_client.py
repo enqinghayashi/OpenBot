@@ -186,3 +186,27 @@ class GripClient:
             raise GripError(resp)
         return json.loads(resp[5:])
 
+    def pressure(self, side=None):
+        """Measured finger-pad pressure, read SERVER-side (DDS truth).
+
+        Added 2026-09-26.  This method DID NOT EXIST.  Every
+        ``client.pressure(...)`` call in the engines (7 sites in
+        pick_engine_v3.py alone) raised AttributeError on the missing
+        attribute, was swallowed by ``except Exception``, and read a
+        constant 0.0 — so the pressure-delta discriminators (the light-grip
+        band, the insert-guard) could never fire, and that 0.0 was never
+        evidence about the object either way.
+
+        Payload is ``{side: {'ok': bool, 'max': float}}``: 'max' is the key
+        every engine call site reads, 'ok' is the availability flag the
+        insert-guard keys on.  An OLDER server replies 'ERROR:unknown
+        command "pressure"', which ``_cmd`` raises and every call site
+        swallows — so an un-upgraded server degrades to exactly the old 0.0
+        and never to a wrong number.
+        """
+        cmd = 'pressure' if side is None else f'pressure {side}'
+        resp = self._cmd(cmd)
+        if not resp.startswith('DONE:'):
+            raise GripError(resp)
+        return json.loads(resp[5:])
+
