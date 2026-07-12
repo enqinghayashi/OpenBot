@@ -214,3 +214,10 @@ class GripClient:
         cmd = 'hold' if side is None else f'hold {side}'
         return self._cmd(cmd)
 
+    def close_socket(self):
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            self._sock = None
