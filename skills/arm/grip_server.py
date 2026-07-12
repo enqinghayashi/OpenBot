@@ -336,3 +336,36 @@ class HandController:
     quiet.
     """
 
+    def __init__(self, side, seed_q=None, reader=None):
+        self._side = side
+        self._lock = threading.Lock()
+        self._pub = None
+        self._running = True
+        self._seed_logged = False
+        # Reader: the controller's own view of motor state (mode/dq/motorstate).
+        # Optional; None or a reader without motor_limits means no state, and
+        # the bound and fault checks are skipped.
+        self._reader = reader
+        # +inf leaves the bound unreachable until set() or close_adaptive
+        # arms a deadline, so boot writes last_q unchanged. Boot holds current
+        # q, never a preset; the seed may come from the persisted last command.
+        self._bound_deadline = float('inf')
+        # fault annunciator edge state
+        self._fault_active = False
+        self._last_fault_check = 0.0
+        if NO_DDS:
+            _log(f'NO_DDS: {side} controller has no DDS writer')
+            self._thread = None  # stop() would AttributeError otherwise
+            self.last_q = {jid: float(seed_q.get(jid, 0.0)) if seed_q else 0.0
+                           for jid in DEX3_JOINTS}
+            return
+        self._pub = ChannelPublisher(f'rt/dex3/{side}/cmd', HandCmd_)
+        self._pub.Init()
+        if seed_q is not None:
+            self.last_q = {jid: float(seed_q.get(jid, 0.0)) for jid in DEX3_JOINTS}
+        else:
+            self.last_q = {jid: 0.0 for jid in DEX3_JOINTS}
+        self._thread = threading.Thread(target=self._writer_loop, daemon=True)
+        self._thread.start()
+
+    # ── writer loop: 20 Hz re-assert in between ramps ───────────────────────
