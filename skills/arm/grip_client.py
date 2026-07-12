@@ -263,3 +263,56 @@ def _cli_close_adaptive(side):
     client.close_socket()
 
 
+def main():
+    argv = sys.argv[1:]
+    if not argv:
+        print(__doc__)
+        return 1
+    cmd = argv[0]
+    try:
+        if cmd == 'state':
+            _cli_state(argv[1] if len(argv) > 1 else None)
+        elif cmd in ('open', 'close', 'hold'):
+            side = argv[1] if len(argv) > 1 else None
+            if side not in (None, 'right', 'left', 'both'):
+                print(f'ERROR: bad side {side!r} (right|left|both)')
+                return 1
+            _cli_drive(cmd, side)
+        elif cmd == 'set':
+            if len(argv) < 3 or argv[1] not in ('right', 'left'):
+                print('ERROR:set <side> <7f> [steps] [dt]')
+                return 1
+            try:
+                vals = [float(tok) for tok in argv[2:9]]
+            except ValueError:
+                print('ERROR: need 7 numeric joint values')
+                return 1
+            # reject a line with fewer than 7 values:
+            # _cli_set indexes vals[jid] for every
+            # joint and would raise IndexError.
+            if len(vals) != 7:
+                print(f'ERROR: set requires 7 joint values (got {len(vals)})')
+                return 1
+            steps = int(argv[9]) if len(argv) > 9 else STEP_DEFAULT
+            dt = float(argv[10]) if len(argv) > 10 else DT_DEFAULT
+            _cli_set(argv[1], vals, steps, dt)
+        elif cmd == 'close_adaptive':
+            if len(argv) < 2 or argv[1] not in ('right', 'left'):
+                print('ERROR:close_adaptive <side>')
+                return 1
+            _cli_close_adaptive(argv[1])
+        else:
+            print(f'ERROR: unknown command {cmd!r}')
+            return 1
+    except GripError as e:
+        # GripError already carries the
+        # server's 'ERROR:' prefix, so
+        # 'ERROR: {e}' doubled it
+        # ("ERROR: ERROR:no_dds"). strip it
+        # here; callers still get the prefix.
+        _msg = str(e)
+        if _msg.startswith('ERROR:'):
+            _msg = _msg[len('ERROR:'):].lstrip()
+        print(f'ERROR: {_msg}')
+        return 1
+    return 0
