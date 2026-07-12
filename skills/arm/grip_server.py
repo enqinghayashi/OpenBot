@@ -297,3 +297,30 @@ class PressureReader:
         except Exception:
             return None
 
+    def motor_limits(self):
+        """Per-joint (q, dq, mode, motorstate), or None if no DDS state.
+
+        B0.1 — the observability half of the latched-motor defect.  `motor_q`
+        alone cannot distinguish a STALLED joint (mode=1, servo on, ~kp*err of
+        holding torque) from a LIMP one (mode=0 = DISABLED: ~0 N.m AND
+        mechanically free), because both report the same q.  The DDS IDL
+        carries the discriminator (`_MotorState_.py:25-33`) and this stack read
+        only `.q`; this is that read.
+
+        Same None semantics as motor_q(), and for the same reason: None (never
+        a zero-filled dict) when there is no state or the field is missing, so
+        every caller can honestly say "no DDS state" instead of acting on a
+        faked zero.  dq and mode/motorstate are returned as the IDL types them
+        (float32 / uint8 / uint32).
+        """
+        state = self.read_state()
+        if state is None or state.motor_state is None:
+            return None
+        try:
+            return {jid: (float(state.motor_state[jid].q),
+                          float(state.motor_state[jid].dq),
+                          int(state.motor_state[jid].mode),
+                          int(state.motor_state[jid].motorstate))
+                    for jid in DEX3_JOINTS}
+        except Exception:
+            return None
