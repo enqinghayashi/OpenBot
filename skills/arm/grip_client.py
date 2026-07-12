@@ -249,3 +249,8 @@ def _cli_drive(action, side):
         client.close_socket()
 
 
+def _cli_set(side, vals, steps, dt):
+    client = GripClient(side)
+    targets = {jid: vals[jid] for jid in DEX3_JOINTS}
+    print(client.set(targets, steps=steps, dt=dt))
+    client.close_socket()
