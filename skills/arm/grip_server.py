@@ -236,3 +236,12 @@ def _log(msg):
     sys.stderr.flush()
 
 
+def _build_cmd(q_dict):
+    """Build a HandCmd_ for one hand from a {joint_id: q} dict."""
+    msg = unitree_hg_msg_dds__HandCmd_()
+    for jid in DEX3_JOINTS:
+        msg.motor_cmd[jid].mode = (jid & 0x0F) | (0x01 << 4)
+        msg.motor_cmd[jid].kp   = DEX3_KP
+        msg.motor_cmd[jid].kd   = DEX3_KD
+        msg.motor_cmd[jid].q    = float(q_dict.get(jid, 0.0))
+    return msg
