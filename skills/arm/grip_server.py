@@ -172,3 +172,18 @@ FINGER_JIDS = (3, 4, 5, 6)
 F_MAX_SAFE = 1.0
 
 
+def clamped_close_target(side, max_fraction):
+    """The {jid: q} the closure will ACTUALLY ramp to, after the F_MAX_SAFE cap.
+
+    Single source of truth for the ramp (`close_adaptive`), the client's
+    `last_q` bookkeeping, and the engine's post-close hold + closure-block
+    score — so the pose commanded and the pose scored can never drift apart.
+    (If they drift, a capped close in free air scores a large margin against the
+    UNCAPPED preset and reports a false capture.)
+
+    Returns (targets, effective_fraction).
+    """
+    eff = min(max(float(max_fraction), 0.0), F_MAX_SAFE)
+    return ({jid: OPEN_PRESETS[side][jid]
+             + eff * (CLOSE_PRESETS[side][jid] - OPEN_PRESETS[side][jid])
+             for jid in DEX3_JOINTS}, eff)
