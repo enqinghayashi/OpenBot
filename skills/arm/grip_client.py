@@ -231,3 +231,19 @@ def _cli_state(side):
     client.close_socket()
 
 
+def _cli_drive(action, side):
+    if side is None:
+        sides = ['right']
+    elif side == 'both':
+        sides = ['right', 'left']
+    else:
+        sides = [side]
+    for s in sides:
+        client = GripClient(s)
+        if action == 'open':
+            print(f'{s}: {client.open()}')
+        elif action == 'close':
+            print(f'{s}: {client.close()}')
+        elif action == 'hold':
+            print(f'{s}: {client.hold()}')
+        client.close_socket()
