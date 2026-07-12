@@ -229,3 +229,5 @@ def _cli_state(side):
     print(json.dumps(client.state(side if side != 'both' else None),
                      indent=2))
     client.close_socket()
+
+
