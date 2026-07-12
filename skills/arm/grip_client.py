@@ -256,3 +256,8 @@ def _cli_set(side, vals, steps, dt):
     client.close_socket()
 
 
+def _cli_close_adaptive(side):
+    client = GripClient(side)
+    verdict = client.close_until_contact()
+    print(f'{side}: DONE:{verdict}')
+    client.close_socket()
