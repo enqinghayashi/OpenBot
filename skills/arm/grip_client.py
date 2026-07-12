@@ -221,3 +221,6 @@ class GripClient:
             except OSError:
                 pass
             self._sock = None
+
+
+# ── operator CLI (run it from a terminal) ────────────────────────────────────
