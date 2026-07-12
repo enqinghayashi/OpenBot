@@ -274,3 +274,16 @@ class PressureReader:
     def has_data(self):
         return self.read_state() is not None
 
+    def finger_pressure(self):
+        state = self.read_state()
+        if state is None:
+            return 0.0
+        max_p = 0.0
+        pkgs = state.press_sensor_state
+        n_pkgs = len(pkgs)
+        for pkg_idx in range(3, min(n_pkgs, 9)):
+            for p in pkgs[pkg_idx].pressure:
+                if p > max_p:
+                    max_p = float(p)
+        return max_p
+
