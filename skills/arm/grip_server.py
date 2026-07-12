@@ -263,3 +263,7 @@ class PressureReader:
         self._sub = ChannelSubscriber(f'rt/dex3/{side}/state', HandState_)
         self._sub.Init(self._on_state)
 
+    def _on_state(self, msg):
+        with self._lock:
+            self._state = msg
+
