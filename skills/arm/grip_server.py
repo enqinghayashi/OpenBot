@@ -326,3 +326,13 @@ class PressureReader:
             return None
 
 
+class HandController:
+    """One hand: last commanded q + single 20 Hz writer (ramps + re-assert).
+
+    The writer thread is THE only DDS writer for its side.  Ramps run under
+    the controller lock (synchronous with the command handler, preserving
+    the old daemon's exact step/dt pacing); between ramps the thread
+    re-asserts last_q at 20 Hz so the dex3 MCU never sees the writer go
+    quiet.
+    """
+
