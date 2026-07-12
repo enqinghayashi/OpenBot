@@ -267,3 +267,7 @@ class PressureReader:
         with self._lock:
             self._state = msg
 
+    def read_state(self):
+        with self._lock:
+            return self._state
+
