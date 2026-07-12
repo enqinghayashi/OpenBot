@@ -245,3 +245,5 @@ def _build_cmd(q_dict):
         msg.motor_cmd[jid].kd   = DEX3_KD
         msg.motor_cmd[jid].q    = float(q_dict.get(jid, 0.0))
     return msg
+
+
