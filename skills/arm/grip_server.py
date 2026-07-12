@@ -234,3 +234,5 @@ except Exception:  # noqa: BLE001 - any SDK failure means we go NO_DDS
 def _log(msg):
     sys.stderr.write(f'[grip_server] {msg}\n')
     sys.stderr.flush()
+
+
