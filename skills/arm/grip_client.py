@@ -261,3 +261,5 @@ def _cli_close_adaptive(side):
     verdict = client.close_until_contact()
     print(f'{side}: DONE:{verdict}')
     client.close_socket()
+
+
