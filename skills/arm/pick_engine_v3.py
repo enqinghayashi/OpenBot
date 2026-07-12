@@ -684,3 +684,149 @@ SEQUENCES_DIR = os.path.expanduser('~/motion_sequences')
 # ── muting Ipopt's stdout (CasADi solve_ik) ──────────────────────────────────
 # Ipopt dumps license text on the first solve and stdout is the protocol
 # (DONE/ERROR), so redirect it to /dev/null during every solve_ik.
+class _SuppressStdout:
+    """Redirect stdout+stderr to /dev/null.  Suppresses Ipopt/CasADi output.
+
+    READ THIS BEFORE "SIMPLIFYING" THE dup2 BACK TO THE OBVIOUS FORM
+    ---------------------------------------------------------------
+    dup2 ALONE IS NOT ENOUGH, and it was not enough for two months of runs.
+    Ipopt's licence banner is written **through the Python ``sys.stdout``
+    OBJECT**, not to file descriptor 1 (MEASURED 2026-10-01; casadi 3.7.2 /
+    Ipopt 3.14.11: a recorder installed as ``sys.stdout`` received the whole
+    banner while fd 1 -- dup2'd to a pipe -- received ZERO bytes).  So
+    redirecting fd 1 cannot touch it.
+
+    That mattered because of how the daemon is served.  The entrypoint
+    replaces ``sys.stdout`` with ``_ReplyRouter`` and, while a command is in
+    flight, routes every Python-level write on it to the CLIENT that asked
+    (``tabletop_pick_place_engine.py:179-187, 258``).  The engine's own
+    command loop is INLINE -- the pick handler writes its ``DONE`` only after
+    ``CARRY_TUCK`` -- so the banner landed in the CLIENT'S REPLY STREAM, ahead
+    of the real reply, and then drained one line per command.
+
+    run10 is the cost, and it is exactly the operator's report: the banner
+    block emitted at pick#1's first solve was consumed by SIX successive
+    commands (``gateway.log:26,36,45,85,96,103``).  ``_do_pick`` treats any
+    non-``ERROR`` reply as an executed pick, so three engine REFUSALS
+    (OUT OF REACH, residuals 0.397/0.348/0.352 m) were reported to the brain
+    as ``DONE pick executed`` -- and so were run10's TWO real successes
+    (y=0.249 and y=0.435; each followed by LIFT + CARRY_TUCK in ``pick.log``):
+    neither got its own ``DONE`` read, and the verdict was stamped ~5 s after
+    dispatch against a reply that was a banner line.  "The pickup succeeded
+    but was never confirmed" is this bug.
+
+    So the suppression has TWO halves and both are load-bearing: dup2 the
+    fds (for anything that writes to fd 1 directly) AND rebind ``sys.stdout``
+    / ``sys.stderr`` to a stream whose fd is already the devnull one (for
+    anything that writes through the Python object, which is what CasADi
+    does).  The rebind is restored in ``__exit__``, so the router comes back
+    intact and the client still gets its replies.
+
+    Re-entrant by construction: every call site is ``with _SuppressStdout():``
+    -- a FRESH instance -- so nesting unwinds LIFO with each instance holding
+    its own saved object.
+    """
+    def __enter__(self):
+        sys.stdout.flush()
+        sys.stderr.flush()
+        self._devnull = os.open(os.devnull, os.O_WRONLY)
+        self._saved_stdout = os.dup(1)
+        self._saved_stderr = os.dup(2)
+        os.dup2(self._devnull, 1)
+        os.dup2(self._devnull, 2)
+        os.close(self._devnull)
+        # second half: a real file object (not a discard stub) so .fileno() and
+        # .isatty() answer; a fresh devnull fd, separate from fd 1.
+        
+        self._saved_sys_stdout = sys.stdout
+        self._saved_sys_stderr = sys.stderr
+        self._sink = open(os.devnull, 'w')
+        sys.stdout = self._sink
+        sys.stderr = self._sink
+
+    def __exit__(self, *args):
+        sys.stdout = self._saved_sys_stdout
+        sys.stderr = self._saved_sys_stderr
+        try:
+            self._sink.close()
+        except Exception:
+            pass
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.dup2(self._saved_stdout, 1)
+        os.dup2(self._saved_stderr, 2)
+        os.close(self._saved_stdout)
+        os.close(self._saved_stderr)
+
+
+def make_wrist_target(torso_x, torso_y, torso_z, fwd_offset=0.0):
+    ik_x = torso_y + fwd_offset
+    # lateral-sign mirror: perception torso +x is robot right, but the IK
+    # solver URDF has +Y = left (left_shoulder y=+0.10022, right_shoulder
+    # y=-0.10021), so an un-negated channel aims every target at the mirrored
+    # side and the hand misses the object's side. every other builder defers to
+    # this one, so the negation propagates to all of them.
+    ik_y = -torso_x
+    ik_z = torso_z
+    R = np.eye(3)
+    return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
+
+
+def make_wrist_target_with_normal(torso_x, torso_y, torso_z,
+                                   normal_x, normal_y, normal_z,
+                                   fwd_offset=0.0):
+    """Build an oriented wrist SE3 target from a surface normal.
+
+    The normal is in torso frame (X=lateral, +x = robot RIGHT, Y=forward,
+    Z=height).
+    Position remapping follows ``make_wrist_target``:
+      ik_x = torso_y + fwd_offset   (forward)
+      ik_y = -torso_x  (lateral; v5.2 negated: torso +x = RIGHT, URDF +y = LEFT)
+      ik_z = torso_z                (height)
+
+    The normal is remapped to IK frame and used as the approach direction (Z).
+    X is a horizontal vector perpendicular to Z; Y = cross(Z, X).
+
+    Parameters
+    ----------
+    torso_x, torso_y, torso_z : float
+        Torso-frame target position.
+    normal_x, normal_y, normal_z : float
+        Torso-frame surface normal components (from depth_projector_node).
+    fwd_offset : float
+        Forward offset applied in IK frame.
+
+    Returns
+    -------
+    np.ndarray
+        4x4 homogeneous transformation matrix (pin.SE3).
+    """
+    # same remap as builder
+    ik_x = torso_y + fwd_offset
+    ik_y = -torso_x
+    ik_z = torso_z
+
+    # remap the normal from the torso frame (X=lateral, Y=forward, Z=height)
+    # into the IK frame (X=forward, Y=lateral, Z=height).
+    normal_ik = np.array([normal_y, normal_x, normal_z], dtype=np.float64)
+    n = np.linalg.norm(normal_ik)
+    if n < 1e-9:
+        # degenerate normal: fall back to the identity orientation
+        R = np.eye(3)
+        return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
+    normal_ik = normal_ik / n
+
+    # X = palm direction, pointing at the object (opposite the surface normal)
+    X = -normal_ik
+    X = X / np.linalg.norm(X)
+    # Z = finger-spread axis: vertical for the horizontal curl plane
+    Z = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    # Y completes the right-handed frame
+    Y = np.cross(Z, X)
+    Y = Y / np.linalg.norm(Y)
+    # re-orthogonalize Z
+    Z = np.cross(X, Y)
+    Z = Z / np.linalg.norm(Z)
+
+    R = np.column_stack([X, Y, Z])
+    return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
