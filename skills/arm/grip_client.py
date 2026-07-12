@@ -254,3 +254,5 @@ def _cli_set(side, vals, steps, dt):
     targets = {jid: vals[jid] for jid in DEX3_JOINTS}
     print(client.set(targets, steps=steps, dt=dt))
     client.close_socket()
+
+
