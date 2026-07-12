@@ -271,3 +271,6 @@ class PressureReader:
         with self._lock:
             return self._state
 
+    def has_data(self):
+        return self.read_state() is not None
+
