@@ -247,3 +247,10 @@ def _build_cmd(q_dict):
     return msg
 
 
+class PressureReader:
+    """Per-side rt/dex3/{side}/state subscriber (non-blocking).
+
+    finger_pressure() replicates real_grasp_detector.py:377-413 (packages
+    3-8 = finger pads + fingertips; 0-2 = palm).  Returns 0 if no data.
+    """
+
