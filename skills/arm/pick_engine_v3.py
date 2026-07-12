@@ -1029,3 +1029,209 @@ def _rotate_about(R, axis, angle):
                   [-ax[1], ax[0], 0.0]])
     return ((np.eye(3) + np.sin(th) * K
              + (1.0 - np.cos(th)) * (K @ K)) @ np.asarray(R, dtype=np.float64))
+
+
+def make_wrist_target_claw_v3(torso_x, torso_y, torso_z, dir_lateral,
+                              deviation=0.0, fwd_offset=0.0):
+    """UPRIGHT_GRASP v3.1 — WALL grip: [6]-index wrist flexion, palm to the
+    wall, fingers vertical.
+    v4.0 (2026-08-30): RETIRED from the commanded flow — the upright
+    waypoints return to the ORIGINAL identity design
+    (make_wrist_target_upright_v4).  The fixed base-frame wall rotation
+    made the wrist chase a pose the arm rarely reached; the solver dumped
+    the residual into the wrist (palm-to-sky / pitch / yaw in the
+    v3.1-v3.3 trials) — the original never did this (identity = a
+    position-only target inside reach).  Kept as history.
+    v3.1.1 adds the optional ulnar DEVIATION (2026-08-30 user design): a
+    slow in-palm-plane roll about the palm normal during the approach,
+    straight->deviate (see the constants block and the wall flows).
+    deviation=0.0 keeps the exact v3.1 behaviour (all call sites may omit
+    it).
+
+    v3.1 (2026-08-30) fixes the v3 orientation bug.  v3 wrote
+      X = [0, dir_lateral, 0]  ("palm normal")
+      Y = [0, 0, 1]            ("fingers")
+    but the MEASURED R_ee convention is: X = FINGERS-extend, Y = physical
+    PALM NORMAL (right +Y, left -Y), Z = finger-spread (live pinocchio FK,
+    same URDF the solver uses — the R_ee frame is
+    <arm>_wrist_yaw_joint + [0.05, 0, 0]).  So v3's X column actually put
+    the FINGERS laterally into the wall and its Y column put the right
+    palm normal UP -> the observed 2026-08-29 failure (palm facing the
+    sky/ceiling, forearm yawed, [5] moved up/down instead of [6] flexion).
+    The "X = palm normal" mislabel traces to mjlab IK_FK_REFERENCE.md
+    ("palm-facing = X") and the old daemon builder docstrings.
+
+    Corrected frame — ONE frame for both arms (the per-arm Y sign flip,
+    right physical palm +Y / left physical palm -Y, gives both arms the
+    palm face-on to the object along the approach axis):
+    v3.3 (2026-08-30) note: the original FSM parked BOTH wrists at the
+    object's own lateral tx (not on the -/+ side of it) — the wall slide
+    triad that replaced it put the wrist radius+standoff to the side and
+    its target sat outside the reachable shell (2026-08-30 trial residual
+    == the displacement exactly), which the solver baked into the wrist
+    pitch.  All call sites now pass tx; the wall-triad values remain as
+    DIAGNOSTIC log numbers only.  v3.4 (2026-08-30): the corrective
+    NO-PITCH gate was REMOVED per user directive (DIAG-ONLY now — see the
+    wp4-FK decomposition) and the upright flows were restored to the
+    original insert guard + retract; see the upright waypoint comments.
+      X = [0, 0, 1]      FINGERS UP (vertical)      <- user's wrist_yaw [6]
+      Y = [0, 1, 0]      palm-normal sign basis (right palm = +Y, left = -Y)
+      Z = cross(X, Y)    spread = [-1, 0, 0]  (det(R) = +1, R^T R = I)
+    The rotation is authored in SOLVER/base frame coordinates (the same
+    frame FK reports — positions use the ik remap below, the rotation does
+    NOT; see robot_arm_ik.py rotational_error = log3(oMf @ cTf[:3,:3].T)).
+
+    NOTE on the flexion index: with fingers up and palm normal horizontal,
+    the wrist rotation about the vertical object is achieved by the dual-14
+    index 13 (right) / 6 (left) — the LAST element of the per-arm 7-vector
+    = the user's [6] = wrist_yaw = in/out flexion; [12]/[5] (up/down) and
+    [11]/[4] (forearm yaw) must stay near zero.  dir_lateral is accepted
+    for signature compatibility and carries the arm side: the base frame
+    is ONE frame both arms (its Y sign basis + position-side flip cancel);
+    when deviation != 0 the sign of dir_lateral selects the mirrored
+    deviation sense (DEV_ROT_SIGN * sign(dir_lateral)).
+
+    DEVIATION (v3.1.1): if deviation != 0, the target becomes
+    R_dev = Rot(n_palm, s_dev * deviation) @ R_WALL with
+    n_palm = [0,1,0] (R_WALL's own Y column) — the palm NORMAL is
+    unchanged (the contact plane still projects onto the wall) and the
+    finger line rolls inside the palm plane, straight->deviate during the
+    approach (waypoint-ramped delta; frozen at contact; the wrist GN
+    realizes it in joint space — the joint map at the wall pose is
+    pose-dependent, so this is a body-frame policy, never a joint-index
+    policy).
+
+    Position remapping follows make_wrist_target:
+      ik_x = torso_y + fwd_offset   (forward; fwd_offset default 0.0)
+      ik_y = -torso_x  (lateral; v5.2 negated: torso +x = RIGHT, URDF +y = LEFT)
+      ik_z = torso_z                (height)
+
+    fwd_offset (v3.2 restore, 2026-08-30): the approach waypoints (wp2/wp3
+    only) pass APPROACH_FORWARD_OFFSET (-0.08) so the wrist parks BEHIND the
+    contact depth exactly like the original make_wrist_target FSM did — the
+    approach then verifies inside the reachable shell.  wp4 / retract keep
+    the default 0.0 (full contact depth): their targets are beyond the reach
+    cap BY CONSTRUCTION — the guarded insert + pressure stop is the safety
+    when the wrist walks the final 8 cm (original FSM semantics).
+    """
+    ik_x = torso_y + fwd_offset
+    ik_y = -torso_x
+    ik_z = torso_z
+
+    X = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    Y = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+    Z = np.cross(X, Y)
+    Z = Z / np.linalg.norm(Z)
+    R = np.column_stack([X, Y, Z])
+    assert abs(np.linalg.det(R) - 1.0) < 1e-6, f'claw_v3 R det != +1: {np.linalg.det(R)}'
+    if abs(float(deviation)) > 1e-9:
+        # ulnar roll about the palm-normal basis [0,1,0]; DEV_ROT_SIGN mirrors
+        # per dir_lateral (-1 right, +1 left) and moves the tip line away from
+        # the thumb.
+        s_dev = DEV_ROT_SIGN * (1.0 if dir_lateral >= 0 else -1.0)
+        R = _rotate_about(R, np.array([0.0, 1.0, 0.0], dtype=np.float64),
+                          s_dev * float(deviation))
+        # defensive guard: Rodrigues about a unit axis cannot change det (max
+        # |det-1| ~1 ulp over d in [0,1]); this catches future edits with an
+        # unnormalized axis.
+        
+        assert abs(np.linalg.det(R) - 1.0) < 1e-6, \
+            f'claw_v3 deviated R det != +1: {np.linalg.det(R)}'
+    return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
+
+
+def make_wrist_target_upright_v4(torso_x, torso_y, torso_z, dir_lateral,
+                                 deviation=0.0, fwd_offset=0.0):
+    """v4.0 upright wrist target — ORIGINAL identity design + ADD-ON.
+
+    v4.0 (2026-08-30, user: "restore all design accordingly from the
+    original file, while maintain the new features as add-on"): the base
+    target is the ORIGINAL's make_wrist_target — identity rotation
+    (R = np.eye(3)), original position channel (ik_x = torso_y +
+    fwd_offset, ik_y = -torso_x, ik_z = torso_z).  deviation=0.0 returns a
+    byte-identical homogeneous target to the original's builder; the v3
+    WALL frame (make_wrist_target_claw_v3) is RETIRED from the commanded
+    flow — the fixed base-frame rotation produced the palm-to-sky / pitch
+    / yaw motions of the v3.1-v3.3 trials, and the original never had them
+    because an identity orientation needs no fixed base-frame rotation and
+    its targets sat inside reach.
+
+    ADD-ON (maintained, default OFF — flip DEVIATION_ENABLED): the
+    v3.1.1 ulnar deviation, R_dev = Rot([0,1,0], s_dev*deviation) @ R_base.
+    [0,1,0] is the identity frame's OWN palm-normal column (FK-verified:
+    R_ee Y = physical palm normal, right +Y / left -Y), so the deviation is
+    FRAME-INDEPENDENT — the palm normal / contact-face projection is
+    unchanged; only the finger line rolls in the palm plane (straight ->
+    deviate during the approach, frozen at contact).
+
+    Position remapping follows make_wrist_target:
+      ik_x = torso_y + fwd_offset   (forward)
+      ik_y = -torso_x  (lateral; v5.2 negated: torso +x = RIGHT, URDF +y = LEFT)
+      ik_z = torso_z                (height)
+
+    dir_lateral: arm side (+1 right / -1 left) — selects the mirrored
+    deviation sense (DEV_ROT_SIGN * sign(dir_lateral)); the position
+    channel is side-independent (original).
+    """
+    target = make_wrist_target(torso_x, torso_y, torso_z, fwd_offset=fwd_offset)
+    if abs(float(deviation)) > 1e-9:
+        s_dev = DEV_ROT_SIGN * (1.0 if dir_lateral >= 0 else -1.0)
+        R = _rotate_about(target[:3, :3],
+                          np.array([0.0, 1.0, 0.0], dtype=np.float64),
+                          s_dev * float(deviation))
+        # defensive: Rodrigues keeps det(R) = det(base); guards future edits
+        assert abs(np.linalg.det(R) - 1.0) < 1e-6, \
+            f'upright_v4 deviated R det != +1: {np.linalg.det(R)}'
+        target = pin.SE3(R, target[:3, 3]).homogeneous
+    return target
+# 4 cm suits a ~20 cm object but overshoots a ~6 cm one, so clamp to 20% of
+# object height when height_m is available.
+GRASP_Z_OFFSET_HEIGHT_FRACTION = 0.20
+_grasp_z_offset_no_height_warned = False
+# last good open-hand pressure baseline, reused if a per-attempt read fails or
+# max=0.0: a fresh relative baseline must be live at verdict time, or the
+# absolute tactile compare arms again. [0]-indexed so assignment needs no
+# global.
+_TACTILE_BASELINE_LAST_GOOD = [None]
+
+
+def _clamped_grasp_z_offset(height_m):
+    """Effective vertical grasp offset above the detection centroid:
+    min(GRASP_Z_OFFSET, GRASP_Z_OFFSET_HEIGHT_FRACTION * object_height_m).
+    Falls back to plain GRASP_Z_OFFSET (with one warning) when the object
+    height is unavailable — never crashes, never refuses a pick."""
+    global _grasp_z_offset_no_height_warned
+    if height_m is not None and 0.0 < float(height_m) <= HEIGHT_M_MAX:
+        return min(GRASP_Z_OFFSET,
+                   GRASP_Z_OFFSET_HEIGHT_FRACTION * float(height_m))
+    if not _grasp_z_offset_no_height_warned:
+        _grasp_z_offset_no_height_warned = True
+        sys.stderr.write(
+            '[pick_daemon] WARNING: object height unavailable — using plain '
+            f'GRASP_Z_OFFSET ({GRASP_Z_OFFSET:.3f} m) for the grasp-z clamp\n')
+        sys.stderr.flush()
+    return GRASP_Z_OFFSET
+
+
+# ── the extra place lift ─────────────────────────────────────────────────────
+# a place first raises the holding arm alone to 2.5 times the detected object
+# height, clamped to the maximum safe rise. it is transient clearance: the
+# release point and drop height stay unchanged, pz and hover_z are not raised,
+# and the arm gives the z back before the release.
+PLACE_EXTRA_LIFT_HEIGHT_FRACTION = 2.5   # x object height (cf. GRASP_Z_OFFSET_HEIGHT_FRACTION)
+# ceiling: the largest rise above the LIFT-class carry pose with x and y held
+# is 0.409 m, about 0.43 m in practice. the 2.5x law holds only for
+# H <= 0.164 m; above that this cap saturates and the achieved rise is logged
+# on every place. 0.40 leaves margin under that ceiling.
+PLACE_EXTRA_LIFT_MAX_M = 0.40
+PLACE_EXTRA_LIFT_TOL_M = SOLVE_VERIFY_POS_TOL   # m; same FK residual the solver checks
+PLACE_EXTRA_LIFT_ATTEMPTS = 3                   # halving retries, then no-raise
+_place_extra_lift_no_height_warned = False
+# last valid pick-time object height (m); None means unknown. [0]-indexed so
+# assignment needs no `global`. written unconditionally at every pick
+# plausibility gate, so a height-less pick clears it and a later place cannot
+# reuse the wrong object. process-local: a daemon restart between pick and
+# place loses it, and the place grammar's height token is the durable path.
+_PLACE_LAST_OBJECT_HEIGHT_M = [None]
+
+
