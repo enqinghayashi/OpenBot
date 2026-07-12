@@ -224,3 +224,8 @@ class GripClient:
 
 
 # ── operator CLI (run it from a terminal) ────────────────────────────────────
+def _cli_state(side):
+    client = GripClient('right' if side in (None, 'both') else side)
+    print(json.dumps(client.state(side if side != 'both' else None),
+                     indent=2))
+    client.close_socket()
