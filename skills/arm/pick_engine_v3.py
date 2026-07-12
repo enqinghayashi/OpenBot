@@ -830,3 +830,202 @@ def make_wrist_target_with_normal(torso_x, torso_y, torso_z,
 
     R = np.column_stack([X, Y, Z])
     return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
+
+
+def make_wrist_target_middle_down(torso_x, torso_y, torso_z, fwd_offset=0.0):
+    """Build an oriented wrist SE3 target with middle finger pointing DOWN.
+
+    The middle finger (wrist Y-axis, thumb-to-pinky direction) is set to
+    point straight down (perpendicular to the table surface).  This ensures
+    the middle finger contacts a horizontally-lying object first during a
+    guarded top-down descent.
+
+    Position remapping follows ``make_wrist_target``:
+      ik_x = torso_y + fwd_offset   (forward)
+      ik_y = -torso_x  (lateral; v5.2 negated: torso +x = RIGHT, URDF +y = LEFT)
+      ik_z = torso_z                (height)
+
+    Rotation (in IK frame):
+      Y = [0, 0, -1]   middle finger DOWN
+      X = [1, 0, 0]    palm forward
+      Z = cross(X, Y)  completes right-handed frame
+
+    Parameters
+    ----------
+    torso_x, torso_y, torso_z : float
+        Torso-frame target position.
+    fwd_offset : float
+        Forward offset applied in IK frame.
+
+    Returns
+    -------
+    np.ndarray
+        4x4 homogeneous transformation matrix (pin.SE3).
+    """
+    # same remap as builder
+    ik_x = torso_y + fwd_offset
+    ik_y = -torso_x
+    ik_z = torso_z
+
+    # Y = middle finger points down (-Z in the IK frame)
+    Y = np.array([0.0, 0.0, -1.0], dtype=np.float64)
+    # X = palm pointing forward (horizontal)
+    X = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+    # Z = completes the right-handed frame
+    Z = np.cross(X, Y)
+
+    R = np.column_stack([X, Y, Z])
+    return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
+
+
+def make_wrist_target_middle_down_left(torso_x, torso_y, torso_z, fwd_offset=0.0):
+    """LEFT-arm middle-down wrist SE3 target — palm DOWN.
+
+    The left hand is mirror-built: its physical palm normal is -Y_local
+    (measured R_ee convention: Y = palm normal, right +Y / left -Y).  So
+    the LEFT-frame mirror of make_wrist_target_middle_down has the palm
+    DIRECTION in the Y column sign-flipped with respect to the right:
+      right:  Y = [0, 0, -1]  =>  right palm (-Y_local ... +Y_local) down
+      left:   Y = [0, 0, +1]  =>  left palm (-Y_local) down
+    LATENT BUG FIX: the left horizontal flow used the RIGHT unmirrored
+    (make_wrist_target_middle_down) at all three sites 2026-08-29, which
+    commanded the left palm normal UP.  det(R) = +1 for both mirrors.
+
+    Position remapping follows make_wrist_target:
+      ik_x = torso_y + fwd_offset   (forward)
+      ik_y = -torso_x  (lateral; v5.2 negated: torso +x = RIGHT, URDF +y = LEFT)
+      ik_z = torso_z                (height)
+    """
+    ik_x = torso_y + fwd_offset
+    ik_y = -torso_x
+    ik_z = torso_z
+
+    X = np.array([1.0, 0.0, 0.0], dtype=np.float64)   # fingers point forward
+    Y = np.array([0.0, 0.0, 1.0], dtype=np.float64)   # left palm normal points down
+    Z = np.cross(X, Y)
+    Z = Z / np.linalg.norm(Z)
+    R = np.column_stack([X, Y, Z])
+    assert abs(np.linalg.det(R) - 1.0) < 1e-6, f'middle_down_left R det != +1: {np.linalg.det(R)}'
+    return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
+
+
+def make_wrist_target_upright_grasp(torso_x, torso_y, torso_z, fwd_offset=0.0,
+                                    pad_normal=None):
+    """DEPRECATED (2026-08-26) — superseded by make_wrist_target_claw();
+    kept as a dead reference for the trial record.  v1: geometrically
+    degenerate — the palm normal always collapses to the approach axis, so
+    the rotation is numerically the old identity (no wrist flexion) and the
+    open fingers lead the insert into the object (fingertip knock-offs).
+    Old v1 docstring: Build the UPRIGHT_GRASP wrist SE3 target (vertical /
+    upright-bottle pick).
+
+    Orientation: the PALM normal points along the approach axis — from the
+    wrist toward the object centre at the grasp height, projected into the
+    horizontal plane — so the palm is face-on to the object and the closure
+    wraps around its sides.  This replaces the old identity rotation, which
+    made the palm contact the object first while the wrist site was still
+    ~2 cm short of the insert target, so the guarded insert kept advancing
+    and shoved the bottle.  Reuses the make_wrist_target_with_normal
+    rotation construction (X = palm direction, Z = vertical, Y = cross).
+
+    Position remapping follows make_wrist_target:
+      ik_x = torso_y + fwd_offset   (forward)
+      ik_y = -torso_x  (lateral; v5.2 negated: torso +x = RIGHT, URDF +y = LEFT)
+      ik_z = torso_z                (height)
+
+    pad_normal (torso frame, e.g. the depth projector's surface normal) is
+    used only when the geometric palm normal is degenerate (wrist parked on
+    the approach axis at the object-centre height) — the fallback treats it
+    as a surface normal (palm = -normal, like make_wrist_target_with_normal)
+    and warns; never crashes.
+    """
+    ik_x = torso_y + fwd_offset
+    ik_y = -torso_x
+    ik_z = torso_z
+
+    # palm direction (IK frame): wrist to object centre, flattened to horizontal.
+    palm_dir = np.array([torso_y - ik_x, torso_x - ik_y, 0.0], dtype=np.float64)
+    n = np.linalg.norm(palm_dir)
+    if n < 1e-9:
+        sys.stderr.write(
+            '[pick_daemon] WARNING: UPRIGHT_GRASP palm normal degenerate '
+            '(wrist on the approach axis at the object-centre height) — '
+            'falling back to the approach-pad normal\n')
+        sys.stderr.flush()
+        X = None
+        if pad_normal is not None:
+            pad_ik = np.array([pad_normal[1], pad_normal[0], 0.0],
+                              dtype=np.float64)
+            pn = np.linalg.norm(pad_ik)
+            if pn > 1e-9:
+                X = -pad_ik / pn  # palm faces object, against surface normal
+        if X is None:
+            X = np.array([1.0, 0.0, 0.0], dtype=np.float64)  # approach from the front
+    else:
+        X = palm_dir / n
+
+    Z = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    Y = np.cross(Z, X)
+    Y = Y / np.linalg.norm(Y)
+    Z = np.cross(X, Y)
+    Z = Z / np.linalg.norm(Z)
+    R = np.column_stack([X, Y, Z])
+    return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
+
+
+def make_wrist_target_claw(torso_x, torso_y, torso_z, fwd_offset=0.0):
+    """UPRIGHT_GRASP v2 — real wrist flexion: palm-down claw from above.
+
+    The 2026-08-25 trial showed make_wrist_target_upright_grasp is
+    geometrically degenerate: the wrist target sits ON the object's forward
+    axis, so 'wrist -> object centre' always equals the approach axis and
+    the resulting rotation is numerically the old identity — zero visible
+    wrist flexion, and the open fingers led the wp4 insert so the
+    fingertips stabbed the bottle's upper flank and knocked it over.
+
+    v2 flexes the wrist ~90 degrees: the palm normal (wrist X) points DOWN,
+    the three fingers hang as a claw, and the wrist parks directly ABOVE
+    the object centre, with the URDF grip zone (17-69 mm along the palm
+    normal in front of the wrist site -> [z-69 mm, z-17 mm]) centred on
+    the grasp height.  Closure pinches the object's waist from the two
+    lateral sides; no fingertip-first insert against a cylindrical flank
+    remains — the only possible contact during the guarded descend is the
+    claw's inner gap (guarded by the pressure insert guard).
+
+    Position remapping follows make_wrist_target:
+      ik_x = torso_y + fwd_offset   (forward)
+      ik_y = -torso_x  (lateral; v5.2 negated: torso +x = RIGHT, URDF +y = LEFT)
+      ik_z = torso_z                (height)
+    """
+    ik_x = torso_y + fwd_offset
+    ik_y = -torso_x
+    ik_z = torso_z
+
+    # IK frame: X=forward, Y=lateral+left, Z=height.
+    #   X = palm normal down (palm faces the floor, which is the flexion)
+    #   Y = lateral: the finger pair and thumb pinch the object's two sides
+    #   Z = cross(X, Y) = forward
+    X = np.array([0.0, 0.0, -1.0], dtype=np.float64)
+    Y = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+    Z = np.cross(X, Y)
+    Z = Z / np.linalg.norm(Z)
+    R = np.column_stack([X, Y, Z])
+    return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
+
+
+def _rotate_about(R, axis, angle):
+    """Rotate frame R by angle (rad) about axis (3-vector, right-hand rule):
+    R' = Rot(axis, angle) @ R.  Rodrigues closed form — no pinocchio
+    dependency (the tv env pinocchio version is not guaranteed to expose
+    AxAng).  Angle 0 / zero axis -> R unchanged."""
+    ax = np.asarray(axis, dtype=np.float64)
+    norm = float(np.linalg.norm(ax))
+    if norm < 1e-12 or abs(float(angle)) < 1e-12:
+        return np.asarray(R, dtype=np.float64)
+    ax = ax / norm
+    th = float(angle)
+    K = np.array([[0.0, -ax[2], ax[1]],
+                  [ax[2], 0.0, -ax[0]],
+                  [-ax[1], ax[0], 0.0]])
+    return ((np.eye(3) + np.sin(th) * K
+             + (1.0 - np.cos(th)) * (K @ K)) @ np.asarray(R, dtype=np.float64))
