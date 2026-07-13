@@ -560,3 +560,74 @@ class HandController:
                                    - OPEN_PRESETS[self._side][jid]))
         self.set(targets)
 
+    def _stage_pre_close(self, fingers_neutral=False):
+        """Settle the thumb BEFORE the fingers close onto it.
+
+        Returns the list of stage names actually issued (empty = nothing to
+        do).  `set` holds any joint ABSENT from its `targets` at the current
+        value, so each stage moves only the joints it names.
+
+        DEFAULT (`fingers_neutral=False`) -- move ONLY the thumb base to its
+        centreline, holding every other joint at its LIVE measured q.  This
+        needs no loaded/empty sensor at all, because nothing is ever commanded
+        toward OPEN and so a held object cannot be released.  It is the shape
+        approved on 2026-09-27, and it is right for a hand arriving from the
+        OPEN preset, where thumb_0 still has a 0.48 rad diagonal to remove.
+
+        OPT-IN (`fingers_neutral=True`) -- straighten the four FINGER motors to
+        0.0 FIRST, then drive the whole thumb to its CLOSE values, then close.
+
+        WHY THE OPT-IN SHAPE EXISTS, and it is measured.  At the operator's
+        2026-09-30 close the right hand arrived from a grasp-lead pose whose
+        thumb_0 travel to CLOSE was exactly +0.0000 -- so the DEFAULT shape
+        targets the one joint that needed nothing, and its 0.10 rad skip
+        tolerance skips it outright -- while thumb_1 travelled -0.5605 and
+        thumb_2 -0.8043 against a curling middle_0 at +0.7695.  The sweep that
+        caused the reported finger collision is in the thumb's DISTAL joints,
+        which neither this staging nor the 2026-09-27 one ever touched.
+
+        WHY IT IS OPT-IN AND NOT DEFAULT.  Straightening the fingers IS a
+        release if the hand holds something, and this hardware admits no
+        PRE-close discriminator: the pads read a delta of ~0 for 5 of the 13
+        characterised objects (Airpods, torch, lunchbox, epipen, spray-short),
+        and the closure-block margin reads a FALSE 'blocked' on an empty hand
+        after any bounded-lead close, because that close stops short of the
+        preset BY DESIGN.  Both candidate sensors fail on the operator's own
+        empty hand, so the risk cannot be engineered away -- it is routed to
+        the one caller that is an explicit human close command instead.  Every
+        other caller omits the flag and gets the default shape unchanged.
+        """
+        issued = []
+        if not fingers_neutral:
+            try:
+                cur = float(self.last_q.get(THUMB_BASE_JID, THUMB_BASE_CENTRE))
+            except Exception:
+                return issued
+            if abs(cur - THUMB_BASE_CENTRE) <= STAGED_CLOSE_SKIP_TOL:
+                return issued
+            self.set({THUMB_BASE_JID: THUMB_BASE_CENTRE})
+            issued.append('thumb_0->centre')
+            return issued
+
+        # fingers_neutral: clear the volume the thumb's distals sweep, first.
+        try:
+            held_f = [float(self.last_q.get(j, 0.0)) for j in FINGER_JIDS]
+        except Exception:
+            held_f = []
+        if held_f and any(abs(v) > STAGED_CLOSE_SKIP_TOL for v in held_f):
+            self.set({j: 0.0 for j in FINGER_JIDS})
+            issued.append('fingers->0.0')
+
+        # then the whole thumb to its close preset.
+        close = CLOSE_PRESETS[self._side]
+        try:
+            held_t = [float(self.last_q.get(j, 0.0)) for j in THUMB_JIDS]
+            behind = any(abs(v - float(close[j])) > STAGED_CLOSE_SKIP_TOL
+                         for j, v in zip(THUMB_JIDS, held_t))
+        except Exception:
+            behind = True
+        if behind:
+            self.set({j: close[j] for j in THUMB_JIDS})
+            issued.append('thumb->close')
+        return issued
+
