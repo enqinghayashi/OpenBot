@@ -986,3 +986,29 @@ def _state_payload(controller, reader=None):
     return payload
 
 
+def _seed_side(side, reader, controllers):
+    """Seed from motor_state.q; fallback /tmp/grip_last_cmd.json; else 0.
+
+    NEVER opens on boot — boot is a hold of current q, never a preset.
+    """
+    motor_q = None
+    deadline = time.time() + 1.5
+    while time.time() < deadline:
+        motor_q = reader.motor_q()
+        if motor_q is not None:
+            break
+        time.sleep(0.05)
+    if motor_q is not None:
+        _log(f'{side} seeded from motor_state.q: '
+             f'{[motor_q[jid] for jid in DEX3_JOINTS]}')
+    else:
+        last = _load_last_cmd()
+        if last and side in last:
+            motor_q = last[side]
+            _log(f'{side} seeded from {LAST_CMD_FILE} (no DDS state yet): '
+                 f'{[motor_q[jid] for jid in DEX3_JOINTS]}')
+        else:
+            motor_q = {jid: 0.0 for jid in DEX3_JOINTS}
+            _log(f'{side} seeded zeros (no motor state, no last-cmd file)')
+    # Hand the same subscriber to the controller, so seeding adds no DDS read.
+    controllers[side] = HandController(side, seed_q=motor_q, reader=reader)
