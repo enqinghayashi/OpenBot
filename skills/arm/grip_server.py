@@ -721,3 +721,6 @@ class HandController:
         self._running = False
         if self._thread is not None:
             self._thread.join(timeout=1.0)
+
+
+# ── persistence: the last commanded q is saved so a restart re-asserts it ──
