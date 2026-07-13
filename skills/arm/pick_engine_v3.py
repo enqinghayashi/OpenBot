@@ -1694,3 +1694,117 @@ def _upright_attempts():
     except Exception:
         pass
     return UPRIGHT_ATTEMPTS
+
+
+def _upright_tilt_sign(attempt):
+    """+1.0 / 0.0 / -1.0 for attempt index 0 / 1 / 2 (later attempts keep
+    -1.0); +1.0 for every attempt when the off flag file exists."""
+    try:
+        if os.path.exists(UPRIGHT_TILT_OFF_FLAG):
+            return 1.0
+    except Exception:
+        pass
+    i = min(max(int(attempt), 0), len(UPRIGHT_TILT_SIGNS) - 1)
+    return float(UPRIGHT_TILT_SIGNS[i])
+
+
+def _deviation_ramped(waypoint_step, delta_tgt=DEV_DELTA_TGT):
+    """Deviation delta (rad) for approach waypoint `waypoint_step`
+    (1-based from the FIRST ramping waypoint): monotone ramp 0 ->
+    delta_tgt, bounded by DEV_STEP_MAX per waypoint, clamped to
+    [0, min(delta_tgt, DEV_MAX)] — never negative (the wrist never
+    deviates past straight the other way).  The contact waypoint is the
+    LAST ramping waypoint; callers reuse its delta for the retract
+    (frozen at contact — 2026-08-30 user rule)."""
+    return float(np.clip(waypoint_step * DEV_STEP_MAX, 0.0,
+                         min(float(delta_tgt), DEV_MAX)))
+
+
+def wrist_rotation_decomposition(arm_ik, q14, side, R_ref):
+    """Body-axis decomposition of the achieved rotation (log-only; the
+    joint-to-motion assignment is pose-dependent, so the gate asserts on
+    BODY axes at the ACTUAL pose, never on joint indices).
+
+    D = log3(R_act @ R_ref^T), projected onto R_act's own columns:
+      - fingers axis  = R_act[:,0]  -> PITCH  (up/down: the user's
+        NO-PITCH rule during upright contact — |pitch| <= PITCH_FROZEN_TOL)
+      - palm normal   = R_act[:,1]  -> DEVIATION (the ulnar roll, ===
+        s_dev * commanded delta at contact: s_dev = DEV_ROT_SIGN *
+        sign(dir_lateral) — +1 LEFT, -1 RIGHT — so a perfect right-arm
+        execution logs the NEGATIVE of the printed positive target;
+        compare magnitudes across the side, or read the signed target)
+      - spread axis   = R_act[:,2]  -> FLEXION (the in/out palm hinge,
+        dominant during the approach)
+    Returns (pitch, deviation, flexion) rad or (None,)*3 if FK fails."""
+    T_ee = get_ee_pose(arm_ik, q14, side)
+    if T_ee is None:
+        return None, None, None
+    R_act = np.asarray(T_ee.rotation, dtype=np.float64)
+    R_ref = np.asarray(R_ref[:3, :3], dtype=np.float64)
+    try:
+        D = np.asarray(pin.log3(R_act @ R_ref.T), dtype=np.float64)
+    except Exception:
+        return None, None, None
+    return (float(np.dot(D, R_act[:, 0])),
+            float(np.dot(D, R_act[:, 1])),
+            float(np.dot(D, R_act[:, 2])))
+
+
+def world_to_ik_frame(world_x, world_y, world_z, robot_x, robot_y, robot_yaw):
+    """Convert MuJoCo world-frame coordinates to IK-frame coordinates.
+
+    Transform chain:  world → torso → IK
+
+    world → torso:
+        Rotate world displacement by -robot_yaw around world Z, giving
+        torso-frame coordinates where X = lateral (+left), Y = forward,
+        Z = height.
+
+    torso → IK (G1 arm IK convention — mirrors make_wrist_target):
+        ik_x = torso_y   (forward)
+        ik_y = torso_x   (LEGACY sign — dead helper, body unchanged; the live
+        builders negate: ik_y = -torso_x)
+        ik_z = torso_z   (height)
+
+    Parameters
+    ----------
+    world_x, world_y, world_z : float
+        Point in MuJoCo world frame.
+    robot_x, robot_y : float
+        Robot base position in world frame.
+    robot_yaw : float
+        Robot yaw angle (radians) in world frame.
+
+    Returns
+    -------
+    np.ndarray, shape (3,)
+        Point in IK frame: [ik_x, ik_y, ik_z].
+    """
+    # world frame → torso frame
+    dx = world_x - robot_x
+    dy = world_y - robot_y
+    cos_yaw = np.cos(robot_yaw)
+    sin_yaw = np.sin(robot_yaw)
+
+    torso_x =  cos_yaw * dx + sin_yaw * dy   # lateral (+left)
+    torso_y = -sin_yaw * dx + cos_yaw * dy   # forward
+    torso_z = world_z                         # height (yaw does not touch it)
+
+    # torso frame → IK frame
+    ik_x = torso_y   # forward
+    ik_y = torso_x   # lateral sign (+left)
+                     # live builders negate: ik_y = -torso_x
+    ik_z = torso_z   # height
+
+    return np.array([ik_x, ik_y, ik_z])
+
+
+# per-step gravity feedforward: the 250 Hz controller feeds the tau to lowcmd
+# and the arm fights gravity at its current pose, so a constant endpoint
+# torque (sol_tauff or zeros) is only correct at the target. rnea every 50 Hz
+# step is cheap (~0.1 ms on the G1 URDF), so every interpolated pose gets its
+# own compensation. this mirrors solve_ik's sol_tauff: pin.rnea on the reduced
+# arm model with v=0 and a=0, whose q is the 14-DOF arm vector.
+_ARM_IK = None  # main() sets it after building G1_29_ArmIK
+
+
