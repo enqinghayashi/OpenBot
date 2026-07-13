@@ -1808,3 +1808,175 @@ def world_to_ik_frame(world_x, world_y, world_z, robot_x, robot_y, robot_yaw):
 _ARM_IK = None  # main() sets it after building G1_29_ArmIK
 
 
+def _arm_gravity_ff(q14, fallback):
+    """[FF-RE-ENABLED for bisection] Gravity-compensation tau (14-vector) at
+    pose q14, or fallback when the IK model is unavailable."""
+    global _ARM_IK
+    if _ARM_IK is None or not hasattr(_ARM_IK, 'reduced_robot'):
+        return fallback
+    try:
+        m = _ARM_IK.reduced_robot.model
+        d = _ARM_IK.reduced_robot.data
+        return pin.rnea(m, d, q14, np.zeros(m.nv), np.zeros(m.nv))
+    except Exception:
+        return fallback
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# table z-floor clamp: the arm must not be driven into the support surface.
+# the risky transitions are the LIFT after a grasp and the return to NEUTRAL
+# after a release; both end at NEUTRAL, the one named pose that does not fit
+# at a table. in the pelvis frame, with the table plane at -0.110 m (derived in
+# _latch_table_floor):
+#     NEUTRAL      lowest limb z = -0.2523 -> 0.142 m inside the table
+#     READY                      +0.1349   -> clear
+#     CARRY_TUCK                 -0.0142   -> clear
+# so the clamp only stops NEUTRAL and any low descent short of the surface;
+# every already-safe move comes back unchanged.
+# this is not collision avoidance: it guards exactly one plane, the table the
+# last pick or place latched. the arm lane has no collision model.
+
+# limb mesh AABBs in each link's own frame, from the URDF collision meshes.
+# the hand and three distal wrist links are included: they sit lower than the
+# hand at READY (45 mm) and CARRY_TUCK (35 mm), so a hand-only clamp
+# under-protects by more than the 30 mm margin. constant; regenerating from the
+# STL files must reproduce these values.
+_LIMB_BBOX = {
+    'right_hand_palm_link':     ((-0.00000, -0.02142, -0.04390), (+0.08670, +0.02032, +0.04390)),
+    'right_hand_thumb_0_link':  ((-0.01150, +0.00000, -0.00950), (+0.01010, +0.02830, +0.00950)),
+    'right_hand_thumb_1_link':  ((-0.01260, -0.00700, -0.01280), (+0.01465, +0.05480, +0.01290)),
+    'right_hand_thumb_2_link':  ((-0.00892, -0.00700, -0.01290), (+0.00877, +0.05196, +0.01310)),
+    'right_hand_index_0_link':  ((-0.00700, -0.01260, -0.01290), (+0.05480, +0.01465, +0.01280)),
+    'right_hand_index_1_link':  ((-0.00700, -0.00892, -0.01310), (+0.05196, +0.00877, +0.01290)),
+    'right_hand_middle_0_link': ((-0.00700, -0.01260, -0.01290), (+0.05480, +0.01465, +0.01280)),
+    'right_hand_middle_1_link': ((-0.00700, -0.00892, -0.01310), (+0.05196, +0.00877, +0.01290)),
+    'right_wrist_roll_link':    ((-0.00000, -0.03000, -0.03000), (+0.05599, +0.03049, +0.03000)),
+    'right_wrist_pitch_link':   ((-0.02850, -0.02849, -0.02849), (+0.07450, +0.02849, +0.02849)),
+    'right_wrist_yaw_link':     ((-0.01799, -0.03000, -0.03049), (+0.04150, +0.02386, +0.03000)),
+    'left_hand_palm_link':      ((+0.00000, -0.02032, -0.04390), (+0.08670, +0.02142, +0.04390)),
+    'left_hand_thumb_0_link':   ((-0.01150, -0.02830, -0.00950), (+0.01010, +0.00000, +0.00950)),
+    'left_hand_thumb_1_link':   ((-0.01260, -0.05480, -0.01290), (+0.01465, +0.00700, +0.01280)),
+    'left_hand_thumb_2_link':   ((-0.00892, -0.05196, -0.01310), (+0.00877, +0.00700, +0.01290)),
+    'left_hand_index_0_link':   ((-0.00700, -0.01465, -0.01280), (+0.05480, +0.01260, +0.01290)),
+    'left_hand_index_1_link':   ((-0.00700, -0.00877, -0.01290), (+0.05196, +0.00892, +0.01310)),
+    'left_hand_middle_0_link':  ((-0.00700, -0.01465, -0.01280), (+0.05480, +0.01260, +0.01290)),
+    'left_hand_middle_1_link':  ((-0.00700, -0.00877, -0.01290), (+0.05196, +0.00892, +0.01310)),
+    'left_wrist_roll_link':     ((-0.00000, -0.03049, -0.03000), (+0.05599, +0.03000, +0.03000)),
+    'left_wrist_pitch_link':    ((-0.02850, -0.02849, -0.02849), (+0.07450, +0.02849, +0.02849)),
+    'left_wrist_yaw_link':      ((-0.01799, -0.02386, -0.03049), (+0.04150, +0.03000, +0.03000)),
+}
+
+_ZFLOOR_CLEARANCE_M = 0.03     # the hand keeps 3 cm above the latched table plane
+_ZFLOOR_STEP = 32              # coarse samples along the interpolation
+_ZFLOOR_ITERS = 20             # bisection iterations
+
+# kill switch: without it the clamp cannot be disabled without editing, and a
+# clamp slightly too high fails quietly, leaving grasps short.
+# PICK_ZFLOOR=0 in the engine environment disables it.
+_ZFLOOR_ENABLED = os.environ.get('PICK_ZFLOOR', '1').strip().lower() not in (
+    '0', 'off', 'false', 'no')
+
+_TABLE_FLOOR_PELVIS = None     # latched floor, pelvis frame; None = no table
+_TABLE_FLOOR_SRC = None        # (tz, height_m, orientation), for the log
+_LIMB_FRAME_CACHE = None       # (id(model), [(frame_id, bbox), ...])
+
+# per-arm z-floor: each arm gets its own scale over its 7 joints, so the idle
+# arm cannot throttle the active one. switches are read at call time;
+# PICK_ZFLOOR_PERARM=0 restores the single-scalar clamp.
+_ZF_RATCHET_TOL_M = 0.001      # below-floor arm may only drop this much more
+_ZF_LIMITED_S = 0.98           # below this = floor-limited (reply token)
+_ZF_FLOW = [False]             # True inside pick / pick_left / place / place_left
+_ZF_LAST_SENT = [None]         # post-clamp 14-vector from the last move (pin source)
+_ZF_IDLE_PIN = {'left': None, 'right': None}   # idle arm's commanded post-clamp slice
+_ZF_CMD = {'moves': 0, 'limited': 0, 'min_s': {'left': 1.0, 'right': 1.0}, 'min_any': 1.0}
+_ZF_ACTIVE = [None]            # command's own arm during a pick / place flow
+_ZF_PRIOR = [None]             # (floor, src) latched at pick / place start
+_ZF_MEAS_Q = [None]            # measured 14-vector at pick / place start (idle precheck)
+_ZF_TOKEN_VERBS = ('place', 'place_left', 'home', 'ready', 'ready_right', 'ready_left',
+                   'carry', 'carry_left', 'neutral', 'play', 'quit')   # verbs that carry the reply token
+
+
+def _latch_table_floor(tz, height_m, orientation):
+    """Latch the table-plane z-floor from a pick/place's own object.
+
+    The detection is the object's CENTROID in the TORSO frame, and the engine
+    commands ``tz = wire_z + GRASP_Z_OFFSET`` as if it were a PELVIS-frame
+    value (v5.2 logs this 4.4 cm discrepancy and leaves the channel unchanged).
+    So, walking from the commanded tz down to the table surface in the pelvis
+    frame::
+
+        centroid_torso  = tz - GRASP_Z_OFFSET
+        centroid_pelvis = centroid_torso - SOLVER_Z_TORSO_OFFSET
+        table_pelvis    = centroid_pelvis - h/2      (upright: centroid mid-height)
+
+    Checked against run11's own log ("Pick target torso frame: x=-0.012
+    y=0.302 z=0.056 orientation=upright height_m=0.164", from the wire command
+    ``pick -0.012 0.302 0.016 upright 0.1641``): tz=0.056 -> table -0.110 m.
+
+    NOTE the sign of the h/2 term.  A larger object puts the table FURTHER
+    below its centroid, so h/2 SUBTRACTS.  (An earlier draft of this design
+    added it, which put the floor 20 cm above the table — above the commanded
+    grasp point itself, clamping away every grasp.)
+
+    Horizontal: the object lies on its side, so h is its LENGTH, not the
+    height of its axis above the table, and cannot be used.  Fall back to the
+    centroid with no h term — a lying object's axis sits one radius above the
+    table, so this is conservative by that radius (~3 cm on a bottle).
+    """
+    global _TABLE_FLOOR_PELVIS, _TABLE_FLOOR_SRC
+    if tz is None:
+        return None
+    h = None
+    try:
+        if height_m is not None and 0.0 < float(height_m) <= HEIGHT_M_MAX:
+            h = float(height_m)
+    except (TypeError, ValueError):
+        h = None
+    try:
+        tz = float(tz)
+    except (TypeError, ValueError):
+        return None
+    floor = tz - GRASP_Z_OFFSET - SOLVER_Z_TORSO_OFFSET + _ZFLOOR_CLEARANCE_M
+    if orientation != 'horizontal' and h is not None:
+        floor -= h / 2.0
+    _TABLE_FLOOR_PELVIS = floor
+    _TABLE_FLOOR_SRC = (tz, h, orientation)
+    sys.stderr.write(
+        f'[pick_daemon][zfloor] latched table floor z={floor:+.4f} (pelvis) '
+        f'from tz={tz:+.4f} h={h} orientation={orientation} '
+        f'clearance={_ZFLOOR_CLEARANCE_M:.3f}\n')
+    sys.stderr.flush()
+    return floor
+
+
+def _clear_table_floor(reason=''):
+    """Drop the latched floor — the robot is going somewhere else."""
+    global _TABLE_FLOOR_PELVIS, _TABLE_FLOOR_SRC
+    if _TABLE_FLOOR_PELVIS is not None:
+        sys.stderr.write(f'[pick_daemon][zfloor] cleared ({reason})\n')
+        sys.stderr.flush()
+    _TABLE_FLOOR_PELVIS = None
+    _TABLE_FLOOR_SRC = None
+
+
+def _limb_frames(model, side=None):
+    """[(frame_id, bbox), ...] for the limb links present in ``model``.
+
+    ``side`` ('left' / 'right') keeps only that arm's links (B8g per-arm clamp).
+    None = both arms: the cached list the single-scalar clamp has always used.
+    """
+    global _LIMB_FRAME_CACHE
+    if side is None and _LIMB_FRAME_CACHE is not None and _LIMB_FRAME_CACHE[0] == id(model):
+        return _LIMB_FRAME_CACHE[1]
+    ids = []
+    for name, bbox in _LIMB_BBOX.items():
+        if side is not None and not name.startswith(side + '_'):
+            continue
+        try:
+            if model.existFrame(name):
+                ids.append((model.getFrameId(name), bbox))
+        except Exception:
+            pass
+    if side is None:
+        _LIMB_FRAME_CACHE = (id(model), ids)
+    return ids
