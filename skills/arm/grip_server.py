@@ -900,3 +900,87 @@ def _handle_line(line, controllers, readers):
         return f'ERROR:{e}'
 
 
+def _state_payload(controller, reader=None):
+    """state reply per side: last commanded q per joint + "available"
+    (true when the DDS writer is live, false under NO_DDS — observer DEV1)
+    + "actual" (measured motor q per joint).
+
+    ``controller._pub is None`` is the module-level NO_DDS marker: the
+    controller is constructed without a writer, so a None pub means the
+    hand is state-only (driving commands still track last_q, but nothing
+    is written to the dex3 MCU).
+
+    ``actual`` is the MEASURED q, distinct from the ``last_q`` entries: a
+    caller asking "is the hand really open?" must compare against what the
+    motors report, not against what we last commanded (that would pass
+    unconditionally).  The pick engine's Item-5 verify-open and its
+    closure-blocked read both key off ``actual`` — omitting it made every
+    pick abort with 'ERROR:hand not verified open' before any motion, so
+    the key is part of the contract, not an extra.  When the reader has no
+    DDS state the key is OMITTED (rather than faked from last_q) so such a
+    caller honestly reports 'no actual state'.
+
+    B0.2 adds ``mode`` and ``motorstate`` per joint, from the reader's
+    ``motor_limits()``.  They are what makes a LIMP joint distinguishable from
+    a stalled one: ``available`` is True even for a mode=0 joint (the writer is
+    live; the motor is simply disabled), so it can never carry this, and
+    ``actual`` alone shows the same q either way.  Like ``actual`` — and for
+    the same reason — BOTH keys are OMITTED ENTIRELY when there is no DDS
+    state, never faked from last_q, so a consumer can tell "all motors are in
+    servo mode" from "I cannot see the motors".
+
+    The read is guarded with getattr/None-checks rather than a bare call: this
+    runs inside _handle_line's try, so an unguarded dereference here would turn
+    every `state` reply into ERROR:..., which breaks _verify_hand_open and
+    _score_closure_blocked and therefore aborts EVERY release.
+    """
+    payload = {
+        **{str(jid): controller.last_q[jid] for jid in DEX3_JOINTS},
+        'available': controller._pub is not None,
+    }
+    # Guard motor_q like motor_limits below: this runs inside _handle_line's
+    # try, so a raising sample would turn the reply into ERROR, break open
+    # verification and abort every release. A raising reader omits the key.
+    motor_q = None
+    if reader is not None:
+        try:
+            # getattr inside the try on purpose: a property that raises must
+            # not escape the guard, so anything that can raise belongs here.
+            _mq = getattr(reader, 'motor_q', None)
+            if callable(_mq):
+                motor_q = _mq()
+                if motor_q is not None:
+                    motor_q = {jid: float(motor_q[jid])
+                               for jid in DEX3_JOINTS}
+                    # Non-finite q is unusable. NaN passes an abs(q - open) >
+                    # tolerance check, so a closed hand would verify open; drop
+                    # the key instead.
+                    if not all(math.isfinite(v) for v in motor_q.values()):
+                        motor_q = None
+        except Exception:
+            motor_q = None
+    if motor_q is not None:
+        payload['actual'] = {str(jid): motor_q[jid] for jid in DEX3_JOINTS}
+    # mode/motorstate follow the same guard-and-omit contract as actual.
+    # A reader without motor_limits simply omits them.
+    limits = None
+    if reader is not None:
+        try:
+            # getattr inside try, as above
+            _ml = getattr(reader, 'motor_limits', None)
+            if callable(_ml):
+                limits = _ml()
+        except Exception:
+            limits = None
+    if limits is not None:
+        try:
+            payload['mode'] = {str(jid): int(limits[jid][2])
+                               for jid in DEX3_JOINTS}
+            payload['motorstate'] = {str(jid): int(limits[jid][3])
+                                     for jid in DEX3_JOINTS}
+        except Exception:
+            # A malformed sample means no usable state: drop both keys, keep
+            # actual.
+            payload.pop('mode', None)
+            payload.pop('motorstate', None)
+    return payload
