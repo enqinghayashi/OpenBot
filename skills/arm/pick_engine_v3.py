@@ -1980,3 +1980,134 @@ def _limb_frames(model, side=None):
     if side is None:
         _LIMB_FRAME_CACHE = (id(model), ids)
     return ids
+
+
+def _lowest_limb_z(arm_ik, q14, side=None):
+    """Lowest point of BOTH arms' hand+wrist meshes, in the PELVIS frame.
+
+    FK of the real URDF links, so the wrist orientation enters correctly (the
+    lowest limb is middle_1 at NEUTRAL, thumb_2 at READY, palm at CARRY_TUCK —
+    no single fixed point or constant offset is right for all poses).  Uses
+    ``oMi[parentJoint] * frame.placement``, the same construction get_ee_pose
+    uses, so no ``updateFramePlacements`` is needed.
+
+    z is linear in the corner coordinates, so over the 8 bbox corners the
+    minimum sits at the corner that takes min or max per axis — 3 sign tests
+    per link instead of 8 transformed corners.  Returns None on failure.
+
+    B8g: ``side`` ('left' / 'right') takes only that arm's links, so one arm's
+    value never depends on the other arm's joints (None = both arms, as before).
+    """
+    model = arm_ik.reduced_robot.model
+    data = arm_ik.reduced_robot.data
+    pin.forwardKinematics(model, data, q14)
+    lo = None
+    for fid, (mn, mx) in _limb_frames(model, side):
+        fr = model.frames[fid]
+        pl = data.oMi[fr.parentJoint] * fr.placement
+        r2 = pl.rotation[2]
+        z = pl.translation[2]
+        for j in range(3):
+            z += r2[j] * (mn[j] if r2[j] > 0.0 else mx[j])
+        if lo is None or z < lo:
+            lo = z
+    return lo
+
+
+def _zfloor_target(arm_ik, start_q, target_q, floor=None, ratchet=False):
+    """Clamp ``target_q`` so the whole commanded move stays above the floor.
+
+    Both transports traverse the SAME joint-space segment: the writer's slew
+    (skills/writer/arm_guard.py: `s = 0.5*(1 - cos(pi*r))`) and this engine's
+    standalone loop (`r = 0.5 - 0.5*cos(pi*i/steps)`, q = start + r*(t-start))
+    are the same law.  Cosine vs linear is a time reparameterization, NOT a
+    different path, so clamping one target vector covers both.
+
+    Returns ``(q_out, clamped, info)``.  ``q_out is target_q`` (the same
+    object) whenever nothing was clamped, so safe moves are bit-identical.
+
+    B8g: by default each arm is clamped on its OWN 7-joint slice
+    (_zfloor_target_perarm).  ``ratchet=True`` (the pick / place flows) lets an
+    arm that starts below the floor move at most _ZF_RATCHET_TOL_M lower;
+    otherwise such an arm is skipped alone.  PICK_ZFLOOR_PERARM=0 selects the
+    pre-B8g single-scalar body (_zfloor_target_single), which ignores ``ratchet``.
+    """
+    if not _ZFLOOR_ENABLED:
+        return target_q, False, None          # kill switch
+    if floor is None:
+        floor = _TABLE_FLOOR_PELVIS
+    if floor is None:
+        return target_q, False, None          # fail-open: no table latched yet
+    if arm_ik is None or not hasattr(arm_ik, 'reduced_robot'):
+        return target_q, False, None
+    if _zfloor_perarm_on():
+        return _zfloor_target_perarm(arm_ik, start_q, target_q, floor, ratchet)
+    return _zfloor_target_single(arm_ik, start_q, target_q, floor)
+
+
+def _zfloor_target_single(arm_ik, start_q, target_q, floor):
+    """The pre-B8g single-scalar clamp (PICK_ZFLOOR_PERARM=0), unchanged."""
+    try:
+        start_q = np.asarray(start_q, dtype=np.float64)
+        target_q = np.asarray(target_q, dtype=np.float64)
+        z_start = _lowest_limb_z(arm_ik, start_q)
+        if z_start is None:
+            return target_q, False, None
+        if z_start < floor:
+            # already below the floor before this move; clamping would trap the
+            # arm in the table and block the move that gets it out. fail open,
+            # loudly.
+            sys.stderr.write(
+                f'[pick_daemon][zfloor] START already below the floor '
+                f'({z_start:+.4f} < {floor:+.4f}) — clamp SKIPPED, move allowed '
+                f'(recovery/escape)\n')
+            sys.stderr.flush()
+            return target_q, False, ('start_below', z_start)
+        worst = z_start
+        k = None
+        for i in range(1, _ZFLOOR_STEP + 1):
+            s = i / float(_ZFLOOR_STEP)
+            z = _lowest_limb_z(arm_ik, start_q + s * (target_q - start_q))
+            if z < worst:
+                worst = z
+            if z < floor and k is None:
+                k = i
+        if k is None:
+            return target_q, False, ('clear', worst)
+        lo_s, hi_s = (k - 1) / float(_ZFLOOR_STEP), k / float(_ZFLOOR_STEP)
+        for _ in range(_ZFLOOR_ITERS):
+            mid = 0.5 * (lo_s + hi_s)
+            if _lowest_limb_z(arm_ik, start_q + mid * (target_q - start_q)) >= floor:
+                lo_s = mid
+            else:
+                hi_s = mid
+        return (start_q + lo_s * (target_q - start_q)), True, (lo_s, worst)
+    except Exception as _ze:
+        sys.stderr.write(f'[pick_daemon][zfloor] clamp skipped ({_ze!r})\n')
+        sys.stderr.flush()
+        return target_q, False, None
+
+
+def _zfloor_perarm_on():
+    """B8g kill switch PICK_ZFLOOR_PERARM, read at CALL time (default on).
+    '0' / 'off' / 'false' / 'no' selects the single-scalar clamp, byte-for-byte."""
+    return os.environ.get('PICK_ZFLOOR_PERARM', '1').strip().lower() not in (
+        '0', 'off', 'false', 'no')
+
+
+def _zf_wrist_short_m(arm_ik, side, target_q, out_q):
+    """B8g E4 logging: how far (m) one arm's hand point moves when the clamp
+    shortens its move.  Computed OUTSIDE the clamp: a failure returns nan and
+    can never make the clamp fail open."""
+    try:
+        model = arm_ik.reduced_robot.model
+        data = arm_ik.reduced_robot.data
+        fid = arm_ik.L_hand_id if side == 'left' else arm_ik.R_hand_id
+        pts = []
+        for q in (target_q, out_q):
+            pin.forwardKinematics(model, data, q)
+            fr = model.frames[fid]
+            pts.append((data.oMi[fr.parentJoint] * fr.placement).translation.copy())
+        return float(np.linalg.norm(pts[0] - pts[1]))
+    except Exception:
+        return float('nan')
