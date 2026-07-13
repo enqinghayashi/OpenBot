@@ -435,3 +435,43 @@ class HandController:
             return -1.0
         return 0.0
 
+    def _residual_bound(self):
+        """last_q with each joint's CLOSING lead over the measured q capped.
+
+        Returns the value to WRITE.  self.last_q is NOT rewritten: a clamp
+        that persisted would freeze the hand at the short value exactly as the
+        rejected design did, whereas recomputing per write means the re-assert
+        returns to the preset the instant the residual falls back under
+        RISER_MAX_RAD.
+
+        No DDS state (no reader, no motor_limits, None) -> self.last_q
+        UNCHANGED, so an absent reader can never silently reshape a command.
+
+        Inert by construction at the shipped placeholders: RISER_MAX_RAD is
+        inf, so `abs(lead) > RISER_MAX_RAD` is false for every joint and this
+        is the identity.  See the RISER_MAX_RAD/SETTLE_S block.
+        """
+        limits = self._read_limits()
+        if limits is None:
+            return self.last_q
+        q = dict(self.last_q)
+        for jid in DEX3_JOINTS:
+            try:
+                q_meas = float(limits[jid][0])
+            except Exception:
+                continue  # bad sample; skip
+            # Non-finite q is unusable. NaN comparisons are all false, so the
+            # bound checks below would pass NaN to the MCU; reject it here.
+            if not math.isfinite(q_meas):
+                continue
+            lead = q[jid] - q_meas
+            if abs(lead) <= RISER_MAX_RAD:
+                continue  # identity case
+            cdir = self._closing_dir(jid)
+            # Bound only the closing excess; OPEN stays untouched, and open
+            # verification uses a 0.2 rad tolerance.
+            if cdir == 0.0 or lead * cdir <= 0.0:
+                continue
+            q[jid] = q_meas + cdir * RISER_MAX_RAD
+        return q
+
