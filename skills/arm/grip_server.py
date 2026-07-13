@@ -401,3 +401,23 @@ class HandController:
         self._pub.Write(_build_cmd(q_dict))
 
     # ── residual bound + fault annunciator ───────────────────
+    def _read_limits(self):
+        """motor_limits() off our reader, or None.  NEVER raises.
+
+        The reader is optional and so is motor_limits (older/fake readers have
+        only motor_q), so this uses getattr and swallows everything: a missing
+        or misbehaving reader must degrade to "no DDS state", which both
+        callers treat as "do nothing".  That is load-bearing — an unguarded
+        dereference here sits inside _writer_loop / _state_payload and would
+        turn every `state` reply into ERROR and every release into an abort.
+        """
+        if self._reader is None:
+            return None
+        fn = getattr(self._reader, 'motor_limits', None)
+        if not callable(fn):
+            return None
+        try:
+            return fn()
+        except Exception:
+            return None
+
