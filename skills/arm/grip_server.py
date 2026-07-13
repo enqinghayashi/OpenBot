@@ -1050,3 +1050,5 @@ def _serve_conn(conn, controllers, readers, quit_event):
         _log(f'unexpected client error, dropping connection: {e}')
     finally:
         _log('client disconnected')
+
+
