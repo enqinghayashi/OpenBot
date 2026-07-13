@@ -750,3 +750,6 @@ def _persist(controllers):
             json.dump(payload, f)
     except Exception as e:
         _log(f'WARNING: persist failed: {e}')
+
+
+# ── command dispatch (one line in -> one line back out) ─────────────────────
