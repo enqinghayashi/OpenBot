@@ -717,3 +717,7 @@ class HandController:
              f'baseline={baseline:.0f})')
         return 'full'
 
+    def stop(self):
+        self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
