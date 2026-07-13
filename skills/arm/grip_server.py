@@ -1052,3 +1052,45 @@ def _serve_conn(conn, controllers, readers, quit_event):
         _log('client disconnected')
 
 
+def main():
+    iface = sys.argv[1] if len(sys.argv) > 1 else 'eth0'
+    if not NO_DDS:
+        ChannelFactoryInitialize(0, iface)
+    _log(f'starting (iface={iface}, NO_DDS={NO_DDS})')
+
+    readers = {'right': PressureReader('right'), 'left': PressureReader('left')}
+    controllers = {}
+    _seed_side('right', readers['right'], controllers)
+    _seed_side('left', readers['left'], controllers)
+
+    if os.path.exists(SOCK_PATH):
+        os.unlink(SOCK_PATH)  # stale socket from a crash
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(SOCK_PATH)
+    server.listen(4)
+
+    print('READY', flush=True)
+    _log('READY — listening on ' + SOCK_PATH)
+
+    quit_event = threading.Event()
+    try:
+        # Thread-per-connection: the daemon holds two client sockets at once,
+        # so a sequential accept loop would starve the second. Only quit stops
+        # accept.
+        while not quit_event.is_set():
+            server.settimeout(0.5)
+            try:
+                conn, _ = server.accept()
+            except socket.timeout:
+                continue
+            _log('accepted connection')
+            threading.Thread(target=_serve_conn,
+                             args=(conn, controllers, readers, quit_event),
+                             daemon=True).start()
+    finally:
+        quit_event.set()
+        for c in controllers.values():
+            c.stop()
+        server.close()
+        if os.path.exists(SOCK_PATH):
+            os.unlink(SOCK_PATH)
