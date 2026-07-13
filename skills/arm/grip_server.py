@@ -753,3 +753,148 @@ def _persist(controllers):
 
 
 # ── command dispatch (one line in -> one line back out) ─────────────────────
+def _handle_line(line, controllers, readers):
+    parts = line.split()
+    if not parts:
+        return 'ERROR:empty command'
+    cmd = parts[0]
+    try:
+        if cmd in ('open', 'close', 'open_left', 'close_left',
+                   'open_both', 'close_both'):
+            sides = []
+            if cmd in ('open_both', 'close_both'):
+                sides = ['right', 'left']
+            else:
+                sides = ['left' if cmd.endswith('_left') else 'right']
+            for side in sides:
+                if cmd.startswith('open'):
+                    controllers[side].open()
+                else:
+                    controllers[side].close()
+            _persist(controllers)
+            return 'DONE'
+
+        elif cmd == 'set':
+            if len(parts) < 3 or parts[1] not in ('right', 'left'):
+                return 'ERROR:set <side> <7f> [steps] [dt]'
+            vals = []
+            for tok in parts[2:]:
+                if len(vals) >= 7:
+                    break
+                try:
+                    vals.append(float(tok))
+                except ValueError:
+                    return 'ERROR:bad q value'
+            if len(vals) != 7:
+                return 'ERROR:need exactly 7 joint values'
+            targets = {jid: vals[jid] for jid in DEX3_JOINTS}
+            steps = STEP_DEFAULT
+            dt = DT_DEFAULT
+            if len(parts) >= 10:
+                try:
+                    steps = int(parts[9])  # set side q7 steps dt
+                except ValueError:
+                    return 'ERROR:bad steps'
+            if len(parts) >= 11:
+                try:
+                    dt = float(parts[10])
+                except ValueError:
+                    return 'ERROR:bad dt'
+            controllers[parts[1]].set(targets, steps=steps, dt=dt)
+            _persist(controllers)
+            return 'DONE'
+
+        elif cmd == 'close_adaptive':
+            if len(parts) < 2 or parts[1] not in ('right', 'left'):
+                return 'ERROR:close_adaptive <side> [max_fraction steps dt stop_threshold min_steps] [fingers_neutral]'
+            side = parts[1]
+            # fingers_neutral may appear in any trailing position, so it can be
+            # added without disturbing the five positional overrides; absence
+            # means false. Strip the token before parsing, or float() hits it
+            # and returns 'ERROR:bad max_fraction'.
+            fingers_neutral = 'fingers_neutral' in parts[2:]
+            if fingers_neutral:
+                parts = [p for p in parts if p != 'fingers_neutral']
+            mf = ADAPTIVE_MAX_FRACTION
+            steps = ADAPTIVE_STEPS
+            dt = ADAPTIVE_DT
+            stop = ADAPTIVE_STOP
+            min_steps = ADAPTIVE_MIN_STEPS
+            if len(parts) >= 3:
+                try:
+                    mf = float(parts[2])
+                except ValueError:
+                    return 'ERROR:bad max_fraction'
+            if len(parts) >= 4:
+                try:
+                    steps = int(parts[3])
+                except ValueError:
+                    return 'ERROR:bad steps'
+            if len(parts) >= 5:
+                try:
+                    dt = float(parts[4])
+                except ValueError:
+                    return 'ERROR:bad dt'
+            if len(parts) >= 6:
+                try:
+                    stop = float(parts[5])
+                except ValueError:
+                    return 'ERROR:bad stop_threshold'
+            if len(parts) >= 7:
+                try:
+                    min_steps = int(parts[6])
+                except ValueError:
+                    return 'ERROR:bad min_steps'
+            try:
+                verdict = controllers[side].close_adaptive(
+                    readers[side], max_fraction=mf, steps=steps, dt=dt,
+                    stop_threshold=stop, min_steps=min_steps,
+                    fingers_neutral=fingers_neutral)
+            except RuntimeError as e:
+                # no_dds is the only error close_adaptive raises
+                return f'ERROR:{e}'
+            _persist(controllers)
+            return f'DONE:{verdict}'
+
+        elif cmd == 'state':
+            side = parts[1] if len(parts) > 1 else None
+            if side is not None and side not in ('right', 'left'):
+                return 'ERROR:state [side]'
+            if side is None:
+                payload = {s: _state_payload(controllers[s], readers[s])
+                           for s in ('right', 'left')}
+            else:
+                payload = {side: _state_payload(controllers[side], readers[side])}
+            return 'DONE:' + json.dumps(payload)
+
+        elif cmd == 'pressure':
+            # Finger-pad pressure from the same reader the adaptive close
+            # stops on. 'max' is read by call sites; 'ok' is the availability
+            # flag the insert guard keys off. When ok is false, 'max' is a 0.0
+            # stand-in, not a measurement.
+            side = parts[1] if len(parts) > 1 else None
+            if side is not None and side not in ('right', 'left'):
+                return 'ERROR:pressure [side]'
+            sides = ('right', 'left') if side is None else (side,)
+            payload = {}
+            for s in sides:
+                has = readers[s].has_data()
+                payload[s] = {
+                    'ok': bool(has),
+                    'max': float(readers[s].finger_pressure()) if has else 0.0,
+                }
+            return 'DONE:' + json.dumps(payload)
+
+        elif cmd == 'hold':
+            # no-op: 20 Hz re-assert holds last_q
+            side = parts[1] if len(parts) > 1 else None
+            if side is not None and side not in ('right', 'left'):
+                return 'ERROR:hold [side]'
+            return 'DONE'
+
+        elif cmd == 'quit':
+            return 'DONE'
+
+        return f'ERROR:unknown command "{cmd}"'
+    except Exception as e:  # one bad command isn't fatal
+        return f'ERROR:{e}'
