@@ -1457,3 +1457,240 @@ def verify_ik_target(arm_ik, q14, side, target_T):
     R_err = R_ee @ R_t.T
     ori_err = float(np.arccos(np.clip((np.trace(R_err) - 1.0) / 2.0, -1.0, 1.0)))
     return pos_err, ori_err, R_ee, float(np.linalg.det(R_ee))
+
+
+def solve_wrist_orientation_in_place(arm_ik, q14, side, target_T,
+                                     iters=WRIST_GN_ITERATIONS,
+                                     tol=WRIST_GN_TOL):
+    """Wrist-space Gauss-Newton — the W2 spec restore (REVIEW_TASK1 W2,
+    IK_SOLVER_RESEARCH §6.1, 02-daemon-poses.md:296-328).
+
+    Minimizes ‖pin.log3(R_ee(q|wrist) @ R_targetᵀ)‖ over the side's THREE
+    wrist joints (user map: [11,12,13] right = forearm-yaw / up-down /
+    [6]-index FLEXION; [4,5,6] left), all other joints held:
+      - forward-difference Jacobian h=1e-3
+      - lstsq(J, -r) step
+      - clip to WRIST_LIMITS
+      - warm start = current wrist q
+      - stagnation guard: 5 iters without improvement -> converged=False
+      - best iterate retained; never raises
+    Returns (q_new, ori_err, pos_err, converged) — the full 14-qq copy with
+    the side's wrist replaced.
+    """
+    iw = RIGHT_WRIST_Q_IDX if side == 'right' else LEFT_WRIST_Q_IDX
+    qb = np.array(q14, dtype=np.float64)
+    qw = qb[iw].copy()
+    R_target = np.asarray(target_T[:3, :3], dtype=np.float64)
+
+    def _resid(qw_):
+        qq = qb.copy()
+        qq[iw] = qw_
+        T_ee = get_ee_pose(arm_ik, qq, side)
+        if T_ee is None:
+            return None
+        R_ee = np.asarray(T_ee.rotation, dtype=np.float64)
+        return np.asarray(pin.log3(R_ee @ R_target.T), dtype=np.float64)
+
+    h = 1e-3
+    qw_best = qw.copy()
+    r_best = _resid(qw_best)
+    err_best = float(np.linalg.norm(r_best)) if r_best is not None else float('inf')
+    converged = False
+    stagnant = 0
+    for _ in range(iters):
+        r = _resid(qw)
+        if r is None:
+            break
+        err = float(np.linalg.norm(r))
+        if err < err_best:
+            err_best = err
+            qw_best = qw.copy()
+        if err <= tol:
+            converged = True
+            break
+        # finite-difference Jacobian
+        J = np.zeros((3, 3))
+        ok = True
+        for j in range(3):
+            qw_h = qw.copy()
+            qw_h[j] += h
+            rh = _resid(qw_h)
+            if rh is None:
+                ok = False
+                break
+            J[:, j] = (rh - r) / h
+        if not ok:
+            break
+        step, *_ = np.linalg.lstsq(J, -r, rcond=None)
+        qw_try = np.clip(qw + step,
+                         [-WRIST_LIMITS[int(i)] for i in iw],
+                         [WRIST_LIMITS[int(i)] for i in iw])
+        if np.allclose(qw_try, qw, atol=1e-9):
+            break
+        r_try = _resid(qw_try)
+        if r_try is not None and float(np.linalg.norm(r_try)) < err:
+            qw = qw_try
+            stagnant = 0
+        else:
+            stagnant += 1
+            if stagnant >= 5:
+                break
+        if converged:
+            break
+
+    q_out = qb.copy()
+    q_out[iw] = qw_best
+    pos_err, ori_err, _, _ = verify_ik_target(arm_ik, q_out, side, target_T)
+    if pos_err is None:
+        pos_err, ori_err = float('inf'), float('inf')
+    converged = converged or (err_best <= tol)
+    return q_out, err_best, pos_err, converged
+
+
+def _solve_ik_verified(arm_ik, left_target, right_target, cur_q, side,
+                       log_prefix):
+    """solve_ik + verify-wash + wrist-GN polish; SOFT-FAIL on exhaustion
+    (v3.2 restore, 2026-08-30).
+
+    v3.4 (2026-08-30 user directive): the v3.3 NO-PITCH corrective gate
+    (`_enforce_pitch_freeze` + the enforce_pitch_freeze flag) is REMOVED
+    COMPLETELY — "do not pitch hands upwards or downwards" stays as a
+    DIAGNOSTIC only (the wp4-FK body-axis decomposition logs flag the
+    achieved pitch vs PITCH_FROZEN_TOL above; nothing corrects it).  The
+    upright flows were restored to the ORIGINAL insert guard + retract at
+    the same time (see the upright waypoint comments).
+
+    Wash loop (<= SOLVE_WASH_ATTEMPTS): each solve runs with warm = the
+    previous attempt's OUTPUT sol_q (identical warm start is deterministic,
+    so re-solving it is a filter no-op — verified separately by the dedup);
+    the filter weights [0.4, 0.3, 0.2, 0.1] sum to 1, so repeated solves of
+    the same waypoint converge the blend to the raw solution.  After each
+    attempt, FK-verify (pos <= SOLVE_VERIFY_POS_TOL, ori <= SOLVE_VERIFY_ORI_TOL).
+    Exception signature (sol_q ~ warm AND pos_err large = Ipopt raised:
+    robot_arm_ik.py:246-271 returns the passed q): log loud, break the wash
+    (warm retries cannot help — the filter already got the input).
+
+    Fail path: GN the best iterate; if wrist-GN converged AND pos ok,
+    re-tau via _arm_gravity_ff (GN changed q); else loud
+    'ERROR:IK verify failed: …' and return the GN-polished best-effort
+    (gn_q, re-tau) — v3.1's hard-fail (None, None) killed the whole FSM at
+    the first waypoint whose target sat beyond the reach cap (before any
+    arm motion); the original FSM commanded whatever the solver returned
+    and let the guarded move be the safety.  The failure stays LOUD (the
+    ERROR line above); the post-move FK checks + gates judge what happened.
+    Only when the solver returned NO usable q at all (best is None) is
+    (None, None) returned — the original's True-fail, the caller's
+    ERROR:IK failed branches.
+    """
+    if (side == 'right' and (left_target is None or right_target is None)) or \
+       (side == 'left' and (left_target is None or right_target is None)):
+        return None, None
+    target_T = right_target if side == 'right' else left_target
+    warm = np.array(cur_q, dtype=np.float64)
+    best = None          # (sol_q, sol_tauff, pos_err, ori_err)
+    best_pos_err = float('inf')
+    raised = False
+    for attempt in range(1, SOLVE_WASH_ATTEMPTS + 1):
+        with _SuppressStdout():
+            sol_q, sol_tauff = arm_ik.solve_ik(
+                left_target, right_target,
+                current_lr_arm_motor_q=warm.copy(),
+                current_lr_arm_motor_dq=np.zeros(14))
+        pos_err, ori_err, _, _ = verify_ik_target(arm_ik, sol_q, side, target_T)
+        if pos_err is None:
+            sys.stderr.write(
+                f'[pick_daemon] {log_prefix}IK verify attempt {attempt}/'
+                f'{SOLVE_WASH_ATTEMPTS}: FK failed — aborting wash\n')
+            sys.stderr.flush()
+            break
+        sys.stderr.write(
+            f'[pick_daemon] {log_prefix}IK verify attempt {attempt}/'
+            f'{SOLVE_WASH_ATTEMPTS}: pos_err={pos_err:.4f} m '
+            f'ori_err={ori_err:.4f} rad\n')
+        sys.stderr.flush()
+        if pos_err < best_pos_err:
+            best_pos_err = pos_err
+            best = (sol_q, sol_tauff, pos_err, ori_err)
+        if (np.allclose(sol_q, warm, atol=1e-4)
+                and pos_err > SOLVE_VERIFY_POS_TOL):
+            sys.stderr.write(
+                f'[pick_daemon] {log_prefix}Ipopt solve raised — warm retries '
+                f'cannot dilute the filter, continuing to GN polish\n')
+            sys.stderr.flush()
+            raised = True
+            break
+        if pos_err <= SOLVE_VERIFY_POS_TOL and ori_err <= SOLVE_VERIFY_ORI_TOL:
+            return sol_q, sol_tauff
+        warm = sol_q
+
+    # wash exhausted: wrist-space GN on the best iterate.
+    gn_base = best[0] if best is not None else np.array(cur_q, dtype=np.float64)
+    gn_q, gn_ori_err, gn_pos_err, gn_conv = solve_wrist_orientation_in_place(
+        arm_ik, gn_base, side, target_T)
+    if gn_conv and gn_pos_err is not None and gn_pos_err <= SOLVE_VERIFY_POS_TOL:
+        sys.stderr.write(
+            f'[pick_daemon] {log_prefix}wrist-GN polish: '
+            f'ori_err={gn_ori_err:.4f} rad pos_err={gn_pos_err:.4f} m '
+            f'(wash attempts exhausted{", solver raised" if raised else ""})\n')
+        sys.stderr.flush()
+        return gn_q, _arm_gravity_ff(gn_q, np.zeros(14))
+
+    if best is None:
+        # no usable q: solve_ik returned (None, None) or FK failed every
+        # attempt. this is a true fail, left to the caller's ERROR:IK failed
+        # branch; cur_q would only no-op the waypoint.
+        sys.stderr.write(
+            f'[pick_daemon] ERROR:IK verify failed: no usable solve from '
+            f'the solver (None / FK failed every attempt) — True-fail, '
+            f'caller\'s ERROR:IK failed branch (no best-effort exists)\n')
+        sys.stderr.flush()
+        return None, None
+
+    sys.stderr.write(
+        f'[pick_daemon] ERROR:IK verify failed: pos={gn_pos_err if gn_pos_err is not None else float("inf"):.4f} '
+        f'm ori={gn_ori_err:.4f} rad (wash + wrist GN exhausted) — v3.2 '
+        f'SOFT-FAIL: commanding the GN-polished best-effort pose (restored '
+        f'original FSM semantics — the guarded move + stop-FN is the '
+        f'safety; see DEPLOY docs)\n')
+    sys.stderr.flush()
+    # command whatever wash+GN returned, never (None, None): no guard on the
+    # current q. the verify and GN polish stay, since their logs report the
+    # waypoint and the caller keeps its gates (pressure evidence, GATE_CONF, FK
+    # orientation checks).
+    return gn_q, _arm_gravity_ff(gn_q, np.zeros(14))
+
+
+# ── the deviation ramp + body-axis decomposition ──────────────────────────────
+# upright right pick tilt, per attempt. deviation is rotation about the palm
+# normal; with the palm sideways it tilts the fingers up or down. attempt 1
+# tilts up, 2 is straight and 3 tilts down, so there are 3 attempts. right
+# arm only; the left arm keeps _l_dev_tgt. the off flag
+# UPRIGHT_TILT_OFF_FLAG makes every attempt +1 on the next pick.
+UPRIGHT_TILT_SIGNS = (1.0, 0.0, -1.0)   # attempt 1 up, 2 straight, 3 down
+# per-attempt grasp-height shift (m), upright right: the straight attempt
+# descends 5 cm more. the z-floor clamp and insert guard stay in force, so a
+# shift the table forbids gets clamped.
+UPRIGHT_TILT_DZ = (0.0, -0.05, 0.0)
+
+
+def _upright_tilt_dz(attempt):
+    """Grasp-height shift (m) for the attempt; 0.0 when the off flag exists."""
+    try:
+        if os.path.exists(UPRIGHT_TILT_OFF_FLAG):
+            return 0.0
+    except Exception:
+        pass
+    i = min(max(int(attempt), 0), len(UPRIGHT_TILT_DZ) - 1)
+    return float(UPRIGHT_TILT_DZ[i])
+UPRIGHT_TILT_OFF_FLAG = '/tmp/openbot_upright_tilt_off'
+UPRIGHT_ATTEMPTS = len(UPRIGHT_TILT_SIGNS)   # one attempt per tilt sign
+
+
+def _upright_attempts():
+    """3 (one per tilt) normally; the B8i/B8j 2 when the off flag exists."""
+    try:
+        if os.path.exists(UPRIGHT_TILT_OFF_FLAG):
+            return 2
+    except Exception:
+        pass
+    return UPRIGHT_ATTEMPTS
