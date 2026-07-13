@@ -231,3 +231,15 @@ WRITER_SOCK_DEFAULT = '/tmp/merged_writer.sock'
 ARM_WRITER_ENABLED = False  # main() sets this via _detect_writer_mode()
 
 
+def _detect_writer_mode():
+    """PICK_ARM_WRITER: on|1|true|yes → writer mode (fail-fast if the writer
+    is unreachable); off|0|false|no → standalone arm_sdk; auto (default) →
+    writer mode iff the writer's socket exists (the merged writer is running
+    and owns rt/lowcmd + the arms — a second arm_sdk writer in this process
+    would fight it and freeze the arms)."""
+    _env = os.environ.get('PICK_ARM_WRITER', 'auto').strip().lower()
+    if _env in ('on', '1', 'true', 'yes'):
+        return True
+    if _env in ('off', '0', 'false', 'no'):
+        return False
+    return os.path.exists(WRITER_SOCK_DEFAULT)
