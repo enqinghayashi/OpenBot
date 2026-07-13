@@ -2111,3 +2111,194 @@ def _zf_wrist_short_m(arm_ik, side, target_q, out_q):
         return float(np.linalg.norm(pts[0] - pts[1]))
     except Exception:
         return float('nan')
+
+
+def _zfloor_target_perarm(arm_ik, start_q, target_q, floor, ratchet):
+    """B8g per-arm clamp.  Each arm is scanned over its OWN 7-joint slice with
+    the same 32-step scan and 20-step bisection as the single-scalar clamp, so
+    one arm's lowest limb never depends on the other arm's joints.
+
+    An arm that starts below the floor: with ``ratchet`` (pick / place flow) it
+    may move, but its lowest limb never goes more than _ZF_RATCHET_TOL_M below
+    where it started; without it, that arm alone is skipped (the legacy escape),
+    logged per arm.  Returns ``(q_out, clamped, info)``; ``info`` when clamped is
+    (smallest applied scale, worst lowest-z, {side: {'s', 'lw', 'mode', 'short_m'}}).
+    """
+    try:
+        start_q = np.asarray(start_q, dtype=np.float64)
+        target_q = np.asarray(target_q, dtype=np.float64)
+        z0 = {}
+        for side in ('left', 'right'):
+            # None means no limb frames for this arm; only that arm is skipped,
+            # the other is still clamped.
+            z0[side] = _lowest_limb_z(arm_ik, start_q, side)
+        if z0['left'] is None and z0['right'] is None:
+            return target_q, False, None
+        out = None
+        per = {}
+        skipped = None
+        worst_all = None
+        for side, sl in (('left', slice(0, 7)), ('right', slice(7, 14))):
+            zs = z0[side]
+            if zs is None:
+                continue                      # no limb frames: skip this arm
+            if not np.any(target_q[sl] != start_q[sl]):
+                continue                      # this arm does not move: nothing to clamp or log
+            eff = floor
+            mode = 'clamp'
+            if zs < floor:
+                if not ratchet:
+                    sys.stderr.write(
+                        f'[pick_daemon][zfloor] START already below the floor '
+                        f'({zs:+.4f} < {floor:+.4f}) arm={side} - clamp SKIPPED for '
+                        f'this arm, move allowed (recovery/escape)\n')
+                    sys.stderr.flush()
+                    skipped = zs if skipped is None else min(skipped, zs)
+                    continue
+                eff = zs - _ZF_RATCHET_TOL_M
+                mode = 'ratchet'
+            worst = zs
+            k = None
+            for i in range(1, _ZFLOOR_STEP + 1):
+                s = i / float(_ZFLOOR_STEP)
+                z = _lowest_limb_z(arm_ik, start_q + s * (target_q - start_q), side)
+                if z < worst:
+                    worst = z
+                if z < eff and k is None:
+                    k = i
+            worst_all = worst if worst_all is None else min(worst_all, worst)
+            if k is None:
+                continue                      # this arm stays above the floor on its own segment
+            lo_s, hi_s = (k - 1) / float(_ZFLOOR_STEP), k / float(_ZFLOOR_STEP)
+            for _ in range(_ZFLOOR_ITERS):
+                mid = 0.5 * (lo_s + hi_s)
+                if _lowest_limb_z(arm_ik, start_q + mid * (target_q - start_q), side) >= eff:
+                    lo_s = mid
+                else:
+                    hi_s = mid
+            if out is None:
+                out = target_q.copy()
+            out[sl] = start_q[sl] + lo_s * (target_q[sl] - start_q[sl])
+            per[side] = {'s': lo_s, 'lw': worst, 'mode': mode,
+                         'short_m': _zf_wrist_short_m(arm_ik, side, target_q, out)}
+        if out is None:
+            if skipped is not None:
+                return target_q, False, ('start_below', skipped)
+            present = [v for v in z0.values() if v is not None]
+            return target_q, False, ('clear', worst_all if worst_all is not None
+                                     else min(present))
+        s_min = min(d['s'] for d in per.values())
+        lw_min = min(d['lw'] for d in per.values())
+        return out, True, (s_min, lw_min, per)
+    except Exception as _ze:
+        sys.stderr.write(f'[pick_daemon][zfloor] clamp skipped ({_ze!r})\n')
+        sys.stderr.flush()
+        return target_q, False, None
+
+
+def _apply_zfloor(start_q, target_q, where, zf_label=None, zf_legacy=False):
+    """Clamp + log.  Returns (q_out, was_clamped).
+
+    B8g: ``zf_label`` names the waypoint in the per-arm log (``where`` still names
+    the cancel phase).  ``zf_legacy`` keeps closeouts, retracts and the safe exit
+    on the legacy skip even inside a pick / place flow.
+    """
+    q_out, clamped, info = _zfloor_target(
+        _ARM_IK, start_q, target_q, ratchet=bool(_ZF_FLOW[0]) and not zf_legacy)
+    if not _zfloor_perarm_on():
+        if clamped:
+            sys.stderr.write(
+                f'[pick_daemon][zfloor] CLAMPED {where}: floor={_TABLE_FLOOR_PELVIS:+.4f} '
+                f'lowest-would-be={info[1]:+.4f} -> s={info[0]:.3f} of the move\n')
+            sys.stderr.flush()
+        return q_out, clamped
+    _zf_account(start_q, target_q, where, zf_label, clamped, info, zf_legacy)
+    return q_out, clamped
+
+
+def _zf_account(start_q, target_q, where, zf_label, clamped, info, zf_legacy=False):
+    """B8g: one CLAMPED line per clamped arm, and the per-command tallies behind
+    the E4 summary and the E5 reply token.  Logging and bookkeeping only: it never
+    raises and never changes the clamp's output.
+
+    E5 scope: inside a pick / place flow only the command's OWN arm counts, and
+    its post-drop closeouts (zf_legacy) do not; outside a flow (the pose verbs)
+    every arm the move changes counts.  Idle-arm moves are logged, never counted.
+    """
+    try:
+        st = np.asarray(start_q, dtype=np.float64)
+        tq = np.asarray(target_q, dtype=np.float64)
+        per = info[2] if (clamped and info is not None and len(info) > 2) else {}
+        s_arm = {'left': 1.0, 'right': 1.0}
+        for side in ('left', 'right'):
+            d = per.get(side)
+            if d is not None and d['s'] < 1.0:
+                s_arm[side] = d['s']
+                sys.stderr.write(
+                    f'[pick_daemon][zfloor] CLAMPED {where}: floor={_TABLE_FLOOR_PELVIS:+.4f} '
+                    f'lowest-would-be={d["lw"]:+.4f} -> s={d["s"]:.3f} of the move '
+                    f'arm={side} label={zf_label or where} '
+                    f'wrist_short={100.0 * d["short_m"]:.1f}cm\n')
+                sys.stderr.flush()
+        moving = [side for side, sl in (('left', slice(0, 7)), ('right', slice(7, 14)))
+                  if np.any(tq[sl] != st[sl])]
+        if _ZF_FLOW[0]:
+            # closeouts and retracts (zf_legacy) never count toward the token.
+            # NEUTRAL does not fit at a table, so counting it would mark every
+            # table place as not at the drop point; for place the token covers
+            # moves up to and including the release.
+            counted = [] if zf_legacy else [side for side in moving if side == _ZF_ACTIVE[0]]
+        else:
+            counted = moving
+        if moving:
+            _ZF_CMD['moves'] += 1      # a move that changes some arm ("before any arm motion")
+        for side in moving:
+            if s_arm[side] < _ZF_CMD['min_s'][side]:
+                _ZF_CMD['min_s'][side] = s_arm[side]
+        if moving and min(s_arm[side] for side in moving) < _ZF_LIMITED_S:
+            _ZF_CMD['limited'] += 1
+        if counted:
+            s_any = min(s_arm[side] for side in counted)
+            if s_any < _ZF_CMD['min_any']:
+                _ZF_CMD['min_any'] = s_any
+    except Exception as _ae:
+        sys.stderr.write(f'[pick_daemon][zfloor] accounting skipped ({_ae!r})\n')
+        sys.stderr.flush()
+
+
+def _zf_cmd_begin():
+    """Top of every command: no flow context, no commanded-target record, and
+    empty per-command tallies."""
+    _ZF_FLOW[0] = False
+    _ZF_ACTIVE[0] = None
+    _ZF_PRIOR[0] = None
+    _ZF_MEAS_Q[0] = None
+    _ZF_LAST_SENT[0] = None
+    _ZF_CMD['moves'] = 0
+    _ZF_CMD['limited'] = 0
+    _ZF_CMD['min_s'] = {'left': 1.0, 'right': 1.0}
+    _ZF_CMD['min_any'] = 1.0
+
+
+def _zf_cmd_end(cmd):
+    """E4: one summary line per command (per-arm clamp on), and the E5 LIMITED
+    line when the command's own arm was floor-limited.  Runs in the command
+    loop's finally; never raises."""
+    try:
+        if not _zfloor_perarm_on():
+            return
+        words = cmd.split()
+        verb = words[0] if words else ''
+        fl = ('%+.4f' % _TABLE_FLOOR_PELVIS) if _TABLE_FLOOR_PELVIS is not None else 'none'
+        sys.stderr.write(
+            f'[pick_daemon][zfloor] summary {verb}: floor={fl} '
+            f'min_s_right={_ZF_CMD["min_s"]["right"]:.3f} '
+            f'min_s_left={_ZF_CMD["min_s"]["left"]:.3f} '
+            f'limited_moves={_ZF_CMD["limited"]}\n')
+        _s_lim = _zf_token_s()          # same value the reply token carries
+        if _s_lim is not None:
+            sys.stderr.write(
+                f'[pick_daemon][zfloor] LIMITED {verb}: s={_s_lim:.2f}\n')
+        sys.stderr.flush()
+    except Exception:
+        pass
