@@ -496,3 +496,31 @@ class HandController:
                 bad[jid] = mode
         return bad
 
+    def _check_faults(self, now=None):
+        """EDGE-TRIGGERED annunciator line, or None.  At most 1 Hz.
+
+        B0.3 — one line when any mode != 1 APPEARS and one line when it
+        CLEARS; nothing in between.  Called from the 20 Hz writer loop, so the
+        1 Hz gate lives here rather than in the caller.  No DDS state emits
+        nothing AND leaves the edge state alone: "no state" is not evidence
+        that a fault cleared.
+        """
+        if now is None:
+            now = time.time()
+        if now - self._last_fault_check < 1.0:
+            return None
+        self._last_fault_check = now
+        bad = self._faulted_modes()
+        if bad is None:
+            return None
+        if bad and not self._fault_active:
+            self._fault_active = True
+            return (f'{self._side} FAULT: motor(s) NOT in servo mode '
+                    f'(mode != 1): {bad} — mode=0 is DISABLED/LIMP (~0 N.m, '
+                    f'backdrivable), so a grip held by it LOOSENS')
+        if not bad and self._fault_active:
+            self._fault_active = False
+            return f'{self._side} FAULT CLEARED: all motors mode == 1'
+        return None
+
+    # ── the commands that actually drive the hand ───────────────────────────
