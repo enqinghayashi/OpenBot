@@ -2302,3 +2302,66 @@ def _zf_cmd_end(cmd):
         sys.stderr.flush()
     except Exception:
         pass
+
+
+def _zf_token_s():
+    """E5: the applied scale printed for a floor-limited command, or None when no
+    move of the command was limited.  A limited move never prints 0.98: the verifier
+    reads s < 0.98 as limited (brain/verifier.py _zfloor_limited_note), so 0.975-0.979
+    is printed as 0.97.  The reply token and the LIMITED log line share this value."""
+    if _ZF_CMD['min_any'] >= _ZF_LIMITED_S:
+        return None
+    return min(round(float(_ZF_CMD['min_any']), 2), round(_ZF_LIMITED_S - 0.01, 2))
+
+
+def _zf_reply_suffix(verb):
+    """E5: the `; zfloor_limited=<s>` token for this command's ONE stdout reply
+    line, or '' unless the command's own moves were floor-limited (applied scale
+    < 0.98).  Only the place / place_left and pose verbs carry it: a pick is
+    reported on stderr alone.  Never raises."""
+    try:
+        if not _zfloor_perarm_on() or verb not in _ZF_TOKEN_VERBS:
+            return ''
+        s_tok = _zf_token_s()
+        if s_tok is None:
+            return ''
+        return '; zfloor_limited=%.2f' % s_tok
+    except Exception:
+        return ''
+
+
+def _zf_pick_begin(active, arm=None):
+    """First statement of a pick / place handler: this command runs in the flow
+    (ratchet for in-flow moves), ``active`` is its own arm, any idle-arm pin of an
+    earlier command is void, and the floor it found is kept for E6."""
+    _ZF_FLOW[0] = True
+    _ZF_ACTIVE[0] = active
+    _ZF_PRIOR[0] = (_TABLE_FLOOR_PELVIS, _TABLE_FLOOR_SRC)
+    _ZF_IDLE_PIN['left'] = None
+    _ZF_IDLE_PIN['right'] = None
+    # precheck: measured arm state at command start, before any motion; read
+    # only when the per-arm clamp is on.
+    _ZF_MEAS_Q[0] = None
+    if arm is not None and _zfloor_perarm_on():
+        try:
+            _ZF_MEAS_Q[0] = np.array(arm.get_current_dual_arm_q(), dtype=np.float64).copy()
+        except Exception:
+            _ZF_MEAS_Q[0] = None
+
+
+def _zf_clear_pins():
+    """floor_clear: the idle-arm pin goes with the floor it was recorded under."""
+    _ZF_IDLE_PIN['left'] = None
+    _ZF_IDLE_PIN['right'] = None
+
+
+def _zf_pin_idle(side, q=None):
+    """E2: pin the idle arm to its COMMANDED post-clamp slice: ``q`` when given,
+    else the 14-vector the last move commanded.  Per-arm only; a no-op otherwise."""
+    if not _zfloor_perarm_on():
+        return
+    src_q = _ZF_LAST_SENT[0] if q is None else q
+    if src_q is None:
+        return
+    lo, hi = (0, 7) if side == 'left' else (7, 14)
+    _ZF_IDLE_PIN[side] = np.array(src_q[lo:hi], dtype=np.float64).copy()
