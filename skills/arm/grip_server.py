@@ -547,3 +547,6 @@ class HandController:
     def open(self):
         self.set(OPEN_PRESETS[self._side])
 
+    def close(self):
+        self.set(CLOSE_PRESETS[self._side])
+
