@@ -395,3 +395,9 @@ class HandController:
                 _log(f'{self._side} fault-check error: {e}')
             time.sleep(1.0 / WRITE_HZ)
 
+    def _write(self, q_dict):
+        if self._pub is None:  # NO_DDS: no writer, just state
+            return
+        self._pub.Write(_build_cmd(q_dict))
+
+    # ── residual bound + fault annunciator ───────────────────
