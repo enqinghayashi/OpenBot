@@ -631,3 +631,89 @@ class HandController:
             issued.append('thumb->close')
         return issued
 
+    def close_adaptive(self, reader, max_fraction=ADAPTIVE_MAX_FRACTION,
+                       steps=ADAPTIVE_STEPS, dt=ADAPTIVE_DT,
+                       stop_threshold=ADAPTIVE_STOP,
+                       min_steps=ADAPTIVE_MIN_STEPS,
+                       fingers_neutral=False):
+        """Incrementally close until finger pressure exceeds threshold.
+
+        Thresholds preserved from the old daemon (close_until_contact):
+        steps=50, dt=0.02, stop_threshold=200000, min_steps=10.  Pressure
+        feedback is read IN-SERVER.
+
+        max_fraction is still passed through clamped_close_target, i.e. capped
+        at F_MAX_SAFE — which is 1.0 as of 2026-09-19, so the cap is currently
+        a NO-OP on the endpoint.  The cap machinery is deliberately kept (see
+        the F_MAX_SAFE comment): it is the single source of truth that stops
+        the pose COMMANDED here and the pose SCORED in _score_closure_blocked
+        from drifting apart.  Callers that want the preset without the ramp
+        still have `set(CLOSE_PRESETS[side])`.
+
+        Returns:
+            'contact' — stopped early, finger grip detected
+            'full'    — reached the (F_MAX_SAFE-clamped) fraction without
+                        threshold
+            'no_data' — no pressure data throughout (closed to max)
+        Raises:
+            RuntimeError('no_dds') — server in NO_DDS mode (no feedback
+            channel at all); the client surfaces this as ERROR:no_dds.
+        """
+        if NO_DDS:
+            raise RuntimeError('no_dds')
+        steps = max(1, int(steps))
+        dt = max(0.005, float(dt))
+        min_steps = max(1, int(min_steps))
+        # F_MAX_SAFE cap: the ramp is a straight line in joint space, so an
+        # uncapped fraction transits the contact band.
+        targets, _eff = clamped_close_target(self._side, max_fraction)
+        if _eff < float(max_fraction):
+            _log(f'{self._side} close_adaptive: max_fraction '
+                 f'{float(max_fraction):.3f} CLAMPED to {_eff:.3f} '
+                 f'(F_MAX_SAFE={F_MAX_SAFE:.3f}) — the OPEN->CLOSE ramp '
+                 f'transits a self-collision band above this')
+        baseline = reader.finger_pressure()
+        _log(f'{self._side} close_adaptive: baseline={baseline:.0f}, '
+             f'stop_threshold={stop_threshold:.0f}, min_steps={min_steps}, '
+             f'steps={steps}')
+        # Staging runs outside the lock because _stage_pre_close calls set(),
+        # which takes self._lock, and threading.Lock is not reentrant.
+        staged = self._stage_pre_close(fingers_neutral)
+        if staged:
+            _log(f'{self._side} close_adaptive: staged '
+                 f'{", ".join(staged)} before the close ramp')
+        with self._lock:
+            start = dict(self.last_q)
+            for i in range(1, steps + 1):
+                r = 0.5 - 0.5 * np.cos(np.pi * i / steps)
+                q = {jid: float(start[jid] + r * (targets.get(jid, start[jid])
+                                                  - start[jid]))
+                     for jid in DEX3_JOINTS}
+                self._write(q)
+                time.sleep(dt)
+                p = reader.finger_pressure()
+                if i % 10 == 0 or (i > min_steps and p > baseline + 10000):
+                    _log(f'{self._side} close_adaptive step {i}/{steps}: '
+                         f'finger_pressure={p:.0f} (baseline={baseline:.0f}, '
+                         f'stop_at={stop_threshold:.0f})')
+                if i > min_steps and p > stop_threshold:
+                    _log(f'{self._side} close_adaptive: GRIP DETECTED at '
+                         f'step {i}/{steps} (finger_pressure={p:.0f} > '
+                         f'threshold={stop_threshold:.0f}, '
+                         f'delta={p - baseline:.0f})')
+                    self.last_q = {jid: float(q[jid]) for jid in DEX3_JOINTS}
+                    # Both exits arm the settle window after writing last_q,
+                    # including the contact return.
+                    self._bound_deadline = time.time() + SETTLE_S
+                    return 'contact'
+            self.last_q = {jid: float(targets[jid]) for jid in DEX3_JOINTS}
+            self._bound_deadline = time.time() + SETTLE_S
+        if baseline == 0:
+            _log(f'{self._side} close_adaptive: NO DDS DATA — '
+                 f'closed to max without feedback')
+            return 'no_data'
+        _log(f'{self._side} close_adaptive: reached full close, no grip '
+             f'detected (final_pressure={reader.finger_pressure():.0f}, '
+             f'baseline={baseline:.0f})')
+        return 'full'
+
