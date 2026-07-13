@@ -984,3 +984,5 @@ def _state_payload(controller, reader=None):
             payload.pop('mode', None)
             payload.pop('motorstate', None)
     return payload
+
+
