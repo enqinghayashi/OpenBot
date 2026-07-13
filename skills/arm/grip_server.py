@@ -421,3 +421,17 @@ class HandController:
         except Exception:
             return None
 
+    def _closing_dir(self, jid):
+        """+1/-1: the sign q MOVES in when this joint closes; 0 if pinned.
+
+        Derived from the presets, not hand-typed per joint, so it cannot
+        disagree with the ramp.  A pinned joint (OPEN == CLOSE) has no closing
+        direction and is never bounded.
+        """
+        delta = CLOSE_PRESETS[self._side][jid] - OPEN_PRESETS[self._side][jid]
+        if delta > 0.0:
+            return 1.0
+        if delta < 0.0:
+            return -1.0
+        return 0.0
+
