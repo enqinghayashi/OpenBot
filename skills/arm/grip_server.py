@@ -740,3 +740,13 @@ def _load_last_cmd():
         return None
 
 
+def _persist(controllers):
+    try:
+        payload = {side: {str(jid): controllers[side].last_q[jid]
+                          for jid in DEX3_JOINTS}
+                   for side in ('right', 'left')}
+        payload['ts'] = time.time()
+        with open(LAST_CMD_FILE, 'w') as f:
+            json.dump(payload, f)
+    except Exception as e:
+        _log(f'WARNING: persist failed: {e}')
