@@ -114,3 +114,13 @@ except ImportError:  # pragma: no cover — standalone lane with no module
     engine_cancel = _NoCancel()
 
 
+def _check_cancel(where):
+    """Motion choke-point probe: raise Cancelled if a cancel is pending.
+
+    Called from the arm-move and hand-move loops.  ``where`` names the PHASE
+    (not the function) because that is what makes the reply actionable — an
+    operator who cancels needs to know whether the arm stopped mid-descent
+    (hovering over the object) or mid-lift (holding it).  Those leave
+    different recovery options.
+    """
+    engine_cancel.check(where)
