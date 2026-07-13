@@ -524,3 +524,23 @@ class HandController:
         return None
 
     # ── the commands that actually drive the hand ───────────────────────────
+    def set(self, targets, steps=STEP_DEFAULT, dt=DT_DEFAULT):
+        """Cosine positional ramp from last commanded q to targets."""
+        steps = max(1, int(steps))
+        dt = max(0.005, float(dt))
+        with self._lock:
+            start = dict(self.last_q)
+            for i in range(1, steps + 1):
+                r = 0.5 - 0.5 * np.cos(np.pi * i / steps)
+                q = {jid: float(start[jid] + r * (targets.get(jid, start[jid])
+                                                  - start[jid]))
+                     for jid in DEX3_JOINTS}
+                self._write(q)
+                time.sleep(dt)
+            self.last_q = {jid: float(targets.get(jid, start[jid]))
+                           for jid in DEX3_JOINTS}
+            # Arm the settle window after the endpoint is recorded, so the
+            # 20 Hz re-assert keeps driving onto the preset for SETTLE_S.
+            # That is what makes an air close converge instead of latching.
+            self._bound_deadline = time.time() + SETTLE_S
+
