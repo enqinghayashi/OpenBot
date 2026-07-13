@@ -544,3 +544,6 @@ class HandController:
             # That is what makes an air close converge instead of latching.
             self._bound_deadline = time.time() + SETTLE_S
 
+    def open(self):
+        self.set(OPEN_PRESETS[self._side])
+
