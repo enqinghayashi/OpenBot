@@ -369,3 +369,29 @@ class HandController:
         self._thread.start()
 
     # ── writer loop: 20 Hz re-assert in between ramps ───────────────────────
+    def _writer_loop(self):
+        while self._running:
+            try:
+                with self._lock:
+                    # Before the deadline this writes last_q (same lock, value
+                    # and rate). After it, recompute the bound per write without
+                    # touching last_q, so the preset returns as soon as the
+                    # residual drops under the cap. No extra lock or thread.
+                    if time.time() < self._bound_deadline:
+                        q = self.last_q
+                    else:
+                        q = self._residual_bound()
+                    self._write(q)
+            except Exception as e:
+                _log(f'{self._side} writer error: {e}')
+            # Edge-triggered mode != 1 alarm: the 1 Hz gate runs here because
+            # this loop is 20 Hz, and one line is emitted per change instead of
+            # 20 per second.
+            try:
+                line = self._check_faults()
+                if line:
+                    _log(line)
+            except Exception as e:
+                _log(f'{self._side} fault-check error: {e}')
+            time.sleep(1.0 / WRITE_HZ)
+
