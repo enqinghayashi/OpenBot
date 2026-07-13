@@ -1014,3 +1014,39 @@ def _seed_side(side, reader, controllers):
     controllers[side] = HandController(side, seed_q=motor_q, reader=reader)
 
 
+def _serve_conn(conn, controllers, readers, quit_event):
+    """Serve ONE client connection until EOF/error/quit.  Runs in its own
+    thread (thread-per-connection): the daemon holds TWO simultaneous
+    GripClient sockets (rhand + lhand), so a single sequential accept loop
+    would starve the second connection forever.  The writer threads and
+    controllers are SHARED — only the socket handling is per-connection.
+
+    Crash-immune by design: any per-client error (BrokenPipeError,
+    ConnectionResetError, any OSError, or an unexpected handler bug) only
+    drops THIS connection — the accept loop keeps serving other clients,
+    and the 20 Hz writers keep running.
+    """
+    try:
+        with conn:
+            _log('client connected')
+            while True:
+                raw = conn.recv(4096)
+                if not raw:
+                    break
+                line = raw.decode().strip()
+                if not line:
+                    continue
+                _log(f'CMD: {line}')
+                if line == 'quit':
+                    conn.sendall(b'DONE\n')
+                    _log('quit requested — exiting')
+                    quit_event.set()
+                    return
+                resp = _handle_line(line, controllers, readers)
+                conn.sendall((resp + '\n').encode())
+    except (BrokenPipeError, ConnectionResetError, OSError) as e:
+        _log(f'client error, dropping connection: {e}')
+    except Exception as e:
+        _log(f'unexpected client error, dropping connection: {e}')
+    finally:
+        _log('client disconnected')
