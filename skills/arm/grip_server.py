@@ -1094,3 +1094,7 @@ def main():
         server.close()
         if os.path.exists(SOCK_PATH):
             os.unlink(SOCK_PATH)
+
+
+if __name__ == '__main__':
+    main()
