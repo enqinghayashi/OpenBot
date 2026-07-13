@@ -724,3 +724,17 @@ class HandController:
 
 
 # ── persistence: the last commanded q is saved so a restart re-asserts it ──
+def _load_last_cmd():
+    try:
+        with open(LAST_CMD_FILE, 'r') as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return None
+        q = {}
+        for side in ('right', 'left'):
+            side_q = data.get(side)
+            if isinstance(side_q, dict):
+                q[side] = {int(k): float(v) for k, v in side_q.items()}
+        return q or None
+    except Exception:
+        return None
