@@ -243,3 +243,5 @@ def _detect_writer_mode():
     if _env in ('off', '0', 'false', 'no'):
         return False
     return os.path.exists(WRITER_SOCK_DEFAULT)
+
+
