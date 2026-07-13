@@ -475,3 +475,24 @@ class HandController:
             q[jid] = q_meas + cdir * RISER_MAX_RAD
         return q
 
+    def _faulted_modes(self):
+        """{jid: mode} for every joint whose mode != 1, or None for no state.
+
+        mode != 1 means NOT in servo mode.  mode = 0 is DISABLED (LIMP): ~0
+        N.m and mechanically free, so a grip LOOSENS and the object slips —
+        which is why `available` (a writer-liveness flag) cannot stand in for
+        this and why the payload now carries `mode` itself.
+        """
+        limits = self._read_limits()
+        if limits is None:
+            return None
+        bad = {}
+        for jid in DEX3_JOINTS:
+            try:
+                mode = int(limits[jid][2])
+            except Exception:
+                continue
+            if mode != 1:
+                bad[jid] = mode
+        return bad
+
