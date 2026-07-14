@@ -389,3 +389,103 @@ def _park_hand_after_lift(hand, side, verb, release_ok):
             f'[pick_daemon] {verb}: {side} hand park at LIFT FAILED ({_ke}) '
             f'— the hand stays open; continuing\n')
         sys.stderr.flush()
+
+
+GRASP_Z_OFFSET = 0.04   # grasp 4cm above the YOLO detection centroid
+# upright grasp sits 1 cm higher. applies only to the upright grasp z, not
+# horizontal tz; knob range 0.005..0.02.
+GRASP_Z_UP_BIAS = 0.01
+# z-frame diagnostic only: perception z is torso_link, IK base is pelvis.
+# the waist_roll origin is (-0.0039635, 0, +0.044) in the URDF, so torso_link
+# is 0.044 m above pelvis and ik_z = torso_z lands ~4.4 cm low. this roughly
+# cancels GRASP_Z_OFFSET + GRASP_Z_UP_BIAS (0.04+0.01-0.044 ~= +0.006 m net),
+# so it is logged, not commanded.
+SOLVER_Z_TORSO_OFFSET = 0.044
+DESCENT_DURATION = 3.0     # descent time (s); higher = slower
+# h-wp3 can finish its ramp with the wrist still above tz (end-of-ramp lag)
+# while the pad has not touched; more than this above tz triggers one guarded
+# push-down.
+H_DESCEND_DEPTH_TOL = 0.03
+
+# ── object-height chain (protocol compatibility) ─────────────────────────────
+# height_m is parsed and plausibility-gated (<=0 or > HEIGHT_M_MAX means
+# unknown); the lift does not use it.
+HEIGHT_M_MAX = 0.5
+
+# ── note for the hardware check ──────────────────────────────────────────────
+# READY/LIFT yaw pairs are same-sign (-0.5/-0.5, -0.3/-0.3), breaking the
+# mirrored-sign convention; check them visually on hardware.
+
+# ── palm-contact detection during the wp4 insert ────────────────────────────
+# joints watched (14-DOF q): left 0=shoulder_pitch, 3=elbow; right
+# 7=shoulder_pitch, 10=elbow
+PALM_CONTACT_MONITOR_JOINTS_RIGHT = [7, 10]
+PALM_CONTACT_MONITOR_JOINTS_LEFT  = [0, 3]
+# [7,10]/[0,3] are blind to a vertical wall-grasp wp4 push: sideways motion
+# comes from shoulder roll 8 and yaw 9 plus wrist flex (12/13 right, 5/6
+# left). these monitors are for the vertical wp4 only. if a false trip
+# occurs, drop to [8,9]/[0,1] or raise the consecutive count to 3.
+WALL_PUSH_MONITOR_JOINTS_RIGHT = [7, 8, 9, 10]
+WALL_PUSH_MONITOR_JOINTS_LEFT  = [0, 1, 2, 3]
+# 0.04 rad is normal tracking lag and false-triggers; 0.15 is a real contact.
+PALM_CONTACT_POSITION_THRESHOLD = 0.15   # sum of abs pos error (rad) across the joints
+PALM_CONTACT_CONSECUTIVE_STEPS  = 2       # overruns in a row before contact
+INSERT_GUARD_HOLD_TIME = 0.3              # hold after the contact stop
+RETRACT_AFTER_CONTACT = -0.03             # torso Y retract after contact; unloads it
+# extra standoff (m) for the vertical wp4 insert and its retract, on top of
+# approach_offset; 10-30 mm, default 20. keep it below the 0.15 rad contact
+# threshold.
+GRASP_INSERT_MARGIN = 0.02
+
+# ── relative insert-guard pressure ───────────────────────────────────────────
+# an absolute threshold of 60000 sits below the resting open-hand floor
+# (~105600), so it fires before any descent and freezes every guarded insert,
+# which then closes on air and reports a false solid grasp.
+# the trigger is a delta over the baseline captured at guard build (hand open,
+# in air). floor noise is ±30; 30000 is three orders above it and below
+# GRIP_PRESSURE_DELTA_EVIDENCE; a real first touch reads tens of thousands.
+DELTA_PRESS = 30000.0
+
+# ── gating verdicts on evidence ──────────────────────────────────────────────
+# close_until_contact using 200000 as an absolute ceiling makes a light object
+# squeezed all the way read lower, so it can return 'full' (no grip). a veto
+# then demotes solid_grasp to grasped_nothing and the retry reopens.
+# that veto buys nothing, since an empty-hand false solid fires via 'contact',
+# not 'full', and it kills real grips. the close's pressure delta (final minus
+# baseline) proves the fingers pressed something, so use it to upgrade a
+# missed light grip.
+GRIP_PRESSURE_DELTA_EVIDENCE = 40000.0   # a late-close rise => object in hand
+# the light-band upper bound stays 40000 because the band promote is ungated.
+# an empty self-pinch ceiling delta is ~94400 (200000 stop minus ~105600 rest
+# floor), so a widened band would promote it without the support gate. a
+# 'full' delta in (40000, 100000] goes to the support_ratio >= 0.5 bearing
+# gate.
+GRIP_CLOSE_STOP_DELTA = 200000.0   # close_until_contact stop; server 200000
+# the close stop must stay well above the resting finger-pressure floor. the
+# server compares absolutely (no baseline) while finger_pressure rests around
+# 104-110k, so a 100000 stop fires before the fingers move and makes a
+# free-air close read as contact, the false-success class. 200000 sits between
+# the rest floor and a hard pad press (223272), so it is inert in
+# normal use. the comparison is absolute, not a delta.
+# keep evidence is not this channel: it comes from _score_closure_blocked
+# (actual-vs-commanded margin, CLOSURE_BLOCKED_TOL=0.06 rad), which is
+# pressure-independent. finger pressure is flat here (bottle in hand: +2584
+# over 50 steps; empty close +1760; span ~120000).
+# light-grip delta floor: a real wall or table jam and an empty self-pinch
+# both press the pads hard. at the rest floor ~105600 the 200000 ceiling caps
+# the squeeze delta at ~94400, below the 100000 stop, so both read
+# closure='full'. a delta between this floor and the evidence threshold marks
+# a real rim or edge grip that the context-free detector calls hit_obstacle;
+# partial rim touches and ±30 noise stay below it.
+_CLOSE_DELTA_LIGHT_GRIP_FLOOR = 9000.0
+# support_ratio bearing gate. the detector knows only object_mass, so the
+# independent signal is support_ratio = sum |tau_est| over DISTAL_JOINT_IDS
+# divided by object weight. a real grip on the 0.30 kg object bears it and the
+# ratio climbs toward 1.0; a self-pinch stays low. promote hit_obstacle to
+# light_object only then. 0.5 is conservative.
+# limitation: a hard wall or table jam also loads distal joints, so this is
+# not a perfect jam discriminator, just more physical than pressure.
+GRIP_SUPPORT_RATIO_KEEP = 0.5
+# reach-refuse split. an in-reach residual is 0.068-0.092 m against
+# 0.17-0.32 m truly out. a hard 0.03 gate false-refused reachable grasps, so
+# 0.15 sits between the groups.
