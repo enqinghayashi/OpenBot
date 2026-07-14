@@ -744,3 +744,16 @@ class _SuppressStdout:
         sys.stdout = self._sink
         sys.stderr = self._sink
 
+    def __exit__(self, *args):
+        sys.stdout = self._saved_sys_stdout
+        sys.stderr = self._saved_sys_stderr
+        try:
+            self._sink.close()
+        except Exception:
+            pass
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.dup2(self._saved_stdout, 1)
+        os.dup2(self._saved_stderr, 2)
+        os.close(self._saved_stdout)
+        os.close(self._saved_stderr)
