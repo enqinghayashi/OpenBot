@@ -757,3 +757,5 @@ class _SuppressStdout:
         os.dup2(self._saved_stderr, 2)
         os.close(self._saved_stdout)
         os.close(self._saved_stderr)
+
+
