@@ -907,3 +907,5 @@ def make_wrist_target_middle_down_left(torso_x, torso_y, torso_z, fwd_offset=0.0
     R = np.column_stack([X, Y, Z])
     assert abs(np.linalg.det(R) - 1.0) < 1e-6, f'middle_down_left R det != +1: {np.linalg.det(R)}'
     return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
+
+
