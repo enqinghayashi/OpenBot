@@ -684,3 +684,45 @@ SEQUENCES_DIR = os.path.expanduser('~/motion_sequences')
 # ── muting Ipopt's stdout (CasADi solve_ik) ──────────────────────────────────
 # Ipopt dumps license text on the first solve and stdout is the protocol
 # (DONE/ERROR), so redirect it to /dev/null during every solve_ik.
+class _SuppressStdout:
+    """Redirect stdout+stderr to /dev/null.  Suppresses Ipopt/CasADi output.
+
+    READ THIS BEFORE "SIMPLIFYING" THE dup2 BACK TO THE OBVIOUS FORM
+    ---------------------------------------------------------------
+    dup2 ALONE IS NOT ENOUGH, and it was not enough for two months of runs.
+    Ipopt's licence banner is written **through the Python ``sys.stdout``
+    OBJECT**, not to file descriptor 1 (MEASURED 2026-10-01; casadi 3.7.2 /
+    Ipopt 3.14.11: a recorder installed as ``sys.stdout`` received the whole
+    banner while fd 1 -- dup2'd to a pipe -- received ZERO bytes).  So
+    redirecting fd 1 cannot touch it.
+
+    That mattered because of how the daemon is served.  The entrypoint
+    replaces ``sys.stdout`` with ``_ReplyRouter`` and, while a command is in
+    flight, routes every Python-level write on it to the CLIENT that asked
+    (``tabletop_pick_place_engine.py:179-187, 258``).  The engine's own
+    command loop is INLINE -- the pick handler writes its ``DONE`` only after
+    ``CARRY_TUCK`` -- so the banner landed in the CLIENT'S REPLY STREAM, ahead
+    of the real reply, and then drained one line per command.
+
+    run10 is the cost, and it is exactly the operator's report: the banner
+    block emitted at pick#1's first solve was consumed by SIX successive
+    commands (``gateway.log:26,36,45,85,96,103``).  ``_do_pick`` treats any
+    non-``ERROR`` reply as an executed pick, so three engine REFUSALS
+    (OUT OF REACH, residuals 0.397/0.348/0.352 m) were reported to the brain
+    as ``DONE pick executed`` -- and so were run10's TWO real successes
+    (y=0.249 and y=0.435; each followed by LIFT + CARRY_TUCK in ``pick.log``):
+    neither got its own ``DONE`` read, and the verdict was stamped ~5 s after
+    dispatch against a reply that was a banner line.  "The pickup succeeded
+    but was never confirmed" is this bug.
+
+    So the suppression has TWO halves and both are load-bearing: dup2 the
+    fds (for anything that writes to fd 1 directly) AND rebind ``sys.stdout``
+    / ``sys.stderr`` to a stream whose fd is already the devnull one (for
+    anything that writes through the Python object, which is what CasADi
+    does).  The rebind is restored in ``__exit__``, so the router comes back
+    intact and the client still gets its replies.
+
+    Re-entrant by construction: every call site is ``with _SuppressStdout():``
+    -- a FRESH instance -- so nesting unwinds LIFO with each instance holding
+    its own saved object.
+    """
