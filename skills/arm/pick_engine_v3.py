@@ -312,3 +312,18 @@ def _close_hand_at_closeout(hand, side, verb):
             f'[pick_daemon] {verb}: {side} hand close at closeout FAILED '
             f'({_ce}) — the hand stays open; continuing\n')
         sys.stderr.flush()
+
+
+# place hand-park: the holding hand parks closed right after LIFT. closing
+# before the hand descends to NEUTRAL keeps open fingers from sweeping down
+# past the drop height, where they can hit the table.
+# cost: the place verifier wants the post-drop hand measured open, and a hand
+# parked closed reads as not open, so a place can stay in progress. the
+# release-open token carries the release measurement instead.
+# latch risk: this is a full close preset with no pressure stop at 20 Hz. a
+# close stalling on a retained object can latch thumb_1, index_0 and middle_0,
+# which need a power cycle, so release_ok must cover an object on the palm at
+# open. no channel answers "hand empty?" directly.
+PLACE_PARK_HAND_CLOSED = True
+
+
