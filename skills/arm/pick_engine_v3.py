@@ -1031,3 +1031,110 @@ def _rotate_about(R, axis, angle):
              + (1.0 - np.cos(th)) * (K @ K)) @ np.asarray(R, dtype=np.float64))
 
 
+def make_wrist_target_claw_v3(torso_x, torso_y, torso_z, dir_lateral,
+                              deviation=0.0, fwd_offset=0.0):
+    """UPRIGHT_GRASP v3.1 — WALL grip: [6]-index wrist flexion, palm to the
+    wall, fingers vertical.
+    v4.0 (2026-08-30): RETIRED from the commanded flow — the upright
+    waypoints return to the ORIGINAL identity design
+    (make_wrist_target_upright_v4).  The fixed base-frame wall rotation
+    made the wrist chase a pose the arm rarely reached; the solver dumped
+    the residual into the wrist (palm-to-sky / pitch / yaw in the
+    v3.1-v3.3 trials) — the original never did this (identity = a
+    position-only target inside reach).  Kept as history.
+    v3.1.1 adds the optional ulnar DEVIATION (2026-08-30 user design): a
+    slow in-palm-plane roll about the palm normal during the approach,
+    straight->deviate (see the constants block and the wall flows).
+    deviation=0.0 keeps the exact v3.1 behaviour (all call sites may omit
+    it).
+
+    v3.1 (2026-08-30) fixes the v3 orientation bug.  v3 wrote
+      X = [0, dir_lateral, 0]  ("palm normal")
+      Y = [0, 0, 1]            ("fingers")
+    but the MEASURED R_ee convention is: X = FINGERS-extend, Y = physical
+    PALM NORMAL (right +Y, left -Y), Z = finger-spread (live pinocchio FK,
+    same URDF the solver uses — the R_ee frame is
+    <arm>_wrist_yaw_joint + [0.05, 0, 0]).  So v3's X column actually put
+    the FINGERS laterally into the wall and its Y column put the right
+    palm normal UP -> the observed 2026-08-29 failure (palm facing the
+    sky/ceiling, forearm yawed, [5] moved up/down instead of [6] flexion).
+    The "X = palm normal" mislabel traces to mjlab IK_FK_REFERENCE.md
+    ("palm-facing = X") and the old daemon builder docstrings.
+
+    Corrected frame — ONE frame for both arms (the per-arm Y sign flip,
+    right physical palm +Y / left physical palm -Y, gives both arms the
+    palm face-on to the object along the approach axis):
+    v3.3 (2026-08-30) note: the original FSM parked BOTH wrists at the
+    object's own lateral tx (not on the -/+ side of it) — the wall slide
+    triad that replaced it put the wrist radius+standoff to the side and
+    its target sat outside the reachable shell (2026-08-30 trial residual
+    == the displacement exactly), which the solver baked into the wrist
+    pitch.  All call sites now pass tx; the wall-triad values remain as
+    DIAGNOSTIC log numbers only.  v3.4 (2026-08-30): the corrective
+    NO-PITCH gate was REMOVED per user directive (DIAG-ONLY now — see the
+    wp4-FK decomposition) and the upright flows were restored to the
+    original insert guard + retract; see the upright waypoint comments.
+      X = [0, 0, 1]      FINGERS UP (vertical)      <- user's wrist_yaw [6]
+      Y = [0, 1, 0]      palm-normal sign basis (right palm = +Y, left = -Y)
+      Z = cross(X, Y)    spread = [-1, 0, 0]  (det(R) = +1, R^T R = I)
+    The rotation is authored in SOLVER/base frame coordinates (the same
+    frame FK reports — positions use the ik remap below, the rotation does
+    NOT; see robot_arm_ik.py rotational_error = log3(oMf @ cTf[:3,:3].T)).
+
+    NOTE on the flexion index: with fingers up and palm normal horizontal,
+    the wrist rotation about the vertical object is achieved by the dual-14
+    index 13 (right) / 6 (left) — the LAST element of the per-arm 7-vector
+    = the user's [6] = wrist_yaw = in/out flexion; [12]/[5] (up/down) and
+    [11]/[4] (forearm yaw) must stay near zero.  dir_lateral is accepted
+    for signature compatibility and carries the arm side: the base frame
+    is ONE frame both arms (its Y sign basis + position-side flip cancel);
+    when deviation != 0 the sign of dir_lateral selects the mirrored
+    deviation sense (DEV_ROT_SIGN * sign(dir_lateral)).
+
+    DEVIATION (v3.1.1): if deviation != 0, the target becomes
+    R_dev = Rot(n_palm, s_dev * deviation) @ R_WALL with
+    n_palm = [0,1,0] (R_WALL's own Y column) — the palm NORMAL is
+    unchanged (the contact plane still projects onto the wall) and the
+    finger line rolls inside the palm plane, straight->deviate during the
+    approach (waypoint-ramped delta; frozen at contact; the wrist GN
+    realizes it in joint space — the joint map at the wall pose is
+    pose-dependent, so this is a body-frame policy, never a joint-index
+    policy).
+
+    Position remapping follows make_wrist_target:
+      ik_x = torso_y + fwd_offset   (forward; fwd_offset default 0.0)
+      ik_y = -torso_x  (lateral; v5.2 negated: torso +x = RIGHT, URDF +y = LEFT)
+      ik_z = torso_z                (height)
+
+    fwd_offset (v3.2 restore, 2026-08-30): the approach waypoints (wp2/wp3
+    only) pass APPROACH_FORWARD_OFFSET (-0.08) so the wrist parks BEHIND the
+    contact depth exactly like the original make_wrist_target FSM did — the
+    approach then verifies inside the reachable shell.  wp4 / retract keep
+    the default 0.0 (full contact depth): their targets are beyond the reach
+    cap BY CONSTRUCTION — the guarded insert + pressure stop is the safety
+    when the wrist walks the final 8 cm (original FSM semantics).
+    """
+    ik_x = torso_y + fwd_offset
+    ik_y = -torso_x
+    ik_z = torso_z
+
+    X = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    Y = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+    Z = np.cross(X, Y)
+    Z = Z / np.linalg.norm(Z)
+    R = np.column_stack([X, Y, Z])
+    assert abs(np.linalg.det(R) - 1.0) < 1e-6, f'claw_v3 R det != +1: {np.linalg.det(R)}'
+    if abs(float(deviation)) > 1e-9:
+        # ulnar roll about the palm-normal basis [0,1,0]; DEV_ROT_SIGN mirrors
+        # per dir_lateral (-1 right, +1 left) and moves the tip line away from
+        # the thumb.
+        s_dev = DEV_ROT_SIGN * (1.0 if dir_lateral >= 0 else -1.0)
+        R = _rotate_about(R, np.array([0.0, 1.0, 0.0], dtype=np.float64),
+                          s_dev * float(deviation))
+        # defensive guard: Rodrigues about a unit axis cannot change det (max
+        # |det-1| ~1 ulp over d in [0,1]); this catches future edits with an
+        # unnormalized axis.
+        
+        assert abs(np.linalg.det(R) - 1.0) < 1e-6, \
+            f'claw_v3 deviated R det != +1: {np.linalg.det(R)}'
+    return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
