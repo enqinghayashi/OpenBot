@@ -1029,3 +1029,5 @@ def _rotate_about(R, axis, angle):
                   [-ax[1], ax[0], 0.0]])
     return ((np.eye(3) + np.sin(th) * K
              + (1.0 - np.cos(th)) * (K @ K)) @ np.asarray(R, dtype=np.float64))
+
+
