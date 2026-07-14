@@ -830,3 +830,5 @@ def make_wrist_target_with_normal(torso_x, torso_y, torso_z,
 
     R = np.column_stack([X, Y, Z])
     return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
+
+
