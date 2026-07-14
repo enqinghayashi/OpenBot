@@ -1140,3 +1140,47 @@ def make_wrist_target_claw_v3(torso_x, torso_y, torso_z, dir_lateral,
     return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
 
 
+def make_wrist_target_upright_v4(torso_x, torso_y, torso_z, dir_lateral,
+                                 deviation=0.0, fwd_offset=0.0):
+    """v4.0 upright wrist target — ORIGINAL identity design + ADD-ON.
+
+    v4.0 (2026-08-30, user: "restore all design accordingly from the
+    original file, while maintain the new features as add-on"): the base
+    target is the ORIGINAL's make_wrist_target — identity rotation
+    (R = np.eye(3)), original position channel (ik_x = torso_y +
+    fwd_offset, ik_y = -torso_x, ik_z = torso_z).  deviation=0.0 returns a
+    byte-identical homogeneous target to the original's builder; the v3
+    WALL frame (make_wrist_target_claw_v3) is RETIRED from the commanded
+    flow — the fixed base-frame rotation produced the palm-to-sky / pitch
+    / yaw motions of the v3.1-v3.3 trials, and the original never had them
+    because an identity orientation needs no fixed base-frame rotation and
+    its targets sat inside reach.
+
+    ADD-ON (maintained, default OFF — flip DEVIATION_ENABLED): the
+    v3.1.1 ulnar deviation, R_dev = Rot([0,1,0], s_dev*deviation) @ R_base.
+    [0,1,0] is the identity frame's OWN palm-normal column (FK-verified:
+    R_ee Y = physical palm normal, right +Y / left -Y), so the deviation is
+    FRAME-INDEPENDENT — the palm normal / contact-face projection is
+    unchanged; only the finger line rolls in the palm plane (straight ->
+    deviate during the approach, frozen at contact).
+
+    Position remapping follows make_wrist_target:
+      ik_x = torso_y + fwd_offset   (forward)
+      ik_y = -torso_x  (lateral; v5.2 negated: torso +x = RIGHT, URDF +y = LEFT)
+      ik_z = torso_z                (height)
+
+    dir_lateral: arm side (+1 right / -1 left) — selects the mirrored
+    deviation sense (DEV_ROT_SIGN * sign(dir_lateral)); the position
+    channel is side-independent (original).
+    """
+    target = make_wrist_target(torso_x, torso_y, torso_z, fwd_offset=fwd_offset)
+    if abs(float(deviation)) > 1e-9:
+        s_dev = DEV_ROT_SIGN * (1.0 if dir_lateral >= 0 else -1.0)
+        R = _rotate_about(target[:3, :3],
+                          np.array([0.0, 1.0, 0.0], dtype=np.float64),
+                          s_dev * float(deviation))
+        # defensive: Rodrigues keeps det(R) = det(base); guards future edits
+        assert abs(np.linalg.det(R) - 1.0) < 1e-6, \
+            f'upright_v4 deviated R det != +1: {np.linalg.det(R)}'
+        target = pin.SE3(R, target[:3, 3]).homogeneous
+    return target
