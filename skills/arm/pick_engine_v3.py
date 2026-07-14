@@ -878,3 +878,32 @@ def make_wrist_target_middle_down(torso_x, torso_y, torso_z, fwd_offset=0.0):
     return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
 
 
+def make_wrist_target_middle_down_left(torso_x, torso_y, torso_z, fwd_offset=0.0):
+    """LEFT-arm middle-down wrist SE3 target — palm DOWN.
+
+    The left hand is mirror-built: its physical palm normal is -Y_local
+    (measured R_ee convention: Y = palm normal, right +Y / left -Y).  So
+    the LEFT-frame mirror of make_wrist_target_middle_down has the palm
+    DIRECTION in the Y column sign-flipped with respect to the right:
+      right:  Y = [0, 0, -1]  =>  right palm (-Y_local ... +Y_local) down
+      left:   Y = [0, 0, +1]  =>  left palm (-Y_local) down
+    LATENT BUG FIX: the left horizontal flow used the RIGHT unmirrored
+    (make_wrist_target_middle_down) at all three sites 2026-08-29, which
+    commanded the left palm normal UP.  det(R) = +1 for both mirrors.
+
+    Position remapping follows make_wrist_target:
+      ik_x = torso_y + fwd_offset   (forward)
+      ik_y = -torso_x  (lateral; v5.2 negated: torso +x = RIGHT, URDF +y = LEFT)
+      ik_z = torso_z                (height)
+    """
+    ik_x = torso_y + fwd_offset
+    ik_y = -torso_x
+    ik_z = torso_z
+
+    X = np.array([1.0, 0.0, 0.0], dtype=np.float64)   # fingers point forward
+    Y = np.array([0.0, 0.0, 1.0], dtype=np.float64)   # left palm normal points down
+    Z = np.cross(X, Y)
+    Z = Z / np.linalg.norm(Z)
+    R = np.column_stack([X, Y, Z])
+    assert abs(np.linalg.det(R) - 1.0) < 1e-6, f'middle_down_left R det != +1: {np.linalg.det(R)}'
+    return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
