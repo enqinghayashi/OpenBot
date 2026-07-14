@@ -759,3 +759,14 @@ class _SuppressStdout:
         os.close(self._saved_stderr)
 
 
+def make_wrist_target(torso_x, torso_y, torso_z, fwd_offset=0.0):
+    ik_x = torso_y + fwd_offset
+    # lateral-sign mirror: perception torso +x is robot right, but the IK
+    # solver URDF has +Y = left (left_shoulder y=+0.10022, right_shoulder
+    # y=-0.10021), so an un-negated channel aims every target at the mirrored
+    # side and the hand misses the object's side. every other builder defers to
+    # this one, so the negation propagates to all of them.
+    ik_y = -torso_x
+    ik_z = torso_z
+    R = np.eye(3)
+    return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
