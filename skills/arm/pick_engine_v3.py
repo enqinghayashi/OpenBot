@@ -772,3 +772,61 @@ def make_wrist_target(torso_x, torso_y, torso_z, fwd_offset=0.0):
     return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
 
 
+def make_wrist_target_with_normal(torso_x, torso_y, torso_z,
+                                   normal_x, normal_y, normal_z,
+                                   fwd_offset=0.0):
+    """Build an oriented wrist SE3 target from a surface normal.
+
+    The normal is in torso frame (X=lateral, +x = robot RIGHT, Y=forward,
+    Z=height).
+    Position remapping follows ``make_wrist_target``:
+      ik_x = torso_y + fwd_offset   (forward)
+      ik_y = -torso_x  (lateral; v5.2 negated: torso +x = RIGHT, URDF +y = LEFT)
+      ik_z = torso_z                (height)
+
+    The normal is remapped to IK frame and used as the approach direction (Z).
+    X is a horizontal vector perpendicular to Z; Y = cross(Z, X).
+
+    Parameters
+    ----------
+    torso_x, torso_y, torso_z : float
+        Torso-frame target position.
+    normal_x, normal_y, normal_z : float
+        Torso-frame surface normal components (from depth_projector_node).
+    fwd_offset : float
+        Forward offset applied in IK frame.
+
+    Returns
+    -------
+    np.ndarray
+        4x4 homogeneous transformation matrix (pin.SE3).
+    """
+    # same remap as builder
+    ik_x = torso_y + fwd_offset
+    ik_y = -torso_x
+    ik_z = torso_z
+
+    # remap the normal from the torso frame (X=lateral, Y=forward, Z=height)
+    # into the IK frame (X=forward, Y=lateral, Z=height).
+    normal_ik = np.array([normal_y, normal_x, normal_z], dtype=np.float64)
+    n = np.linalg.norm(normal_ik)
+    if n < 1e-9:
+        # degenerate normal: fall back to the identity orientation
+        R = np.eye(3)
+        return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
+    normal_ik = normal_ik / n
+
+    # X = palm direction, pointing at the object (opposite the surface normal)
+    X = -normal_ik
+    X = X / np.linalg.norm(X)
+    # Z = finger-spread axis: vertical for the horizontal curl plane
+    Z = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    # Y completes the right-handed frame
+    Y = np.cross(Z, X)
+    Y = Y / np.linalg.norm(Y)
+    # re-orthogonalize Z
+    Z = np.cross(X, Y)
+    Z = Z / np.linalg.norm(Z)
+
+    R = np.column_stack([X, Y, Z])
+    return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
