@@ -1195,3 +1195,19 @@ _grasp_z_offset_no_height_warned = False
 _TACTILE_BASELINE_LAST_GOOD = [None]
 
 
+def _clamped_grasp_z_offset(height_m):
+    """Effective vertical grasp offset above the detection centroid:
+    min(GRASP_Z_OFFSET, GRASP_Z_OFFSET_HEIGHT_FRACTION * object_height_m).
+    Falls back to plain GRASP_Z_OFFSET (with one warning) when the object
+    height is unavailable — never crashes, never refuses a pick."""
+    global _grasp_z_offset_no_height_warned
+    if height_m is not None and 0.0 < float(height_m) <= HEIGHT_M_MAX:
+        return min(GRASP_Z_OFFSET,
+                   GRASP_Z_OFFSET_HEIGHT_FRACTION * float(height_m))
+    if not _grasp_z_offset_no_height_warned:
+        _grasp_z_offset_no_height_warned = True
+        sys.stderr.write(
+            '[pick_daemon] WARNING: object height unavailable — using plain '
+            f'GRASP_Z_OFFSET ({GRASP_Z_OFFSET:.3f} m) for the grasp-z clamp\n')
+        sys.stderr.flush()
+    return GRASP_Z_OFFSET
