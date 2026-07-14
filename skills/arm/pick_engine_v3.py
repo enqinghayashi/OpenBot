@@ -489,3 +489,13 @@ GRIP_SUPPORT_RATIO_KEEP = 0.5
 # reach-refuse split. an in-reach residual is 0.068-0.092 m against
 # 0.17-0.32 m truly out. a hard 0.03 gate false-refused reachable grasps, so
 # 0.15 sits between the groups.
+def _env_reach_refuse_pos():
+    """REACH_REFUSE_POS default 0.15; OPENBOT_REACH_REFUSE_POS overrides when
+    0.03 < v <= 0.50 (v5.4).  Missing / garbage / out-of-range -> 0.15."""
+    try:
+        _v = float(os.environ.get('OPENBOT_REACH_REFUSE_POS', ''))
+    except (TypeError, ValueError):
+        return 0.15
+    if _v == _v and 0.03 < _v <= 0.50:
+        return _v
+    return 0.15
