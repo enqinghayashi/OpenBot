@@ -726,3 +726,21 @@ class _SuppressStdout:
     -- a FRESH instance -- so nesting unwinds LIFO with each instance holding
     its own saved object.
     """
+    def __enter__(self):
+        sys.stdout.flush()
+        sys.stderr.flush()
+        self._devnull = os.open(os.devnull, os.O_WRONLY)
+        self._saved_stdout = os.dup(1)
+        self._saved_stderr = os.dup(2)
+        os.dup2(self._devnull, 1)
+        os.dup2(self._devnull, 2)
+        os.close(self._devnull)
+        # second half: a real file object (not a discard stub) so .fileno() and
+        # .isatty() answer; a fresh devnull fd, separate from fd 1.
+        
+        self._saved_sys_stdout = sys.stdout
+        self._saved_sys_stderr = sys.stderr
+        self._sink = open(os.devnull, 'w')
+        sys.stdout = self._sink
+        sys.stderr = self._sink
+
