@@ -1013,3 +1013,19 @@ def make_wrist_target_claw(torso_x, torso_y, torso_z, fwd_offset=0.0):
     return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
 
 
+def _rotate_about(R, axis, angle):
+    """Rotate frame R by angle (rad) about axis (3-vector, right-hand rule):
+    R' = Rot(axis, angle) @ R.  Rodrigues closed form — no pinocchio
+    dependency (the tv env pinocchio version is not guaranteed to expose
+    AxAng).  Angle 0 / zero axis -> R unchanged."""
+    ax = np.asarray(axis, dtype=np.float64)
+    norm = float(np.linalg.norm(ax))
+    if norm < 1e-12 or abs(float(angle)) < 1e-12:
+        return np.asarray(R, dtype=np.float64)
+    ax = ax / norm
+    th = float(angle)
+    K = np.array([[0.0, -ax[2], ax[1]],
+                  [ax[2], 0.0, -ax[0]],
+                  [-ax[1], ax[0], 0.0]])
+    return ((np.eye(3) + np.sin(th) * K
+             + (1.0 - np.cos(th)) * (K @ K)) @ np.asarray(R, dtype=np.float64))
