@@ -832,3 +832,47 @@ def make_wrist_target_with_normal(torso_x, torso_y, torso_z,
     return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
 
 
+def make_wrist_target_middle_down(torso_x, torso_y, torso_z, fwd_offset=0.0):
+    """Build an oriented wrist SE3 target with middle finger pointing DOWN.
+
+    The middle finger (wrist Y-axis, thumb-to-pinky direction) is set to
+    point straight down (perpendicular to the table surface).  This ensures
+    the middle finger contacts a horizontally-lying object first during a
+    guarded top-down descent.
+
+    Position remapping follows ``make_wrist_target``:
+      ik_x = torso_y + fwd_offset   (forward)
+      ik_y = -torso_x  (lateral; v5.2 negated: torso +x = RIGHT, URDF +y = LEFT)
+      ik_z = torso_z                (height)
+
+    Rotation (in IK frame):
+      Y = [0, 0, -1]   middle finger DOWN
+      X = [1, 0, 0]    palm forward
+      Z = cross(X, Y)  completes right-handed frame
+
+    Parameters
+    ----------
+    torso_x, torso_y, torso_z : float
+        Torso-frame target position.
+    fwd_offset : float
+        Forward offset applied in IK frame.
+
+    Returns
+    -------
+    np.ndarray
+        4x4 homogeneous transformation matrix (pin.SE3).
+    """
+    # same remap as builder
+    ik_x = torso_y + fwd_offset
+    ik_y = -torso_x
+    ik_z = torso_z
+
+    # Y = middle finger points down (-Z in the IK frame)
+    Y = np.array([0.0, 0.0, -1.0], dtype=np.float64)
+    # X = palm pointing forward (horizontal)
+    X = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+    # Z = completes the right-handed frame
+    Z = np.cross(X, Y)
+
+    R = np.column_stack([X, Y, Z])
+    return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
