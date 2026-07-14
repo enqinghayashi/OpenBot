@@ -260,3 +260,55 @@ def _hold_rc_writer(arm, enabled, context=''):
         sys.stderr.flush()
 
 
+def _close_hand_at_closeout(hand, side, verb):
+    """Task #9 (2026-09-13): park a hand CLOSED at a verb's closeout.
+
+    Operator report after the first routed place: "after place task is done,
+    the hand is not closed at all, it remained open which i do not want that,
+    i want the hand to be fully closed" — plus, "for the hand closure at
+    neutral pose as well".
+
+    **CALL THIS FROM `neutral` ONLY.  NEVER FROM A PLACE EXIT.**  That is not
+    a style preference; a close on a place path is a RELEASE-OBSERVABLE
+    violation and it breaks EVERY place, on all four exits:
+
+      * the engine writes DONE after this returns, and the gateway then takes
+        a FRESH grip read (gateway/gateway_node.py:2171 _refresh_grip_state());
+      * verify_place requires `grip.is_open is True` (brain/verifier.py:1098),
+        per the place post_condition "grip open AND object out of hand"
+        (brain/tool_contract.py `"place"`);
+      * GripClient.close() cosine-ramps 40 x 0.02 s = 0.8 s of BLOCKING sleep
+        (grip_server.py `set`), so the DONE cannot even be written first.
+
+    Net effect of closing here from a place: the gateway measures a closed
+    hand and `place` returns in_progress ("post-drop hand not measured-open")
+    on the whole success path, deterministically.  This was tried and
+    reverted on 2026-09-13.  `neutral` carries no such contract (it has no
+    entry in brain/tool_contract.py), which is why the resting-pose half of
+    the operator's request lives there instead.
+    tests/test_place_closeout_closed_hand.py pins all of this at the source
+    level — it fails if a fifth place path re-adds the call.
+
+    BEST-EFFORT BY DESIGN: whatever verb calls this, a hand-controller fault
+    must never turn a completed (unundoable) action into an ERROR.  Log and
+    continue, same policy as the open-verify and payload-off steps nearby.
+
+    `hand` is the GripClient for `side` ('right' -> rhand, 'left' -> lhand);
+    GripClient.close() cosine-ramps to that side's CLOSE preset.
+
+    2026-09-27: the close is now THUMB-FIRST and STAGED rather than one ramp --
+    see `_staged_thumb_first_close` below for the operator report and the
+    mechanism.  Endpoints are unchanged; only the order is.  BOTH stages live
+    in that helper, so this body no longer calls `hand.close()` itself.
+    """
+    try:
+        stage = _staged_thumb_first_close(hand, side, verb)
+        sys.stderr.write(
+            f'[pick_daemon] {verb}: {side} hand CLOSED at closeout '
+            f'(CLOSE preset; thumb-first {stage})\n')
+        sys.stderr.flush()
+    except Exception as _ce:
+        sys.stderr.write(
+            f'[pick_daemon] {verb}: {side} hand close at closeout FAILED '
+            f'({_ce}) — the hand stays open; continuing\n')
+        sys.stderr.flush()
