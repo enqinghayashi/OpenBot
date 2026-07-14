@@ -909,3 +909,65 @@ def make_wrist_target_middle_down_left(torso_x, torso_y, torso_z, fwd_offset=0.0
     return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
 
 
+def make_wrist_target_upright_grasp(torso_x, torso_y, torso_z, fwd_offset=0.0,
+                                    pad_normal=None):
+    """DEPRECATED (2026-08-26) — superseded by make_wrist_target_claw();
+    kept as a dead reference for the trial record.  v1: geometrically
+    degenerate — the palm normal always collapses to the approach axis, so
+    the rotation is numerically the old identity (no wrist flexion) and the
+    open fingers lead the insert into the object (fingertip knock-offs).
+    Old v1 docstring: Build the UPRIGHT_GRASP wrist SE3 target (vertical /
+    upright-bottle pick).
+
+    Orientation: the PALM normal points along the approach axis — from the
+    wrist toward the object centre at the grasp height, projected into the
+    horizontal plane — so the palm is face-on to the object and the closure
+    wraps around its sides.  This replaces the old identity rotation, which
+    made the palm contact the object first while the wrist site was still
+    ~2 cm short of the insert target, so the guarded insert kept advancing
+    and shoved the bottle.  Reuses the make_wrist_target_with_normal
+    rotation construction (X = palm direction, Z = vertical, Y = cross).
+
+    Position remapping follows make_wrist_target:
+      ik_x = torso_y + fwd_offset   (forward)
+      ik_y = -torso_x  (lateral; v5.2 negated: torso +x = RIGHT, URDF +y = LEFT)
+      ik_z = torso_z                (height)
+
+    pad_normal (torso frame, e.g. the depth projector's surface normal) is
+    used only when the geometric palm normal is degenerate (wrist parked on
+    the approach axis at the object-centre height) — the fallback treats it
+    as a surface normal (palm = -normal, like make_wrist_target_with_normal)
+    and warns; never crashes.
+    """
+    ik_x = torso_y + fwd_offset
+    ik_y = -torso_x
+    ik_z = torso_z
+
+    # palm direction (IK frame): wrist to object centre, flattened to horizontal.
+    palm_dir = np.array([torso_y - ik_x, torso_x - ik_y, 0.0], dtype=np.float64)
+    n = np.linalg.norm(palm_dir)
+    if n < 1e-9:
+        sys.stderr.write(
+            '[pick_daemon] WARNING: UPRIGHT_GRASP palm normal degenerate '
+            '(wrist on the approach axis at the object-centre height) — '
+            'falling back to the approach-pad normal\n')
+        sys.stderr.flush()
+        X = None
+        if pad_normal is not None:
+            pad_ik = np.array([pad_normal[1], pad_normal[0], 0.0],
+                              dtype=np.float64)
+            pn = np.linalg.norm(pad_ik)
+            if pn > 1e-9:
+                X = -pad_ik / pn  # palm faces object, against surface normal
+        if X is None:
+            X = np.array([1.0, 0.0, 0.0], dtype=np.float64)  # approach from the front
+    else:
+        X = palm_dir / n
+
+    Z = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    Y = np.cross(Z, X)
+    Y = Y / np.linalg.norm(Y)
+    Z = np.cross(X, Y)
+    Z = Z / np.linalg.norm(Z)
+    R = np.column_stack([X, Y, Z])
+    return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
