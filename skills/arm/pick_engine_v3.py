@@ -1138,3 +1138,5 @@ def make_wrist_target_claw_v3(torso_x, torso_y, torso_z, dir_lateral,
         assert abs(np.linalg.det(R) - 1.0) < 1e-6, \
             f'claw_v3 deviated R det != +1: {np.linalg.det(R)}'
     return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
+
+
