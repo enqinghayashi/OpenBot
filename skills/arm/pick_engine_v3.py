@@ -1184,3 +1184,14 @@ def make_wrist_target_upright_v4(torso_x, torso_y, torso_z, dir_lateral,
             f'upright_v4 deviated R det != +1: {np.linalg.det(R)}'
         target = pin.SE3(R, target[:3, 3]).homogeneous
     return target
+# 4 cm suits a ~20 cm object but overshoots a ~6 cm one, so clamp to 20% of
+# object height when height_m is available.
+GRASP_Z_OFFSET_HEIGHT_FRACTION = 0.20
+_grasp_z_offset_no_height_warned = False
+# last good open-hand pressure baseline, reused if a per-attempt read fails or
+# max=0.0: a fresh relative baseline must be live at verdict time, or the
+# absolute tactile compare arms again. [0]-indexed so assignment needs no
+# global.
+_TACTILE_BASELINE_LAST_GOOD = [None]
+
+
