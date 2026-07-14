@@ -245,3 +245,16 @@ def _detect_writer_mode():
     return os.path.exists(WRITER_SOCK_DEFAULT)
 
 
+def _hold_rc_writer(arm, enabled, context=''):
+    """Writer-mode RC interlock (engine hold_rc timeline: ON at pick start,
+    OFF after CARRY_TUCK / failure / quit / exception).  Standalone mode:
+    NO-OP — the arm_sdk controller has no such verb."""
+    if not ARM_WRITER_ENABLED:
+        return
+    try:
+        arm.hold_rc(enabled)
+    except Exception as _e:
+        sys.stderr.write(
+            f'[pick_daemon] hold_rc {enabled} ({context}) FAILED: {_e} — '
+            'writer keeps the clamp; writer console `hold_rc off`\n')
+        sys.stderr.flush()
