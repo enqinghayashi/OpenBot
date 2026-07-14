@@ -2669,3 +2669,165 @@ def move_arm_smooth_guarded(arm, target_q, target_tauff, monitor_indices,
 
     arm.ctrl_dual_arm(target_q, target_tauff)
     return True, None
+
+
+def _make_pressure_insert_stop(client, side):
+    """Item 2 (v3 RELATIVE): build the insert-guard pressure check.
+
+    v4.0 (2026-08-30): RETIRED — no call sites remain (the upright flow's
+    pressure-stop-first went in v3.4; the horizontal flows' went in v4.0;
+    every guarded move uses the ORIGINAL middle-finger + position-err
+    backstop).  Kept as history.
+    Polls grip_server `pressure [side]` once per guarded-move loop iteration
+    (same socket verb pattern as GripClient.state — see grip_client.py
+    pressure()).  The baseline is captured lazily on the FIRST successful
+    read — the guard is built right before the guarded move with the hand
+    open in the air (the 2026-08-29 freezes triggered at loop iteration 2,
+    still in the approach pose), so the first read IS the open-hand floor.
+    Fires when pmax - baseline > DELTA_PRESS.
+    ok:false (no state data) → skip the pressure check and fall through to
+    the position-err backstop; logged once per guarded insert, not per loop
+    step.  Never raises.
+    """
+    _warned = {'flag': False}
+    _baseline = {'p': None}
+
+    def _check():
+        try:
+            payload = client.pressure(side)
+        except Exception:
+            payload = None
+        if payload is None or not payload.get(side, {}).get('ok'):
+            if not _warned['flag']:
+                _warned['flag'] = True
+                sys.stderr.write(
+                    f'[pick_daemon] pressure insert-guard: no pressure data '
+                    f'({side}) — position-err backstop only\n')
+                sys.stderr.flush()
+            return None
+        pmax = float(payload[side].get('max', 0.0))
+        if _baseline['p'] is None:
+            _baseline['p'] = pmax
+            sys.stderr.write(
+                f'[pick_daemon] pressure insert-guard baseline ({side}): '
+                f'{pmax:.0f} (DELTA_PRESS={DELTA_PRESS:.0f})\n')
+            sys.stderr.flush()
+        delta = pmax - _baseline['p']
+        if delta > DELTA_PRESS:
+            sys.stderr.write(
+                f'[pick_daemon] palm/finger pressure trigger '
+                f'(pmax={pmax:.0f}, baseline={_baseline["p"]:.0f}, '
+                f'delta=+{delta:.0f}) — stopping insert\n')
+            sys.stderr.flush()
+            return f'pressure:{pmax:.0f}'
+        return None
+
+    return _check
+
+
+# ── verify-open tolerance ─────────────────────────────────────────────────────
+# the tolerance must stay below the smallest open-to-close span, or a
+# still-closed joint reads as open. the smallest span is thumb_0 at 0.480 rad;
+# 0.2 tolerates normal tracking lag while still catching a fist.
+VERIFY_OPEN_TOLERANCE_RAD = 0.2
+
+
+# release-open evidence for the gateway's place verdict. the place verifier
+# wants the post-drop hand measured open, but with PLACE_PARK_HAND_CLOSED on,
+# the LIFT closeout closes the holding hand before DONE, so the post-DONE read
+# correctly sees closed and place could never verify. the release is measured
+# separately: step 6 _verify_hand_open compares every finger joint against the
+# OPEN preset in measured motor-q space, and the DONE line carries
+#     DONE; release_open=<side>:<True|False>
+# the verifier takes the token for the release half, measured at the release
+# rather than after the closeout re-closed. the park is unchanged. the token
+# cannot be a second stdout line since the transport is one line in, one out.
+# absent means unmeasured (a refusal that never reached step 6), never a pass.
+_RELEASE_OPEN = {}
+
+
+def _note_release_open(side, ok):
+    """Record the measured-open result of a place release for ``side``."""
+    if side in ("right", "left"):
+        _RELEASE_OPEN[side] = bool(ok)
+
+
+def _release_open_token(side):
+    """'; release_open=<side>:<True|False>' for the DONE line, or ''.
+
+    Empty when this process never measured a release for ``side`` — the
+    gateway/verifier then treat the release as UNMEASURED and fall back to
+    the post-state read (the pre-2026-09-27 behaviour, byte-identical).
+    """
+    if side not in _RELEASE_OPEN:
+        return ''
+    return '; release_open=%s:%s' % (side, _RELEASE_OPEN[side])
+
+
+def _verify_hand_open(client, side, open_preset):
+    """Item 5: verify the hand actually opened before a wp4 insert.
+
+    Queries the grip_server `state [side]` reply's ``actual`` (live motor q
+    per joint — the same source grip_server's _seed_side uses) and compares
+    every finger joint against the OPEN preset within
+    VERIFY_OPEN_TOLERANCE_RAD.  One retry (re-open + settle) on unknown /
+    no-state or any finger far from open; then reports failure.
+
+    Returns (ok: bool, reason: str); reason is meaningful only when not ok.
+    Never raises: any transport error counts as 'no actual state'.
+    """
+    for _round in (0, 1):
+        try:
+            payload = client.state(side)
+        except Exception:
+            payload = None
+        actual = payload.get(side, {}).get('actual') if payload else None
+        if actual:
+            for jid in DEX3_JOINTS:
+                q = float(actual.get(str(jid), 0.0))
+                if abs(q - open_preset[jid]) > VERIFY_OPEN_TOLERANCE_RAD:
+                    if _round == 0:
+                        sys.stderr.write(
+                            f'[pick_daemon] hand {side} not fully open '
+                            f'(finger {jid} q={q:.2f} rad, open preset '
+                            f'{open_preset[jid]:.2f}) — re-opening\n')
+                        sys.stderr.flush()
+                    else:
+                        return False, (f'finger {jid} at {q:.2f} rad '
+                                       f'(open preset {open_preset[jid]:.2f})')
+                    break
+            else:
+                return True, None
+        elif _round == 0:
+            sys.stderr.write(
+                f'[pick_daemon] hand {side} actual state unavailable — '
+                're-opening\n')
+            sys.stderr.flush()
+        if _round == 0:
+            try:
+                client.open()
+            except Exception:
+                pass
+            time.sleep(0.3)
+    return False, 'no actual state'
+
+
+def _read_hand_actual(client, side):
+    """v5.2 (2026-09-07) Edit E: side-unwrapped live motor q from the
+    grip_server `state` reply.
+
+    The reply is SIDE-KEYED — {side: {joint: q}} — the `actual` mapping
+    lives under the side key, NOT at the top level.  (The v5.1 blocked-read
+    did `_cs.get('actual', {})` and read NOTHING — so `_close_blocked` never
+    fired; see _score_closure_blocked.)  Mirrors the unwrap _verify_hand_open
+    uses: payload.get(side, {}).get('actual').
+
+    Never raises: transport error → {}.
+    """
+    try:
+        payload = client.state(side)
+    except Exception:
+        return {}
+    if not payload:
+        return {}
+    return payload.get(side, {}).get('actual') or {}
