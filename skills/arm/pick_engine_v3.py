@@ -2831,3 +2831,164 @@ def _read_hand_actual(client, side):
     if not payload:
         return {}
     return payload.get(side, {}).get('actual') or {}
+
+
+# ── thumb-first staged close ────────────────────────────────────────────────
+# a full close is one cosine ramp over all seven joints, so thumb_0 travels
+# R_HAND_OPEN[0]=+0.48 to R_HAND_CLOSE[0]=-0.0268 (0.507 rad base rotation)
+# while joints 3..6 curl to 1.571/1.745. the thumb sweeps diagonally through
+# where index and middle curl, and nothing stages them, so the thumb can
+# collide with the fingers.
+# this is a path change only: no preset and no endpoint moves. the order is
+# thumb base to its centreline in its own ramp first, every other joint held
+# at the measured q, then the ordinary full close. by stage 2 thumb_0 has
+# ~0.027 rad left.
+# the other joints are held at live q because `set` commands absolute targets
+# and both call sites can be part-closed; commanding OPEN would open a loaded
+# hand before closing. a read failure falls back to OPEN, the pose both call
+# sites are in by construction (the place park is guarded by release_ok).
+# staging is skipped when the thumb base is within STAGED_CLOSE_SKIP_TOL of
+# the centreline, since there is no diagonal to remove.
+THUMB_BASE_JID = 0
+THUMB_BASE_CENTRE = 0.0
+STAGED_CLOSE_SKIP_TOL = 0.10   # rad; base this close to centre = no staging
+
+
+def _staged_thumb_first_close(hand, side, verb):
+    """Stage 1 = thumb base to centre, stage 2 = the ordinary full close.
+
+    BOTH STAGES LIVE HERE, deliberately: the operator's requirement is one
+    motion in two phases ("the thumb should first return to neutural centre
+    then close"), so a caller that staged and then forgot to close would leave
+    the fingers OPEN -- the exact condition the operator's 2026-09-21 directive
+    exists to prevent.  Keeping them in one function makes that unrepresentable
+    rather than merely discouraged.
+
+    Returns the stage-1 outcome as a short string, for the caller's log line:
+    'staged' | 'already-centre:<q>' | 'no-state' | 'stage1-failed:<err>'.
+
+    BEST-EFFORT ON STAGE 1 ONLY.  `hand.close()` is UNCONDITIONAL and is NOT
+    inside the stage-1 try, so a staging fault can never skip the close.  A
+    stage-2 exception PROPAGATES -- both call sites already wrap this and log
+    'the hand stays open; continuing', and swallowing here would hide a real
+    hand-controller fault from those handlers.
+    """
+    actual = _read_hand_actual(hand, side)
+    open_preset = OPEN_PRESETS[side]
+
+    # held pose: OPEN preset overwritten joint by joint from the live read.
+    # `actual` is JSON, so its keys are strings.
+    held = {jid: float(open_preset[jid]) for jid in DEX3_JOINTS}
+    q_thumb = None
+    for jid in DEX3_JOINTS:
+        raw = actual.get(str(jid))
+        if raw is None:
+            continue
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            continue
+        held[jid] = val
+        if jid == THUMB_BASE_JID:
+            q_thumb = val
+
+    if q_thumb is None:
+        # no live thumb reference: fall back to OPEN's base, the abducted start
+        # this staging unwinds.
+        q_thumb = float(open_preset[THUMB_BASE_JID])
+        held[THUMB_BASE_JID] = q_thumb
+        note = 'no-state'
+    else:
+        note = 'staged'
+
+    if abs(q_thumb - THUMB_BASE_CENTRE) <= STAGED_CLOSE_SKIP_TOL:
+        note = 'already-centre:%.3f' % q_thumb
+    else:
+        stage1 = dict(held)
+        stage1[THUMB_BASE_JID] = float(THUMB_BASE_CENTRE)
+        try:
+            hand.set(stage1)
+        except Exception as _se:                              # noqa: BLE001
+            note = 'stage1-failed:%s' % _se
+
+    # stage 2: ordinary full close, outside the try above; staging is
+    # best-effort, the close is not.
+    
+    hand.close()
+    return note
+
+
+def _score_closure_blocked(client, side, preset=None):
+    """v5.2 (2026-09-07) Edit E: score how far the CLOSED hand sits from the
+    preset it was COMMANDED to — the physical wrap evidence (an air close
+    reaches the preset exactly; a real wrap is BLOCKED short of it).
+
+    margin = max over DEX3_JOINTS of |actual - preset[jid]|, NaN-skipped
+    (no-state joints are not evidence).  blocked = margin > CLOSURE_BLOCKED_TOL.
+
+    `preset` DEFAULTS to CLOSE_PRESETS[side], which is what every caller wants
+    when the close was commanded to the full preset.  It must be passed
+    EXPLICITLY whenever the close was capped (F_MAX_SAFE): comparing a capped
+    close against the UNCAPPED preset makes the margin |q(0.600) - q(1.0)|,
+    which for joint 2 is 0.40 rad >> CLOSURE_BLOCKED_TOL — every free-air close
+    would then report a false capture.  Score against what you commanded.
+
+    Returns (blocked: bool, margin: float, worst_jid: int|None).  Never
+    raises; a no-data read returns (False, NaN, None).
+    """
+    actual = _read_hand_actual(client, side)
+    if not actual:
+        return False, float('nan'), None
+    if preset is None:
+        preset = CLOSE_PRESETS[side]
+    margin = 0.0
+    worst = None
+    found = False
+    for jid in DEX3_JOINTS:
+        q = float(actual.get(str(jid), float('nan')))
+        if q != q:  # skip NaN (no state data)
+            continue
+        found = True
+        _m = abs(q - float(preset[jid]))
+        if _m > margin:
+            margin = _m
+            worst = jid
+    if not found:
+        return False, float('nan'), None
+    return margin > CLOSURE_BLOCKED_TOL, margin, worst
+
+
+def _capped_close_preset(side):
+    """The preset the F_MAX_SAFE-capped closure actually commands.
+
+    EVERY post-close re-press and EVERY closure-block score must use this
+    rather than CLOSE_PRESETS[side].  Two distinct failures otherwise:
+
+      * re-pressing R_HAND_CLOSE/L_HAND_CLOSE transits the self-collision band
+        at f=0.63..0.81 again — the exact defect the cap exists to remove;
+      * scoring against the UNCAPPED preset reads |q(0.600) - q(1.0)| as the
+        margin, which for joint 2 is 0.40 rad >> CLOSURE_BLOCKED_TOL, so every
+        free-air close reports a FALSE capture.
+
+    Returns a {jid: q} dict.
+    """
+    return clamped_close_target(side, 1.0)[0]
+
+
+def _close_dir(side, jid):
+    """+1.0 / -1.0: the sign q MOVES in when `jid` closes; 0.0 if pinned.
+
+    Derived from the presets, exactly as the ramp is, so it cannot disagree
+    with the ramp and cannot be hand-typed wrong per joint.  Verified against
+    the DEPLOY build's dicts (the engine imports grip_server from
+    /home/unitree/leon/openbot): right = {0,1,2: -1.0, 3,4,5,6: +1.0}, left =
+    the exact mirror {0,1,2: +1.0, 3,4,5,6: -1.0}.  No Dex3 joint is pinned
+    (OPEN == CLOSE) today, so this never returns 0.0 in practice; a future
+    pinned joint falls out here rather than being handed invented travel.
+    """
+    delta = float(CLOSE_PRESETS[side][jid]) - float(OPEN_PRESETS[side][jid])
+    if delta > 0.0:
+        return 1.0
+    if delta < 0.0:
+        return -1.0
+    return 0.0
