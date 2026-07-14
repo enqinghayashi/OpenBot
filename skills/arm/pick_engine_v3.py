@@ -770,3 +770,5 @@ def make_wrist_target(torso_x, torso_y, torso_z, fwd_offset=0.0):
     ik_z = torso_z
     R = np.eye(3)
     return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
+
+
