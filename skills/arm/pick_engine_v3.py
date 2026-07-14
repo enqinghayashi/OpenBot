@@ -973,3 +973,41 @@ def make_wrist_target_upright_grasp(torso_x, torso_y, torso_z, fwd_offset=0.0,
     return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
 
 
+def make_wrist_target_claw(torso_x, torso_y, torso_z, fwd_offset=0.0):
+    """UPRIGHT_GRASP v2 — real wrist flexion: palm-down claw from above.
+
+    The 2026-08-25 trial showed make_wrist_target_upright_grasp is
+    geometrically degenerate: the wrist target sits ON the object's forward
+    axis, so 'wrist -> object centre' always equals the approach axis and
+    the resulting rotation is numerically the old identity — zero visible
+    wrist flexion, and the open fingers led the wp4 insert so the
+    fingertips stabbed the bottle's upper flank and knocked it over.
+
+    v2 flexes the wrist ~90 degrees: the palm normal (wrist X) points DOWN,
+    the three fingers hang as a claw, and the wrist parks directly ABOVE
+    the object centre, with the URDF grip zone (17-69 mm along the palm
+    normal in front of the wrist site -> [z-69 mm, z-17 mm]) centred on
+    the grasp height.  Closure pinches the object's waist from the two
+    lateral sides; no fingertip-first insert against a cylindrical flank
+    remains — the only possible contact during the guarded descend is the
+    claw's inner gap (guarded by the pressure insert guard).
+
+    Position remapping follows make_wrist_target:
+      ik_x = torso_y + fwd_offset   (forward)
+      ik_y = -torso_x  (lateral; v5.2 negated: torso +x = RIGHT, URDF +y = LEFT)
+      ik_z = torso_z                (height)
+    """
+    ik_x = torso_y + fwd_offset
+    ik_y = -torso_x
+    ik_z = torso_z
+
+    # IK frame: X=forward, Y=lateral+left, Z=height.
+    #   X = palm normal down (palm faces the floor, which is the flexion)
+    #   Y = lateral: the finger pair and thumb pinch the object's two sides
+    #   Z = cross(X, Y) = forward
+    X = np.array([0.0, 0.0, -1.0], dtype=np.float64)
+    Y = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+    Z = np.cross(X, Y)
+    Z = Z / np.linalg.norm(Z)
+    R = np.column_stack([X, Y, Z])
+    return pin.SE3(R, np.array([ik_x, ik_y, ik_z])).homogeneous
