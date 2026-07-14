@@ -327,3 +327,65 @@ def _close_hand_at_closeout(hand, side, verb):
 PLACE_PARK_HAND_CLOSED = True
 
 
+def _park_hand_after_lift(hand, side, verb, release_ok):
+    """Park the HOLDING hand CLOSED right after the place closeout's LIFT move.
+
+    `release_ok` is the place's own `_verify_hand_open` result, and it is the
+    ONLY guard this stack can offer against the one way this park is dangerous:
+    a close that GRASPS.  The right Dex3 hand latches three of its seven motors
+    (thumb_1 / index_0 / middle_0 -> mode=0, motorstate=512, ~0 N.m) on a close
+    that stalls against a retained object — measured three times on 2026-09-19,
+    cleared only by a power cycle.  This park drives the FULL CLOSE preset:
+    `hand.close()` sends the raw `close` verb, which grip_server resolves to
+    CLOSE_PRESETS with no pressure stop, and `_writer_loop` re-asserts it at
+    20 Hz for as long as the hand is held there (grip_server.py:444-451,
+    WRITE_HZ = 20.0).  F_MAX_SAFE does NOT apply on this path — it lives only
+    in `clamped_close_target`, which only `close_adaptive` calls — so restoring
+    it would not have capped this.  An object still in the fingers at the LIFT
+    pose therefore gets a sustained full-preset stall: the latch trigger.
+
+    `release_ok` is a JOINT-POSITION test (every finger within
+    VERIFY_OPEN_TOLERANCE_RAD of the open preset).  It catches a finger that
+    never reached open — a wedged object, an unreleased object, a latched
+    finger — and it does NOT catch an object resting on the palm with the
+    fingers at open.  That gap is real and is documented rather than papered
+    over: no channel on this stack can answer "is the hand empty?" — the
+    pressure path reads 0 and the grasp verdict's own `tactile` flag is False.
+    A position test is all there is, so this refuses on doubt rather than
+    closing blind.
+
+    Best-effort by design: a hand-controller fault must never turn a completed
+    (unundoable) action into an ERROR — log and continue, the same policy as
+    `_close_hand_at_closeout` and the payload-off step nearby.
+
+    `hand` is the GripClient for `side` ('right' -> rhand, 'left' -> lhand).
+    GripClient.close() cosine-ramps 40 x 0.02 s = 0.8 s of BLOCKING sleep, so
+    this delays the closeout's NEUTRAL move by that much when ON.
+
+    2026-09-27: the park is now THUMB-FIRST and STAGED rather than one ramp --
+    see `_staged_thumb_first_close` below for the operator report and the
+    mechanism.  Endpoints are unchanged; only the order is.  BOTH stages live
+    in that helper, so this body no longer calls `hand.close()` itself.  This
+    adds a second 0.8 s stage-1 ramp, so the NEUTRAL move is delayed ~1.6 s
+    when it fires.
+    """
+    if not PLACE_PARK_HAND_CLOSED:
+        return
+    if not release_ok:
+        sys.stderr.write(
+            f'[pick_daemon] {verb}: park SKIPPED — the {side} hand was not '
+            f'verified open after the release, so something may still be in '
+            f'the fingers; refusing to close on it (latch risk)\n')
+        sys.stderr.flush()
+        return
+    try:
+        stage = _staged_thumb_first_close(hand, side, verb)
+        sys.stderr.write(
+            f'[pick_daemon] {verb}: {side} hand PARKED CLOSED at the LIFT pose '
+            f'(CLOSE preset; thumb-first {stage})\n')
+        sys.stderr.flush()
+    except Exception as _ke:
+        sys.stderr.write(
+            f'[pick_daemon] {verb}: {side} hand park at LIFT FAILED ({_ke}) '
+            f'— the hand stays open; continuing\n')
+        sys.stderr.flush()
