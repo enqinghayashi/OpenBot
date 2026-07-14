@@ -258,3 +258,5 @@ def _hold_rc_writer(arm, enabled, context=''):
             f'[pick_daemon] hold_rc {enabled} ({context}) FAILED: {_e} — '
             'writer keeps the clamp; writer console `hold_rc off`\n')
         sys.stderr.flush()
+
+
