@@ -1435,3 +1435,5 @@ def get_ee_pose(arm_ik, q14, side='right'):
         return placement
     except Exception:
         return None
+
+
