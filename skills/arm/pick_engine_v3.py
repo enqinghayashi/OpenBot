@@ -1708,3 +1708,13 @@ def _upright_tilt_sign(attempt):
     return float(UPRIGHT_TILT_SIGNS[i])
 
 
+def _deviation_ramped(waypoint_step, delta_tgt=DEV_DELTA_TGT):
+    """Deviation delta (rad) for approach waypoint `waypoint_step`
+    (1-based from the FIRST ramping waypoint): monotone ramp 0 ->
+    delta_tgt, bounded by DEV_STEP_MAX per waypoint, clamped to
+    [0, min(delta_tgt, DEV_MAX)] — never negative (the wrist never
+    deviates past straight the other way).  The contact waypoint is the
+    LAST ramping waypoint; callers reuse its delta for the retract
+    (frozen at contact — 2026-08-30 user rule)."""
+    return float(np.clip(waypoint_step * DEV_STEP_MAX, 0.0,
+                         min(float(delta_tgt), DEV_MAX)))
