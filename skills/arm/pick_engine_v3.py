@@ -1235,3 +1235,137 @@ _place_extra_lift_no_height_warned = False
 _PLACE_LAST_OBJECT_HEIGHT_M = [None]
 
 
+def _place_extra_lift(arm, arm_ik, side, height_m, verb, log_prefix=''):
+    """Raise ONE arm vertically by min(2.5*H, PLACE_EXTRA_LIFT_MAX_M).
+
+    Returns (requested_m, achieved_m, ok).  ok=False means NO arm motion was
+    commanded at all — never raises, never refuses (warn-and-degrade, matching
+    _clamped_grasp_z_offset's contract).  A place whose object height is
+    unknown or implausible still PLACES, it simply does not raise.
+
+    CARTESIAN, not joint-space: no single joint delivers +0.15 m from the
+    carry pose (best dz/dq is shoulder_pitch at 0.121 m/rad, so 1.5 rad buys
+    0.135 m), and a joint-space raise both undershoots a 2.5×H law
+    systematically and drives joints toward their stops.  The target is
+    translation-ONLY (the achieved wrist rotation is kept) so the held object
+    does not rotate or re-seat in the grip — the grip is closed on the object
+    throughout, so any wrist rotation would drag it.
+
+    The IK is limit-bounded by construction, but it SOFT-FAILS loud-and-
+    best-effort rather than returning None, so the FK residual check below is
+    mandatory, not belt-and-braces: an unverified over-range solve would be
+    commanded verbatim to the writer (no joint-limit check, no reach gate, no
+    stall watchdog on any layer) and would press the URDF stop at full kp.
+    """
+    global _place_extra_lift_no_height_warned
+
+    _requested = 0.0
+    try:
+        # plausibility: same bound as the pick gate (HEIGHT_M_MAX). the range
+        # test also rejects non-finite values, since `0.0 < nan` and
+        # `nan <= 0.5` are both False.
+        _rise = 0.0
+        if height_m is not None:
+            try:
+                _h_m = float(height_m)
+            except (TypeError, ValueError):
+                _h_m = None
+            if _h_m is not None and 0.0 < _h_m <= HEIGHT_M_MAX:
+                _rise = min(PLACE_EXTRA_LIFT_HEIGHT_FRACTION * _h_m,
+                            PLACE_EXTRA_LIFT_MAX_M)
+        if _rise <= 0.0:
+            if not _place_extra_lift_no_height_warned:
+                _place_extra_lift_no_height_warned = True
+                sys.stderr.write(
+                    f'[pick_daemon] {log_prefix}no object height '
+                    f'(fallback rise 0.00) — proceeding\n')
+                sys.stderr.flush()
+            return 0.0, 0.0, False
+        _requested = _rise
+
+        # 2. measured baseline: the writer's `q` verb returns actual lowstate q.
+        _q_now = arm.get_current_dual_arm_q().copy()
+        _T_ee = get_ee_pose(arm_ik, _q_now, side)
+        if _T_ee is None:
+            sys.stderr.write(
+                f'[pick_daemon] {log_prefix}FK failed — no raise, '
+                f'place proceeds\n')
+            sys.stderr.flush()
+            return _requested, 0.0, False
+        _R0 = np.asarray(_T_ee.rotation, dtype=np.float64).copy()
+        _p0 = np.asarray(_T_ee.translation, dtype=np.float64).copy()
+
+        # idle-arm target is its current wrist pose (idle-pin idiom), already
+        # parked at CARRY_TUCK by step 2 on the coords exits.
+        _other = 'left' if side == 'right' else 'right'
+        _idle_wrist = get_wrist_pose(arm_ik, _q_now, _other)
+        _idle_t = (pin.SE3(np.eye(3), _idle_wrist).homogeneous
+                   if _idle_wrist is not None
+                   else (R_NEUTRAL if _other == 'right' else L_NEUTRAL))
+
+        _try_rise = _rise
+        for _attempt in range(1, PLACE_EXTRA_LIFT_ATTEMPTS + 1):
+            # 4. target is translation only, so the grip does not rotate.
+            _target = pin.SE3(
+                _R0, _p0 + np.array([0.0, 0.0, _try_rise])).homogeneous
+            # 6. arg order: the first positional is always the left target.
+            if side == 'left':
+                _left_t, _right_t = _target, _idle_t
+            else:
+                _left_t, _right_t = _idle_t, _target
+            _sol_q, _sol_tau = _solve_ik_verified(
+                arm_ik, _left_t, _right_t, _q_now, side, log_prefix)
+            if _sol_q is None:
+                break
+            _pos_err, _ori_err, _, _ = verify_ik_target(
+                arm_ik, _sol_q, side, _target)
+            if _pos_err is None:
+                break
+            if _pos_err <= PLACE_EXTRA_LIFT_TOL_M:
+                _T_got = get_ee_pose(arm_ik, _sol_q, side)
+                if _T_got is None:
+                    break
+                _achieved = (float(np.asarray(_T_got.translation,
+                                              dtype=np.float64)[2])
+                             - float(_p0[2]))
+                # idle dofs: transport needs 14 floats, so pin the idle slice to
+                # the measured q (the _t5_joint_move pattern). not freeze_idle_arm,
+                # which would hard-command CARRY_TUCK when step 2 never ran.
+                _cmd_q = np.array(_sol_q, dtype=np.float64).copy()
+                _idle_idx = slice(0, 7) if side == 'right' else slice(7, 14)
+                _cmd_q[_idle_idx] = _q_now[_idle_idx]
+                sys.stderr.write(
+                    f'[pick_daemon] {log_prefix}raise {side} arm: '
+                    f'H={float(height_m):.3f} m requested='
+                    f'{_requested:.3f} m clamped={_try_rise:.3f} m '
+                    f'achieved={_achieved:.3f} m (pos_err={_pos_err:.4f})\n')
+                sys.stderr.flush()
+                # tau from the same 14-vector that is commanded (_t5_joint_move),
+                # or the idle arm's gravity comp will not match its own q.
+                move_arm_smooth(arm, _cmd_q, _arm_gravity_ff(_cmd_q,
+                                                            np.zeros(14)))
+                return _requested, _achieved, True
+            # 7. residual too large: halve and retry, which clamps to the
+            # maximum safe rise without a magic number.
+            sys.stderr.write(
+                f'[pick_daemon] {log_prefix}raise attempt {_attempt}/'
+                f'{PLACE_EXTRA_LIFT_ATTEMPTS}: pos_err={_pos_err:.4f} m > tol '
+                f'{PLACE_EXTRA_LIFT_TOL_M:.3f} at rise={_try_rise:.3f} m — '
+                f'halving\n')
+            sys.stderr.flush()
+            _try_rise *= 0.5
+
+        sys.stderr.write(
+            f'[pick_daemon] {log_prefix}no FK-verified raise within '
+            f'{PLACE_EXTRA_LIFT_ATTEMPTS} attempts (requested='
+            f'{_requested:.3f} m) — commanding NO raise, place proceeds\n')
+        sys.stderr.flush()
+        return _requested, 0.0, False
+    except Exception as _el_e:
+        # a raise fault must never reach the per-command handler, which would
+        # freeze the arm, drop the RC interlock and skip DONE.
+        sys.stderr.write(
+            f'[pick_daemon] {log_prefix}raise failed: {_el_e} — no raise, '
+            f'place proceeds\n')
+        sys.stderr.flush()
+        return _requested, 0.0, False
