@@ -1413,3 +1413,25 @@ def get_wrist_pose(arm_ik, current_q, side='right'):
 # a verified target without touching the read-only solver.
 
 
+def get_ee_pose(arm_ik, q14, side='right'):
+    """Full R_ee frame FK — pin.SE3 (rotation + translation).
+
+    Same parent-joint construction as get_wrist_pose:
+    ``data.oMi[parent_joint] * frame.placement`` with
+    frame = <side>_ee = <side>_wrist_yaw_joint + [0.05, 0, 0] (identity
+    rotation).  THIS is the frame whose columns are measured as X =
+    fingers-extend, Y = physical palm normal (right +Y, left -Y), Z =
+    finger-spread.  Returns None on failure; never raises.
+    """
+    model = arm_ik.reduced_robot.model
+    data = arm_ik.reduced_robot.data
+    frame_id = arm_ik.R_hand_id if side == 'right' else arm_ik.L_hand_id
+
+    try:
+        pin.forwardKinematics(model, data, q14)
+        frame = model.frames[frame_id]
+        parent_joint_id = frame.parentJoint
+        placement = data.oMi[parent_joint_id] * frame.placement
+        return placement
+    except Exception:
+        return None
