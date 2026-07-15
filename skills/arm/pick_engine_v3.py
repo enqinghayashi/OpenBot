@@ -1718,3 +1718,5 @@ def _deviation_ramped(waypoint_step, delta_tgt=DEV_DELTA_TGT):
     (frozen at contact — 2026-08-30 user rule)."""
     return float(np.clip(waypoint_step * DEV_STEP_MAX, 0.0,
                          min(float(delta_tgt), DEV_MAX)))
+
+
