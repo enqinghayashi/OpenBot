@@ -1750,3 +1750,50 @@ def wrist_rotation_decomposition(arm_ik, q14, side, R_ref):
             float(np.dot(D, R_act[:, 2])))
 
 
+def world_to_ik_frame(world_x, world_y, world_z, robot_x, robot_y, robot_yaw):
+    """Convert MuJoCo world-frame coordinates to IK-frame coordinates.
+
+    Transform chain:  world → torso → IK
+
+    world → torso:
+        Rotate world displacement by -robot_yaw around world Z, giving
+        torso-frame coordinates where X = lateral (+left), Y = forward,
+        Z = height.
+
+    torso → IK (G1 arm IK convention — mirrors make_wrist_target):
+        ik_x = torso_y   (forward)
+        ik_y = torso_x   (LEGACY sign — dead helper, body unchanged; the live
+        builders negate: ik_y = -torso_x)
+        ik_z = torso_z   (height)
+
+    Parameters
+    ----------
+    world_x, world_y, world_z : float
+        Point in MuJoCo world frame.
+    robot_x, robot_y : float
+        Robot base position in world frame.
+    robot_yaw : float
+        Robot yaw angle (radians) in world frame.
+
+    Returns
+    -------
+    np.ndarray, shape (3,)
+        Point in IK frame: [ik_x, ik_y, ik_z].
+    """
+    # world frame → torso frame
+    dx = world_x - robot_x
+    dy = world_y - robot_y
+    cos_yaw = np.cos(robot_yaw)
+    sin_yaw = np.sin(robot_yaw)
+
+    torso_x =  cos_yaw * dx + sin_yaw * dy   # lateral (+left)
+    torso_y = -sin_yaw * dx + cos_yaw * dy   # forward
+    torso_z = world_z                         # height (yaw does not touch it)
+
+    # torso frame → IK frame
+    ik_x = torso_y   # forward
+    ik_y = torso_x   # lateral sign (+left)
+                     # live builders negate: ik_y = -torso_x
+    ik_z = torso_z   # height
+
+    return np.array([ik_x, ik_y, ik_z])
