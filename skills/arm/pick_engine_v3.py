@@ -1545,3 +1545,5 @@ def solve_wrist_orientation_in_place(arm_ik, q14, side, target_T,
         pos_err, ori_err = float('inf'), float('inf')
     converged = converged or (err_best <= tol)
     return q_out, err_best, pos_err, converged
+
+
