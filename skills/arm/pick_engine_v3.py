@@ -1896,3 +1896,54 @@ _ZF_TOKEN_VERBS = ('place', 'place_left', 'home', 'ready', 'ready_right', 'ready
                    'carry', 'carry_left', 'neutral', 'play', 'quit')   # verbs that carry the reply token
 
 
+def _latch_table_floor(tz, height_m, orientation):
+    """Latch the table-plane z-floor from a pick/place's own object.
+
+    The detection is the object's CENTROID in the TORSO frame, and the engine
+    commands ``tz = wire_z + GRASP_Z_OFFSET`` as if it were a PELVIS-frame
+    value (v5.2 logs this 4.4 cm discrepancy and leaves the channel unchanged).
+    So, walking from the commanded tz down to the table surface in the pelvis
+    frame::
+
+        centroid_torso  = tz - GRASP_Z_OFFSET
+        centroid_pelvis = centroid_torso - SOLVER_Z_TORSO_OFFSET
+        table_pelvis    = centroid_pelvis - h/2      (upright: centroid mid-height)
+
+    Checked against run11's own log ("Pick target torso frame: x=-0.012
+    y=0.302 z=0.056 orientation=upright height_m=0.164", from the wire command
+    ``pick -0.012 0.302 0.016 upright 0.1641``): tz=0.056 -> table -0.110 m.
+
+    NOTE the sign of the h/2 term.  A larger object puts the table FURTHER
+    below its centroid, so h/2 SUBTRACTS.  (An earlier draft of this design
+    added it, which put the floor 20 cm above the table — above the commanded
+    grasp point itself, clamping away every grasp.)
+
+    Horizontal: the object lies on its side, so h is its LENGTH, not the
+    height of its axis above the table, and cannot be used.  Fall back to the
+    centroid with no h term — a lying object's axis sits one radius above the
+    table, so this is conservative by that radius (~3 cm on a bottle).
+    """
+    global _TABLE_FLOOR_PELVIS, _TABLE_FLOOR_SRC
+    if tz is None:
+        return None
+    h = None
+    try:
+        if height_m is not None and 0.0 < float(height_m) <= HEIGHT_M_MAX:
+            h = float(height_m)
+    except (TypeError, ValueError):
+        h = None
+    try:
+        tz = float(tz)
+    except (TypeError, ValueError):
+        return None
+    floor = tz - GRASP_Z_OFFSET - SOLVER_Z_TORSO_OFFSET + _ZFLOOR_CLEARANCE_M
+    if orientation != 'horizontal' and h is not None:
+        floor -= h / 2.0
+    _TABLE_FLOOR_PELVIS = floor
+    _TABLE_FLOOR_SRC = (tz, h, orientation)
+    sys.stderr.write(
+        f'[pick_daemon][zfloor] latched table floor z={floor:+.4f} (pelvis) '
+        f'from tz={tz:+.4f} h={h} orientation={orientation} '
+        f'clearance={_ZFLOOR_CLEARANCE_M:.3f}\n')
+    sys.stderr.flush()
+    return floor
