@@ -1437,3 +1437,23 @@ def get_ee_pose(arm_ik, q14, side='right'):
         return None
 
 
+def verify_ik_target(arm_ik, q14, side, target_T):
+    """FK-verify a solve result against its SE3 target.
+
+    pos_err = |p_ee - p_target|  (m); ori_err = angle of R_ee . R_target^T
+    (rad) — the same residual the solver minimizes (robot_arm_ik.py:127-128,
+    log3 of oMf @ cTf^T).  Also returns det(R_ee); a |det| != 1 result means
+    the achieved frame is a mirror (asserted never to happen).
+    Returns (pos_err, ori_err, R_ee, det) or (None,)*4 if FK fails.
+    """
+    T_ee = get_ee_pose(arm_ik, q14, side)
+    if T_ee is None:
+        return None, None, None, None
+    R_ee = np.asarray(T_ee.rotation, dtype=np.float64)
+    p_ee = np.asarray(T_ee.translation, dtype=np.float64)
+    R_t = np.asarray(target_T[:3, :3], dtype=np.float64)
+    p_t = np.asarray(target_T[:3, 3], dtype=np.float64)
+    pos_err = float(np.linalg.norm(p_ee - p_t))
+    R_err = R_ee @ R_t.T
+    ori_err = float(np.arccos(np.clip((np.trace(R_err) - 1.0) / 2.0, -1.0, 1.0)))
+    return pos_err, ori_err, R_ee, float(np.linalg.det(R_ee))
