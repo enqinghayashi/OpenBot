@@ -1797,3 +1797,14 @@ def world_to_ik_frame(world_x, world_y, world_z, robot_x, robot_y, robot_yaw):
     ik_z = torso_z   # height
 
     return np.array([ik_x, ik_y, ik_z])
+
+
+# per-step gravity feedforward: the 250 Hz controller feeds the tau to lowcmd
+# and the arm fights gravity at its current pose, so a constant endpoint
+# torque (sol_tauff or zeros) is only correct at the target. rnea every 50 Hz
+# step is cheap (~0.1 ms on the G1 URDF), so every interpolated pose gets its
+# own compensation. this mirrors solve_ik's sol_tauff: pin.rnea on the reduced
+# arm model with v=0 and a=0, whose q is the 14-DOF arm vector.
+_ARM_IK = None  # main() sets it after building G1_29_ArmIK
+
+
