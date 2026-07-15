@@ -1457,3 +1457,5 @@ def verify_ik_target(arm_ik, q14, side, target_T):
     R_err = R_ee @ R_t.T
     ori_err = float(np.arccos(np.clip((np.trace(R_err) - 1.0) / 2.0, -1.0, 1.0)))
     return pos_err, ori_err, R_ee, float(np.linalg.det(R_ee))
+
+
