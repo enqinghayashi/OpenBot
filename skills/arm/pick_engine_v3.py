@@ -1748,3 +1748,5 @@ def wrist_rotation_decomposition(arm_ik, q14, side, R_ref):
     return (float(np.dot(D, R_act[:, 0])),
             float(np.dot(D, R_act[:, 1])),
             float(np.dot(D, R_act[:, 2])))
+
+
