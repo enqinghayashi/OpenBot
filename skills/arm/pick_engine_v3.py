@@ -1547,3 +1547,114 @@ def solve_wrist_orientation_in_place(arm_ik, q14, side, target_T,
     return q_out, err_best, pos_err, converged
 
 
+def _solve_ik_verified(arm_ik, left_target, right_target, cur_q, side,
+                       log_prefix):
+    """solve_ik + verify-wash + wrist-GN polish; SOFT-FAIL on exhaustion
+    (v3.2 restore, 2026-08-30).
+
+    v3.4 (2026-08-30 user directive): the v3.3 NO-PITCH corrective gate
+    (`_enforce_pitch_freeze` + the enforce_pitch_freeze flag) is REMOVED
+    COMPLETELY — "do not pitch hands upwards or downwards" stays as a
+    DIAGNOSTIC only (the wp4-FK body-axis decomposition logs flag the
+    achieved pitch vs PITCH_FROZEN_TOL above; nothing corrects it).  The
+    upright flows were restored to the ORIGINAL insert guard + retract at
+    the same time (see the upright waypoint comments).
+
+    Wash loop (<= SOLVE_WASH_ATTEMPTS): each solve runs with warm = the
+    previous attempt's OUTPUT sol_q (identical warm start is deterministic,
+    so re-solving it is a filter no-op — verified separately by the dedup);
+    the filter weights [0.4, 0.3, 0.2, 0.1] sum to 1, so repeated solves of
+    the same waypoint converge the blend to the raw solution.  After each
+    attempt, FK-verify (pos <= SOLVE_VERIFY_POS_TOL, ori <= SOLVE_VERIFY_ORI_TOL).
+    Exception signature (sol_q ~ warm AND pos_err large = Ipopt raised:
+    robot_arm_ik.py:246-271 returns the passed q): log loud, break the wash
+    (warm retries cannot help — the filter already got the input).
+
+    Fail path: GN the best iterate; if wrist-GN converged AND pos ok,
+    re-tau via _arm_gravity_ff (GN changed q); else loud
+    'ERROR:IK verify failed: …' and return the GN-polished best-effort
+    (gn_q, re-tau) — v3.1's hard-fail (None, None) killed the whole FSM at
+    the first waypoint whose target sat beyond the reach cap (before any
+    arm motion); the original FSM commanded whatever the solver returned
+    and let the guarded move be the safety.  The failure stays LOUD (the
+    ERROR line above); the post-move FK checks + gates judge what happened.
+    Only when the solver returned NO usable q at all (best is None) is
+    (None, None) returned — the original's True-fail, the caller's
+    ERROR:IK failed branches.
+    """
+    if (side == 'right' and (left_target is None or right_target is None)) or \
+       (side == 'left' and (left_target is None or right_target is None)):
+        return None, None
+    target_T = right_target if side == 'right' else left_target
+    warm = np.array(cur_q, dtype=np.float64)
+    best = None          # (sol_q, sol_tauff, pos_err, ori_err)
+    best_pos_err = float('inf')
+    raised = False
+    for attempt in range(1, SOLVE_WASH_ATTEMPTS + 1):
+        with _SuppressStdout():
+            sol_q, sol_tauff = arm_ik.solve_ik(
+                left_target, right_target,
+                current_lr_arm_motor_q=warm.copy(),
+                current_lr_arm_motor_dq=np.zeros(14))
+        pos_err, ori_err, _, _ = verify_ik_target(arm_ik, sol_q, side, target_T)
+        if pos_err is None:
+            sys.stderr.write(
+                f'[pick_daemon] {log_prefix}IK verify attempt {attempt}/'
+                f'{SOLVE_WASH_ATTEMPTS}: FK failed — aborting wash\n')
+            sys.stderr.flush()
+            break
+        sys.stderr.write(
+            f'[pick_daemon] {log_prefix}IK verify attempt {attempt}/'
+            f'{SOLVE_WASH_ATTEMPTS}: pos_err={pos_err:.4f} m '
+            f'ori_err={ori_err:.4f} rad\n')
+        sys.stderr.flush()
+        if pos_err < best_pos_err:
+            best_pos_err = pos_err
+            best = (sol_q, sol_tauff, pos_err, ori_err)
+        if (np.allclose(sol_q, warm, atol=1e-4)
+                and pos_err > SOLVE_VERIFY_POS_TOL):
+            sys.stderr.write(
+                f'[pick_daemon] {log_prefix}Ipopt solve raised — warm retries '
+                f'cannot dilute the filter, continuing to GN polish\n')
+            sys.stderr.flush()
+            raised = True
+            break
+        if pos_err <= SOLVE_VERIFY_POS_TOL and ori_err <= SOLVE_VERIFY_ORI_TOL:
+            return sol_q, sol_tauff
+        warm = sol_q
+
+    # wash exhausted: wrist-space GN on the best iterate.
+    gn_base = best[0] if best is not None else np.array(cur_q, dtype=np.float64)
+    gn_q, gn_ori_err, gn_pos_err, gn_conv = solve_wrist_orientation_in_place(
+        arm_ik, gn_base, side, target_T)
+    if gn_conv and gn_pos_err is not None and gn_pos_err <= SOLVE_VERIFY_POS_TOL:
+        sys.stderr.write(
+            f'[pick_daemon] {log_prefix}wrist-GN polish: '
+            f'ori_err={gn_ori_err:.4f} rad pos_err={gn_pos_err:.4f} m '
+            f'(wash attempts exhausted{", solver raised" if raised else ""})\n')
+        sys.stderr.flush()
+        return gn_q, _arm_gravity_ff(gn_q, np.zeros(14))
+
+    if best is None:
+        # no usable q: solve_ik returned (None, None) or FK failed every
+        # attempt. this is a true fail, left to the caller's ERROR:IK failed
+        # branch; cur_q would only no-op the waypoint.
+        sys.stderr.write(
+            f'[pick_daemon] ERROR:IK verify failed: no usable solve from '
+            f'the solver (None / FK failed every attempt) — True-fail, '
+            f'caller\'s ERROR:IK failed branch (no best-effort exists)\n')
+        sys.stderr.flush()
+        return None, None
+
+    sys.stderr.write(
+        f'[pick_daemon] ERROR:IK verify failed: pos={gn_pos_err if gn_pos_err is not None else float("inf"):.4f} '
+        f'm ori={gn_ori_err:.4f} rad (wash + wrist GN exhausted) — v3.2 '
+        f'SOFT-FAIL: commanding the GN-polished best-effort pose (restored '
+        f'original FSM semantics — the guarded move + stop-FN is the '
+        f'safety; see DEPLOY docs)\n')
+    sys.stderr.flush()
+    # command whatever wash+GN returned, never (None, None): no guard on the
+    # current q. the verify and GN polish stay, since their logs report the
+    # waypoint and the caller keeps its gates (pressure evidence, GATE_CONF, FK
+    # orientation checks).
+    return gn_q, _arm_gravity_ff(gn_q, np.zeros(14))
