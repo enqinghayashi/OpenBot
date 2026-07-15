@@ -1706,3 +1706,5 @@ def _upright_tilt_sign(attempt):
         pass
     i = min(max(int(attempt), 0), len(UPRIGHT_TILT_SIGNS) - 1)
     return float(UPRIGHT_TILT_SIGNS[i])
+
+
