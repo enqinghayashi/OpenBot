@@ -1658,3 +1658,18 @@ def _solve_ik_verified(arm_ik, left_target, right_target, cur_q, side,
     # waypoint and the caller keeps its gates (pressure evidence, GATE_CONF, FK
     # orientation checks).
     return gn_q, _arm_gravity_ff(gn_q, np.zeros(14))
+
+
+# ── the deviation ramp + body-axis decomposition ──────────────────────────────
+# upright right pick tilt, per attempt. deviation is rotation about the palm
+# normal; with the palm sideways it tilts the fingers up or down. attempt 1
+# tilts up, 2 is straight and 3 tilts down, so there are 3 attempts. right
+# arm only; the left arm keeps _l_dev_tgt. the off flag
+# UPRIGHT_TILT_OFF_FLAG makes every attempt +1 on the next pick.
+UPRIGHT_TILT_SIGNS = (1.0, 0.0, -1.0)   # attempt 1 up, 2 straight, 3 down
+# per-attempt grasp-height shift (m), upright right: the straight attempt
+# descends 5 cm more. the z-floor clamp and insert guard stay in force, so a
+# shift the table forbids gets clamped.
+UPRIGHT_TILT_DZ = (0.0, -0.05, 0.0)
+
+
