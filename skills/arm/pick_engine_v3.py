@@ -1686,3 +1686,11 @@ UPRIGHT_TILT_OFF_FLAG = '/tmp/openbot_upright_tilt_off'
 UPRIGHT_ATTEMPTS = len(UPRIGHT_TILT_SIGNS)   # one attempt per tilt sign
 
 
+def _upright_attempts():
+    """3 (one per tilt) normally; the B8i/B8j 2 when the off flag exists."""
+    try:
+        if os.path.exists(UPRIGHT_TILT_OFF_FLAG):
+            return 2
+    except Exception:
+        pass
+    return UPRIGHT_ATTEMPTS
