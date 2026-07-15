@@ -1403,3 +1403,13 @@ def get_wrist_pose(arm_ik, current_q, side='right'):
             f'frame_id={frame_id}, parent_joint={_pj})\n')
         sys.stderr.flush()
         return None
+
+
+# ── the verified-solve machinery ──────────────────────────────────────────────
+# solve_ik never returns None: its exception path returns the passed q. every
+# output is also blended 0.4/0.3/0.2/0.1, with identical duplicates skipped, so
+# a 4-solve pick's wp4 command is only ~40% wp4 and a failed solve is commanded
+# as-is with the Ipopt errors hidden. the wash, FK verify and wrist GN restore
+# a verified target without touching the read-only solver.
+
+
