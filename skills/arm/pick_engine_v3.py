@@ -1371,3 +1371,35 @@ def _place_extra_lift(arm, arm_ik, side, height_m, verb, log_prefix=''):
         return _requested, 0.0, False
 
 
+def get_wrist_pose(arm_ik, current_q, side='right'):
+    """Return wrist position [x,y,z] in IK frame using forward kinematics.
+
+    Uses the parent-joint method: FK → joint placement → apply frame offset.
+    This avoids ``data.oMf`` which may not include end-effector frames
+    (R_ee / L_ee at IDs 107/106) in all Pinocchio versions.
+
+    Returns None if FK fails.
+    """
+    model = arm_ik.reduced_robot.model
+    data = arm_ik.reduced_robot.data
+    frame_id = arm_ik.R_hand_id if side == 'right' else arm_ik.L_hand_id
+
+    try:
+        pin.forwardKinematics(model, data, current_q)
+        frame = model.frames[frame_id]
+        parent_joint_id = frame.parentJoint
+        # oMi has all the joint placements (forwardKinematics always fills them in)
+        placement = data.oMi[parent_joint_id] * frame.placement
+        return placement.translation.copy()
+    except Exception as e:
+        try:
+            _pj = model.frames[frame_id].parentJoint
+        except Exception:
+            _pj = 'N/A'
+        sys.stderr.write(
+            f'[pick_daemon] get_wrist_pose failed: {e} '
+            f'(|q|={len(current_q)}, model.nq={model.nq}, '
+            f'nframes={model.nframes}, njoints={model.njoints}, '
+            f'frame_id={frame_id}, parent_joint={_pj})\n')
+        sys.stderr.flush()
+        return None
