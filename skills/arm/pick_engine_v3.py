@@ -1696,3 +1696,13 @@ def _upright_attempts():
     return UPRIGHT_ATTEMPTS
 
 
+def _upright_tilt_sign(attempt):
+    """+1.0 / 0.0 / -1.0 for attempt index 0 / 1 / 2 (later attempts keep
+    -1.0); +1.0 for every attempt when the off flag file exists."""
+    try:
+        if os.path.exists(UPRIGHT_TILT_OFF_FLAG):
+            return 1.0
+    except Exception:
+        pass
+    i = min(max(int(attempt), 0), len(UPRIGHT_TILT_SIGNS) - 1)
+    return float(UPRIGHT_TILT_SIGNS[i])
