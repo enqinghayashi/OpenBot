@@ -1211,3 +1211,27 @@ def _clamped_grasp_z_offset(height_m):
             f'GRASP_Z_OFFSET ({GRASP_Z_OFFSET:.3f} m) for the grasp-z clamp\n')
         sys.stderr.flush()
     return GRASP_Z_OFFSET
+
+
+# ── the extra place lift ─────────────────────────────────────────────────────
+# a place first raises the holding arm alone to 2.5 times the detected object
+# height, clamped to the maximum safe rise. it is transient clearance: the
+# release point and drop height stay unchanged, pz and hover_z are not raised,
+# and the arm gives the z back before the release.
+PLACE_EXTRA_LIFT_HEIGHT_FRACTION = 2.5   # x object height (cf. GRASP_Z_OFFSET_HEIGHT_FRACTION)
+# ceiling: the largest rise above the LIFT-class carry pose with x and y held
+# is 0.409 m, about 0.43 m in practice. the 2.5x law holds only for
+# H <= 0.164 m; above that this cap saturates and the achieved rise is logged
+# on every place. 0.40 leaves margin under that ceiling.
+PLACE_EXTRA_LIFT_MAX_M = 0.40
+PLACE_EXTRA_LIFT_TOL_M = SOLVE_VERIFY_POS_TOL   # m; same FK residual the solver checks
+PLACE_EXTRA_LIFT_ATTEMPTS = 3                   # halving retries, then no-raise
+_place_extra_lift_no_height_warned = False
+# last valid pick-time object height (m); None means unknown. [0]-indexed so
+# assignment needs no `global`. written unconditionally at every pick
+# plausibility gate, so a height-less pick clears it and a later place cannot
+# reuse the wrong object. process-local: a daemon restart between pick and
+# place loses it, and the place grammar's height token is the durable path.
+_PLACE_LAST_OBJECT_HEIGHT_M = [None]
+
+
