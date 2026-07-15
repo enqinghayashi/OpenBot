@@ -1808,3 +1808,15 @@ def world_to_ik_frame(world_x, world_y, world_z, robot_x, robot_y, robot_yaw):
 _ARM_IK = None  # main() sets it after building G1_29_ArmIK
 
 
+def _arm_gravity_ff(q14, fallback):
+    """[FF-RE-ENABLED for bisection] Gravity-compensation tau (14-vector) at
+    pose q14, or fallback when the IK model is unavailable."""
+    global _ARM_IK
+    if _ARM_IK is None or not hasattr(_ARM_IK, 'reduced_robot'):
+        return fallback
+    try:
+        m = _ARM_IK.reduced_robot.model
+        d = _ARM_IK.reduced_robot.data
+        return pin.rnea(m, d, q14, np.zeros(m.nv), np.zeros(m.nv))
+    except Exception:
+        return fallback
