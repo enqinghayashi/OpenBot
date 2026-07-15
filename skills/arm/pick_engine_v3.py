@@ -1682,3 +1682,7 @@ def _upright_tilt_dz(attempt):
         pass
     i = min(max(int(attempt), 0), len(UPRIGHT_TILT_DZ) - 1)
     return float(UPRIGHT_TILT_DZ[i])
+UPRIGHT_TILT_OFF_FLAG = '/tmp/openbot_upright_tilt_off'
+UPRIGHT_ATTEMPTS = len(UPRIGHT_TILT_SIGNS)   # one attempt per tilt sign
+
+
