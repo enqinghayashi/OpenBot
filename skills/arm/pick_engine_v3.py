@@ -1369,3 +1369,5 @@ def _place_extra_lift(arm, arm_ik, side, height_m, verb, log_prefix=''):
             f'place proceeds\n')
         sys.stderr.flush()
         return _requested, 0.0, False
+
+
