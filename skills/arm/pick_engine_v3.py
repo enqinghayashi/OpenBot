@@ -1673,3 +1673,12 @@ UPRIGHT_TILT_SIGNS = (1.0, 0.0, -1.0)   # attempt 1 up, 2 straight, 3 down
 UPRIGHT_TILT_DZ = (0.0, -0.05, 0.0)
 
 
+def _upright_tilt_dz(attempt):
+    """Grasp-height shift (m) for the attempt; 0.0 when the off flag exists."""
+    try:
+        if os.path.exists(UPRIGHT_TILT_OFF_FLAG):
+            return 0.0
+    except Exception:
+        pass
+    i = min(max(int(attempt), 0), len(UPRIGHT_TILT_DZ) - 1)
+    return float(UPRIGHT_TILT_DZ[i])
