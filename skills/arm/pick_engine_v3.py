@@ -1947,3 +1947,5 @@ def _latch_table_floor(tz, height_m, orientation):
         f'clearance={_ZFLOOR_CLEARANCE_M:.3f}\n')
     sys.stderr.flush()
     return floor
+
+
