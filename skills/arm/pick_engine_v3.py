@@ -1694,3 +1694,5 @@ def _upright_attempts():
     except Exception:
         pass
     return UPRIGHT_ATTEMPTS
+
+
