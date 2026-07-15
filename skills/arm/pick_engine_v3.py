@@ -3366,3 +3366,236 @@ def _bounded_lead_close(client, side, preset, eps=None, max_presses=None,
              f'rad, tau_est <= {_tau_s} N.m).  The closure-block margin decides '
              f'the keep; this corner is logged, not hidden')
     return 'full'
+
+def _squeeze_hold(client, side, preset, steps=20, dt=0.01, hold_s=0.5):
+    """v5.2 (2026-09-07) Edit E: re-assert the close preset, settle, re-read.
+
+    The v5.1 blocked-read ran right after the 1.0 s ramp — the stalled
+    motors had not yet converged, so the margin read was noisy.  Re-asserting
+    the SAME preset re-presses the grip, `hold_s` lets the stall converge,
+    then the margin is re-scored.  Load-bearing part = settle + re-read.
+
+    The preset is re-asserted AND the re-score is taken against that SAME
+    preset (Task #10, 2026-09-18): the two must not drift.  Passing a capped
+    target here while `_score_closure_blocked` defaulted to the uncapped
+    CLOSE preset scored |q(0.600) - q(1.0)| and reported a false capture on
+    every free-air close.
+
+    Returns ((blocked, margin, worst) after the hold).
+    """
+    # the re-press is bounded. a full-preset re-command is an unbounded-lead
+    # ramp onto a hand already blocked by the object, the same rail as the
+    # initial close, repeated at the pre-lift pin and the tuck re-pin.
+    # force comes from the bounded lead per joint against the measured pose:
+    # tau_est ~= bias + 16.6*HAND_CLOSE_LEAD_EPS ~= 5 N.m.
+    # the score stays unchanged on purpose: `preset` (the caller's
+    # F_MAX_SAFE-clamped full preset) is still the margin reference, so
+    # _close_blocked still means |q_actual - preset| > CLOSURE_BLOCKED_TOL.
+    # scoring the bounded target would make margin == eps < tolerance and
+    # report blocked=False on a blocked hand, which the pre-lift pin would turn
+    # into an aborted lift.
+    # `steps` and `dt` are kept for signature compatibility, not pacing: a fixed
+    # step count is what produced the unbounded ramp. the press count comes from
+    # convergence; writes are HAND_CLOSE_PRESS_WRITES (== 1, load-bearing) at
+    # HAND_CLOSE_PRESS_DT.
+    try:
+        _bounded_lead_close(client, side, preset)
+    except Exception:
+        pass
+    time.sleep(hold_s)
+    return _score_closure_blocked(client, side, preset)
+
+
+def freeze_idle_arm(arm, sol_q, side):
+    """T5/T8: overwrite the idle arm's slice of sol_q with its KNOWN
+    CARRY_TUCK pose — deterministic pose-pin (Task 8 hardware batch).
+
+    Called after EVERY dual-arm IK solve during the active arm's waypoints
+    (waypoints, wp4 guarded insert, contact-relief retract): the inactive
+    arm stays at carry_tuck — no nullspace drift, regardless of how the
+    solver perturbs the idle side.  The inactive arm's target is ALWAYS
+    CARRY_TUCK_{LEFT,RIGHT} by design (step 2 just moved it there), so we
+    pin the KNOWN pose instead of sampling get_current_dual_arm_q (which
+    returns the ACTUAL lowstate q).  Sampling closed a settle race:
+    2026-08-17 the sample could land while the arm was still tracking the
+    step-2 sweep, freezing it at an INTERMEDIATE pose ("stopped halfway
+    into carry_tuck").  The pin is deterministic and also makes the idle
+    arm CONTINUE into its tuck pose during the approach if it was still
+    moving.  Belt-and-braces (Task 8 diagnosis batch): a bounded settle-wait
+    polls until the idle arm ACTUALLY tracks the known pose (max |cmd−meas|
+    < 0.03 rad, cmd = the pinned CARRY_TUCK, meas = actual lowstate q) or
+    2.5 s elapse, so the first commanded move of a pick flow starts from a
+    settled arm, not a still-tracking one.  Never blocks a pick: a timeout
+    just logs and proceeds (the pin still commands the known pose).
+    Mutates and returns ``sol_q``.  API unchanged (arm kept for call-site
+    compatibility).
+    """
+    if side == 'left':
+        idx = slice(7, 14)
+        target = _zf_idle_target('right', CARRY_TUCK_RIGHT)   # the pin, when set
+    else:
+        idx = slice(0, 7)
+        target = _zf_idle_target('left', CARRY_TUCK_LEFT)     # the pin, when set
+
+    _settled = False
+    _meas = None
+    _deadline = time.time() + 0.5  # 2.5 s would stall every waypoint; the idle arm rarely needs that long
+    _tol_rad = 0.08 if _zfloor_perarm_on() else 0.03   # 0.03 leaves the settle wait too short
+    while time.time() < _deadline:
+        try:
+            _meas = arm.get_current_dual_arm_q()
+        except Exception:
+            break
+        if np.max(np.abs(_meas[idx] - target)) < _tol_rad:
+            _settled = True
+            break
+        time.sleep(0.05)
+    if not _settled:
+        _err = (np.max(np.abs(_meas[idx] - target)) if _meas is not None
+                else float('nan'))
+        _idle_name = 'left' if side == 'right' else 'right'
+        sys.stderr.write(
+            f'[pick_daemon] freeze_idle_arm: {_idle_name} arm not settled at its '
+            f'tuck pose within {"0.5 s" if _zfloor_perarm_on() else "2.5 s"} '
+            f'(max err {_err:.3f} rad) — proceeding '
+            f'with the pose-pin anyway\n')
+        sys.stderr.flush()
+
+    sol_q[idx] = target
+    return sol_q
+
+
+def _solver_fresh(arm_ik, log_prefix=""):
+    """v5.2 (2026-09-07) Edit C: make the NEXT solve raw/fresh.
+
+    The solver's WeightedMovingFilter([0.4,0.3,0.2,0.1]) has NO reset() and
+    blends every solve_ik call (robot_arm_ik.py L227-228: add_data then
+    sol_q = smooth_filter.filtered_data).  Once its queue is full the NEWEST
+    solve gets weight 0.1 — waypoint commands become ~90% stale, and the
+    queue even survives ACROSS picks (the chain of warm starts: q[i-1] ->
+    filtered q[i]).  _apply_filter returns queue[-1] while the queue is
+    shorter than the window, so clearing _data_queue (private attribute —
+    try/except guarded) makes the NEXT solve pass through 100% fresh.
+    Called ONCE before the first solve of each waypoint phase; mid-phase
+    re-solves (resume/pushes) keep smoothing.
+
+    Returns the number of entries cleared (0 when there is no filter /
+    attribute — degrades to a visible no-op, never raises).
+    """
+    _f = getattr(arm_ik, 'smooth_filter', None)
+    if _f is None:
+        sys.stderr.write(
+            f'[pick_daemon] {log_prefix}solver-fresh: no smooth_filter on '
+            'the IK module — skip\n')
+        sys.stderr.flush()
+        return 0
+    try:
+        _n = len(_f._data_queue)
+        _f._data_queue.clear()
+        sys.stderr.write(
+            f'[pick_daemon] {log_prefix}solver-fresh: cleared {_n} stale '
+            f'filter entries — next solve raw/fresh\n')
+        sys.stderr.flush()
+        return _n
+    except AttributeError:
+        sys.stderr.write(
+            f'[pick_daemon] {log_prefix}solver-fresh: no _data_queue '
+            'attribute — skipping (sealed-solver drift?)\n')
+        sys.stderr.flush()
+        return 0
+
+
+def solve_and_move(arm, arm_ik, target, log_prefix="", side='right', raw=False):
+    """Solve IK and move the arm smoothly.
+
+    Parameters
+    ----------
+    side : str
+        'right' → right arm moves to target, left arm stays at current position.
+        'left'  → left arm moves to target, right arm stays at current position.
+    raw : bool
+        v5.0 (2026-09-06): True → the ORIGINAL raw ``arm_ik.solve_ik``
+        (sacred reference solve_and_move L588-616), verbatim.  Used by the
+        HORIZONTAL swing (h-wp1/h-wp2, both arms) so the wrist turns /
+        normalises DURING the swing exactly like the original — the
+        verified-solve wrist-GN was the palm-tilt signature (h ori_err
+        0.18-0.22 rad) and the "reach-then-turn" look.  False (default) →
+        verified solve (wash + FK verify + wrist-GN), kept for all UPRIGHT
+        approach waypoints (deviation + verified = user feature).
+    """
+    # pin the idle arm where it is so it does not drift
+    _cur_q = arm.get_current_dual_arm_q().copy()
+    if side == 'left':
+        _idle_wrist = get_wrist_pose(arm_ik, _cur_q, side='right')
+        _idle_target = (pin.SE3(np.eye(3), _idle_wrist).homogeneous
+                        if _idle_wrist is not None else R_NEUTRAL)
+        if raw:
+            # arg order: (target, _idle_target), grasp first for the left arm.
+            # do not swap.
+            with _SuppressStdout():
+                sol_q, sol_tauff = arm_ik.solve_ik(
+                    target, _idle_target,
+                    current_lr_arm_motor_q=_cur_q.copy(),
+                    current_lr_arm_motor_dq=np.zeros(14))
+        else:
+            # verified solve: wash + FK verify + wrist-GN, loud on failure
+            sol_q, sol_tauff = _solve_ik_verified(arm_ik, target, _idle_target,
+                                                  _cur_q, 'left', log_prefix)
+    else:
+        _idle_wrist = get_wrist_pose(arm_ik, _cur_q, side='left')
+        _idle_target = (pin.SE3(np.eye(3), _idle_wrist).homogeneous
+                        if _idle_wrist is not None else L_NEUTRAL)
+        if raw:
+            with _SuppressStdout():
+                sol_q, sol_tauff = arm_ik.solve_ik(
+                    _idle_target, target,
+                    current_lr_arm_motor_q=_cur_q.copy(),
+                    current_lr_arm_motor_dq=np.zeros(14))
+        else:
+            sol_q, sol_tauff = _solve_ik_verified(arm_ik, _idle_target, target,
+                                                  _cur_q, 'right', log_prefix)
+
+    if sol_q is None:
+        return False
+
+    # no early return when solve_ik comes back with the current q (an Ipopt
+    # silent failure): command what came back, a no-op move, rather than skip
+    # the waypoint.
+    # freeze the idle arm: hard-overwrite its slice with the current q, sampled
+    # after the carry_tuck move settled, before commanding anything.
+    sol_q = freeze_idle_arm(arm, sol_q, side)
+
+    sys.stderr.write(f'[pick_daemon] {log_prefix}IK solved, moving...\n')
+    sys.stderr.flush()
+    move_arm_smooth(arm, sol_q, sol_tauff,
+                    zf_label=(log_prefix.strip().rstrip(':').strip() or None))
+    return True
+
+
+def _t5_joint_move(arm, side, pose, duration=None, zf_legacy=False):
+    """T5 helper: move ONE arm to a fixed joint-space pose (LIFT/CARRY_TUCK).
+
+    The other (idle) arm's slice is kept at its CURRENT q — a full 14-vector
+    is built here, so the idle arm is untouched by construction (equivalent
+    to freeze_idle_arm but no IK solve is involved).  Hand state is NOT
+    touched by this helper — the caller keeps the hand closed.
+
+    duration (v5.2, 2026-09-07): pass-through to move_arm_smooth — a gentler
+    CARRY_TUCK wrist roll (CARRY_TUCK_DURATION=4.0) mitigates slinging a
+    light capture out of the fingers.
+    """
+    _t5_q = arm.get_current_dual_arm_q().copy()
+    if side == 'right':
+        _t5_q[7:14] = pose
+    else:
+        _t5_q[0:7] = pose
+    # gravity FF at the target pose, not zeros: move_arm_smooth re-asserts
+    # ctrl_dual_arm(target_q, target_tauff) at the end, so zeros leave the arm
+    # without gravity comp after ready/lift/CARRY_TUCK/neutral and it sags on
+    # hardware.
+    tau_target = _arm_gravity_ff(_t5_q, np.zeros(14))
+    if duration is None:
+        move_arm_smooth(arm, _t5_q, tau_target, zf_legacy=zf_legacy)
+    else:
+        move_arm_smooth(arm, _t5_q, tau_target, duration=duration,
+                        zf_legacy=zf_legacy)
