@@ -1459,3 +1459,89 @@ def verify_ik_target(arm_ik, q14, side, target_T):
     return pos_err, ori_err, R_ee, float(np.linalg.det(R_ee))
 
 
+def solve_wrist_orientation_in_place(arm_ik, q14, side, target_T,
+                                     iters=WRIST_GN_ITERATIONS,
+                                     tol=WRIST_GN_TOL):
+    """Wrist-space Gauss-Newton — the W2 spec restore (REVIEW_TASK1 W2,
+    IK_SOLVER_RESEARCH §6.1, 02-daemon-poses.md:296-328).
+
+    Minimizes ‖pin.log3(R_ee(q|wrist) @ R_targetᵀ)‖ over the side's THREE
+    wrist joints (user map: [11,12,13] right = forearm-yaw / up-down /
+    [6]-index FLEXION; [4,5,6] left), all other joints held:
+      - forward-difference Jacobian h=1e-3
+      - lstsq(J, -r) step
+      - clip to WRIST_LIMITS
+      - warm start = current wrist q
+      - stagnation guard: 5 iters without improvement -> converged=False
+      - best iterate retained; never raises
+    Returns (q_new, ori_err, pos_err, converged) — the full 14-qq copy with
+    the side's wrist replaced.
+    """
+    iw = RIGHT_WRIST_Q_IDX if side == 'right' else LEFT_WRIST_Q_IDX
+    qb = np.array(q14, dtype=np.float64)
+    qw = qb[iw].copy()
+    R_target = np.asarray(target_T[:3, :3], dtype=np.float64)
+
+    def _resid(qw_):
+        qq = qb.copy()
+        qq[iw] = qw_
+        T_ee = get_ee_pose(arm_ik, qq, side)
+        if T_ee is None:
+            return None
+        R_ee = np.asarray(T_ee.rotation, dtype=np.float64)
+        return np.asarray(pin.log3(R_ee @ R_target.T), dtype=np.float64)
+
+    h = 1e-3
+    qw_best = qw.copy()
+    r_best = _resid(qw_best)
+    err_best = float(np.linalg.norm(r_best)) if r_best is not None else float('inf')
+    converged = False
+    stagnant = 0
+    for _ in range(iters):
+        r = _resid(qw)
+        if r is None:
+            break
+        err = float(np.linalg.norm(r))
+        if err < err_best:
+            err_best = err
+            qw_best = qw.copy()
+        if err <= tol:
+            converged = True
+            break
+        # finite-difference Jacobian
+        J = np.zeros((3, 3))
+        ok = True
+        for j in range(3):
+            qw_h = qw.copy()
+            qw_h[j] += h
+            rh = _resid(qw_h)
+            if rh is None:
+                ok = False
+                break
+            J[:, j] = (rh - r) / h
+        if not ok:
+            break
+        step, *_ = np.linalg.lstsq(J, -r, rcond=None)
+        qw_try = np.clip(qw + step,
+                         [-WRIST_LIMITS[int(i)] for i in iw],
+                         [WRIST_LIMITS[int(i)] for i in iw])
+        if np.allclose(qw_try, qw, atol=1e-9):
+            break
+        r_try = _resid(qw_try)
+        if r_try is not None and float(np.linalg.norm(r_try)) < err:
+            qw = qw_try
+            stagnant = 0
+        else:
+            stagnant += 1
+            if stagnant >= 5:
+                break
+        if converged:
+            break
+
+    q_out = qb.copy()
+    q_out[iw] = qw_best
+    pos_err, ori_err, _, _ = verify_ik_target(arm_ik, q_out, side, target_T)
+    if pos_err is None:
+        pos_err, ori_err = float('inf'), float('inf')
+    converged = converged or (err_best <= tol)
+    return q_out, err_best, pos_err, converged
