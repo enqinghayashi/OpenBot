@@ -1720,3 +1720,31 @@ def _deviation_ramped(waypoint_step, delta_tgt=DEV_DELTA_TGT):
                          min(float(delta_tgt), DEV_MAX)))
 
 
+def wrist_rotation_decomposition(arm_ik, q14, side, R_ref):
+    """Body-axis decomposition of the achieved rotation (log-only; the
+    joint-to-motion assignment is pose-dependent, so the gate asserts on
+    BODY axes at the ACTUAL pose, never on joint indices).
+
+    D = log3(R_act @ R_ref^T), projected onto R_act's own columns:
+      - fingers axis  = R_act[:,0]  -> PITCH  (up/down: the user's
+        NO-PITCH rule during upright contact — |pitch| <= PITCH_FROZEN_TOL)
+      - palm normal   = R_act[:,1]  -> DEVIATION (the ulnar roll, ===
+        s_dev * commanded delta at contact: s_dev = DEV_ROT_SIGN *
+        sign(dir_lateral) — +1 LEFT, -1 RIGHT — so a perfect right-arm
+        execution logs the NEGATIVE of the printed positive target;
+        compare magnitudes across the side, or read the signed target)
+      - spread axis   = R_act[:,2]  -> FLEXION (the in/out palm hinge,
+        dominant during the approach)
+    Returns (pitch, deviation, flexion) rad or (None,)*3 if FK fails."""
+    T_ee = get_ee_pose(arm_ik, q14, side)
+    if T_ee is None:
+        return None, None, None
+    R_act = np.asarray(T_ee.rotation, dtype=np.float64)
+    R_ref = np.asarray(R_ref[:3, :3], dtype=np.float64)
+    try:
+        D = np.asarray(pin.log3(R_act @ R_ref.T), dtype=np.float64)
+    except Exception:
+        return None, None, None
+    return (float(np.dot(D, R_act[:, 0])),
+            float(np.dot(D, R_act[:, 1])),
+            float(np.dot(D, R_act[:, 2])))
