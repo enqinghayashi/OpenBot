@@ -7825,3 +7825,111 @@ def _note_cmd(target_q, meas_q=None):
             None if meas_q is None else np.array(meas_q, dtype=np.float64).copy())
     except Exception:
         _LAST_CMD_Q[0] = None
+
+
+def _last_cmd_err(q_now):
+    """'%.3f' = max|recorded target - q_now| (the stall a relax releases), or
+    'unknown' when there is no record, or when the arm has moved more than
+    ARM_CMD_RECORD_DRIFT_RAD since it was taken (the record is stale).
+    Never raises."""
+    rec = _LAST_CMD_Q[0]
+    if rec is None:
+        return 'unknown'
+    try:
+        tgt, meas = rec
+        q_now = np.asarray(q_now, dtype=np.float64)
+        if meas is not None and float(np.max(np.abs(
+                q_now - np.asarray(meas, dtype=np.float64)))) > ARM_CMD_RECORD_DRIFT_RAD:
+            return 'unknown'
+        return '%.3f' % float(np.max(np.abs(
+            np.asarray(tgt, dtype=np.float64) - q_now)))
+    except Exception:
+        return 'unknown'
+
+
+def _relax_arm_to_measured(arm, ctx, q=None):
+    """Collapse the commanded arm target onto the MEASURED q.
+
+    The writer PD-holds `arm.current` forever, so an arm stopped short of its
+    target (blocked by the table, the object, or its own body) keeps pushing
+    with the full position-error torque.  Re-commanding the measured pose is
+    the only way to remove that torque without moving anywhere new.  Writer
+    mode: a slew_start (non-blocking) over ARM_RELAX_DURATION_S with the
+    gravity FF of the measured pose.  Standalone: one ctrl_dual_arm.
+
+    Never raises.  Returns the q it commanded, or None on failure (the reason
+    is kept in _LAST_RELAX_ERROR[0] and logged).
+    """
+    _LAST_RELAX_ERROR[0] = None
+    try:
+        if q is None:
+            q = arm.get_current_dual_arm_q()
+        q = np.array(q, dtype=np.float64)
+        tau = _arm_gravity_ff(q, np.zeros(14))
+        if ARM_WRITER_ENABLED:
+            arm.slew_start(q, duration=ARM_RELAX_DURATION_S, tau=tau)
+        else:
+            arm.ctrl_dual_arm(q, tau)
+        _note_cmd(q, q)
+        _safe_log(f'[pick_daemon] SAFE-EXIT({ctx}): relaxed to measured q '
+                  f'(commanded target := measured, '
+                  f'{ARM_RELAX_DURATION_S:.1f} s)')
+        return q
+    except Exception as _e:
+        _LAST_RELAX_ERROR[0] = repr(_e)
+        _safe_log(f'[pick_daemon] SAFE-EXIT({ctx}): relax to measured q '
+                  f'FAILED: {_e!r}')
+        return None
+
+
+def _safe_move(arm, target_q, ctx, duration=None):
+    """Blocking, NON-CANCELLABLE move used only by the safe-exit unwinds.
+
+    Same z-floor clamp as move_arm_smooth, then the writer slew with
+    abort=None (or an interpolation loop with no cancel probe in standalone
+    mode).  It never polls the cancel flag on purpose: these moves run AFTER
+    the command's reply was written, and a Cancelled raised here would make
+    the command loop's handler write a second stdout line.
+
+    May raise (writer failure).  Returns the commanded (clamped) target.
+    """
+    start_q = np.array(arm.get_current_dual_arm_q(), dtype=np.float64)
+    tgt = np.array(target_q, dtype=np.float64)
+    tgt, _clamped = _apply_zfloor(start_q, tgt, 'safe_exit:' + ctx, zf_legacy=True)
+    tgt = np.array(tgt, dtype=np.float64)
+    tau = _arm_gravity_ff(tgt, np.zeros(14))
+    max_delta = float(np.max(np.abs(tgt - start_q)))
+    if duration is None:
+        duration = max(1.5, max_delta / MOVE_SPEED)
+    _safe_log(f'[pick_daemon] SAFE-EXIT({ctx}): non-cancellable move '
+              f'max_delta={max_delta:.3f} rad duration={duration:.1f}s')
+    # clearing the tracked target first: the writer's target is about to
+    # change, and a move that raises leaves the target unknown.
+    _LAST_CMD_Q[0] = None
+    if ARM_WRITER_ENABLED:
+        arm.slew(tgt, duration=duration, tau=tau, abort=None)
+    else:
+        steps = max(1, int(duration * MOVE_HZ))
+        dt = duration / steps
+        for i in range(1, steps + 1):
+            r = 0.5 - 0.5 * np.cos(np.pi * i / steps)
+            arm.ctrl_dual_arm(start_q + r * (tgt - start_q), tau)
+            time.sleep(dt)
+        arm.ctrl_dual_arm(tgt, tau)
+    _note_cmd(tgt)
+    return tgt
+
+
+def _trail_reset():
+    del _SAFE_TRAIL[:]
+
+
+def _trail_note(arm, tag):
+    """Record the MEASURED q after a reached waypoint (never raises)."""
+    try:
+        q = np.array(arm.get_current_dual_arm_q(), dtype=np.float64)
+        _SAFE_TRAIL.append((tag, q))
+        while len(_SAFE_TRAIL) > SAFE_TRAIL_MAX:
+            del _SAFE_TRAIL[0]
+    except Exception as _e:
+        _safe_log(f'[pick_daemon] SAFE-EXIT trail note {tag} skipped: {_e!r}')
