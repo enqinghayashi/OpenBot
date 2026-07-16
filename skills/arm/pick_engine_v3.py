@@ -7933,3 +7933,100 @@ def _trail_note(arm, tag):
             del _SAFE_TRAIL[0]
     except Exception as _e:
         _safe_log(f'[pick_daemon] SAFE-EXIT trail note {tag} skipped: {_e!r}')
+
+
+def _retract_trail(arm, ctx):
+    """Replay the recorded waypoints in REVERSE (retract along the approach).
+
+    Entries within SAFE_TRAIL_SKIP_RAD of the current q are skipped.  The
+    trail is cleared first, so a failure part-way can never leave a stale
+    trail for a later command.  May raise (from _safe_move).  Returns the
+    number of retract moves commanded.
+    """
+    trail = list(_SAFE_TRAIL)
+    del _SAFE_TRAIL[:]
+    n = 0
+    for tag, q in reversed(trail):
+        cur = np.array(arm.get_current_dual_arm_q(), dtype=np.float64)
+        if float(np.max(np.abs(np.asarray(q) - cur))) <= SAFE_TRAIL_SKIP_RAD:
+            _safe_log(f'[pick_daemon] SAFE-EXIT({ctx}): retract {tag} '
+                      f'skipped (already within {SAFE_TRAIL_SKIP_RAD:.2f} rad)')
+            continue
+        _safe_move(arm, q, f'{ctx}:retract {tag}')
+        n += 1
+    return n
+
+
+def _post_park_stall_check(arm, expected_q, ctx):
+    """After a park/tuck: if the arm sits > ARM_STALL_ERR_RAD from where it
+    was commanded, it is stalled against something — relax to measured.
+
+    The software stall watchdog that needs no writer change.  Never raises.
+    Returns the max joint error (rad), or None when it could not be read.
+    `expected_q` is the target the caller just commanded, so it is also
+    recorded (with the q measured here) as the engine's last commanded target.
+    """
+    try:
+        if expected_q is None:
+            return None
+        time.sleep(ARM_STALL_SETTLE_S)
+        q = np.array(arm.get_current_dual_arm_q(), dtype=np.float64)
+        d = np.abs(q - np.array(expected_q, dtype=np.float64))
+        j = int(np.argmax(d))
+        e = float(d[j])
+        _note_cmd(expected_q, q)
+        if e > ARM_STALL_ERR_RAD:
+            _relax_arm_to_measured(arm, ctx, q=q)
+            _safe_log(f'[pick_daemon] ARM STALL after {ctx}: joint {j} err '
+                      f'{e:.3f} rad — relaxed to measured')
+        return e
+    except Exception as _e:
+        _safe_log(f'[pick_daemon] stall check after {ctx} skipped: {_e!r}')
+        return None
+
+
+def _safe_park_holding(arm, side, ctx):
+    """Place IK failure while HOLDING: relax, then the holding side's
+    CARRY_TUCK (the idle side stays at its measured q).  The hand is NOT
+    touched.  Never raises (the caller's ASCEND_TAIL release must run).
+    """
+    try:
+        q = _relax_arm_to_measured(arm, ctx)
+        if q is None:
+            q = np.array(arm.get_current_dual_arm_q(), dtype=np.float64)
+        tgt = np.array(q, dtype=np.float64).copy()
+        if side == 'left':
+            tgt[0:7] = CARRY_TUCK_LEFT
+        else:
+            tgt[7:14] = CARRY_TUCK_RIGHT
+        got = _safe_move(arm, tgt, ctx)
+        _safe_log(f'[pick_daemon] SAFE-EXIT({ctx}): holding ({side}) arm '
+                  'parked at CARRY_TUCK, hand untouched')
+        _post_park_stall_check(arm, got, ctx)
+        return got
+    except Exception as _e:
+        _safe_log(f'[pick_daemon] SAFE-EXIT({ctx}): park of the holding arm '
+                  f'FAILED: {_e!r}')
+        return None
+
+
+def _precheck_solve(arm_ik, idle_T, target_T, warm):
+    """3 wash solves (warm = previous output), no wrist-GN, stdout muted."""
+    q = np.array(warm, dtype=np.float64)
+    for _ in range(3):
+        with _SuppressStdout():
+            sol, _tau = arm_ik.solve_ik(
+                idle_T, target_T,
+                current_lr_arm_motor_q=q.copy(),
+                current_lr_arm_motor_dq=np.zeros(14))
+        if sol is None:
+            raise RuntimeError('solve_ik returned None')
+        q = np.array(sol, dtype=np.float64)
+    return q
+
+
+def _precheck_residual(arm_ik, q, score_T):
+    r = verify_ik_target(arm_ik, q, 'right', score_T)[0]
+    if r is None:
+        raise RuntimeError('FK verify failed')
+    return float(r)
