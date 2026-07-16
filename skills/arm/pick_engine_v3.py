@@ -8147,3 +8147,84 @@ def _rim_diag(arm, arm_ik, stage, target_T):
     except Exception as _e:                                # noqa: BLE001
         sys.stderr.write(f'[pick_daemon][rimdiag] {stage} skipped ({_e})\n')
         sys.stderr.flush()
+
+
+# horizontal pick ladder ("hladder"), right-arm horizontal picks only; the
+# pick handler resolves these names at call time.
+# 3 attempts: 1 aims at the command; 2-3 aim at the re-detected base offset
+# by H_LADDER_DXYZ and descend below attempt 1's h-wp3 target by dz
+# (cumulative 2.0 + 1.5 cm lower). the base is the median of clean rows taken
+# while the hand is up at h-wp1, else the command aim; every re-aimed target
+# is reach-prechecked at its lowered z.
+# only the descent target moves: the floor latch and z-floor clamp are
+# untouched, so on a flat object the clamp binds and lowering is a no-op
+# (the [hladder] descent line reports clamp=bound, lower ~0).
+# a keep-closed re-press is +2 cm forward of the capturing aim, at the
+# command's tz, and is always the last attempt. upright picks keep 2
+# attempts, +2 cm; the left arm is untouched. flip the sign or axis of the
+# rungs in H_LADDER_DXYZ only.
+# kill switch, read at every pick: the H_LADDER_OFF_FLAG file exists, or
+# OPENBOT_H_LADDER=0 in the engine's environment. the engine runs with a
+# fixed environment, so a shell export does not reach it and the flag file
+# is the operative switch (next pick, no restart).
+
+# re-detection sources, the first fresh one wins:
+#   H_LADDER_ROWS_FILE  {"t": <write epoch>, "rows": [body rows]}, one row
+#     per detection; absent or stale is skipped;
+#   H_LADDER_DET_FILE  one max-confidence row per message, written only for
+#     the pickable classes; no stamp, so the file mtime is the row time.
+# a row is clean when it carries the pick-start target's label (the instance
+# id is not a gate: it changes when the hand hides the object for more than
+# 2 s), arrives at least H_LADDER_SETTLE_S after the hand reached h-wp1
+# and at most H_LADDER_MAX_AGE_S ago, says horizontal if it says, lies within
+# H_LADDER_MAX_DZ_M of the command z and inside the command height band, and
+# is within H_LADDER_MAX_JUMP_M of the last clean pose.
+
+H_LADDER_ATTEMPTS = 3
+H_LADDER_DXYZ = ((0.000, 0.000, -0.020), (0.000, 0.000, -0.035))   # attempts 2, 3: (dx, dy, dz) m, dz below attempt 1's target
+H_LADDER_REPRESS_DY = 0.02         # keep-closed re-press: +2 cm forward
+H_LADDER_ENV = 'OPENBOT_H_LADDER'
+H_LADDER_OFF_FLAG = '/tmp/openbot_h_ladder_off'
+H_LADDER_ROWS_FILE = '/tmp/openbot_body_rows.json'
+H_LADDER_DET_FILE = '/tmp/pick_latest_detection.json'
+H_LADDER_REF_WAIT_S = 0.3          # pick start: look this long for the target's row
+H_LADDER_REF_MATCH_M = 0.03        # ... within this distance of the command (x, y)
+H_LADDER_SETTLE_S = 0.5            # rows written this long after the hand left the view
+H_LADDER_WINDOW_S = 1.0            # ... collected for at most this long after that
+H_LADDER_POLL_S = 0.1
+H_LADDER_MAX_AGE_S = 1.0
+H_LADDER_MIN_ROWS = 3              # distinct clean rows (packets) for a fresh base
+H_LADDER_MAX_DZ_M = 0.03
+H_LADDER_MAX_DH_M = 0.015          # |h - command h| <= max(this, FRAC * command h)
+H_LADDER_MAX_DH_FRAC = 0.35
+H_LADDER_MAX_JUMP_M = 0.08
+H_LADDER_MAX_SPREAD_M = 0.02
+
+
+def _hl_log(msg):
+    sys.stderr.write('[pick_daemon][hladder] ' + msg + '\n')
+    sys.stderr.flush()
+
+
+def _hl_switch(_environ=None, _exists=None):
+    """(on, why) -- the hladder kill switch.  Never raises (an unreadable
+    switch is 'on', the shipped default)."""
+    try:
+        env = os.environ if _environ is None else _environ
+        v = str(env.get(H_LADDER_ENV, '')).strip().lower()
+        if v in ('0', 'off', 'false', 'no'):
+            return False, 'env %s=%s' % (H_LADDER_ENV, v)
+    except Exception:
+        pass
+    try:
+        if (os.path.exists if _exists is None else _exists)(H_LADDER_OFF_FLAG):
+            return False, 'flag %s' % H_LADDER_OFF_FLAG
+    except Exception:
+        pass
+    return True, 'default'
+
+
+def _hl_rung(k):
+    """(dx, dy, dz) of attempt k (2 or 3): (dx, dy) on its base, dz on attempt 1's
+    descent target."""
+    return H_LADDER_DXYZ[min(max(k - 2, 0), len(H_LADDER_DXYZ) - 1)]
