@@ -2113,3 +2113,84 @@ def _zf_wrist_short_m(arm_ik, side, target_q, out_q):
         return float('nan')
 
 
+def _zfloor_target_perarm(arm_ik, start_q, target_q, floor, ratchet):
+    """B8g per-arm clamp.  Each arm is scanned over its OWN 7-joint slice with
+    the same 32-step scan and 20-step bisection as the single-scalar clamp, so
+    one arm's lowest limb never depends on the other arm's joints.
+
+    An arm that starts below the floor: with ``ratchet`` (pick / place flow) it
+    may move, but its lowest limb never goes more than _ZF_RATCHET_TOL_M below
+    where it started; without it, that arm alone is skipped (the legacy escape),
+    logged per arm.  Returns ``(q_out, clamped, info)``; ``info`` when clamped is
+    (smallest applied scale, worst lowest-z, {side: {'s', 'lw', 'mode', 'short_m'}}).
+    """
+    try:
+        start_q = np.asarray(start_q, dtype=np.float64)
+        target_q = np.asarray(target_q, dtype=np.float64)
+        z0 = {}
+        for side in ('left', 'right'):
+            # None means no limb frames for this arm; only that arm is skipped,
+            # the other is still clamped.
+            z0[side] = _lowest_limb_z(arm_ik, start_q, side)
+        if z0['left'] is None and z0['right'] is None:
+            return target_q, False, None
+        out = None
+        per = {}
+        skipped = None
+        worst_all = None
+        for side, sl in (('left', slice(0, 7)), ('right', slice(7, 14))):
+            zs = z0[side]
+            if zs is None:
+                continue                      # no limb frames: skip this arm
+            if not np.any(target_q[sl] != start_q[sl]):
+                continue                      # this arm does not move: nothing to clamp or log
+            eff = floor
+            mode = 'clamp'
+            if zs < floor:
+                if not ratchet:
+                    sys.stderr.write(
+                        f'[pick_daemon][zfloor] START already below the floor '
+                        f'({zs:+.4f} < {floor:+.4f}) arm={side} - clamp SKIPPED for '
+                        f'this arm, move allowed (recovery/escape)\n')
+                    sys.stderr.flush()
+                    skipped = zs if skipped is None else min(skipped, zs)
+                    continue
+                eff = zs - _ZF_RATCHET_TOL_M
+                mode = 'ratchet'
+            worst = zs
+            k = None
+            for i in range(1, _ZFLOOR_STEP + 1):
+                s = i / float(_ZFLOOR_STEP)
+                z = _lowest_limb_z(arm_ik, start_q + s * (target_q - start_q), side)
+                if z < worst:
+                    worst = z
+                if z < eff and k is None:
+                    k = i
+            worst_all = worst if worst_all is None else min(worst_all, worst)
+            if k is None:
+                continue                      # this arm stays above the floor on its own segment
+            lo_s, hi_s = (k - 1) / float(_ZFLOOR_STEP), k / float(_ZFLOOR_STEP)
+            for _ in range(_ZFLOOR_ITERS):
+                mid = 0.5 * (lo_s + hi_s)
+                if _lowest_limb_z(arm_ik, start_q + mid * (target_q - start_q), side) >= eff:
+                    lo_s = mid
+                else:
+                    hi_s = mid
+            if out is None:
+                out = target_q.copy()
+            out[sl] = start_q[sl] + lo_s * (target_q[sl] - start_q[sl])
+            per[side] = {'s': lo_s, 'lw': worst, 'mode': mode,
+                         'short_m': _zf_wrist_short_m(arm_ik, side, target_q, out)}
+        if out is None:
+            if skipped is not None:
+                return target_q, False, ('start_below', skipped)
+            present = [v for v in z0.values() if v is not None]
+            return target_q, False, ('clear', worst_all if worst_all is not None
+                                     else min(present))
+        s_min = min(d['s'] for d in per.values())
+        lw_min = min(d['lw'] for d in per.values())
+        return out, True, (s_min, lw_min, per)
+    except Exception as _ze:
+        sys.stderr.write(f'[pick_daemon][zfloor] clamp skipped ({_ze!r})\n')
+        sys.stderr.flush()
+        return target_q, False, None
