@@ -1949,3 +1949,11 @@ def _latch_table_floor(tz, height_m, orientation):
     return floor
 
 
+def _clear_table_floor(reason=''):
+    """Drop the latched floor — the robot is going somewhere else."""
+    global _TABLE_FLOOR_PELVIS, _TABLE_FLOOR_SRC
+    if _TABLE_FLOOR_PELVIS is not None:
+        sys.stderr.write(f'[pick_daemon][zfloor] cleared ({reason})\n')
+        sys.stderr.flush()
+    _TABLE_FLOOR_PELVIS = None
+    _TABLE_FLOOR_SRC = None
