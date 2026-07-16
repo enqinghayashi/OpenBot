@@ -2088,3 +2088,8 @@ def _zfloor_target_single(arm_ik, start_q, target_q, floor):
         return target_q, False, None
 
 
+def _zfloor_perarm_on():
+    """B8g kill switch PICK_ZFLOOR_PERARM, read at CALL time (default on).
+    '0' / 'off' / 'false' / 'no' selects the single-scalar clamp, byte-for-byte."""
+    return os.environ.get('PICK_ZFLOOR_PERARM', '1').strip().lower() not in (
+        '0', 'off', 'false', 'no')
