@@ -2216,3 +2216,51 @@ def _apply_zfloor(start_q, target_q, where, zf_label=None, zf_legacy=False):
     return q_out, clamped
 
 
+def _zf_account(start_q, target_q, where, zf_label, clamped, info, zf_legacy=False):
+    """B8g: one CLAMPED line per clamped arm, and the per-command tallies behind
+    the E4 summary and the E5 reply token.  Logging and bookkeeping only: it never
+    raises and never changes the clamp's output.
+
+    E5 scope: inside a pick / place flow only the command's OWN arm counts, and
+    its post-drop closeouts (zf_legacy) do not; outside a flow (the pose verbs)
+    every arm the move changes counts.  Idle-arm moves are logged, never counted.
+    """
+    try:
+        st = np.asarray(start_q, dtype=np.float64)
+        tq = np.asarray(target_q, dtype=np.float64)
+        per = info[2] if (clamped and info is not None and len(info) > 2) else {}
+        s_arm = {'left': 1.0, 'right': 1.0}
+        for side in ('left', 'right'):
+            d = per.get(side)
+            if d is not None and d['s'] < 1.0:
+                s_arm[side] = d['s']
+                sys.stderr.write(
+                    f'[pick_daemon][zfloor] CLAMPED {where}: floor={_TABLE_FLOOR_PELVIS:+.4f} '
+                    f'lowest-would-be={d["lw"]:+.4f} -> s={d["s"]:.3f} of the move '
+                    f'arm={side} label={zf_label or where} '
+                    f'wrist_short={100.0 * d["short_m"]:.1f}cm\n')
+                sys.stderr.flush()
+        moving = [side for side, sl in (('left', slice(0, 7)), ('right', slice(7, 14)))
+                  if np.any(tq[sl] != st[sl])]
+        if _ZF_FLOW[0]:
+            # closeouts and retracts (zf_legacy) never count toward the token.
+            # NEUTRAL does not fit at a table, so counting it would mark every
+            # table place as not at the drop point; for place the token covers
+            # moves up to and including the release.
+            counted = [] if zf_legacy else [side for side in moving if side == _ZF_ACTIVE[0]]
+        else:
+            counted = moving
+        if moving:
+            _ZF_CMD['moves'] += 1      # a move that changes some arm ("before any arm motion")
+        for side in moving:
+            if s_arm[side] < _ZF_CMD['min_s'][side]:
+                _ZF_CMD['min_s'][side] = s_arm[side]
+        if moving and min(s_arm[side] for side in moving) < _ZF_LIMITED_S:
+            _ZF_CMD['limited'] += 1
+        if counted:
+            s_any = min(s_arm[side] for side in counted)
+            if s_any < _ZF_CMD['min_any']:
+                _ZF_CMD['min_any'] = s_any
+    except Exception as _ae:
+        sys.stderr.write(f'[pick_daemon][zfloor] accounting skipped ({_ae!r})\n')
+        sys.stderr.flush()
