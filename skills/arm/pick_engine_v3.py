@@ -2266,3 +2266,15 @@ def _zf_account(start_q, target_q, where, zf_label, clamped, info, zf_legacy=Fal
         sys.stderr.flush()
 
 
+def _zf_cmd_begin():
+    """Top of every command: no flow context, no commanded-target record, and
+    empty per-command tallies."""
+    _ZF_FLOW[0] = False
+    _ZF_ACTIVE[0] = None
+    _ZF_PRIOR[0] = None
+    _ZF_MEAS_Q[0] = None
+    _ZF_LAST_SENT[0] = None
+    _ZF_CMD['moves'] = 0
+    _ZF_CMD['limited'] = 0
+    _ZF_CMD['min_s'] = {'left': 1.0, 'right': 1.0}
+    _ZF_CMD['min_any'] = 1.0
