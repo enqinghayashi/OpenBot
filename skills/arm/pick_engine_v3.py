@@ -3599,3 +3599,129 @@ def _t5_joint_move(arm, side, pose, duration=None, zf_legacy=False):
     else:
         move_arm_smooth(arm, _t5_q, tau_target, duration=duration,
                         zf_legacy=zf_legacy)
+
+
+def waypoint_to_arrays(wp):
+    """Convert a motion sequence waypoint to arm_q[14] + hand dicts."""
+    arm_data = wp.get('arm', {})
+    arm_q = np.zeros(14)
+    for i in range(14):
+        key = str(15 + i)
+        if key in arm_data:
+            arm_q[i] = arm_data[key]
+
+    rhand = {int(k): v for k, v in wp.get('rhand', {}).items()}
+    lhand = {int(k): v for k, v in wp.get('lhand', {}).items()}
+
+    return arm_q, rhand, lhand
+
+
+def play_sequence(arm, rhand, lhand, seq_data):
+    """Play a motion sequence with per-waypoint timing and hand control."""
+    waypoints = seq_data.get('waypoints', [])
+    total = len(waypoints)
+
+    for idx, wp in enumerate(waypoints):
+        name = wp.get('name', f'wp{idx+1}')
+        move_time = wp.get('move_time', 1.5)
+        hold_time = wp.get('hold_time', 0.5)
+
+        sys.stderr.write(
+            f'[pick_daemon] Sequence: {name} ({idx+1}/{total}) '
+            f'move={move_time}s hold={hold_time}s\n')
+        sys.stderr.flush()
+
+        arm_q, rhand_targets, lhand_targets = waypoint_to_arrays(wp)
+
+        # move the arm over the given duration
+        tau_target = _arm_gravity_ff(arm_q, np.zeros(14))
+        move_arm_smooth(arm, arm_q, tau_target, duration=move_time)
+
+# set the hands at the same time (fast, does not block long)
+        if rhand_targets:
+            rhand.set(rhand_targets)
+        if lhand_targets:
+            lhand.set(lhand_targets)
+
+        # hold there
+        if hold_time > 0:
+            _check_cancel('sequence_hold')  # the arm move above is already covered;
+            time.sleep(hold_time)           # this bounds the wait between
+
+
+def _run_diag_bounded(fn, label, timeout=5.0):
+    """Run a diagnostic under a hard time bound.
+
+    READY must never wait on sensor availability.  The daemon imports
+    real_grasp_detector from /home/unitree/leon (deployed copy) — if that
+    copy ever blocks inside a diagnostic (e.g. a DDS read with a long
+    timeout), init stalls for 15+s while commands buffer in stdin.  This
+    bounds the worst case so READY is emitted deterministically.
+
+    Returns fn()'s value, or None if it exceeds the bound.
+    """
+    import threading as _t
+    _result = {}
+
+    def _run():
+        try:
+            _result['val'] = fn()
+        except Exception as e:
+            _result['err'] = e
+
+    _th = _t.Thread(target=_run, daemon=True)
+    _th.start()
+    _th.join(timeout)
+    if _th.is_alive():
+        sys.stderr.write(
+            f'[pick_daemon] WARNING: {label} exceeded {timeout:.0f}s bound — '
+            'skipping diagnostic (READY not blocked)\n')
+        sys.stderr.flush()
+        return None
+    if 'err' in _result:
+        raise _result['err']
+    return _result.get('val')
+
+
+def _parse_pick_tail(parts):
+    """Parse the optional tail of a pick / pick_left command.
+
+    The orientation is the only non-numeric token ('upright' / 'horizontal');
+    up to three floats BEFORE it are the surface normal (nx ny nz), and floats
+    AFTER it are the optional trailing [height_m, x_off] (raw token strings).
+
+    Returns (nx, ny, nz, orientation, height_m, x_off); nx/ny/nz are None when
+    no normal is given, height_m/x_off are None when absent.
+    """
+    orientation = 'upright'
+    normals = []
+    trailing = []
+    section = 'before'
+    for tok in parts[4:]:
+        if tok in ('upright', 'horizontal'):
+            orientation = tok
+            section = 'after'
+        elif section == 'before':
+            normals.append(tok)
+        else:
+            trailing.append(tok)
+    nx = ny = nz = None
+    if normals:
+        if len(normals) != 3:
+            raise ValueError('expected 3 normal components, got %d' % len(normals))
+        nx, ny, nz = float(normals[0]), float(normals[1]), float(normals[2])
+    if len(trailing) > 2:
+        raise ValueError('too many trailing tokens')
+    height_m = trailing[0] if len(trailing) >= 1 else None
+    x_off = trailing[1] if len(trailing) >= 2 else None
+    return nx, ny, nz, orientation, height_m, x_off
+
+
+# ── the grasp-verdict file log (diagnostic) ─────────────────────
+# the gateway spawns this engine with stdout/stderr on pipes that are thrown
+# away, so the live grasp numbers (closure-block margin, pressure delta,
+# support_ratio, final quadrant) would be lost. _grasp_log tees them to an
+# append-only file. best-effort: never raises and never touches the decision.
+_GRASP_LOG_PATH = '/tmp/pick_walk_logs/engine_grasp.log'
+
+
