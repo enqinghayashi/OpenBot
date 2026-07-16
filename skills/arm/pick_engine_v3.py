@@ -2045,3 +2045,44 @@ def _zfloor_target(arm_ik, start_q, target_q, floor=None, ratchet=False):
     return _zfloor_target_single(arm_ik, start_q, target_q, floor)
 
 
+def _zfloor_target_single(arm_ik, start_q, target_q, floor):
+    """The pre-B8g single-scalar clamp (PICK_ZFLOOR_PERARM=0), unchanged."""
+    try:
+        start_q = np.asarray(start_q, dtype=np.float64)
+        target_q = np.asarray(target_q, dtype=np.float64)
+        z_start = _lowest_limb_z(arm_ik, start_q)
+        if z_start is None:
+            return target_q, False, None
+        if z_start < floor:
+            # already below the floor before this move; clamping would trap the
+            # arm in the table and block the move that gets it out. fail open,
+            # loudly.
+            sys.stderr.write(
+                f'[pick_daemon][zfloor] START already below the floor '
+                f'({z_start:+.4f} < {floor:+.4f}) — clamp SKIPPED, move allowed '
+                f'(recovery/escape)\n')
+            sys.stderr.flush()
+            return target_q, False, ('start_below', z_start)
+        worst = z_start
+        k = None
+        for i in range(1, _ZFLOOR_STEP + 1):
+            s = i / float(_ZFLOOR_STEP)
+            z = _lowest_limb_z(arm_ik, start_q + s * (target_q - start_q))
+            if z < worst:
+                worst = z
+            if z < floor and k is None:
+                k = i
+        if k is None:
+            return target_q, False, ('clear', worst)
+        lo_s, hi_s = (k - 1) / float(_ZFLOOR_STEP), k / float(_ZFLOOR_STEP)
+        for _ in range(_ZFLOOR_ITERS):
+            mid = 0.5 * (lo_s + hi_s)
+            if _lowest_limb_z(arm_ik, start_q + mid * (target_q - start_q)) >= floor:
+                lo_s = mid
+            else:
+                hi_s = mid
+        return (start_q + lo_s * (target_q - start_q)), True, (lo_s, worst)
+    except Exception as _ze:
+        sys.stderr.write(f'[pick_daemon][zfloor] clamp skipped ({_ze!r})\n')
+        sys.stderr.flush()
+        return target_q, False, None
