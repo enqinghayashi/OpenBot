@@ -2196,3 +2196,21 @@ def _zfloor_target_perarm(arm_ik, start_q, target_q, floor, ratchet):
         return target_q, False, None
 
 
+def _apply_zfloor(start_q, target_q, where, zf_label=None, zf_legacy=False):
+    """Clamp + log.  Returns (q_out, was_clamped).
+
+    B8g: ``zf_label`` names the waypoint in the per-arm log (``where`` still names
+    the cancel phase).  ``zf_legacy`` keeps closeouts, retracts and the safe exit
+    on the legacy skip even inside a pick / place flow.
+    """
+    q_out, clamped, info = _zfloor_target(
+        _ARM_IK, start_q, target_q, ratchet=bool(_ZF_FLOW[0]) and not zf_legacy)
+    if not _zfloor_perarm_on():
+        if clamped:
+            sys.stderr.write(
+                f'[pick_daemon][zfloor] CLAMPED {where}: floor={_TABLE_FLOOR_PELVIS:+.4f} '
+                f'lowest-would-be={info[1]:+.4f} -> s={info[0]:.3f} of the move\n')
+            sys.stderr.flush()
+        return q_out, clamped
+    _zf_account(start_q, target_q, where, zf_label, clamped, info, zf_legacy)
+    return q_out, clamped
