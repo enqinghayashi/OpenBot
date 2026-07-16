@@ -2093,3 +2093,5 @@ def _zfloor_perarm_on():
     '0' / 'off' / 'false' / 'no' selects the single-scalar clamp, byte-for-byte."""
     return os.environ.get('PICK_ZFLOOR_PERARM', '1').strip().lower() not in (
         '0', 'off', 'false', 'no')
+
+
