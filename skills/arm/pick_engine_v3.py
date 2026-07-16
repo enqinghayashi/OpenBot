@@ -2014,3 +2014,32 @@ def _lowest_limb_z(arm_ik, q14, side=None):
     return lo
 
 
+def _zfloor_target(arm_ik, start_q, target_q, floor=None, ratchet=False):
+    """Clamp ``target_q`` so the whole commanded move stays above the floor.
+
+    Both transports traverse the SAME joint-space segment: the writer's slew
+    (skills/writer/arm_guard.py: `s = 0.5*(1 - cos(pi*r))`) and this engine's
+    standalone loop (`r = 0.5 - 0.5*cos(pi*i/steps)`, q = start + r*(t-start))
+    are the same law.  Cosine vs linear is a time reparameterization, NOT a
+    different path, so clamping one target vector covers both.
+
+    Returns ``(q_out, clamped, info)``.  ``q_out is target_q`` (the same
+    object) whenever nothing was clamped, so safe moves are bit-identical.
+
+    B8g: by default each arm is clamped on its OWN 7-joint slice
+    (_zfloor_target_perarm).  ``ratchet=True`` (the pick / place flows) lets an
+    arm that starts below the floor move at most _ZF_RATCHET_TOL_M lower;
+    otherwise such an arm is skipped alone.  PICK_ZFLOOR_PERARM=0 selects the
+    pre-B8g single-scalar body (_zfloor_target_single), which ignores ``ratchet``.
+    """
+    if not _ZFLOOR_ENABLED:
+        return target_q, False, None          # kill switch
+    if floor is None:
+        floor = _TABLE_FLOOR_PELVIS
+    if floor is None:
+        return target_q, False, None          # fail-open: no table latched yet
+    if arm_ik is None or not hasattr(arm_ik, 'reduced_robot'):
+        return target_q, False, None
+    if _zfloor_perarm_on():
+        return _zfloor_target_perarm(arm_ik, start_q, target_q, floor, ratchet)
+    return _zfloor_target_single(arm_ik, start_q, target_q, floor)
