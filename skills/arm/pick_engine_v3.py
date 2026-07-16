@@ -2280,3 +2280,25 @@ def _zf_cmd_begin():
     _ZF_CMD['min_any'] = 1.0
 
 
+def _zf_cmd_end(cmd):
+    """E4: one summary line per command (per-arm clamp on), and the E5 LIMITED
+    line when the command's own arm was floor-limited.  Runs in the command
+    loop's finally; never raises."""
+    try:
+        if not _zfloor_perarm_on():
+            return
+        words = cmd.split()
+        verb = words[0] if words else ''
+        fl = ('%+.4f' % _TABLE_FLOOR_PELVIS) if _TABLE_FLOOR_PELVIS is not None else 'none'
+        sys.stderr.write(
+            f'[pick_daemon][zfloor] summary {verb}: floor={fl} '
+            f'min_s_right={_ZF_CMD["min_s"]["right"]:.3f} '
+            f'min_s_left={_ZF_CMD["min_s"]["left"]:.3f} '
+            f'limited_moves={_ZF_CMD["limited"]}\n')
+        _s_lim = _zf_token_s()          # same value the reply token carries
+        if _s_lim is not None:
+            sys.stderr.write(
+                f'[pick_daemon][zfloor] LIMITED {verb}: s={_s_lim:.2f}\n')
+        sys.stderr.flush()
+    except Exception:
+        pass
