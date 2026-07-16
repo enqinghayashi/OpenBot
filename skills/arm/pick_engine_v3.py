@@ -2095,3 +2095,19 @@ def _zfloor_perarm_on():
         '0', 'off', 'false', 'no')
 
 
+def _zf_wrist_short_m(arm_ik, side, target_q, out_q):
+    """B8g E4 logging: how far (m) one arm's hand point moves when the clamp
+    shortens its move.  Computed OUTSIDE the clamp: a failure returns nan and
+    can never make the clamp fail open."""
+    try:
+        model = arm_ik.reduced_robot.model
+        data = arm_ik.reduced_robot.data
+        fid = arm_ik.L_hand_id if side == 'left' else arm_ik.R_hand_id
+        pts = []
+        for q in (target_q, out_q):
+            pin.forwardKinematics(model, data, q)
+            fr = model.frames[fid]
+            pts.append((data.oMi[fr.parentJoint] * fr.placement).translation.copy())
+        return float(np.linalg.norm(pts[0] - pts[1]))
+    except Exception:
+        return float('nan')
