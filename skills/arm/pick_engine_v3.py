@@ -8030,3 +8030,120 @@ def _precheck_residual(arm_ik, q, score_T):
     if r is None:
         raise RuntimeError('FK verify failed')
     return float(r)
+
+
+# horizontal palm rule + upright rim diagnostics; module-level, so the pick
+# handler resolves these names at call time.
+# the palm ends 2 cm below the object's top with every digit 2 cm off the table.
+# URDF geometry, middle-down relative to R_ee: palm underside 1.73 cm below
+# R_ee, open thumb tip 11.41 cm below. height_m of a lying object is its
+# vertical thickness. every digit 2 cm off the table needs h >= ~0.137 m, so
+# flatter objects are infeasible and the descent target is left unchanged.
+# a module constant rather than an env switch: the engine runs with a filtered
+# environment.
+H_RULE_MODE = 'on'            # 'on' | 'log' (plan logged, never applied) | 'off'
+H_PALM_BELOW_REE = 0.0173     # m, palm underside below R_ee (middle-down)
+H_THUMB_BELOW_REE = 0.1141    # m, open-thumb hull below R_ee (middle-down)
+H_PALM_BELOW_TOP = 0.02       # m, palm 2 cm below the object's top
+H_DIGIT_CLEAR = 0.02          # m, digits 2 cm off the table
+H_RULE_H_MIN = 0.008          # m, plausible lying-object thickness band
+H_RULE_H_MAX = 0.20
+
+
+def _h_palm_plan(tz, height_m):
+    """B8i-H: the palm-rule plan for one right horizontal h-wp3 (pelvis-frame
+    metres) or None (height unknown / outside [H_RULE_H_MIN, H_RULE_H_MAX])."""
+    try:
+        h = float(height_m)
+        tz = float(tz)
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(h) and math.isfinite(tz)):
+        return None
+    if not (H_RULE_H_MIN <= h <= H_RULE_H_MAX):
+        return None
+    zc = tz - GRASP_Z_OFFSET + SOLVER_Z_TORSO_OFFSET   # torso_link 0.044 m above pelvis (URDF)
+    top = zc + h / 2.0
+    table = zc - h / 2.0
+    ee_rule = top - H_PALM_BELOW_TOP + H_PALM_BELOW_REE
+    floor = table + H_DIGIT_CLEAR
+    ee_guard = floor + H_THUMB_BELOW_REE
+    return {'zc': zc, 'top': top, 'table': table, 'ee_rule': ee_rule,
+            'floor': floor, 'ee_guard': ee_guard, 'feasible': ee_rule >= ee_guard}
+
+
+def _h_rule_tz(tz, height_m, mode=None):
+    """B8i-H: the h-wp3 wrist target z - the plan's ee_rule when the mode is
+    'on' and the plan is feasible, else tz (legacy).  One '[hrule] plan' line
+    unless the mode is 'off'.  Never raises."""
+    mode = H_RULE_MODE if mode is None else mode
+    if mode == 'off':
+        return tz
+    try:
+        plan = _h_palm_plan(tz, height_m)
+        if plan is None:
+            sys.stderr.write(
+                f'[pick_daemon][hrule] plan mode={mode} h={height_m!r} '
+                f'tz={float(tz):+.4f} -> legacy (height unknown or outside '
+                f'[{H_RULE_H_MIN:.3f}, {H_RULE_H_MAX:.2f}] m)\n')
+            sys.stderr.flush()
+            return tz
+        use = (mode == 'on' and plan['feasible'])
+        out = plan['ee_rule'] if use else tz
+        sys.stderr.write(
+            f'[pick_daemon][hrule] plan mode={mode} h={float(height_m):.4f} '
+            f'tz={float(tz):+.4f} zc={plan["zc"]:+.4f} top={plan["top"]:+.4f} '
+            f'table={plan["table"]:+.4f} ee_rule={plan["ee_rule"]:+.4f} '
+            f'ee_guard={plan["ee_guard"]:+.4f} feasible={plan["feasible"]} -> '
+            f'{"rule" if use else "legacy"} target z={float(out):+.4f}\n')
+        sys.stderr.flush()
+        return out
+    except Exception as _e:                                # noqa: BLE001
+        sys.stderr.write(f'[pick_daemon][hrule] plan failed ({_e}) -> legacy\n')
+        sys.stderr.flush()
+        return tz
+
+
+def _h_rule_close(arm, arm_ik, h_tz, tz, height_m):
+    """B8i-H telemetry after the right h-wp3 descent: the MEASURED wrist z, the
+    lowest hand/wrist hull point (_lowest_limb_z) and the estimated table.
+    Diagnostic only; never raises, never moves."""
+    if H_RULE_MODE == 'off':
+        return
+    try:
+        _q = arm.get_current_dual_arm_q().copy()
+        _w = get_wrist_pose(arm_ik, _q, side='right')
+        _lo = _lowest_limb_z(arm_ik, _q, 'right')
+        _plan = _h_palm_plan(tz, height_m)
+        _fmt = lambda v: ('%+.4f' % float(v)) if v is not None else 'none'
+        sys.stderr.write(
+            f'[pick_daemon][hrule] close wrist_z={_fmt(_w[2] if _w is not None else None)} '
+            f'target={_fmt(h_tz)} legacy_tz={_fmt(tz)} lowest_limb={_fmt(_lo)} '
+            f'table_est={_fmt(_plan["table"] if _plan is not None else None)}\n')
+        sys.stderr.flush()
+    except Exception as _e:                                # noqa: BLE001
+        sys.stderr.write(f'[pick_daemon][hrule] close skipped ({_e})\n')
+        sys.stderr.flush()
+
+
+def _rim_diag(arm, arm_ik, stage, target_T):
+    """B8i (10-09 cup rim): the MEASURED right wrist (get_ee_pose of the measured
+    q, the frame verify_ik_target compares) against the stage's commanded
+    target, so the next cup pick shows whether wp3 / wp4 was held off its
+    target (rim or wall contact).  Diagnostic only; never raises, never moves."""
+    try:
+        _q = arm.get_current_dual_arm_q().copy()
+        _T = get_ee_pose(arm_ik, _q, 'right')
+        if _T is None:
+            raise RuntimeError('FK failed')
+        _p = np.asarray(_T.translation, dtype=np.float64)
+        _t = np.asarray(target_T, dtype=np.float64)[:3, 3]
+        _d = _p - _t
+        sys.stderr.write(
+            f'[pick_daemon][rimdiag] {stage} measured R_ee=({_p[0]:.4f},{_p[1]:.4f},{_p[2]:.4f}) '
+            f'target=({_t[0]:.4f},{_t[1]:.4f},{_t[2]:.4f}) '
+            f'd=({_d[0]:+.4f},{_d[1]:+.4f},{_d[2]:+.4f}) |d|={float(np.linalg.norm(_d)):.4f}\n')
+        sys.stderr.flush()
+    except Exception as _e:                                # noqa: BLE001
+        sys.stderr.write(f'[pick_daemon][rimdiag] {stage} skipped ({_e})\n')
+        sys.stderr.flush()
