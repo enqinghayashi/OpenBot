@@ -1982,3 +1982,33 @@ def _limb_frames(model, side=None):
     return ids
 
 
+def _lowest_limb_z(arm_ik, q14, side=None):
+    """Lowest point of BOTH arms' hand+wrist meshes, in the PELVIS frame.
+
+    FK of the real URDF links, so the wrist orientation enters correctly (the
+    lowest limb is middle_1 at NEUTRAL, thumb_2 at READY, palm at CARRY_TUCK —
+    no single fixed point or constant offset is right for all poses).  Uses
+    ``oMi[parentJoint] * frame.placement``, the same construction get_ee_pose
+    uses, so no ``updateFramePlacements`` is needed.
+
+    z is linear in the corner coordinates, so over the 8 bbox corners the
+    minimum sits at the corner that takes min or max per axis — 3 sign tests
+    per link instead of 8 transformed corners.  Returns None on failure.
+
+    B8g: ``side`` ('left' / 'right') takes only that arm's links, so one arm's
+    value never depends on the other arm's joints (None = both arms, as before).
+    """
+    model = arm_ik.reduced_robot.model
+    data = arm_ik.reduced_robot.data
+    pin.forwardKinematics(model, data, q14)
+    lo = None
+    for fid, (mn, mx) in _limb_frames(model, side):
+        fr = model.frames[fid]
+        pl = data.oMi[fr.parentJoint] * fr.placement
+        r2 = pl.rotation[2]
+        z = pl.translation[2]
+        for j in range(3):
+            z += r2[j] * (mn[j] if r2[j] > 0.0 else mx[j])
+        if lo is None or z < lo:
+            lo = z
+    return lo
