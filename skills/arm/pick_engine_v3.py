@@ -1959,3 +1959,24 @@ def _clear_table_floor(reason=''):
     _TABLE_FLOOR_SRC = None
 
 
+def _limb_frames(model, side=None):
+    """[(frame_id, bbox), ...] for the limb links present in ``model``.
+
+    ``side`` ('left' / 'right') keeps only that arm's links (B8g per-arm clamp).
+    None = both arms: the cached list the single-scalar clamp has always used.
+    """
+    global _LIMB_FRAME_CACHE
+    if side is None and _LIMB_FRAME_CACHE is not None and _LIMB_FRAME_CACHE[0] == id(model):
+        return _LIMB_FRAME_CACHE[1]
+    ids = []
+    for name, bbox in _LIMB_BBOX.items():
+        if side is not None and not name.startswith(side + '_'):
+            continue
+        try:
+            if model.existFrame(name):
+                ids.append((model.getFrameId(name), bbox))
+        except Exception:
+            pass
+    if side is None:
+        _LIMB_FRAME_CACHE = (id(model), ids)
+    return ids
