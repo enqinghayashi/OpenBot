@@ -8919,3 +8919,51 @@ def _sc_banner():
 class _ScRefusal(object):
     """One self-collision refusal: the ERROR line's fields."""
 
+    def __init__(self, verb, x, y, rep, stage, wp):
+        self.verb = verb
+        self.x = float(x)
+        self.y = float(y)
+        self.term = rep['term']
+        self.value = float(rep['value'])
+        self.right_link = rep['right_link']
+        self.other_link = rep['other_link']
+        self.move_right_m = float(rep['move_right_m'])
+        self.stage = stage   # stdout stage: 'precheck' or the live waypoint
+        self.wp = wp         # waypoint whose commanded move tripped the rule
+        # side of the torso midline the target sits on (torso +x = right)
+        self.side = 'left' if self.x < 0.0 else 'right'
+
+
+def _sc_line(rec):
+    """The ONE stdout reply of a self-collision refusal.  brain/agent/tools.py
+    parses it (_SELF_COLLISION_RE / _SELF_COLLISION_FIELDS_RE): x/y are the
+    TARGET (torso frame, x right-positive), side= the side of the midline the
+    target sits on, 'clearance=' carries the refuting term's value (metres;
+    the term is named in the stderr line), link= the pair that tripped it,
+    move_right_m how far the target must move right to clear the rule."""
+    return (f'ERROR:self_collision verb={rec.verb} side={rec.side} x={rec.x:.3f}m '
+            f'y={rec.y:.3f}m clearance={rec.value:.3f}m '
+            f'link={rec.right_link}~{rec.other_link} '
+            f'move_right_m={rec.move_right_m:.2f} stage={rec.stage}\n')
+
+
+def _sc_bar(verb):
+    """The endpoint midline bar: the pick bar, or the place bar."""
+    return (_sc_mod.HAND_Y_MAX_PLACE_M if verb == 'place'
+            else _sc_mod.HAND_Y_MAX_M)
+
+
+def _sc_cmp(rec):
+    """Term-aware comparator for the stderr line ('clearance <c> m < <thr> m'
+    only fits the left-arm term)."""
+    _pair = f'right {rec.right_link} vs {rec.other_link}'
+    if rec.term == 'left_arm_clearance':
+        return (f'{_pair} clearance {rec.value:.3f} m < '
+                f'{_sc_mod.LEFT_CLEAR_MIN_M:.3f} m')
+    return (f'{_pair} hand y {rec.value:+.3f} m > '
+            f'{_sc_bar(rec.verb):+.3f} m')
+
+
+def _sc_terms(rep):
+    return (f"clear={rep['left_clear_m']:.3f} hand_y={rep['hand_y_m']:+.3f} "
+            f"torso_diag={rep['torso_gross_m']:+.3f}")
