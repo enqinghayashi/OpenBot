@@ -2669,3 +2669,5 @@ def move_arm_smooth_guarded(arm, target_q, target_tauff, monitor_indices,
 
     arm.ctrl_dual_arm(target_q, target_tauff)
     return True, None
+
+
