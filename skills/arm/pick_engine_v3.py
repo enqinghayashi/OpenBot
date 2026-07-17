@@ -2404,3 +2404,17 @@ def _zf_idle_pre(side, tuck, start_q=None):
         return tuck
 
 
+def _zf_restore_floor():
+    """E6: a pick / place refused BEFORE any arm motion gives back the floor it
+    found when the command began.  No-op when nothing changed."""
+    global _TABLE_FLOOR_PELVIS, _TABLE_FLOOR_SRC
+    prior = _ZF_PRIOR[0]
+    if prior is None or not _zfloor_perarm_on():
+        return
+    if prior == (_TABLE_FLOOR_PELVIS, _TABLE_FLOOR_SRC):
+        return
+    _TABLE_FLOOR_PELVIS, _TABLE_FLOOR_SRC = prior
+    sys.stderr.write(
+        f'[pick_daemon][zfloor] refused before arm motion: floor restored to '
+        f'{_TABLE_FLOOR_PELVIS!r}\n')
+    sys.stderr.flush()
