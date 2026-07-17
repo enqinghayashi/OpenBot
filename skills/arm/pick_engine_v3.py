@@ -2481,3 +2481,5 @@ def move_arm_smooth(arm, target_q, target_tauff, duration=None, where='arm_move'
         time.sleep(dt)
 
     arm.ctrl_dual_arm(target_q, target_tauff)
+
+
