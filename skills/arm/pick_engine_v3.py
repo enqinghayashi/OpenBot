@@ -2420,3 +2420,64 @@ def _zf_restore_floor():
     sys.stderr.flush()
 
 
+def move_arm_smooth(arm, target_q, target_tauff, duration=None, where='arm_move',
+                    zf_label=None, zf_legacy=False):
+    """Smooth move of the 14-DOF arm target.
+
+    ``where`` names the PHASE for the cancel reply (see ``_check_cancel``).
+    Cancellable in both transports: the writer branch through
+    ``WriterArmClient.slew(abort=...)`` (20 ms poll inside the slew wait) and
+    the standalone branch through the per-step probe below.
+
+    The table z-floor clamp is applied HERE, on the target, before the
+    transport branch — both transports walk the same joint-space segment, so
+    one clamped target covers both (see _zfloor_target).
+    """
+    start_q = arm.get_current_dual_arm_q().copy()
+    target_q, _zf_clamped = _apply_zfloor(start_q, target_q, where,
+                                          zf_label=zf_label, zf_legacy=zf_legacy)
+    _ZF_LAST_SENT[0] = np.array(target_q, dtype=np.float64).copy()   # pin source
+    if _zf_clamped:
+        # gravity FF belongs to the pose actually commanded, not the one asked for.
+        target_tauff = _arm_gravity_ff(target_q, target_tauff)
+    if ARM_WRITER_ENABLED:
+        # writer-slew move: raw 14-DOF target over the socket. the writer's
+        # ArmGuard cosine slew (0.3 rad/s, min 1.5 s) replaces the 50 Hz
+        # interpolation loop, and the explicit duration keeps both sides on one
+        # clock. target_tauff (pin.rnea at the target) rides as the writer's arm
+        # gravity FF, so the guarded position-error monitor sees servo error, not
+        # gravity droop.
+        max_delta = float(np.max(np.abs(target_q - start_q)))
+        if duration is None:
+            duration = max(1.5, max_delta / MOVE_SPEED)
+        sys.stderr.write(
+            f'[pick_daemon][writer] move_arm_smooth: max_delta={max_delta:.3f} '
+            f'rad, duration={duration:.1f}s (writer slew, tau FF)\n')
+        sys.stderr.flush()
+        arm.slew(target_q, duration=duration, tau=target_tauff,
+                 abort=lambda: _check_cancel(where))
+        return
+    max_delta = float(np.max(np.abs(target_q - start_q)))
+    if duration is None:
+        duration = max(1.5, max_delta / MOVE_SPEED)
+    steps = max(1, int(duration * MOVE_HZ))
+    dt = duration / steps
+
+    sys.stderr.write(
+        f'[pick_daemon] move_arm_smooth: max_delta={max_delta:.3f} rad, '
+        f'duration={duration:.1f}s, steps={steps}\n')
+    sys.stderr.flush()
+
+    for i in range(1, steps + 1):
+        # cancel probe before the next command, so the arm never gets a forward
+        # command after the cancel (same ordering as the contact check).
+        _check_cancel(where)
+        r = 0.5 - 0.5 * np.cos(np.pi * i / steps)
+        q_interp = start_q + r * (target_q - start_q)
+        # constant FF (target_tauff) for every step: a per-step recompute gave a
+        # stiff, locked feel mid-motion.
+        tau_step = target_tauff  # constant FF
+        arm.ctrl_dual_arm(q_interp, tau_step)
+        time.sleep(dt)
+
+    arm.ctrl_dual_arm(target_q, target_tauff)
