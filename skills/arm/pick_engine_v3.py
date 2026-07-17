@@ -2304,3 +2304,11 @@ def _zf_cmd_end(cmd):
         pass
 
 
+def _zf_token_s():
+    """E5: the applied scale printed for a floor-limited command, or None when no
+    move of the command was limited.  A limited move never prints 0.98: the verifier
+    reads s < 0.98 as limited (brain/verifier.py _zfloor_limited_note), so 0.975-0.979
+    is printed as 0.97.  The reply token and the LIMITED log line share this value."""
+    if _ZF_CMD['min_any'] >= _ZF_LIMITED_S:
+        return None
+    return min(round(float(_ZF_CMD['min_any']), 2), round(_ZF_LIMITED_S - 0.01, 2))
