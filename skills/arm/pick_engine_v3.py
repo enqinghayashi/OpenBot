@@ -2347,3 +2347,5 @@ def _zf_pick_begin(active, arm=None):
             _ZF_MEAS_Q[0] = np.array(arm.get_current_dual_arm_q(), dtype=np.float64).copy()
         except Exception:
             _ZF_MEAS_Q[0] = None
+
+
