@@ -2483,3 +2483,189 @@ def move_arm_smooth(arm, target_q, target_tauff, duration=None, where='arm_move'
     arm.ctrl_dual_arm(target_q, target_tauff)
 
 
+def move_arm_smooth_guarded(arm, target_q, target_tauff, monitor_indices,
+                             pos_threshold, consecutive_threshold,
+                             stop_fn=None, duration=None, where='guarded_move',
+                             zf_label=None, zf_legacy=False):
+    """Like move_arm_smooth but stops early on contact.
+
+    ``where`` names the PHASE for the cancel reply (see ``_check_cancel``).
+    The cancel probe is checked FIRST in each step, before the contact checks
+    and before the next forward command — a cancel is strictly higher
+    priority than continuing to press, and the phase it names is what the
+    operator is told the arm stopped in.
+
+    Two detection mechanisms (either triggers a stop):
+
+    1. **Position error**: monitors |cmd_q - actual_q| on ``monitor_indices``.
+       If cumulative error exceeds ``pos_threshold`` for
+       ``consecutive_threshold`` consecutive steps → contact stop.
+
+    2. **stop_fn callback** (optional): called at each step as
+       ``stop_fn() → str or None``.  If it returns a non-empty string, the
+       motion stops immediately with that string as the reason.  Use this
+       for palm pressure sensors or other fast contact signals.
+
+    **Contact is checked BEFORE sending each new command** (except step 1),
+    so the arm never receives a forward command after contact is detected.
+
+    On stop, the arm freezes at its current actual position.
+
+    Returns (completed: bool, stop_reason: str or None).
+
+    The table z-floor clamp applies here too.  On a well-formed descent it
+    should be a NO-OP: the floor sits (GRASP_Z_OFFSET + SOLVER_Z_TORSO_OFFSET +
+    h/2 + clearance) below the commanded grasp z, and the descent stops AT that
+    grasp z.  It bites only if a target is itself commanded at or into the
+    surface.
+
+    THAT CLAIM IS NOT MEASURED.  The margin depends on the grasp orientation's
+    fingertip drop, which varies with the object and the wrist roll — a fixed
+    constant is exactly what this clamp exists to avoid assuming.  Watch for
+    `[zfloor] CLAMPED ... guarded` in engine_grasp.log on the first table run;
+    if it appears during a DESCENT, the floor is too high and grasps will come
+    up short.
+    """
+    start_q = arm.get_current_dual_arm_q().copy()
+    target_q, _zf_clamped = _apply_zfloor(start_q, target_q, where,
+                                          zf_label=zf_label, zf_legacy=zf_legacy)
+    _ZF_LAST_SENT[0] = np.array(target_q, dtype=np.float64).copy()   # pin source
+    if _zf_clamped:
+        target_tauff = _arm_gravity_ff(target_q, target_tauff)
+    if ARM_WRITER_ENABLED:
+        # writer-slew guarded move: start the slew and monitor daemon-side at
+        # MOVE_HZ; the explicit duration time-aligns both sides. contact
+        # semantics: stop_fn first, then |profile - actual| position error on
+        # monitor_indices; on stop, arm.freeze(). actual_q is polled from the
+        # writer over the socket.
+        max_delta = float(np.max(np.abs(target_q - start_q)))
+        if duration is None:
+            duration = max(1.5, max_delta / MOVE_SPEED)
+        steps = max(1, int(duration * MOVE_HZ))
+        dt = duration / steps
+        sys.stderr.write(
+            f'[pick_daemon][writer] move_arm_smooth_guarded: '
+            f'max_delta={max_delta:.3f} rad, duration={duration:.1f}s, '
+            f'steps={steps}, monitoring joints={monitor_indices}\n')
+        sys.stderr.flush()
+        # target_tauff rides the socket as the writer gravity FF: the monitor
+        # compares the daemon profile against physical q, so the arm must track
+        # with servo-scale error. without FF the wrist and elbow droop past the
+        # 0.15 rad sum threshold and the guard false-freezes mid-air.
+        arm.slew_start(target_q, duration=duration, tau=target_tauff)
+        consecutive_exceeded = 0
+        prev_cmd_q = start_q.copy()
+        for i in range(1, steps + 1):
+            # cancel first: it outranks continuing to press and is checked
+            # before the next forward command.
+            _check_cancel(where)
+            # contact check from the previous step before the next profile point,
+            # so the arm never gets a forward command after contact.
+            if i > 1:
+                # stop_fn first: tactile is the fastest contact signal
+                if stop_fn is not None:
+                    reason = stop_fn()
+                    if reason:
+                        sys.stderr.write(
+                            f'[pick_daemon][writer] PALM CONTACT (sensor): '
+                            f'{reason} (step {i}/{steps}), freezing\n')
+                        sys.stderr.flush()
+                        arm.freeze()
+                        return False, reason
+                # position error: previous profile point against the actual q polled from the writer
+                actual_q = arm.get_current_dual_arm_q()
+                error = sum(abs(prev_cmd_q[j] - actual_q[j])
+                            for j in monitor_indices)
+                if error > pos_threshold:
+                    consecutive_exceeded += 1
+                    if consecutive_exceeded >= consecutive_threshold:
+                        sys.stderr.write(
+                            f'[pick_daemon][writer] PALM CONTACT (pos err): '
+                            f'{error:.4f} rad exceeded threshold '
+                            f'{pos_threshold:.4f} for {consecutive_exceeded} '
+                            f'consecutive steps (step {i}/{steps}), '
+                            f'freezing\n')
+                        sys.stderr.flush()
+                        arm.freeze()
+                        return False, f'position_error:{error:.4f}rad'
+                else:
+                    consecutive_exceeded = 0
+            # advance the daemon-side profile; the writer tracks its own cosine
+            # slew of the same duration, time-aligned by construction.
+            r = 0.5 - 0.5 * np.cos(np.pi * i / steps)
+            prev_cmd_q = start_q + r * (target_q - start_q)
+            time.sleep(dt)
+        return True, None
+    max_delta = float(np.max(np.abs(target_q - start_q)))
+    if duration is None:
+        duration = max(1.5, max_delta / MOVE_SPEED)
+    steps = max(1, int(duration * MOVE_HZ))
+    dt = duration / steps
+
+    sys.stderr.write(
+        f'[pick_daemon] move_arm_smooth_guarded: max_delta={max_delta:.3f} rad, '
+        f'duration={duration:.1f}s, steps={steps}, '
+        f'monitoring joints={monitor_indices}\n')
+    sys.stderr.flush()
+
+    consecutive_exceeded = 0
+    prev_cmd_q = start_q.copy()
+    prev_actual_q = start_q.copy()
+
+    for i in range(1, steps + 1):
+        # ── cancel first (see the writer branch above).
+        _check_cancel(where)
+        # check contact from the previous step before sending the next command,
+        # so no forward command goes out after contact.
+        if i > 1:
+            # stop_fn first: tactile is the fastest contact signal
+            if stop_fn is not None:
+                reason = stop_fn()
+                if reason:
+                    sys.stderr.write(
+                        f'[pick_daemon] PALM CONTACT (sensor): {reason} '
+                        f'(step {i}/{steps}, before sending cmd), freezing\n')
+                    sys.stderr.flush()
+                    # gravity FF at the frozen actual pose; endpoint torque at an
+                    # intermediate pose gives a stiff hold.
+                    arm.ctrl_dual_arm(
+                        prev_actual_q, _arm_gravity_ff(prev_actual_q,
+                                                       target_tauff))
+                    return False, reason
+
+            # position error: previous commanded against the current actual
+            actual_q = arm.get_current_dual_arm_q()
+            error = sum(abs(prev_cmd_q[j] - actual_q[j]) for j in monitor_indices)
+
+            if error > pos_threshold:
+                consecutive_exceeded += 1
+                if consecutive_exceeded >= consecutive_threshold:
+                    sys.stderr.write(
+                        f'[pick_daemon] PALM CONTACT (pos err): {error:.4f} rad '
+                        f'exceeded threshold {pos_threshold:.4f} for '
+                        f'{consecutive_exceeded} consecutive steps '
+                        f'(step {i}/{steps}, before sending cmd), freezing\n')
+                    sys.stderr.flush()
+                    # gravity FF at the frozen actual pose; endpoint torque there
+                    # gives a stiff hold.
+                    
+                    arm.ctrl_dual_arm(
+                        actual_q, target_tauff)
+                    return False, f'position_error:{error:.4f}rad'
+            else:
+                consecutive_exceeded = 0
+
+            prev_actual_q = actual_q
+
+        # ── send the next command, only if no contact is detected ──
+        r = 0.5 - 0.5 * np.cos(np.pi * i / steps)
+        cmd_q = start_q + r * (target_q - start_q)
+        prev_cmd_q = cmd_q
+        # constant FF (target_tauff) for every step: a per-step recompute gave a
+        # stiff, locked feel mid-motion.
+        tau_step = target_tauff  # constant FF
+        arm.ctrl_dual_arm(cmd_q, tau_step)
+        time.sleep(dt)
+
+    arm.ctrl_dual_arm(target_q, target_tauff)
+    return True, None
