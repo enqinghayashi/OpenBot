@@ -2355,3 +2355,13 @@ def _zf_clear_pins():
     _ZF_IDLE_PIN['right'] = None
 
 
+def _zf_pin_idle(side, q=None):
+    """E2: pin the idle arm to its COMMANDED post-clamp slice: ``q`` when given,
+    else the 14-vector the last move commanded.  Per-arm only; a no-op otherwise."""
+    if not _zfloor_perarm_on():
+        return
+    src_q = _ZF_LAST_SENT[0] if q is None else q
+    if src_q is None:
+        return
+    lo, hi = (0, 7) if side == 'left' else (7, 14)
+    _ZF_IDLE_PIN[side] = np.array(src_q[lo:hi], dtype=np.float64).copy()
