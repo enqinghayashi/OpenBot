@@ -8875,3 +8875,47 @@ _SC_ENV = 'OPENBOT_SELF_COLLISION_GUARD'
 _SC_PRECHECK_C0 = [None]
 
 
+def _sc_enabled():
+    return os.environ.get(_SC_ENV, '1').strip() != '0'
+
+
+def _sc_unavailable(exc):
+    _safe_log(f'SELF-COLLISION GUARD unavailable ({exc!r}) — not refusing')
+
+
+def _sc_ready():
+    """True when the guard runs: enabled and the module imported (a missing
+    module is logged as unavailable at every check, never silently)."""
+    if not _sc_enabled():
+        return False
+    if _sc_mod is None:
+        _sc_unavailable(_SC_IMPORT_EXC)
+        return False
+    return True
+
+
+def _sc_banner():
+    """The ONE startup line (deploy check C3: 'SELF-COLLISION GUARD armed').
+    Runs at IMPORT time, so it must never raise: a module whose attributes
+    do not match (a stale copy on the box) is reported 'unavailable'."""
+    try:
+        if not _sc_enabled():
+            _safe_log(f'[pick_daemon] SELF-COLLISION GUARD DISABLED by env '
+                      f'({_SC_ENV}=0) — cross-body picks are NOT refused')
+        elif _sc_mod is None:
+            _sc_unavailable(_SC_IMPORT_EXC)
+        else:
+            _safe_log(f'[pick_daemon] SELF-COLLISION GUARD armed: '
+                      f'thr={_sc_mod.LEFT_CLEAR_MIN_M:.3f} m, '
+                      f'links={len(_sc_mod.SAMPLES)} (right-arm sampled links vs '
+                      f'{len(_sc_mod.LEFT_CAP_NAMES)} left-arm capsules; refuse '
+                      f'also when the right palm y > {_sc_mod.HAND_Y_MAX_M:+.3f} '
+                      f'm for a pick / > {_sc_mod.HAND_Y_MAX_PLACE_M:+.3f} m for '
+                      f'a place)')
+    except Exception as _e:
+        _sc_unavailable(_e)
+
+
+class _ScRefusal(object):
+    """One self-collision refusal: the ERROR line's fields."""
+
