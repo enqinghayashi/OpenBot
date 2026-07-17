@@ -8463,3 +8463,173 @@ def _hl_begin(orientation, tx, ty, tz, height_m, _now=None, _sleep=None,
     except Exception as _e:                                # noqa: BLE001
         _hl_log('off: setup failed (%r) -> B8i flow' % (_e,))
         return None
+
+
+def _hl_next_attempt(st, attempt, keep_closed):
+    """Top of attempt k = attempt + 1 >= 2.  False = stop the ladder (the
+    keep-closed re-press was the last attempt, or an error).  A re-press aims
+    at the capturing attempt's aim + H_LADDER_REPRESS_DY (B8i: ty + 0.02, at
+    the command's tz: dz 0); a fresh approach gets the provisional aim
+    original + (dx, dy) and the rung's dz (_hl_aim decides after h-wp1)."""
+    k = attempt + 1
+    try:
+        if st['kc_used']:
+            _hl_log('stop before attempt %d/%d: the keep-closed re-press was the '
+                    'last attempt (B8i: one re-press, then the final keep-closed)'
+                    % (k, st['n']))
+            return False
+        if keep_closed:
+            st['kc_used'] = True
+            ax, ay = st['aim']
+            st['aim'] = (ax, ay + H_LADDER_REPRESS_DY)
+            st['dz'] = 0.0
+            st['tried'] = k
+            sys.stderr.write('[pick_daemon] Retry attempt %d/%d: keep-closed '
+                             're-press +2cm forward (hladder, B8i re-press)\n'
+                             % (k, st['n']))
+            sys.stderr.flush()
+            _hl_log_attempt(st, k, 'repress', 0.0, H_LADDER_REPRESS_DY, 0.0,
+                            'keep-closed: attempt-%d capture evidence' % attempt)
+            return True
+        dx, dy, dz = _hl_rung(k)
+        st['aim'] = (st['x0'] + dx, st['y0'] + dy)
+        st['dz'] = dz
+        st['tried'] = k
+        sys.stderr.write('[pick_daemon] Retry attempt %d/%d: hladder rung '
+                         'dx=%+.3f dy=%+.3f dz=%+.3f (base decided after h-wp1)\n'
+                         % (k, st['n'], dx, dy, dz))
+        sys.stderr.flush()
+        return True
+    except Exception as _e:                                # noqa: BLE001
+        _hl_log('stop before attempt %d: ladder error (%r)' % (k, _e))
+        return False
+
+
+def _hl_aim(st, attempt, arm_ik, tz, x_off, _now=None, _sleep=None,
+            _rows=None, _cancel=None, _precheck=None, _limit=None):
+    """After h-wp1 of a fresh horizontal approach: the aim of attempt
+    k = attempt + 1 into st['aim'] (and its dz into st['dz']).  k = 1: the
+    command's aim.  k >= 2: the re-detected base + (dx, dy), else the original
+    + (dx, dy), each reach-prechecked at the lowered z tz + dz (the pick-start
+    gate); False = stop (no reachable aim, or an error)."""
+    k = attempt + 1
+    try:
+        if attempt == 0:
+            st['aim'] = (st['x0'], st['y0'])
+            st['dz'] = 0.0
+            _hl_log_attempt(st, 1, 'orig', 0.0, 0.0, 0.0, 'first')
+            return True
+        _now = time.time if _now is None else _now
+        _precheck = _reach_precheck if _precheck is None else _precheck
+        limit = REACH_REFUSE_POS if _limit is None else _limit
+        dx, dy, dz = _hl_rung(k)
+        st['dz'] = dz
+        base, info = _hl_redetect(st, _now(), _now, _sleep, _rows, _cancel)
+        cands = []
+        if base is not None:
+            st['last_xy'] = base          # last clean pose, used by the next jump gate
+            cands.append(('fresh', base, info))
+        cands.append(('orig', (st['x0'], st['y0']),
+                      info if base is None else 'fallback'))
+        notes = []
+        for kind, (bx, by), why in cands:
+            cx, cy = bx + dx, by + dy
+            try:
+                res = _precheck(arm_ik, 'horizontal', cx, cy, tz + dz, x_off=x_off)[0]
+            except Exception:
+                res = None
+            if res is not None and res > limit:
+                notes.append('%s(%.3f,%.3f,z%+.3f) reach %.3f>%.3f'
+                             % (kind, cx, cy, tz + dz, res, limit))
+                continue
+            st['aim'] = (cx, cy)
+            _hl_log_attempt(st, k, kind, dx, dy, dz,
+                            why + (' refused=' + ';'.join(notes) if notes else ''))
+            return True
+        st['tried'] = k - 1
+        _hl_log('stop before attempt %d/%d: no reachable aim (%s)'
+                % (k, st['n'], '; '.join(notes)))
+        return False
+    except Exception as _e:                                # noqa: BLE001
+        if attempt:
+            st['tried'] = k - 1
+        _hl_log('stop before attempt %d/%d: ladder error (%r)' % (k, st.get('n'), _e))
+        return False
+
+
+def _hl_descent_target(st, attempt, h_tz, R):
+    """The h-wp3 descent target of attempt k = attempt + 1: the B8i target ``R``
+    (make_wrist_target_middle_down(tx, ty_use, h_tz, ...), whose translation z is
+    h_tz itself) moved dz in z (H_LADDER_DXYZ; 0 on attempt 1 and on a
+    re-press): same x, y, orientation and park offset, attempt 1's height + dz.
+    Returns ``R`` itself when dz is 0.  Only the TARGET moves: the B8i
+    bookkeeping (gap, stall, retract, the pad band) stays on h_tz, the floor
+    latched at the pick start is not touched and the z-floor clamp cuts the
+    lowered move like any other.  Never raises: an error keeps ``R`` (the
+    unlowered B8i target) and logs one line."""
+    try:
+        dz = float(st.get('dz', 0.0)) if attempt > 0 else 0.0
+        st['tz_target'] = float(h_tz) + dz
+        if dz == 0.0:
+            return R
+        tgt = np.array(R, dtype=np.float64, copy=True)
+        if tgt.shape != (4, 4):
+            raise ValueError('target shape %r' % (tgt.shape,))
+        tgt[2, 3] = tgt[2, 3] + dz
+        return tgt
+    except Exception as _e:                                # noqa: BLE001
+        st['tz_target'] = h_tz
+        _hl_log('descent %d: lowering skipped (%r) -> the unlowered target'
+                % (attempt + 1, _e))
+        return R
+
+
+def _hl_descent_note(st, attempt, h_tz, sol_q, arm, arm_ik):
+    """After the h-wp3 descent of attempt k = attempt + 1: ONE line with the
+    commanded dz, the descent target z, the MEASURED wrist z (FK of the measured
+    q, the frame of the B8i 'gap' lines), how much LOWER it ended than attempt 1
+    did, and whether the z-floor clamp bound: 'bound' = the right arm's
+    commanded slice of the last descent pass (_ZF_LAST_SENT, post-clamp)
+    differs from its IK target (pre-clamp); 'free' = equal; 'none' = no floor
+    latched or PICK_ZFLOOR=0; 'n/a' = unknown.  Log only: never raises, never
+    moves, reads no switch and writes no floor."""
+    k = attempt + 1
+    try:
+        dz = float(st.get('dz', 0.0)) if attempt > 0 else 0.0
+        tgt = st.get('tz_target')
+        tgt = float(h_tz) + dz if tgt is None else float(tgt)
+        try:
+            _w = get_wrist_pose(arm_ik, arm.get_current_dual_arm_q().copy(),
+                                side='right')
+            wz = float(_w[2]) if _w is not None else None
+        except Exception:                                  # noqa: BLE001
+            wz = None
+        if k == 1:
+            st['wz1'] = wz
+        wz1 = st.get('wz1')
+        lower = (wz1 - wz) if (k > 1 and wz is not None and wz1 is not None) else None
+        floor = _TABLE_FLOOR_PELVIS
+        sent = _ZF_LAST_SENT[0]
+        if not _ZFLOOR_ENABLED or floor is None:
+            clamp = 'none'
+        elif sol_q is None or sent is None:
+            clamp = 'n/a'
+        else:
+            dev = max(abs(float(a) - float(b))
+                      for a, b in zip(list(sent)[7:14], list(sol_q)[7:14]))
+            clamp = 'bound' if dev > 1e-6 else 'free'
+        _hl_log('descent %d/%d: dz=%+.3f target_z=%+.4f wrist_z=%s lower=%s clamp=%s '
+                'floor=%s' % (k, st['n'], dz, tgt,
+                              ('%+.4f' % wz) if wz is not None else 'none',
+                              ('%+.4f' % lower) if lower is not None else 'n/a',
+                              clamp, ('%+.4f' % floor) if floor is not None else 'none'))
+    except Exception as _e:                                # noqa: BLE001
+        _hl_log('descent %d: note skipped (%r)' % (k, _e))
+
+
+def _hl_end(st, grasp_ok):
+    try:
+        _hl_log('end: grasp_ok=%s after %d/%d attempts' % (bool(grasp_ok),
+                                                            st['tried'], st['n']))
+    except Exception:                                      # noqa: BLE001
+        pass
