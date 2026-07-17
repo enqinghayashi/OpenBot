@@ -2330,3 +2330,20 @@ def _zf_reply_suffix(verb):
         return ''
 
 
+def _zf_pick_begin(active, arm=None):
+    """First statement of a pick / place handler: this command runs in the flow
+    (ratchet for in-flow moves), ``active`` is its own arm, any idle-arm pin of an
+    earlier command is void, and the floor it found is kept for E6."""
+    _ZF_FLOW[0] = True
+    _ZF_ACTIVE[0] = active
+    _ZF_PRIOR[0] = (_TABLE_FLOOR_PELVIS, _TABLE_FLOOR_SRC)
+    _ZF_IDLE_PIN['left'] = None
+    _ZF_IDLE_PIN['right'] = None
+    # precheck: measured arm state at command start, before any motion; read
+    # only when the per-arm clamp is on.
+    _ZF_MEAS_Q[0] = None
+    if arm is not None and _zfloor_perarm_on():
+        try:
+            _ZF_MEAS_Q[0] = np.array(arm.get_current_dual_arm_q(), dtype=np.float64).copy()
+        except Exception:
+            _ZF_MEAS_Q[0] = None
