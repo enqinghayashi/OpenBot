@@ -2314,3 +2314,17 @@ def _zf_token_s():
     return min(round(float(_ZF_CMD['min_any']), 2), round(_ZF_LIMITED_S - 0.01, 2))
 
 
+def _zf_reply_suffix(verb):
+    """E5: the `; zfloor_limited=<s>` token for this command's ONE stdout reply
+    line, or '' unless the command's own moves were floor-limited (applied scale
+    < 0.98).  Only the place / place_left and pose verbs carry it: a pick is
+    reported on stderr alone.  Never raises."""
+    try:
+        if not _zfloor_perarm_on() or verb not in _ZF_TOKEN_VERBS:
+            return ''
+        s_tok = _zf_token_s()
+        if s_tok is None:
+            return ''
+        return '; zfloor_limited=%.2f' % s_tok
+    except Exception:
+        return ''
