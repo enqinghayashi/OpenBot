@@ -2353,3 +2353,5 @@ def _zf_clear_pins():
     """floor_clear: the idle-arm pin goes with the floor it was recorded under."""
     _ZF_IDLE_PIN['left'] = None
     _ZF_IDLE_PIN['right'] = None
+
+
