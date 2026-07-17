@@ -8328,3 +8328,138 @@ def _hl_pick_row(rows, t, now, t_min, st):
     if best is not None:
         return (best[1], best[2]), None
     return None, (worst[1] if worst is not None else 'absent')
+
+
+def _hl_median(v):
+    s = sorted(v)
+    n = len(s)
+    return s[n // 2] if n % 2 else 0.5 * (s[n // 2 - 1] + s[n // 2])
+
+
+def _hl_redetect(st, t_view, _now=None, _sleep=None, _rows=None, _cancel=None):
+    """((bx, by), info) -- the median of >= H_LADDER_MIN_ROWS clean rows of the
+    target written in [t_view + SETTLE, t_view + SETTLE + WINDOW] -- or
+    (None, why).  Waits at most SETTLE + WINDOW + one poll (also counted, not
+    only timed); a stop is honoured every poll (_check_cancel raises
+    engine_cancel.Cancelled)."""
+    _now = time.time if _now is None else _now
+    _sleep = time.sleep if _sleep is None else _sleep
+    _rows = _hl_rows if _rows is None else _rows
+    _cancel = _check_cancel if _cancel is None else _cancel
+    if st.get('ref_label') is None:
+        return None, 'no_ref'
+    t_min = t_view + H_LADDER_SETTLE_S
+    deadline = t_min + H_LADDER_WINDOW_S
+    seen = set()
+    clean = []
+    rej = {}
+    src = 'none'
+    # bounded by count as well as the clock: a wall clock that stalls or steps
+    # back (NTP) can never hold the arm at h-wp1 past SETTLE + WINDOW + one poll.
+    
+    for _poll in range(int(round((H_LADDER_SETTLE_S + H_LADDER_WINDOW_S)
+                                 / H_LADDER_POLL_S)) + 1):
+        _cancel('hladder_redetect')
+        now = _now()
+        if now >= t_min:
+            samples, src = _rows(now)
+            packets = {}
+            for row, t in samples:
+                packets.setdefault(t, []).append(row)
+            for t in sorted(packets):
+                if (src, t) in seen:
+                    continue
+                seen.add((src, t))
+                xy, why = _hl_pick_row(packets[t], t, now, t_min, st)
+                if xy is not None:
+                    clean.append(xy)
+                else:
+                    rej[why] = rej.get(why, 0) + 1
+            if len(clean) >= H_LADDER_MIN_ROWS or now >= deadline:
+                break
+        _sleep(H_LADDER_POLL_S)
+    _rj = ','.join('%s:%d' % kv for kv in sorted(rej.items())) or '-'
+    if len(clean) < H_LADDER_MIN_ROWS:
+        return None, 'src=%s clean=%d/%d rej=%s' % (src, len(clean),
+                                                     H_LADDER_MIN_ROWS, _rj)
+    bx = _hl_median([c[0] for c in clean])
+    by = _hl_median([c[1] for c in clean])
+    spread = max(math.hypot(c[0] - bx, c[1] - by) for c in clean)
+    if spread > H_LADDER_MAX_SPREAD_M:
+        return None, 'src=%s clean=%d spread=%.3f>%.3f' % (
+            src, len(clean), spread, H_LADDER_MAX_SPREAD_M)
+    lx, ly = st['last_xy']
+    return (bx, by), 'src=%s n=%d bx=%.3f by=%.3f spread=%.3f jump=%.3f rej=%s' % (
+        src, len(clean), bx, by, spread, math.hypot(bx - lx, by - ly), _rj)
+
+
+def _hl_log_attempt(st, k, base, dx, dy, dz, why):
+    x, y = st['aim']
+    _hl_log('attempt %d/%d base=%s x=%.3f y=%.3f dy=%+.3f dx=%+.3f dz=%+.3f why=%s'
+            % (k, st['n'], base, x, y, dy, dx, dz, why))
+
+
+def _hl_find_ref(st, _now, _sleep, _rows):
+    """The target's row at pick start (the command's (x, y) within
+    H_LADDER_REF_MATCH_M, z within H_LADDER_MAX_DZ_M, fresh, horizontal if it
+    says): (label, instance_id or None, why) or (None, None, why)."""
+    deadline = _now() + H_LADDER_REF_WAIT_S
+    src = 'none'
+    n = int(round(H_LADDER_REF_WAIT_S / H_LADDER_POLL_S)) + 1
+    for i in range(n):
+        now = _now()
+        samples, src = _rows(now)
+        best = None
+        for row, t in samples:
+            p = _hl_xyz(row)
+            lab = row.get('label')
+            if p is None or not isinstance(lab, str) or not lab:
+                continue
+            if now - t > H_LADDER_MAX_AGE_S or abs(p[2] - st['z_cmd']) > H_LADDER_MAX_DZ_M:
+                continue
+            o = row.get('orientation')
+            if o is not None and o != 'horizontal':
+                continue
+            d = math.hypot(p[0] - st['x0'], p[1] - st['y0'])
+            if d <= H_LADDER_REF_MATCH_M and (best is None or d < best[0]):
+                best = (d, lab, row.get('instance_id'), now - t)
+        if best is not None:
+            return best[1], best[2], 'src=%s d=%.3f age=%.2fs' % (src, best[0], best[3])
+        if now >= deadline or i == n - 1:
+            break
+        _sleep(H_LADDER_POLL_S)
+    return None, None, 'no fresh target row within %.2f m (src=%s)' % (
+        H_LADDER_REF_MATCH_M, src)
+
+
+def _hl_begin(orientation, tx, ty, tz, height_m, _now=None, _sleep=None,
+              _rows=None, _environ=None, _exists=None):
+    """The ladder state for THIS right pick, or None = the B8i flow.  None
+    (upright, or the kill switch) is returned before any log line or row read.
+    Never raises: a setup error logs one line and returns None (B8i)."""
+    if orientation != 'horizontal':
+        return None
+    if not _hl_switch(_environ, _exists)[0]:
+        return None
+    try:
+        _now = time.time if _now is None else _now
+        _sleep = time.sleep if _sleep is None else _sleep
+        _rows = _hl_rows if _rows is None else _rows
+        x0, y0 = float(tx), float(ty)
+        st = {'n': H_LADDER_ATTEMPTS, 'tried': 1, 'x0': x0, 'y0': y0,
+              'z_cmd': float(tz) - GRASP_Z_OFFSET,
+              'h_cmd': float(height_m) if height_m is not None else None,
+              'aim': (x0, y0), 'last_xy': (x0, y0), 'kc_used': False,
+              'ref_label': None, 'ref_iid': None, 'dz': 0.0, 'wz1': None}
+        lab, iid, why = _hl_find_ref(st, _now, _sleep, _rows)
+        st['ref_label'], st['ref_iid'] = lab, iid
+        _r = ('ref=%s%s (%s)' % (lab, '#%s' % iid if iid is not None else '', why)
+              if lab is not None else
+              'ref=none (%s): the rungs apply to the original aim' % why)
+        _hl_log('on: horizontal right pick, %d attempts, rungs (dx,dy,dz) '
+                'a2=(%+.3f,%+.3f,%+.3f) a3=(%+.3f,%+.3f,%+.3f) m; %s'
+                % ((st['n'],) + tuple(_hl_rung(2)) + tuple(_hl_rung(3)) + (_r,)))
+        return st
+    except Exception as _e:                                # noqa: BLE001
+        _hl_log('off: setup failed (%r) -> B8i flow' % (_e,))
+        return None
