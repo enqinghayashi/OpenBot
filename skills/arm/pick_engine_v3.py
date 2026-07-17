@@ -2376,3 +2376,29 @@ def _zf_idle_target(side, tuck):
     return tuck
 
 
+def _zf_idle_pre(side, tuck, start_q=None):
+    """E2, the prechecks: they run BEFORE the command moves its idle arm, so no pin
+    is set yet.  Returns the idle 7-slice the approach will run with: the pin when
+    set; else where the coming tuck move leaves the idle arm, i.e. the per-arm clamp
+    of ``start_q`` -> ``start_q`` with the idle slice at ``tuck`` under the latched
+    floor (pick: T5 step 1 puts both arms at READY, so start_q = READY_POSE; place:
+    step 2 parks from the measured pose).  Nothing clamps (no floor, or a clear
+    path) -> exactly ``tuck``, the pre-B8g answer.  start_q None = the measured q at
+    the start of the command.  Switch off, no start, or any failure: ``tuck``."""
+    if not _zfloor_perarm_on():
+        return tuck
+    pinned = _ZF_IDLE_PIN.get(side)
+    if pinned is not None:
+        return pinned
+    start = start_q if start_q is not None else _ZF_MEAS_Q[0]
+    if start is None:
+        return tuck
+    try:
+        lo, hi = (0, 7) if side == 'left' else (7, 14)
+        s0 = np.array(start, dtype=np.float64).copy()
+        tgt = s0.copy()
+        tgt[lo:hi] = tuck
+        q_out = _zfloor_target(_ARM_IK, s0, tgt, ratchet=True)[0]
+        return np.array(q_out[lo:hi], dtype=np.float64).copy()
+    except Exception:
+        return tuck
