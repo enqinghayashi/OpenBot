@@ -8228,3 +8228,103 @@ def _hl_rung(k):
     """(dx, dy, dz) of attempt k (2 or 3): (dx, dy) on its base, dz on attempt 1's
     descent target."""
     return H_LADDER_DXYZ[min(max(k - 2, 0), len(H_LADDER_DXYZ) - 1)]
+
+
+def _hl_rows(now, _open=None, _mtime=None):
+    """([(row, t)], src) from the first fresh source: 'rows', else 'det', else
+    ([], 'none').  Never raises (pick_node writes 'det' non-atomically)."""
+    _open = open if _open is None else _open
+    _mtime = (lambda p: os.stat(p).st_mtime) if _mtime is None else _mtime
+    try:
+        with _open(H_LADDER_ROWS_FILE) as f:
+            doc = json.load(f)
+        t = float(doc.get('t'))
+        rows = doc.get('rows')
+        if (math.isfinite(t) and isinstance(rows, list)
+                and -0.5 <= now - t <= H_LADDER_MAX_AGE_S):
+            return [(r, t) for r in rows if isinstance(r, dict)], 'rows'
+    except Exception:
+        pass
+    try:
+        t = float(_mtime(H_LADDER_DET_FILE))
+        with _open(H_LADDER_DET_FILE) as f:
+            row = json.load(f)
+        if isinstance(row, dict) and math.isfinite(t):
+            return [(row, t)], 'det'
+    except Exception:
+        pass
+    return [], 'none'
+
+
+def _hl_xyz(row):
+    """(x, y, z) floats of a row, or None (missing / non-finite)."""
+    try:
+        x, y, z = float(row['x']), float(row['y']), float(row['z'])
+    except Exception:
+        return None
+    if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
+        return None
+    return x, y, z
+
+
+def _hl_row_problem(row, t, now, t_min, st):
+    """None when the row is CLEAN for st, else the first failing gate's name
+    (shape, stale, early, orient, dz, dh, jump).  The label / instance match
+    is the caller's (_hl_pick_row)."""
+    p = _hl_xyz(row)
+    if p is None:
+        return 'shape'
+    x, y, z = p
+    if now - t > H_LADDER_MAX_AGE_S:
+        return 'stale'
+    if t < t_min:
+        return 'early'
+    o = row.get('orientation')
+    if o is not None and o != 'horizontal':
+        return 'orient'
+    if abs(z - st['z_cmd']) > H_LADDER_MAX_DZ_M:
+        return 'dz'
+    h, hc = row.get('height_m'), st.get('h_cmd')
+    if h is not None and hc is not None:
+        try:
+            hv = float(h)
+        except (TypeError, ValueError):
+            return 'dh'
+        if (not math.isfinite(hv)
+                or abs(hv - hc) > max(H_LADDER_MAX_DH_M, H_LADDER_MAX_DH_FRAC * hc)):
+            return 'dh'
+    lx, ly = st['last_xy']
+    if math.hypot(x - lx, y - ly) > H_LADDER_MAX_JUMP_M:
+        return 'jump'
+    return None
+
+
+def _hl_is_target(row, st):
+    """The pick-start label.  The instance id is logged, NOT gated: s3 10-10 the
+    banana was id 15 at the pick start and id 24 after the failed pick
+    (gateway.log:62/68) -- the hand hid it 2.76 s (depth.log:6077-6078) and the
+    tracker evicts after 2.0 s (instance_tracker.py evict_s)."""
+    return row.get('label') == st.get('ref_label')
+
+
+def _hl_pick_row(rows, t, now, t_min, st):
+    """One packet -> ((x, y), None) for its clean target row nearest the last
+    clean pose, or (None, reason): 'absent' (no row of the target) or the
+    failing gate of the nearest target row."""
+    lx, ly = st['last_xy']
+    best = None
+    worst = None
+    for row in rows:
+        if not _hl_is_target(row, st):
+            continue
+        p = _hl_xyz(row)
+        d = math.hypot(p[0] - lx, p[1] - ly) if p is not None else float('inf')
+        why = _hl_row_problem(row, t, now, t_min, st)
+        if why is None:
+            if best is None or d < best[0]:
+                best = (d, p[0], p[1])
+        elif worst is None or d < worst[0]:
+            worst = (d, why)
+    if best is not None:
+        return (best[1], best[2]), None
+    return None, (worst[1] if worst is not None else 'absent')
