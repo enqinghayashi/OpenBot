@@ -2671,3 +2671,55 @@ def move_arm_smooth_guarded(arm, target_q, target_tauff, monitor_indices,
     return True, None
 
 
+def _make_pressure_insert_stop(client, side):
+    """Item 2 (v3 RELATIVE): build the insert-guard pressure check.
+
+    v4.0 (2026-08-30): RETIRED — no call sites remain (the upright flow's
+    pressure-stop-first went in v3.4; the horizontal flows' went in v4.0;
+    every guarded move uses the ORIGINAL middle-finger + position-err
+    backstop).  Kept as history.
+    Polls grip_server `pressure [side]` once per guarded-move loop iteration
+    (same socket verb pattern as GripClient.state — see grip_client.py
+    pressure()).  The baseline is captured lazily on the FIRST successful
+    read — the guard is built right before the guarded move with the hand
+    open in the air (the 2026-08-29 freezes triggered at loop iteration 2,
+    still in the approach pose), so the first read IS the open-hand floor.
+    Fires when pmax - baseline > DELTA_PRESS.
+    ok:false (no state data) → skip the pressure check and fall through to
+    the position-err backstop; logged once per guarded insert, not per loop
+    step.  Never raises.
+    """
+    _warned = {'flag': False}
+    _baseline = {'p': None}
+
+    def _check():
+        try:
+            payload = client.pressure(side)
+        except Exception:
+            payload = None
+        if payload is None or not payload.get(side, {}).get('ok'):
+            if not _warned['flag']:
+                _warned['flag'] = True
+                sys.stderr.write(
+                    f'[pick_daemon] pressure insert-guard: no pressure data '
+                    f'({side}) — position-err backstop only\n')
+                sys.stderr.flush()
+            return None
+        pmax = float(payload[side].get('max', 0.0))
+        if _baseline['p'] is None:
+            _baseline['p'] = pmax
+            sys.stderr.write(
+                f'[pick_daemon] pressure insert-guard baseline ({side}): '
+                f'{pmax:.0f} (DELTA_PRESS={DELTA_PRESS:.0f})\n')
+            sys.stderr.flush()
+        delta = pmax - _baseline['p']
+        if delta > DELTA_PRESS:
+            sys.stderr.write(
+                f'[pick_daemon] palm/finger pressure trigger '
+                f'(pmax={pmax:.0f}, baseline={_baseline["p"]:.0f}, '
+                f'delta=+{delta:.0f}) — stopping insert\n')
+            sys.stderr.flush()
+            return f'pressure:{pmax:.0f}'
+        return None
+
+    return _check
