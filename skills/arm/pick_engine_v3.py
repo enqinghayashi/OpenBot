@@ -2367,3 +2367,10 @@ def _zf_pin_idle(side, q=None):
     _ZF_IDLE_PIN[side] = np.array(src_q[lo:hi], dtype=np.float64).copy()
 
 
+def _zf_idle_target(side, tuck):
+    """E2: the idle arm's 7-joint target: the pin when one is set (per-arm on),
+    else the CARRY_TUCK pose as before."""
+    pinned = _ZF_IDLE_PIN.get(side)
+    if pinned is not None and _zfloor_perarm_on():
+        return pinned
+    return tuck
