@@ -8807,3 +8807,71 @@ def _reach_precheck(arm_ik, orientation, tx, ty, tz, x_off=None):
         except Exception:
             pass
         return None, 'unavailable'
+
+
+def _expected_after_move(start_q, target_q):
+    """The target move_arm_smooth actually commands from start_q (the same
+    no-log z-floor clamp), so a clamped move is not read as a stall."""
+    try:
+        return _zfloor_target(_ARM_IK, start_q, target_q)[0]
+    except Exception:
+        return target_q
+
+
+def _ev_num(v):
+    try:
+        if v is None:
+            return None
+        f = float(v)
+        return round(f, 4) if math.isfinite(f) else None
+    except Exception:
+        return None
+
+
+def _ev_bool(v):
+    return None if v is None else bool(v)
+
+
+def _set_grip_evidence(side, verdict, close_blocked=None, close_margin=None,
+                       pin_margin=None, tuck_blocked=None, tuck_margin=None):
+    """S2: record what the hand reported on this pick's exit (never raises).
+    Evidence only: no reply and no decision depends on it."""
+    try:
+        _GRIP_EVIDENCE_SEQ[0] += 1
+        _LAST_GRIP_EVIDENCE[0] = {
+            'seq': _GRIP_EVIDENCE_SEQ[0],
+            'side': side,
+            'verdict': verdict,
+            'close_blocked': _ev_bool(close_blocked),
+            'close_margin': _ev_num(close_margin),
+            'pin_margin': _ev_num(pin_margin),
+            'tuck_blocked': _ev_bool(tuck_blocked),
+            'tuck_margin': _ev_num(tuck_margin),
+            't': round(time.time(), 3),
+        }
+    except Exception as _e:
+        _safe_log(f'[pick_daemon] grip evidence not recorded: {_e!r}')
+
+
+# self-collision guard for cross-body reaches: check one commanded move
+# prev -> pose (left-arm clearance along the joint path, right palm side of
+# the pelvis midline; torso depth is diagnostic only, never a refusal).
+# consulted at precheck, before hold_rc and any arm motion, and live on every
+# pick move except the straight-up wp1 ascents: wp2, wp3, wp4, h-wp2, h-wp3,
+# both contact retracts and the keep-closed re-press.
+# a refusal prints ERROR:self_collision and leaves to the failure block.
+# guard failure never refuses; OPENBOT_SELF_COLLISION_GUARD=0 disables it.
+# the startup line prints at import time, since the engine imports this module.
+try:
+    import self_collision as _sc_mod
+    _SC_IMPORT_EXC = None
+except Exception as _sc_import_e:
+    _sc_mod = None
+    _SC_IMPORT_EXC = _sc_import_e
+
+_SC_ENV = 'OPENBOT_SELF_COLLISION_GUARD'
+# minimum left-arm clearance from the last precheck, quoted by a live
+# refusal; reset by every precheck.
+_SC_PRECHECK_C0 = [None]
+
+
