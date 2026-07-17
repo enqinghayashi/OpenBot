@@ -2349,3 +2349,7 @@ def _zf_pick_begin(active, arm=None):
             _ZF_MEAS_Q[0] = None
 
 
+def _zf_clear_pins():
+    """floor_clear: the idle-arm pin goes with the floor it was recorded under."""
+    _ZF_IDLE_PIN['left'] = None
+    _ZF_IDLE_PIN['right'] = None
