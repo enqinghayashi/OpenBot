@@ -2975,3 +2975,20 @@ def _capped_close_preset(side):
     return clamped_close_target(side, 1.0)[0]
 
 
+def _close_dir(side, jid):
+    """+1.0 / -1.0: the sign q MOVES in when `jid` closes; 0.0 if pinned.
+
+    Derived from the presets, exactly as the ramp is, so it cannot disagree
+    with the ramp and cannot be hand-typed wrong per joint.  Verified against
+    the DEPLOY build's dicts (the engine imports grip_server from
+    /home/unitree/leon/openbot): right = {0,1,2: -1.0, 3,4,5,6: +1.0}, left =
+    the exact mirror {0,1,2: +1.0, 3,4,5,6: -1.0}.  No Dex3 joint is pinned
+    (OPEN == CLOSE) today, so this never returns 0.0 in practice; a future
+    pinned joint falls out here rather than being handed invented travel.
+    """
+    delta = float(CLOSE_PRESETS[side][jid]) - float(OPEN_PRESETS[side][jid])
+    if delta > 0.0:
+        return 1.0
+    if delta < 0.0:
+        return -1.0
+    return 0.0
