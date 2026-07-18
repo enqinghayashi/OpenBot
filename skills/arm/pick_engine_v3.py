@@ -2854,3 +2854,65 @@ THUMB_BASE_CENTRE = 0.0
 STAGED_CLOSE_SKIP_TOL = 0.10   # rad; base this close to centre = no staging
 
 
+def _staged_thumb_first_close(hand, side, verb):
+    """Stage 1 = thumb base to centre, stage 2 = the ordinary full close.
+
+    BOTH STAGES LIVE HERE, deliberately: the operator's requirement is one
+    motion in two phases ("the thumb should first return to neutural centre
+    then close"), so a caller that staged and then forgot to close would leave
+    the fingers OPEN -- the exact condition the operator's 2026-09-21 directive
+    exists to prevent.  Keeping them in one function makes that unrepresentable
+    rather than merely discouraged.
+
+    Returns the stage-1 outcome as a short string, for the caller's log line:
+    'staged' | 'already-centre:<q>' | 'no-state' | 'stage1-failed:<err>'.
+
+    BEST-EFFORT ON STAGE 1 ONLY.  `hand.close()` is UNCONDITIONAL and is NOT
+    inside the stage-1 try, so a staging fault can never skip the close.  A
+    stage-2 exception PROPAGATES -- both call sites already wrap this and log
+    'the hand stays open; continuing', and swallowing here would hide a real
+    hand-controller fault from those handlers.
+    """
+    actual = _read_hand_actual(hand, side)
+    open_preset = OPEN_PRESETS[side]
+
+    # held pose: OPEN preset overwritten joint by joint from the live read.
+    # `actual` is JSON, so its keys are strings.
+    held = {jid: float(open_preset[jid]) for jid in DEX3_JOINTS}
+    q_thumb = None
+    for jid in DEX3_JOINTS:
+        raw = actual.get(str(jid))
+        if raw is None:
+            continue
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            continue
+        held[jid] = val
+        if jid == THUMB_BASE_JID:
+            q_thumb = val
+
+    if q_thumb is None:
+        # no live thumb reference: fall back to OPEN's base, the abducted start
+        # this staging unwinds.
+        q_thumb = float(open_preset[THUMB_BASE_JID])
+        held[THUMB_BASE_JID] = q_thumb
+        note = 'no-state'
+    else:
+        note = 'staged'
+
+    if abs(q_thumb - THUMB_BASE_CENTRE) <= STAGED_CLOSE_SKIP_TOL:
+        note = 'already-centre:%.3f' % q_thumb
+    else:
+        stage1 = dict(held)
+        stage1[THUMB_BASE_JID] = float(THUMB_BASE_CENTRE)
+        try:
+            hand.set(stage1)
+        except Exception as _se:                              # noqa: BLE001
+            note = 'stage1-failed:%s' % _se
+
+    # stage 2: ordinary full close, outside the try above; staging is
+    # best-effort, the close is not.
+    
+    hand.close()
+    return note
