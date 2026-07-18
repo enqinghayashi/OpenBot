@@ -2916,3 +2916,5 @@ def _staged_thumb_first_close(hand, side, verb):
     
     hand.close()
     return note
+
+
