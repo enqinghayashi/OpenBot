@@ -2918,3 +2918,41 @@ def _staged_thumb_first_close(hand, side, verb):
     return note
 
 
+def _score_closure_blocked(client, side, preset=None):
+    """v5.2 (2026-09-07) Edit E: score how far the CLOSED hand sits from the
+    preset it was COMMANDED to — the physical wrap evidence (an air close
+    reaches the preset exactly; a real wrap is BLOCKED short of it).
+
+    margin = max over DEX3_JOINTS of |actual - preset[jid]|, NaN-skipped
+    (no-state joints are not evidence).  blocked = margin > CLOSURE_BLOCKED_TOL.
+
+    `preset` DEFAULTS to CLOSE_PRESETS[side], which is what every caller wants
+    when the close was commanded to the full preset.  It must be passed
+    EXPLICITLY whenever the close was capped (F_MAX_SAFE): comparing a capped
+    close against the UNCAPPED preset makes the margin |q(0.600) - q(1.0)|,
+    which for joint 2 is 0.40 rad >> CLOSURE_BLOCKED_TOL — every free-air close
+    would then report a false capture.  Score against what you commanded.
+
+    Returns (blocked: bool, margin: float, worst_jid: int|None).  Never
+    raises; a no-data read returns (False, NaN, None).
+    """
+    actual = _read_hand_actual(client, side)
+    if not actual:
+        return False, float('nan'), None
+    if preset is None:
+        preset = CLOSE_PRESETS[side]
+    margin = 0.0
+    worst = None
+    found = False
+    for jid in DEX3_JOINTS:
+        q = float(actual.get(str(jid), float('nan')))
+        if q != q:  # skip NaN (no state data)
+            continue
+        found = True
+        _m = abs(q - float(preset[jid]))
+        if _m > margin:
+            margin = _m
+            worst = jid
+    if not found:
+        return False, float('nan'), None
+    return margin > CLOSURE_BLOCKED_TOL, margin, worst
