@@ -154,3 +154,205 @@ DIRECT_COMMANDS = {
 }
 
 
+def is_reachable(x, y, z):
+    """Return True if target (torso-frame coordinates) is within arm workspace."""
+    if not (0.15 <= y <= 0.65):
+        return False
+    if abs(x) >= 0.45:
+        return False
+    if not (-0.35 <= z <= 0.45):
+        return False
+    return True
+
+
+class PickNode(Node):
+    def __init__(self):
+        super().__init__('pick_node')
+
+        self._latest_detections = {}
+        self._busy = False
+        self._daemon_proc = None
+        self._daemon_lock = threading.Lock()
+
+        self._pending_pick = None
+        self._pending_lock = threading.Lock()
+
+        # ── pick state for walk coordinator ──────────────────────────────────
+        # state: idle/busy/holding/error
+        # label: last pick
+        # held: in hand?
+        # alive: proc health
+        # JSON on /pick_state, 5 Hz
+        self._pick_state = 'idle'
+        self._pick_label = None
+        self._pick_held = False
+        self._pick_state_lock = threading.Lock()
+
+        self.create_subscription(
+            String, '/object_detections_body', self._on_detections, 10)
+        self.create_subscription(
+            String, '/pick_target', self._on_pick_target, 10)
+        self.create_subscription(
+            String, '/arm_command', self._on_arm_command, 10)
+
+        self._status_pub = self.create_publisher(String, '/pick_status', 10)
+        self._pick_state_pub = self.create_publisher(
+            String, '/pick_state', 10)
+
+        # ── tracking stability state ─────────────────────────────────────────
+        self._prev_tx = None
+        self._prev_ty = None
+        self._prev_tz = None
+        self._last_detection_time = None
+        self._tracking_label = None
+
+        # wipe stale side files
+        # (ghost guard)
+        for _p in (DETECTION_FILE, STATUS_FILE):
+            try:
+                os.remove(_p)
+            except OSError:
+                pass
+
+        if _NO_DAEMON:
+            self.get_logger().info(
+                '--no-daemon: starting with ZERO arm_sdk writers — '
+                'robot can walk immediately. Spawn the pick daemon on '
+                'demand via /arm_command "spawn_daemon".')
+        else:
+            self._start_daemon()
+
+        self.get_logger().info(
+            'Pick node ready. Publish label to /pick_target, '
+            'then "confirm" to execute. Direct commands on /arm_command.')
+
+        # ── tracking-status writer thread ────────────────────────────────────
+        threading.Thread(target=self._write_servo_status, daemon=True).start()
+
+        # ── /pick_state publisher, 5 Hz ──────────────────────────────────
+        threading.Thread(target=self._write_pick_state, daemon=True).start()
+
+    # ── Looking after the daemon ────────────────────────────────────────────────
+
+    def _start_daemon(self):
+        """Spawn the pick daemon and wait for READY.
+
+        T11: returns True ONLY if the daemon printed READY within the
+        60 s deadline and the process is still alive; False on ANY
+        failure — READY timeout, the process dying during startup
+        (poll() != None, e.g. the corrupted-transport null-byte import
+        crash), or a spawn exception.  Failure paths log the daemon's
+        last stderr lines (see _log_last_stderr) so the pick_node log
+        carries the diagnosis.  Callers reply DONE only on True.
+        """
+        # clear posture json
+        # or restore_arm_pose.py
+        # revives an old pose
+        try:
+            os.remove('/tmp/last_arm_q.json')
+            self.get_logger().info('Cleared stale /tmp/last_arm_q.json')
+        except FileNotFoundError:
+            pass
+        self.get_logger().info(
+            'Starting pick_daemon.py (loading pinocchio — takes ~10s)...')
+        # refuse if ANY daemon alive
+        # (orphan = second writer,
+        # arm ping-pongs). Only our
+        # child tracked; [p] keeps
+        # pgrep off itself
+        try:
+            _chk = subprocess.run(['pgrep', '-f',
+                                     '[t]abletop_pick_place_engine.py'
+                                     '|[p]ick_engine_v[23].py'],
+                                  capture_output=True, text=True, timeout=5)
+            if _chk.returncode == 0:
+                self.get_logger().error(
+                    'REFUSING to spawn: pick_daemon already alive (double '
+                    'arm_sdk writer). Run: pkill -f pick_daemon')
+                return False
+        except Exception:
+            pass
+        try:
+            daemon_args = [TV_PYTHON, DAEMON_SCRIPT, NETWORK_IFACE]
+            # argv[2]: arm selector
+            # always pass it
+            # no 'upper' flag: stock
+            # G1_29 controller;
+            # no UpperOnly subclass
+            daemon_args.append(
+                _DAEMON_ARM if _DAEMON_ARM in ('left', 'right') else 'both')
+            self._daemon_proc = subprocess.Popen(
+                daemon_args,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                env=DAEMON_ENV,
+            )
+            threading.Thread(
+                target=self._log_daemon_stderr, daemon=True).start()
+
+            deadline = time.time() + 60.0
+            while time.time() < deadline:
+                # dead proc: bail out
+                # readline '' = EOF:
+                # dump stderr, skip 60 s
+                if self._daemon_proc.poll() is not None:
+                    self._log_last_stderr()
+                    self.get_logger().error(
+                        'Daemon process died during startup '
+                        f'(exit code {self._daemon_proc.returncode}) — '
+                        'crash at startup, NOT ready')
+                    return False
+                line = self._daemon_proc.stdout.readline().strip()
+                if not line:
+                    continue
+                if line == 'READY':
+                    self.get_logger().info('Pick daemon ready.')
+                    # DDS may fork at init,
+                    # leaving a second rt/arm_sdk
+                    # writer; arm oscillates
+                    # kill all but ours
+                    _mine_pid = self._daemon_proc.pid
+                    def _watchdog(_mine_pid=_mine_pid):
+                        import signal as _sig
+                        while True:
+                            time.sleep(2.0)
+                            if (self._daemon_proc is None
+                                    or self._daemon_proc.poll() is not None):
+                                return
+                            try:
+                                _p = subprocess.run(
+                                    ['pgrep', '-f',
+                                     '[t]abletop_pick_place_engine.py'
+                                     '|[p]ick_engine_v[23].py'],
+                                    capture_output=True, text=True, timeout=5)
+                                for _pid in [int(x) for x in _p.stdout.split()
+                                             if x.strip().isdigit()]:
+                                    if _pid != _mine_pid:
+                                        os.kill(_pid, _sig.SIGKILL)
+                                        self.get_logger().warn(
+                                            'killed forked/extra daemon pid '
+                                            f'{_pid}')
+                            except Exception:
+                                pass
+                    threading.Thread(target=_watchdog, daemon=True).start()
+                    return True
+                self.get_logger().warn(
+                    f'Daemon stray output during init (skipped): "{line}"')
+            # no READY in 60 s
+            self._log_last_stderr()
+            self.get_logger().error(
+                'Daemon failed to send READY within 60s — '
+                'startup failed, NOT ready')
+            return False
+
+        except Exception as e:
+            self.get_logger().error(f'Failed to start daemon: {e}')
+            return False
+
+    def _log_daemon_stderr(self):
+        for line in self._daemon_proc.stderr:
+            self.get_logger().info(f'[daemon] {line.strip()}')
+
