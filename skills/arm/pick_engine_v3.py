@@ -2956,3 +2956,5 @@ def _score_closure_blocked(client, side, preset=None):
     if not found:
         return False, float('nan'), None
     return margin > CLOSURE_BLOCKED_TOL, margin, worst
+
+
