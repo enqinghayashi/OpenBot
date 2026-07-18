@@ -3196,3 +3196,5 @@ def _worst_closing_lead(client, side, target):
         except (KeyError, TypeError, ValueError):
             continue
     return worst
+
+
