@@ -2973,3 +2973,5 @@ def _capped_close_preset(side):
     Returns a {jid: q} dict.
     """
     return clamped_close_target(side, 1.0)[0]
+
+
