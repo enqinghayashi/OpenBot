@@ -2752,3 +2752,13 @@ def _note_release_open(side, ok):
         _RELEASE_OPEN[side] = bool(ok)
 
 
+def _release_open_token(side):
+    """'; release_open=<side>:<True|False>' for the DONE line, or ''.
+
+    Empty when this process never measured a release for ``side`` — the
+    gateway/verifier then treat the release as UNMEASURED and fall back to
+    the post-state read (the pre-2026-09-27 behaviour, byte-identical).
+    """
+    if side not in _RELEASE_OPEN:
+        return ''
+    return '; release_open=%s:%s' % (side, _RELEASE_OPEN[side])
