@@ -3087,3 +3087,84 @@ def _at_close_ceiling(target, side, preset, tol=None):
     return True
 
 
+def _watch_hand(client, side, target, eps, budget_s=None, poll_s=None,
+                where='hand_close'):
+    """Pace ONE press: poll q_meas until the fingers arrive, or stop moving.
+
+    Returns (arrived, moved, lost):
+      arrived — every moving joint is within (1 - HAND_CLOSE_ARRIVE_FRAC)*eps of
+                its target, so the next press would be the same command.
+      moved   — the LARGEST per-joint displacement from the window's first read,
+                so a press that produced no motion at all reads 0.0 (a stall =
+                an obstruction) while a slow finger still reports its motion.
+      lost    — the longest run of consecutive empty state reads at the end, so
+                a mid-press DDS dropout is reported as STATE LOST rather than
+                being mislabelled as "the fingers stopped" (the one log line an
+                operator would use to tell a rail from a dropout).
+
+    This is a PACING device only.  Safety comes from the lead bound, not from
+    this function: ending the watch early can only make the walk press again
+    sooner, never command a larger lead.
+    """
+    if budget_s is None:
+        budget_s = HAND_CLOSE_WATCH_BUDGET_S
+    if poll_s is None:
+        poll_s = HAND_CLOSE_POLL_S
+    q_last = _read_hand_actual(client, side)
+    if not q_last:
+        return False, 0.0, HAND_CLOSE_LOST_READS
+    q0 = dict(q_last)
+    moved = 0.0
+    quiet = 0.0
+    lost = 0
+    deadline = time.time() + float(budget_s)
+    while time.time() < deadline:
+        # cancel probe: the loop can run for seconds while the fingers press.
+        _check_cancel(where)
+        time.sleep(poll_s)
+        qn = _read_hand_actual(client, side)
+        if not qn:
+            lost += 1
+            if lost >= HAND_CLOSE_LOST_READS:
+                return False, moved, lost
+            continue
+        lost = 0
+        step = 0.0
+        for jid in DEX3_JOINTS:
+            a = q_last.get(str(jid))
+            b = qn.get(str(jid))
+            m0 = q0.get(str(jid))
+            if a is None or b is None or m0 is None:
+                continue
+            try:
+                b = float(b)
+                a = float(a)
+                m0 = float(m0)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(b):
+                continue
+            step = max(step, abs(b - a))
+            moved = max(moved, abs(b - m0))
+        q_last = qn
+        if step <= HAND_CLOSE_STILL_TOL:
+            quiet += poll_s
+            if quiet >= HAND_CLOSE_STILL_HOLD_S:
+                break
+        else:
+            quiet = 0.0
+        # arrival: even the farthest joint is within (1-ARRIVE_FRAC)*eps of
+        # its target, so the next press would recompute the same command. stop
+        # waiting.
+        _worst = 0.0
+        for jid in DEX3_JOINTS:
+            cdir = _close_dir(side, jid)
+            if cdir == 0.0:
+                continue
+            try:
+                _worst = max(_worst, cdir * (float(target[jid]) - float(qn[str(jid)])))
+            except (KeyError, TypeError, ValueError):
+                continue
+        if _worst <= (1.0 - HAND_CLOSE_ARRIVE_FRAC) * float(eps):
+            return True, moved, lost
+    return False, moved, lost
