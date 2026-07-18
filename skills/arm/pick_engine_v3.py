@@ -8967,3 +8967,106 @@ def _sc_cmp(rec):
 def _sc_terms(rep):
     return (f"clear={rep['left_clear_m']:.3f} hand_y={rep['hand_y_m']:+.3f} "
             f"torso_diag={rep['torso_gross_m']:+.3f}")
+
+
+def _sc_check(q_from, q_to, verb, x, y, stage, wp):
+    """self_collision.report() on ONE commanded move q_from -> q_to.
+    Returns (_ScRefusal or None, report or None).  Never raises: a raising
+    check is 'unavailable', never a refusal."""
+    try:
+        rep = _sc_mod.report(np.array(q_from, dtype=np.float64),
+                             np.array(q_to, dtype=np.float64))
+        if not rep['refuse']:
+            return None, rep
+        return _ScRefusal(verb, x, y, rep, stage, wp), rep
+    except Exception as _e:
+        _sc_unavailable(_e)
+        return None, None
+
+
+def _sc_live_verdict(rec, rep, wp):
+    if rec is None:
+        if rep is not None:
+            _safe_log(f'[pick_daemon] {wp} self-collision guard: '
+                      f'{_sc_terms(rep)} -> pass')
+        return
+    c0 = _SC_PRECHECK_C0[0]
+    _c0 = f'{c0:.3f} m' if c0 is not None else 'n/a'
+    _safe_log(f'SELF-COLLISION (live, {wp}): solved {wp} pose {_sc_cmp(rec)} '
+              f'(precheck passed with {_c0}) — REFUSED before commanding '
+              f'{wp}; safe exit.')
+
+
+def _sc_live_check(arm, sol_q, stage, verb, x, y):
+    """LIVE guard on an already-solved, idle-arm-pinned pose (wp4: sol_q after
+    freeze_idle_arm; h-wp3: each descent pass's _s): the move from the
+    MEASURED q to sol_q.  Returns a _ScRefusal -- the caller writes the ONE
+    reply, sets _reply_sent and leaves the attempt loop to the failure block
+    -- or None (pass / off / unavailable)."""
+    if not _sc_ready():
+        return None
+    try:
+        q_from = np.array(arm.get_current_dual_arm_q(), dtype=np.float64)
+    except Exception as _e:
+        _sc_unavailable(_e)
+        return None
+    rec, rep = _sc_check(q_from, sol_q, verb, x, y, stage, stage)
+    _sc_live_verdict(rec, rep, stage)
+    return rec
+
+
+def _sc_live_presolve(arm, arm_ik, target, stage, verb, x, y, raw=False,
+                      log_prefix=''):
+    """LIVE guard for a waypoint that solve_and_move() solves AND moves in one
+    call (wp2, wp3, h-wp2).  Solves the SAME target with solve_and_move's exact
+    idiom for side='right' (measured q, FK idle-left target, the verified
+    solve -- or the raw solve for raw=True), pins the idle arm the way
+    freeze_idle_arm does (q[0:7] = CARRY_TUCK_LEFT, without its settle wait)
+    and checks the move from the measured q.  The caller has just called
+    _solver_fresh(), so this is the 1st-after-fresh solve; the filter is
+    cleared again afterwards, so solve_and_move's own solve is again the
+    1st-after-fresh solve from the same measured q (robot_arm_ik seeds
+    init_data from current_lr_arm_motor_q) -- the commanded pose is the pose
+    this guard checked.  An unsolvable target returns None: that is
+    solve_and_move's own refusal, not this guard's."""
+    if not _sc_ready():
+        return None
+    _q = None
+    _cur_q = None
+    try:
+        _cur_q = arm.get_current_dual_arm_q().copy()
+        _idle_wrist = get_wrist_pose(arm_ik, _cur_q, side='left')
+        _idle_target = (pin.SE3(np.eye(3), _idle_wrist).homogeneous
+                        if _idle_wrist is not None else L_NEUTRAL)
+        if raw:
+            with _SuppressStdout():
+                _q, _tau = arm_ik.solve_ik(
+                    _idle_target, target,
+                    current_lr_arm_motor_q=_cur_q.copy(),
+                    current_lr_arm_motor_dq=np.zeros(14))
+        else:
+            _q, _tau = _solve_ik_verified(arm_ik, _idle_target, target, _cur_q,
+                                          'right', log_prefix + '[sc-guard] ')
+    except Exception as _e:
+        _sc_unavailable(_e)
+        _q = None
+    finally:
+        _solver_fresh(arm_ik, log_prefix + '[sc-guard] ')
+    if _q is None:
+        return None
+    _q = np.array(_q, dtype=np.float64).copy()
+    _q[0:7] = _zf_idle_target('left', CARRY_TUCK_LEFT)   # left arm at the pose the preceding move leaves it
+    rec, rep = _sc_check(_cur_q, _q, verb, x, y, stage, stage)
+    _sc_live_verdict(rec, rep, stage)
+    return rec
+
+
+def _sc_ik_snapshot(arm_ik):
+    """The solver state a precheck's solves touch: the smoothing filter's queue
+    and last output, and the warm start.  None when not introspectable."""
+    try:
+        f = arm_ik.smooth_filter
+        return (list(f._data_queue), np.array(f._filtered_data).copy(),
+                np.array(arm_ik.init_data).copy())
+    except Exception:
+        return None
