@@ -2958,3 +2958,18 @@ def _score_closure_blocked(client, side, preset=None):
     return margin > CLOSURE_BLOCKED_TOL, margin, worst
 
 
+def _capped_close_preset(side):
+    """The preset the F_MAX_SAFE-capped closure actually commands.
+
+    EVERY post-close re-press and EVERY closure-block score must use this
+    rather than CLOSE_PRESETS[side].  Two distinct failures otherwise:
+
+      * re-pressing R_HAND_CLOSE/L_HAND_CLOSE transits the self-collision band
+        at f=0.63..0.81 again — the exact defect the cap exists to remove;
+      * scoring against the UNCAPPED preset reads |q(0.600) - q(1.0)| as the
+        margin, which for joint 2 is 0.40 rad >> CLOSURE_BLOCKED_TOL, so every
+        free-air close reports a FALSE capture.
+
+    Returns a {jid: q} dict.
+    """
+    return clamped_close_target(side, 1.0)[0]
