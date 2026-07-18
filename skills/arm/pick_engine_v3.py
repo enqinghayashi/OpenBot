@@ -2723,3 +2723,26 @@ def _make_pressure_insert_stop(client, side):
         return None
 
     return _check
+
+
+# ── verify-open tolerance ─────────────────────────────────────────────────────
+# the tolerance must stay below the smallest open-to-close span, or a
+# still-closed joint reads as open. the smallest span is thumb_0 at 0.480 rad;
+# 0.2 tolerates normal tracking lag while still catching a fist.
+VERIFY_OPEN_TOLERANCE_RAD = 0.2
+
+
+# release-open evidence for the gateway's place verdict. the place verifier
+# wants the post-drop hand measured open, but with PLACE_PARK_HAND_CLOSED on,
+# the LIFT closeout closes the holding hand before DONE, so the post-DONE read
+# correctly sees closed and place could never verify. the release is measured
+# separately: step 6 _verify_hand_open compares every finger joint against the
+# OPEN preset in measured motor-q space, and the DONE line carries
+#     DONE; release_open=<side>:<True|False>
+# the verifier takes the token for the release half, measured at the release
+# rather than after the closeout re-closed. the park is unchanged. the token
+# cannot be a second stdout line since the transport is one line in, one out.
+# absent means unmeasured (a refusal that never reached step 6), never a pass.
+_RELEASE_OPEN = {}
+
+
