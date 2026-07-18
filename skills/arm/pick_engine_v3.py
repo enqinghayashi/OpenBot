@@ -3170,3 +3170,29 @@ def _watch_hand(client, side, target, eps, budget_s=None, poll_s=None,
     return False, moved, lost
 
 
+def _worst_closing_lead(client, side, target):
+    """max over joints of cdir*(target - q_meas) — the HELD closing lead.
+
+    Read live, so callers must only LOG it.  This is the quantity the measured
+    torque law keys on: tau_est ~= bias + 16.6*lead.  Returns None with no
+    state to read.
+    """
+    q = _read_hand_actual(client, side)
+    if not q:
+        return None
+    worst = 0.0
+    for jid in DEX3_JOINTS:
+        try:
+            qm = float(q[str(jid)])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not math.isfinite(qm):
+            continue
+        cdir = _close_dir(side, jid)
+        if cdir == 0.0:
+            continue
+        try:
+            worst = max(worst, cdir * (float(target[jid]) - qm))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return worst
