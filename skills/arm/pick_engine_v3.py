@@ -2810,3 +2810,5 @@ def _verify_hand_open(client, side, open_preset):
                 pass
             time.sleep(0.3)
     return False, 'no actual state'
+
+
