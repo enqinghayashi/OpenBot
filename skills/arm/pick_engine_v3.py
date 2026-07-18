@@ -2764,3 +2764,49 @@ def _release_open_token(side):
     return '; release_open=%s:%s' % (side, _RELEASE_OPEN[side])
 
 
+def _verify_hand_open(client, side, open_preset):
+    """Item 5: verify the hand actually opened before a wp4 insert.
+
+    Queries the grip_server `state [side]` reply's ``actual`` (live motor q
+    per joint — the same source grip_server's _seed_side uses) and compares
+    every finger joint against the OPEN preset within
+    VERIFY_OPEN_TOLERANCE_RAD.  One retry (re-open + settle) on unknown /
+    no-state or any finger far from open; then reports failure.
+
+    Returns (ok: bool, reason: str); reason is meaningful only when not ok.
+    Never raises: any transport error counts as 'no actual state'.
+    """
+    for _round in (0, 1):
+        try:
+            payload = client.state(side)
+        except Exception:
+            payload = None
+        actual = payload.get(side, {}).get('actual') if payload else None
+        if actual:
+            for jid in DEX3_JOINTS:
+                q = float(actual.get(str(jid), 0.0))
+                if abs(q - open_preset[jid]) > VERIFY_OPEN_TOLERANCE_RAD:
+                    if _round == 0:
+                        sys.stderr.write(
+                            f'[pick_daemon] hand {side} not fully open '
+                            f'(finger {jid} q={q:.2f} rad, open preset '
+                            f'{open_preset[jid]:.2f}) — re-opening\n')
+                        sys.stderr.flush()
+                    else:
+                        return False, (f'finger {jid} at {q:.2f} rad '
+                                       f'(open preset {open_preset[jid]:.2f})')
+                    break
+            else:
+                return True, None
+        elif _round == 0:
+            sys.stderr.write(
+                f'[pick_daemon] hand {side} actual state unavailable — '
+                're-opening\n')
+            sys.stderr.flush()
+        if _round == 0:
+            try:
+                client.open()
+            except Exception:
+                pass
+            time.sleep(0.3)
+    return False, 'no actual state'
