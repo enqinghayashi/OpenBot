@@ -3057,3 +3057,12 @@ def _bounded_lead_target(client, side, preset, eps=None):
     return target
 
 
+def _targets_within(a, b, tol):
+    """True when two {jid: q} commands agree on every Dex3 joint within `tol`."""
+    for jid in DEX3_JOINTS:
+        try:
+            if abs(float(a[jid]) - float(b[jid])) > tol:
+                return False
+        except (KeyError, TypeError, ValueError):
+            return False
+    return True
