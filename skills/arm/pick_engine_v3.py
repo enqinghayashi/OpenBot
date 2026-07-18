@@ -2750,3 +2750,5 @@ def _note_release_open(side, ok):
     """Record the measured-open result of a place release for ``side``."""
     if side in ("right", "left"):
         _RELEASE_OPEN[side] = bool(ok)
+
+
