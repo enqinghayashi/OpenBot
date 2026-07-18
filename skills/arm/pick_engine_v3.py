@@ -3404,3 +3404,5 @@ def _squeeze_hold(client, side, preset, steps=20, dt=0.01, hold_s=0.5):
         pass
     time.sleep(hold_s)
     return _score_closure_blocked(client, side, preset)
+
+
