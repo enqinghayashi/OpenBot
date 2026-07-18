@@ -2994,3 +2994,64 @@ def _close_dir(side, jid):
     return 0.0
 
 
+def _bounded_lead_target(client, side, preset, eps=None):
+    """The {jid: q} to command so the LEAD over the measured q is <= eps.
+
+    THE FIX IS THIS FUNCTION.  tau_est ~= bias + 16.6 * lead, so bounding the
+    lead IS bounding the torque, with no torque sensor and no model in the loop:
+
+        target[jid] = clamp(q_meas[jid] + eps * closing_dir, toward preset)
+
+    eps PAST where the joint actually is, and NEVER past the close preset.
+    PER JOINT against a LIVE q_meas, which is required and not a refinement: the
+    joints BLOCK AT DIFFERENT FRACTIONS of travel, so a preset-relative offset
+    is not a bounded lead at all (the operator's one uniform proven press landed
+    0.067-0.276 rad of lead across the seven joints).
+
+    The clamp toward the preset is what makes the walk FINITE — a joint already
+    at the preset is re-commanded AT the preset — so this can never command
+    travel beyond the aperture.  And because the reference is a FRESH q_meas,
+    never the previous command, the lead cannot accumulate across presses: a
+    finger stopped by the object is re-commanded to the SAME place every time.
+
+    INT-KEYED ON PURPOSE: GripClient.set() does `float(targets.get(jid, 0.0))`
+    over DEX3_JOINTS with an INT jid, so a str-keyed target would be sent as
+    0.0 on all 7 joints — a full OPEN command mid-pick.
+
+    A non-finite q_meas is REJECTED, not passed through: inf would satisfy
+    `min(inf, preset) == preset` and produce exactly the full-preset command
+    this function exists to remove, and NaN would be written to the MCU.
+
+    Returns None when the hand state is unavailable or incomplete — it never
+    invents a command.  Callers MUST treat None as "write nothing".
+    """
+    if eps is None:
+        eps = HAND_CLOSE_LEAD_EPS
+    q = _read_hand_actual(client, side)
+    if not q:
+        return None
+    target = {}
+    for jid in DEX3_JOINTS:
+        try:
+            qm = float(q[str(jid)])
+        except (KeyError, TypeError, ValueError):
+            return None                       # a joint with no state read: no bound
+        if not math.isfinite(qm):
+            return None
+        try:
+            ceil_j = float(preset[jid])
+        except (KeyError, TypeError, ValueError):
+            return None
+        cdir = _close_dir(side, jid)
+        if cdir == 0.0:
+            # pinned joint: no closing direction, so there is no lead to bound
+            # and it must not get invented travel. hold it where it is.
+            target[jid] = qm
+            continue
+        want = qm + cdir * float(eps)
+        if cdir > 0.0:
+            want = min(want, ceil_j)
+        else:
+            want = max(want, ceil_j)
+        target[jid] = float(want)
+    return target
