@@ -2992,3 +2992,5 @@ def _close_dir(side, jid):
     if delta < 0.0:
         return -1.0
     return 0.0
+
+
