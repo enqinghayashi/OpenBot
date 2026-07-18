@@ -356,3 +356,166 @@ class PickNode(Node):
         for line in self._daemon_proc.stderr:
             self.get_logger().info(f'[daemon] {line.strip()}')
 
+    def _log_last_stderr(self):
+        """T11: surface the daemon's last stderr lines in the pick_node log.
+
+        The streaming _log_daemon_stderr thread usually forwards every
+        line as it arrives, but a fast crash can outrun it.  This drains
+        whatever is still buffered (bounded — never blocks on a live but
+        silent daemon) and logs it as errors so the crash cause (e.g.
+        "ValueError: source code string cannot contain null bytes") is
+        in the pick_node log.
+        """
+        try:
+            fd = self._daemon_proc.stderr.fileno()
+        except Exception:
+            return
+        deadline = time.time() + 0.5
+        try:
+            while time.time() < deadline:
+                r, _, _ = select.select([fd], [], [], 0.05)
+                if not r:
+                    break        # thread drained it
+                line = self._daemon_proc.stderr.readline()
+                if not line:
+                    break        # EOF, fully drained
+                self.get_logger().error(f'[daemon stderr] {line.strip()}')
+        except Exception:
+            pass
+
+    def _send_cmd(self, cmd: str, timeout: float = 30.0) -> str:
+        with self._daemon_lock:
+            # dead daemon: skip wait;
+            # a stale _busy=True would
+            # lock later commands out
+            if self._daemon_proc is None or self._daemon_proc.poll() is not None:
+                self._busy = False
+                return 'ERROR:daemon not running'
+            try:
+                self._daemon_proc.stdin.write(cmd + '\n')
+                self._daemon_proc.stdin.flush()
+
+                deadline = time.time() + timeout
+                while time.time() < deadline:
+                    line = self._daemon_proc.stdout.readline()
+                    if not line:
+                        # '' = daemon dead
+                        if self._daemon_proc.poll() is not None:
+                            self._busy = False
+                            return 'ERROR:daemon died'
+                        continue
+                    line = line.strip()
+                    if line.startswith('DONE') or line.startswith('ERROR:'):
+                        return line
+                    self.get_logger().warn(
+                        f'Daemon stray output (skipped): "{line}"')
+                return 'ERROR:timeout waiting for daemon response'
+            except BrokenPipeError:
+                self._busy = False
+                return 'ERROR:daemon pipe broken'
+            except Exception as e:
+                return f'ERROR:{e}'
+
+    # ── What ROS calls us with ──────────────────────────────────────────────────
+
+    def _on_detections(self, msg):
+        try:
+            detections = json.loads(msg.data)
+            _now = time.time()
+            self._latest_detections = {
+                d['label']: {**d, '_t': _now} for d in detections
+                if d.get('conf', 0) >= MIN_CONF
+            }
+
+            # ── refresh tracking off best detection ────────────────────────
+            if detections:
+                best = max(detections, key=lambda d: d.get('conf', 0))
+                conf = best.get('conf', 0)
+                if conf >= LOST_CONF_THRESHOLD:
+                    self._prev_tx = best.get('x')
+                    self._prev_ty = best.get('y')
+                    self._prev_tz = best.get('z')
+                    self._tracking_label = best.get('label')
+                    self._last_detection_time = time.time()
+
+                    # for "shifted"
+                    _det_data = {
+                        'label': self._tracking_label,
+                        'x': self._prev_tx,
+                        'y': self._prev_ty,
+                        'z': self._prev_tz,
+                        'conf': conf,
+                    }
+                    if 'orientation' in best:
+                        _det_data['orientation'] = best['orientation']
+                    if 'nx' in best:
+                        _det_data['nx'] = best['nx']
+                        _det_data['ny'] = best['ny']
+                        _det_data['nz'] = best['nz']
+                    if 'height_m' in best:
+                        _det_data['height_m'] = best['height_m']
+                    if 'x_off' in best:
+                        _det_data['x_off'] = best['x_off']
+                    try:
+                        with open(DETECTION_FILE, 'w') as f:
+                            json.dump(_det_data, f)
+                    except Exception:
+                        pass
+        except Exception as e:
+            self.get_logger().warn(f'Bad detection msg: {e}')
+
+    def _write_servo_status(self):
+        """Phase 4: write tracking stability status to /tmp/pick_servo_status.
+
+        Runs as a daemon thread. Status values:
+          "stable"  — centroid shift < STABILITY_THRESHOLD_M
+          "shifted" — centroid shift >= STABILITY_THRESHOLD_M
+          "lost"    — no recent detection or confidence too low
+        """
+        _last_tx = None
+        _last_ty = None
+
+        while True:
+            try:
+                now = time.time()
+                cur_tx = self._prev_tx
+                cur_ty = self._prev_ty
+
+                if (self._last_detection_time is None
+                        or (now - self._last_detection_time) > LOST_TIME_THRESHOLD):
+                    status = 'lost'
+                elif cur_tx is None or cur_ty is None:
+                    status = 'lost'
+                elif _last_tx is not None and _last_ty is not None:
+                    dx = cur_tx - _last_tx
+                    dy = cur_ty - _last_ty
+                    if dx * dx + dy * dy >= STABILITY_THRESHOLD_M * STABILITY_THRESHOLD_M:
+                        status = 'shifted'
+                    else:
+                        status = 'stable'
+                else:
+                    status = 'stable'
+
+                _last_tx = cur_tx
+                _last_ty = cur_ty
+
+                with open(STATUS_FILE, 'w') as f:
+                    f.write(status + '\n')
+            except Exception:
+                pass
+            time.sleep(0.1)
+
+    # ── /pick_state JSON at 5 Hz ───────────────────────────────────────────────
+    def _set_pick_state(self, state, label=None, held=None):
+        """Update the pick state machine (thread-safe)."""
+        with self._pick_state_lock:
+            self._pick_state = state
+            if label is not None:
+                self._pick_label = label
+            if held is not None:
+                self._pick_held = held
+
+    def _pick_state_snapshot(self):
+        with self._pick_state_lock:
+            return (self._pick_state, self._pick_label, self._pick_held)
+
