@@ -3198,3 +3198,171 @@ def _worst_closing_lead(client, side, target):
     return worst
 
 
+def _bounded_lead_close(client, side, preset, eps=None, max_presses=None,
+                        dt=None, watch_budget_s=None, poll_s=None,
+                        deadline_s=None):
+    """Close the hand toward `preset` with the per-write LEAD bounded by eps.
+    Drop-in for close_until_contact (:4114 / :5488) and for the re-press inside
+    _squeeze_hold (:2219).
+
+    WHY THIS REPLACES THE RAMP AND NOTHING SMALLER.  Per measured fact 5, the
+    server's cosine ramp is BACK-LOADED and in M2 the fingers met the seated
+    bottle at step 40 with the commanded lead ALREADY ~0.76 rad — ~92% of the
+    rail — so every stop-threshold scheme fires at the same instant the rail
+    begins.  And only the engine can bound this: the deploy build's grip_server
+    has NO lead bound (its ramp writes `self._write(q)` unclamped), so the
+    engine is the only place the lead can be capped.
+
+    THE WALK, and the three ways it ends:
+      (1) THE COMMAND REACHES THE PRESET on every moving joint AND the finger
+          has caught up to it (or this press produced no motion at all).  The
+          walk does NOT stop at the first ceiling press: with the command fixed
+          AT the preset every further press re-commands the same pose, so the
+          lead can only SHRINK, and waiting is free of safety cost.  This is
+          what makes the C2 guarantee STRUCTURAL and independent of the CALLER's
+          hold time — a free-air close hands off with the fingers ARRIVED, not
+          merely commanded.  Note `_at_close_ceiling` is only true when EVERY
+          moving joint is within eps of the preset, so the lead at that moment is
+          <= eps by construction and can never be the rail.
+      (2) THE COMMAND STOPS ADVANCING before the ceiling (this press's target
+          equals the last written target) — the finger physically stopped
+          short of the preset.  The hand is then held at a bounded lead of eps
+          by the server's 20 Hz re-assert.
+      (3) the press cap / the wall-clock deadline, logged LOUDLY.  Note the
+          physical reading: under a sustained eps-lead the closing torque is
+          ~5 N.m, which moves a FREE finger, so a finger that creeps under it is
+          obstructed.  This corner is logged rather than hidden, and the
+          closure-block margin — not this verdict — decides the keep.
+
+    C3 INVARIANT, stated once: at EVERY commanded write,
+        cdir_jid * (q_cmd[jid] - q_meas[jid]) <= eps
+    enforced three independent ways — (a) _bounded_lead_target is the ONLY
+    builder of a command and builds the lead by arithmetic; (b) steps=1 means
+    the only write is the endpoint, so no intermediate ramp point can carry a
+    stale last_q; (c) the reference is a fresh q_meas each press, never the
+    previous command, so the lead cannot accumulate.  The walk is finite because
+    the target is CLAMPED to the close preset on every press.
+
+    VERDICT: 'full' | 'no_data'.  Deliberately NOT the old trichotomy.
+    'contact' existed only for a pressure stop crossing GRIP_CLOSE_STOP_DELTA
+    (200000, :517), which is INERT on this hardware (rest floor 104-110k, a hard
+    pad press 223272), so a blocked close has always come back 'full' in normal
+    use.  Returning 'contact' now would newly DISABLE the light-grip promotion
+    at :4302 (which requires `_contact_closure == 'full'`) — trading a false
+    success for a DROP — and the keep evidence was never this channel (:527-542)
+    but the closure-block margin the CALLER scores.  So the verdict keeps its
+    historical value and the LOG lines carry the truth instead.
+    'no_data' means the hand state was unreadable and NOTHING WAS WRITTEN: a
+    close whose lead cannot be observed IS the rail path, so the walk refuses
+    rather than pressing blind (and says so at the call site).
+
+    Never raises.
+    """
+    if eps is None:
+        eps = HAND_CLOSE_LEAD_EPS
+    if max_presses is None:
+        max_presses = HAND_CLOSE_MAX_PRESSES
+    if dt is None:
+        dt = HAND_CLOSE_PRESS_DT
+    if watch_budget_s is None:
+        watch_budget_s = HAND_CLOSE_WATCH_BUDGET_S
+    if poll_s is None:
+        poll_s = HAND_CLOSE_POLL_S
+    if deadline_s is None:
+        deadline_s = HAND_CLOSE_DEADLINE_S
+
+    def _log(msg):
+        sys.stderr.write(f'[pick_daemon] bounded-lead close ({side}): {msg}\n')
+        sys.stderr.flush()
+
+    try:
+        ceiling = {jid: float(preset[jid]) for jid in DEX3_JOINTS}
+    except (KeyError, TypeError, ValueError):
+        # an incomplete ceiling would let the commanded and scored poses drift
+        # apart. refuse instead.
+        _log('preset incomplete — writing NOTHING')
+        return 'no_data'
+
+    # the state channel can flicker; a transient empty read must not count as
+    # blind, which would leave the hand open where it is closed.
+    q = {}
+    for _try in range(max(1, int(HAND_CLOSE_STATE_RETRIES))):
+        q = _read_hand_actual(client, side)
+        if q:
+            break
+        time.sleep(HAND_CLOSE_STATE_RETRY_S)
+    if not q:
+        _log(f'NO HAND STATE after {int(HAND_CLOSE_STATE_RETRIES)} reads — '
+             f'writing NOTHING.  The lead over q_meas is what the motor sees as '
+             f'torque, so with no q_meas there is nothing to bound; commanding '
+             f'anyway IS the rail that latches the motor')
+        return 'no_data'
+
+    written = None
+    presses = 0
+    how = 'cap'
+    _ever_ceil = False
+    deadline = time.time() + float(deadline_s)
+    while presses < int(max_presses) and time.time() < deadline:
+        target = _bounded_lead_target(client, side, ceiling, eps=eps)
+        if target is None:
+            _log('hand state lost mid-close — stopping the walk, holding the '
+                 'last bounded target (no further writes)')
+            return 'no_data'
+        _at_ceil = _at_close_ceiling(target, side, ceiling)
+        # fixed-point exit only makes sense while the command can still advance.
+        # at the ceiling the command is already the preset and repeats, so it
+        # must not read as the fingers stopping.
+        if (not _at_ceil) and written is not None and _targets_within(
+                target, written, HAND_CLOSE_TARGET_TOL):
+            how = 'stopped'
+            break
+        try:
+            client.set(target, steps=HAND_CLOSE_PRESS_WRITES, dt=dt)
+        except Exception as _exc:
+            _log(f'press REFUSED ({_exc}) — holding the last bounded target, '
+                 f'not pressing blind')
+            return 'no_data'
+        written = target
+        presses += 1
+        _arrived, _moved, _lost = _watch_hand(client, side, target, eps,
+                                              watch_budget_s, poll_s)
+        if _lost >= HAND_CLOSE_LOST_READS:
+            _log('hand state LOST while watching the press — stopping the walk '
+                 '(this is a DDS dropout, NOT a stall)')
+            return 'no_data'
+        if _at_ceil:
+            _ever_ceil = True
+            # the command is the preset, so further presses re-command the same
+            # pose and the lead can only shrink, which costs nothing safety-wise.
+            # this makes a free-air close independent of the caller's hold time:
+            # _at_close_ceiling is true only when every moving joint is within eps
+            # of the preset, so lead <= eps by construction and the finger still
+            # has up to eps of travel left. stop on arrival, or when this press
+            # produced no motion (a finger blocked at depth <= eps, logged as
+            # 'ceiling' since the command really is home).
+            if _arrived or _moved <= HAND_CLOSE_STILL_TOL:
+                break
+
+    if written is None:
+        _log('no press issued (zero presses)')
+        return 'no_data'
+
+    _held = _worst_closing_lead(client, side, written)
+    _held_s = ('n/a' if _held is None else f'{_held:.3f}')
+    _tau_s = ('n/a' if _held is None
+              else f'{1.09 + 16.6 * _held:.1f}')
+    if how == 'stopped':
+        _log(f'BLOCKED: the fingers stopped after {presses} press(es).  HOLDING '
+             f'at a bounded lead of {_held_s} rad — tau_est ~= bias + 16.6*lead '
+             f'~= {_tau_s} N.m, vs the ~15 N.m rail at ~0.83 rad of lead')
+    elif _ever_ceil:
+        _log(f'the command reached the close preset after {presses} press(es) '
+             f'— the server holds it home; held lead {_held_s} rad '
+             f'(tau_est <= {_tau_s} N.m)')
+    else:
+        _log(f'*** GAVE UP after {presses} press(es) with the fingers STILL '
+             f'MOVING — holding the last BOUNDED target (held lead {_held_s} '
+             f'rad, tau_est <= {_tau_s} N.m).  The closure-block margin decides '
+             f'the keep; this corner is logged, not hidden')
+    return 'full'
