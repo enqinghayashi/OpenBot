@@ -3068,3 +3068,20 @@ def _targets_within(a, b, tol):
     return True
 
 
+def _at_close_ceiling(target, side, preset, tol=None):
+    """True when `target` IS the close preset on every joint that can move.
+
+    A joint with no closing direction (pinned) has no travel to place, so it is
+    not required to sit at the preset.
+    """
+    if tol is None:
+        tol = HAND_CLOSE_CEILING_TOL
+    for jid in DEX3_JOINTS:
+        if _close_dir(side, jid) == 0.0:
+            continue
+        try:
+            if abs(float(target[jid]) - float(preset[jid])) > tol:
+                return False
+        except (KeyError, TypeError, ValueError):
+            return False
+    return True
