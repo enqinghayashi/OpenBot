@@ -3367,3 +3367,40 @@ def _bounded_lead_close(client, side, preset, eps=None, max_presses=None,
              f'the keep; this corner is logged, not hidden')
     return 'full'
 
+def _squeeze_hold(client, side, preset, steps=20, dt=0.01, hold_s=0.5):
+    """v5.2 (2026-09-07) Edit E: re-assert the close preset, settle, re-read.
+
+    The v5.1 blocked-read ran right after the 1.0 s ramp — the stalled
+    motors had not yet converged, so the margin read was noisy.  Re-asserting
+    the SAME preset re-presses the grip, `hold_s` lets the stall converge,
+    then the margin is re-scored.  Load-bearing part = settle + re-read.
+
+    The preset is re-asserted AND the re-score is taken against that SAME
+    preset (Task #10, 2026-09-18): the two must not drift.  Passing a capped
+    target here while `_score_closure_blocked` defaulted to the uncapped
+    CLOSE preset scored |q(0.600) - q(1.0)| and reported a false capture on
+    every free-air close.
+
+    Returns ((blocked, margin, worst) after the hold).
+    """
+    # the re-press is bounded. a full-preset re-command is an unbounded-lead
+    # ramp onto a hand already blocked by the object, the same rail as the
+    # initial close, repeated at the pre-lift pin and the tuck re-pin.
+    # force comes from the bounded lead per joint against the measured pose:
+    # tau_est ~= bias + 16.6*HAND_CLOSE_LEAD_EPS ~= 5 N.m.
+    # the score stays unchanged on purpose: `preset` (the caller's
+    # F_MAX_SAFE-clamped full preset) is still the margin reference, so
+    # _close_blocked still means |q_actual - preset| > CLOSURE_BLOCKED_TOL.
+    # scoring the bounded target would make margin == eps < tolerance and
+    # report blocked=False on a blocked hand, which the pre-lift pin would turn
+    # into an aborted lift.
+    # `steps` and `dt` are kept for signature compatibility, not pacing: a fixed
+    # step count is what produced the unbounded ramp. the press count comes from
+    # convergence; writes are HAND_CLOSE_PRESS_WRITES (== 1, load-bearing) at
+    # HAND_CLOSE_PRESS_DT.
+    try:
+        _bounded_lead_close(client, side, preset)
+    except Exception:
+        pass
+    time.sleep(hold_s)
+    return _score_closure_blocked(client, side, preset)
