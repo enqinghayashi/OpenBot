@@ -2831,3 +2831,26 @@ def _read_hand_actual(client, side):
     if not payload:
         return {}
     return payload.get(side, {}).get('actual') or {}
+
+
+# ── thumb-first staged close ────────────────────────────────────────────────
+# a full close is one cosine ramp over all seven joints, so thumb_0 travels
+# R_HAND_OPEN[0]=+0.48 to R_HAND_CLOSE[0]=-0.0268 (0.507 rad base rotation)
+# while joints 3..6 curl to 1.571/1.745. the thumb sweeps diagonally through
+# where index and middle curl, and nothing stages them, so the thumb can
+# collide with the fingers.
+# this is a path change only: no preset and no endpoint moves. the order is
+# thumb base to its centreline in its own ramp first, every other joint held
+# at the measured q, then the ordinary full close. by stage 2 thumb_0 has
+# ~0.027 rad left.
+# the other joints are held at live q because `set` commands absolute targets
+# and both call sites can be part-closed; commanding OPEN would open a loaded
+# hand before closing. a read failure falls back to OPEN, the pose both call
+# sites are in by construction (the place park is guarded by release_ok).
+# staging is skipped when the thumb base is within STAGED_CLOSE_SKIP_TOL of
+# the centreline, since there is no diagonal to remove.
+THUMB_BASE_JID = 0
+THUMB_BASE_CENTRE = 0.0
+STAGED_CLOSE_SKIP_TOL = 0.10   # rad; base this close to centre = no staging
+
+
