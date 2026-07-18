@@ -9070,3 +9070,164 @@ def _sc_ik_snapshot(arm_ik):
                 np.array(arm_ik.init_data).copy())
     except Exception:
         return None
+
+
+def _sc_ik_restore(arm_ik, snap):
+    """Put the solver state back, so a precheck leaves NO side effect on the
+    flow's own IK (the place flow never clears the filter itself)."""
+    if snap is None:
+        return
+    try:
+        f = arm_ik.smooth_filter
+        f._data_queue[:] = snap[0]
+        f._filtered_data = snap[1]
+        arm_ik.init_data = snap[2]
+    except Exception as _e:
+        _safe_log(f'[pick_daemon] sc-precheck: solver state restore failed '
+                  f'({_e!r})')
+
+
+def _self_collision_precheck(arm, arm_ik, verb, orientation, tx, ty, tz):
+    """batch 5b PRECHECK: would the RIGHT arm's commanded chain press into the
+    torso / the tucked left arm?  Decided BEFORE hold_rc and any arm motion.
+
+    pick:  _reach_precheck's simulated chain -- q0 = READY with the left arm
+           at its predicted T5-2 stop (_zf_idle_pre), idle target =
+           the FK left wrist at q0, 3 wash solves per stage (_precheck_solve)
+           warm-started along the chain: upright wp2 -> wp3 -> wp4 (the
+           commanded insert, grasp from the chain's warm), horizontal
+           h-wp2 -> h-wp3.
+    place: ASCEND (pz + APPROACH_HEIGHT_OFFSET) -> DESCEND (pz) from the
+           MEASURED carry pose (left arm at its predicted park, _zf_idle_pre
+           from the measured pose).  The place flow's extra lift is not
+           simulated (a straight raise of the holding arm from the carry pose).
+           Approximation: the flow skips its park when the idle arm is within
+           0.03 rad of its tuck and pins the measured slice; this prediction
+           does not model that skip (error at most 0.03 rad per joint).
+    Every stage pose is pinned to that idle slice (as freeze_idle_arm pins the
+    commanded slice) and each commanded move prev -> stage is checked with
+    self_collision.report(); the first refusing move wins.  The endpoint
+    midline bar is the pick bar (HAND_Y_MAX_M, calibrated on every pick that
+    reached >= 100 C) for a pick and the place bar (HAND_Y_MAX_PLACE_M) for a
+    place: the pick bar would refuse the cool centre places run3 / run5 /
+    run17; the place bar refuses the left places run11 / run18 (inside the
+    torso by exact distance, 92 C).  A place endpoint between the two bars is
+    reported as a 'SELF-COLLISION WARNING' line, not a refusal.
+
+    Returns a _ScRefusal (stage 'precheck', wp = the failing waypoint) or None
+    (pass / guard off / unavailable -- it never refuses on its own failure).
+    Records the chain's minimum left-arm clearance in _SC_PRECHECK_C0 (quoted
+    by a LIVE refusal) and restores the solver state it found (filter queue,
+    filter output, warm start), so the flow's own IK is unaffected.
+    """
+    _SC_PRECHECK_C0[0] = None
+    if not _sc_ready():
+        return None
+    _snap = _sc_ik_snapshot(arm_ik)
+    rec = None
+    c0 = None
+    notes = []
+    warns = []
+    try:
+        if verb == 'place':
+            q0 = np.array(arm.get_current_dual_arm_q(), dtype=np.float64).copy()
+        else:
+            q0 = np.array(READY_POSE, dtype=np.float64).copy()
+        _idle_tuck = _zf_idle_pre('left', CARRY_TUCK_LEFT, q0)   # left arm where the tuck move leaves it
+        q0[0:7] = _idle_tuck
+        idle_w = get_wrist_pose(arm_ik, q0, side='left')
+        right_w = get_wrist_pose(arm_ik, q0, side='right')
+        if idle_w is None or right_w is None:
+            raise RuntimeError('FK of the start pose unavailable')
+        idle_T = pin.SE3(np.eye(3), idle_w).homogeneous
+        if verb == 'place':
+            chain = [
+                ('ascend', make_wrist_target_upright_v4(
+                    tx, ty, tz + APPROACH_HEIGHT_OFFSET, +1)),
+                ('descend', make_wrist_target_upright_v4(tx, ty, tz, +1)),
+            ]
+        elif orientation == 'horizontal':
+            h_z = max(float(right_w[2]), tz + 0.20)
+            chain = [
+                ('h-wp2', make_wrist_target_middle_down(
+                    tx, ty, h_z, fwd_offset=-HAND_GRIP_CENTER_OFFSET)),
+                ('h-wp3', make_wrist_target_middle_down(
+                    tx, ty, tz, fwd_offset=-HAND_GRIP_CENTER_OFFSET)),
+            ]
+        else:
+            a_z = max(float(right_w[2]), tz + APPROACH_HEIGHT_OFFSET)
+            g_z = tz + GRASP_Z_UP_BIAS
+            dv3 = _deviation_ramped(1) if DEVIATION_ENABLED else 0.0
+            dv4 = _deviation_ramped(2) if DEVIATION_ENABLED else 0.0
+            chain = [
+                ('wp2', make_wrist_target_upright_v4(
+                    tx, ty, a_z, +1, fwd_offset=APPROACH_FORWARD_OFFSET)),
+                ('wp3', make_wrist_target_upright_v4(
+                    tx, ty, g_z, +1, deviation=dv3,
+                    fwd_offset=APPROACH_FORWARD_OFFSET)),
+                ('wp4', make_wrist_target_upright_v4(
+                    tx, ty, g_z, +1, deviation=dv4,
+                    fwd_offset=-HAND_GRIP_CENTER_OFFSET)),
+            ]
+        prev = q0
+        warm = q0
+        for name, target_T in chain:
+            _solver_fresh(arm_ik, 'sc-precheck: ')
+            warm = _precheck_solve(arm_ik, idle_T, target_T, warm)
+            q = warm.copy()
+            q[0:7] = _idle_tuck
+            rep = _sc_mod.report(prev, q, True, _sc_bar(verb))
+            notes.append(f'{name}: {_sc_terms(rep)}')
+            if (verb == 'place' and not rep['refuse']
+                    and rep['hand_y_m'] > _sc_mod.HAND_Y_MAX_M):
+                warns.append((name, rep['hand_y_m']))
+            c0 = (rep['left_clear_m'] if c0 is None
+                  else min(c0, rep['left_clear_m']))
+            if rep['refuse']:
+                rec = _ScRefusal(verb, tx, ty, rep, 'precheck', name)
+                break
+            prev = q
+    except Exception as _e:
+        _sc_unavailable(_e)
+        _sc_ik_restore(arm_ik, _snap)
+        return None
+    _sc_ik_restore(arm_ik, _snap)
+    _SC_PRECHECK_C0[0] = c0
+    _safe_log(f'[pick_daemon] self-collision precheck ({verb}, {orientation}): '
+              + ' | '.join(notes)
+              + (f' -> REFUSE at {rec.wp} ({rec.term})' if rec is not None
+                 else f' -> pass (min clearance {c0:.3f} m)'))
+    for _wn, _wy in warns:
+        _safe_log(f'SELF-COLLISION WARNING (precheck, {verb} {_wn}): right '
+                  f'hand palm y {_wy:+.3f} m > {_sc_mod.HAND_Y_MAX_M:+.3f} m '
+                  f'(the pick bar) for target x={tx:.3f} y={ty:.3f} '
+                  f'z={tz:.3f} — NOT refused (place bar '
+                  f'{_sc_mod.HAND_Y_MAX_PLACE_M:+.3f} m); watch the right-arm '
+                  f'temperatures.')
+    if rec is not None:
+        m = rec.move_right_m
+        if m > 0.0005:
+            _fix = (f"move the object to the robot's right (about "
+                    f"{m * 100:.0f} cm) or turn the robot left")
+            if ty > 0.0:
+                _fix += f' (about {math.degrees(math.atan2(m, ty)):.0f} deg)'
+        else:
+            _fix = "move the object to the robot's right or turn the robot left"
+        _where = ('too close to the body midline' if rec.side == 'right'
+                  else 'LEFT of the body midline')
+        _safe_log(f'SELF-COLLISION (precheck, {rec.wp}): {_sc_cmp(rec)} for '
+                  f'target x={tx:.3f} y={ty:.3f} z={tz:.3f} ({orientation}) — '
+                  f'the object is {_where}; the right arm would press into the '
+                  f'torso/left arm. {verb.capitalize()} REFUSED before any arm '
+                  f'motion; {_fix}.')
+    return rec
+
+
+# the single startup line, printed at import time: the engine imports this
+# module and calls main(), so a __main__-only line would never print.
+
+_sc_banner()
+
+
+if __name__ == '__main__':
+    main()
