@@ -2812,3 +2812,22 @@ def _verify_hand_open(client, side, open_preset):
     return False, 'no actual state'
 
 
+def _read_hand_actual(client, side):
+    """v5.2 (2026-09-07) Edit E: side-unwrapped live motor q from the
+    grip_server `state` reply.
+
+    The reply is SIDE-KEYED — {side: {joint: q}} — the `actual` mapping
+    lives under the side key, NOT at the top level.  (The v5.1 blocked-read
+    did `_cs.get('actual', {})` and read NOTHING — so `_close_blocked` never
+    fired; see _score_closure_blocked.)  Mirrors the unwrap _verify_hand_open
+    uses: payload.get(side, {}).get('actual').
+
+    Never raises: transport error → {}.
+    """
+    try:
+        payload = client.state(side)
+    except Exception:
+        return {}
+    if not payload:
+        return {}
+    return payload.get(side, {}).get('actual') or {}
