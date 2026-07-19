@@ -7825,3 +7825,5 @@ def _note_cmd(target_q, meas_q=None):
             None if meas_q is None else np.array(meas_q, dtype=np.float64).copy())
     except Exception:
         _LAST_CMD_Q[0] = None
+
+
