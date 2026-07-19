@@ -3599,3 +3599,5 @@ def _t5_joint_move(arm, side, pose, duration=None, zf_legacy=False):
     else:
         move_arm_smooth(arm, _t5_q, tau_target, duration=duration,
                         zf_legacy=zf_legacy)
+
+
