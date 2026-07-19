@@ -361,3 +361,155 @@ class RealGraspDetector:
         middle = self.check_middle_finger_contact(threshold=middle_threshold)
         return (palm, middle)
 
+    def get_max_pressure(self) -> float:
+        """Return the maximum pressure value across ALL sensor packages.
+
+        Returns 0 if no DDS data is available.  Used by adaptive closure
+        to track pressure increase as fingers close around the object.
+        """
+        hand_state = self._read_state()
+        if hand_state is None:
+            return 0.0
+        max_p = 0.0
+        for pkg in hand_state.press_sensor_state:
+            for p in pkg.pressure:
+                if p > max_p:
+                    max_p = float(p)
+        return max_p
+
+    def get_finger_pressure(self) -> float:
+        """Return the maximum pressure across finger sensor packages only.
+
+        Excludes palm packages (indices 0-2).  Returns 0 if no DDS data.
+        Used by adaptive closure to track finger grip pressure independently
+        from palm contact pressure.
+        """
+        hand_state = self._read_state()
+        if hand_state is None:
+            return 0.0
+        max_p = 0.0
+        pkgs = hand_state.press_sensor_state
+        n_finger_pkgs = 0
+        # 3-5 pads, 6-8 tips
+        for pkg_idx in range(3, min(len(pkgs), 9)):
+            n_finger_pkgs += 1
+            for p in pkgs[pkg_idx].pressure:
+                if p > max_p:
+                    max_p = float(p)
+
+        # debug: per-pkg max, every 25 calls
+        if not hasattr(self, '_fp_debug_count'):
+            self._fp_debug_count = 0
+        self._fp_debug_count += 1
+        if self._fp_debug_count % 25 == 0:
+            pkg_maxes = []
+            for pkg_idx in range(3, min(len(pkgs), 9)):
+                pkg_max = max(pkgs[pkg_idx].pressure) if pkgs[pkg_idx].pressure else 0.0
+                pkg_maxes.append(f'pkg[{pkg_idx}]={pkg_max:.0f}')
+            import sys as _sys
+            _sys.stderr.write(
+                f'[RealGraspDetector {self._side}] finger_pressure=#{self._fp_debug_count}: '
+                f'n_finger_pkgs={n_finger_pkgs}, max={max_p:.0f}, '
+                f'per_pkg=[{", ".join(pkg_maxes)}]\n')
+            _sys.stderr.flush()
+
+        return max_p
+
+    def diagnose_palm_sensors(self):
+        """One-shot diagnostic: print all pressure sensor packages and their max values.
+
+        Call this once after daemon init to verify the DDS subscription is live
+        and the dex3_server is publishing hand state data.
+        """
+        import sys as _sys
+        hand_state = self._read_state()
+        if hand_state is None:
+            _sys.stderr.write(
+                f'[RealGraspDetector {self._side}] DIAGNOSE: '
+                f'NO hand state received — is dex3_server running? '
+                f'Topic: rt/dex3/{self._side}/state\n')
+            _sys.stderr.flush()
+            return False
+
+        n_pkgs = len(hand_state.press_sensor_state)
+        n_motors = len(hand_state.motor_state)
+        _sys.stderr.write(
+            f'[RealGraspDetector {self._side}] DIAGNOSE: '
+            f'{n_pkgs} pressure packages, {n_motors} motors\n')
+        for pkg_idx, pkg in enumerate(hand_state.press_sensor_state):
+            max_p = max(pkg.pressure) if pkg.pressure else 0.0
+            active_ch = sum(1 for p in pkg.pressure if p > self._pressure_threshold)
+            _sys.stderr.write(
+                f'[RealGraspDetector {self._side}]   pkg[{pkg_idx}]: '
+                f'max={max_p:.0f}, active_channels={active_ch}/12 '
+                f'(threshold={self._pressure_threshold:.0f})\n')
+        _sys.stderr.flush()
+        return True
+
+    def diagnose_finger_sensors(self):
+        """One-shot diagnostic: show finger pad + fingertip pressure sensors.
+
+        The Dex3-1 has 12 finger pressure pads + 9 fingertip pressure sensors
+        across 6 packages (3 fingers × 2 packages each: pad + tip).
+        This prints per-package max pressure so you can verify finger sensors
+        are responding independently from palm sensors.
+        """
+        import sys as _sys
+        hand_state = self._read_state()
+        if hand_state is None:
+            _sys.stderr.write(
+                f'[RealGraspDetector {self._side}] FINGER DIAGNOSE: '
+                f'NO hand state — is dex3_server running?\n')
+            _sys.stderr.flush()
+            return False
+
+        n_pkgs = len(hand_state.press_sensor_state)
+        _sys.stderr.write(
+            f'[RealGraspDetector {self._side}] FINGER SENSOR DIAGNOSE: '
+            f'{n_pkgs} packages total (palm 0-2, finger pad 3-5, fingertip 6-8)\n')
+        for pkg_idx, pkg in enumerate(hand_state.press_sensor_state):
+            max_p = max(pkg.pressure) if pkg.pressure else 0.0
+            active_ch = sum(1 for p in pkg.pressure if p > self._pressure_threshold)
+            # 0-2 palm, 3-5 pad, 6-8 tip
+            if pkg_idx <= 2:
+                label = 'PALM'
+            elif pkg_idx <= 5:
+                label = 'FINGER_PAD'
+            else:
+                label = 'FINGERTIP'
+            _sys.stderr.write(
+                f'[RealGraspDetector {self._side}]   pkg[{pkg_idx}] {label}: '
+                f'max={max_p:.0f}, active={active_ch}/12 '
+                f'(threshold={self._pressure_threshold:.0f})\n')
+        _sys.stderr.flush()
+        return True
+
+    # ------------------------------------------------------------------
+    # internal helpers - nobody outside should need these
+    # ------------------------------------------------------------------
+
+    def _read_state(self) -> Optional[HandState_]:
+        """Non-blocking read of the latest HandState_ from DDS.
+
+        Returns None when no message has arrived yet (channel empty).
+        """
+        return self._sub.Read(timeout=0)
+
+    def _compute_torque_support(self, motor_states) -> tuple:
+        """Return (tau_sum, motor_high) from distal joint tau_est.
+
+        tau_sum = sum of abs(tau_est) for joints 2, 4, 6 (distal).
+        motor_high = True when tau_sum > torque_threshold.
+
+        Note: Full Pinocchio finger Jacobian projection from tau_est to
+        vertical fingertip force requires the hand model which is not
+        available in this standalone module.  We use the scaled sum of
+        distal joint torque magnitudes as a proxy for upward support.
+        """
+        tau_sum = 0.0
+        for joint_id in self.DISTAL_JOINT_IDS:
+            if joint_id < len(motor_states):
+                tau_sum += abs(motor_states[joint_id].tau_est)
+        motor_high = tau_sum > self._torque_threshold
+        return tau_sum, motor_high
+
