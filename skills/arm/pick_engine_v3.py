@@ -7827,3 +7827,21 @@ def _note_cmd(target_q, meas_q=None):
         _LAST_CMD_Q[0] = None
 
 
+def _last_cmd_err(q_now):
+    """'%.3f' = max|recorded target - q_now| (the stall a relax releases), or
+    'unknown' when there is no record, or when the arm has moved more than
+    ARM_CMD_RECORD_DRIFT_RAD since it was taken (the record is stale).
+    Never raises."""
+    rec = _LAST_CMD_Q[0]
+    if rec is None:
+        return 'unknown'
+    try:
+        tgt, meas = rec
+        q_now = np.asarray(q_now, dtype=np.float64)
+        if meas is not None and float(np.max(np.abs(
+                q_now - np.asarray(meas, dtype=np.float64)))) > ARM_CMD_RECORD_DRIFT_RAD:
+            return 'unknown'
+        return '%.3f' % float(np.max(np.abs(
+            np.asarray(tgt, dtype=np.float64) - q_now)))
+    except Exception:
+        return 'unknown'
