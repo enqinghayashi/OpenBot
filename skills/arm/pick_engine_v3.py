@@ -3614,3 +3614,5 @@ def waypoint_to_arrays(wp):
     lhand = {int(k): v for k, v in wp.get('lhand', {}).items()}
 
     return arm_q, rhand, lhand
+
+
