@@ -3647,3 +3647,5 @@ def play_sequence(arm, rhand, lhand, seq_data):
         if hold_time > 0:
             _check_cancel('sequence_hold')  # the arm move above is already covered;
             time.sleep(hold_time)           # this bounds the wait between
+
+
