@@ -3406,3 +3406,60 @@ def _squeeze_hold(client, side, preset, steps=20, dt=0.01, hold_s=0.5):
     return _score_closure_blocked(client, side, preset)
 
 
+def freeze_idle_arm(arm, sol_q, side):
+    """T5/T8: overwrite the idle arm's slice of sol_q with its KNOWN
+    CARRY_TUCK pose — deterministic pose-pin (Task 8 hardware batch).
+
+    Called after EVERY dual-arm IK solve during the active arm's waypoints
+    (waypoints, wp4 guarded insert, contact-relief retract): the inactive
+    arm stays at carry_tuck — no nullspace drift, regardless of how the
+    solver perturbs the idle side.  The inactive arm's target is ALWAYS
+    CARRY_TUCK_{LEFT,RIGHT} by design (step 2 just moved it there), so we
+    pin the KNOWN pose instead of sampling get_current_dual_arm_q (which
+    returns the ACTUAL lowstate q).  Sampling closed a settle race:
+    2026-08-17 the sample could land while the arm was still tracking the
+    step-2 sweep, freezing it at an INTERMEDIATE pose ("stopped halfway
+    into carry_tuck").  The pin is deterministic and also makes the idle
+    arm CONTINUE into its tuck pose during the approach if it was still
+    moving.  Belt-and-braces (Task 8 diagnosis batch): a bounded settle-wait
+    polls until the idle arm ACTUALLY tracks the known pose (max |cmd−meas|
+    < 0.03 rad, cmd = the pinned CARRY_TUCK, meas = actual lowstate q) or
+    2.5 s elapse, so the first commanded move of a pick flow starts from a
+    settled arm, not a still-tracking one.  Never blocks a pick: a timeout
+    just logs and proceeds (the pin still commands the known pose).
+    Mutates and returns ``sol_q``.  API unchanged (arm kept for call-site
+    compatibility).
+    """
+    if side == 'left':
+        idx = slice(7, 14)
+        target = _zf_idle_target('right', CARRY_TUCK_RIGHT)   # the pin, when set
+    else:
+        idx = slice(0, 7)
+        target = _zf_idle_target('left', CARRY_TUCK_LEFT)     # the pin, when set
+
+    _settled = False
+    _meas = None
+    _deadline = time.time() + 0.5  # 2.5 s would stall every waypoint; the idle arm rarely needs that long
+    _tol_rad = 0.08 if _zfloor_perarm_on() else 0.03   # 0.03 leaves the settle wait too short
+    while time.time() < _deadline:
+        try:
+            _meas = arm.get_current_dual_arm_q()
+        except Exception:
+            break
+        if np.max(np.abs(_meas[idx] - target)) < _tol_rad:
+            _settled = True
+            break
+        time.sleep(0.05)
+    if not _settled:
+        _err = (np.max(np.abs(_meas[idx] - target)) if _meas is not None
+                else float('nan'))
+        _idle_name = 'left' if side == 'right' else 'right'
+        sys.stderr.write(
+            f'[pick_daemon] freeze_idle_arm: {_idle_name} arm not settled at its '
+            f'tuck pose within {"0.5 s" if _zfloor_perarm_on() else "2.5 s"} '
+            f'(max err {_err:.3f} rad) — proceeding '
+            f'with the pose-pin anyway\n')
+        sys.stderr.flush()
+
+    sol_q[idx] = target
+    return sol_q
