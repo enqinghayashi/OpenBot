@@ -7847,3 +7847,36 @@ def _last_cmd_err(q_now):
         return 'unknown'
 
 
+def _relax_arm_to_measured(arm, ctx, q=None):
+    """Collapse the commanded arm target onto the MEASURED q.
+
+    The writer PD-holds `arm.current` forever, so an arm stopped short of its
+    target (blocked by the table, the object, or its own body) keeps pushing
+    with the full position-error torque.  Re-commanding the measured pose is
+    the only way to remove that torque without moving anywhere new.  Writer
+    mode: a slew_start (non-blocking) over ARM_RELAX_DURATION_S with the
+    gravity FF of the measured pose.  Standalone: one ctrl_dual_arm.
+
+    Never raises.  Returns the q it commanded, or None on failure (the reason
+    is kept in _LAST_RELAX_ERROR[0] and logged).
+    """
+    _LAST_RELAX_ERROR[0] = None
+    try:
+        if q is None:
+            q = arm.get_current_dual_arm_q()
+        q = np.array(q, dtype=np.float64)
+        tau = _arm_gravity_ff(q, np.zeros(14))
+        if ARM_WRITER_ENABLED:
+            arm.slew_start(q, duration=ARM_RELAX_DURATION_S, tau=tau)
+        else:
+            arm.ctrl_dual_arm(q, tau)
+        _note_cmd(q, q)
+        _safe_log(f'[pick_daemon] SAFE-EXIT({ctx}): relaxed to measured q '
+                  f'(commanded target := measured, '
+                  f'{ARM_RELAX_DURATION_S:.1f} s)')
+        return q
+    except Exception as _e:
+        _LAST_RELAX_ERROR[0] = repr(_e)
+        _safe_log(f'[pick_daemon] SAFE-EXIT({ctx}): relax to measured q '
+                  f'FAILED: {_e!r}')
+        return None
