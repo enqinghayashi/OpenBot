@@ -3715,3 +3715,13 @@ def _parse_pick_tail(parts):
     height_m = trailing[0] if len(trailing) >= 1 else None
     x_off = trailing[1] if len(trailing) >= 2 else None
     return nx, ny, nz, orientation, height_m, x_off
+
+
+# ── the grasp-verdict file log (diagnostic) ─────────────────────
+# the gateway spawns this engine with stdout/stderr on pipes that are thrown
+# away, so the live grasp numbers (closure-block margin, pressure delta,
+# support_ratio, final quadrant) would be lost. _grasp_log tees them to an
+# append-only file. best-effort: never raises and never touches the decision.
+_GRASP_LOG_PATH = '/tmp/pick_walk_logs/engine_grasp.log'
+
+
