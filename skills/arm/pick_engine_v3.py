@@ -3683,3 +3683,35 @@ def _run_diag_bounded(fn, label, timeout=5.0):
     return _result.get('val')
 
 
+def _parse_pick_tail(parts):
+    """Parse the optional tail of a pick / pick_left command.
+
+    The orientation is the only non-numeric token ('upright' / 'horizontal');
+    up to three floats BEFORE it are the surface normal (nx ny nz), and floats
+    AFTER it are the optional trailing [height_m, x_off] (raw token strings).
+
+    Returns (nx, ny, nz, orientation, height_m, x_off); nx/ny/nz are None when
+    no normal is given, height_m/x_off are None when absent.
+    """
+    orientation = 'upright'
+    normals = []
+    trailing = []
+    section = 'before'
+    for tok in parts[4:]:
+        if tok in ('upright', 'horizontal'):
+            orientation = tok
+            section = 'after'
+        elif section == 'before':
+            normals.append(tok)
+        else:
+            trailing.append(tok)
+    nx = ny = nz = None
+    if normals:
+        if len(normals) != 3:
+            raise ValueError('expected 3 normal components, got %d' % len(normals))
+        nx, ny, nz = float(normals[0]), float(normals[1]), float(normals[2])
+    if len(trailing) > 2:
+        raise ValueError('too many trailing tokens')
+    height_m = trailing[0] if len(trailing) >= 1 else None
+    x_off = trailing[1] if len(trailing) >= 2 else None
+    return nx, ny, nz, orientation, height_m, x_off
