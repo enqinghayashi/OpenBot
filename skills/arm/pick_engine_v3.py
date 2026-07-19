@@ -7809,3 +7809,9 @@ _LAST_GRIP_EVIDENCE = [None]
 _GRIP_EVIDENCE_SEQ = [0]
 
 
+def _safe_log(msg):
+    try:
+        sys.stderr.write(msg if msg.endswith('\n') else msg + '\n')
+        sys.stderr.flush()
+    except Exception:
+        pass
