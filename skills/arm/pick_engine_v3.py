@@ -3601,3 +3601,16 @@ def _t5_joint_move(arm, side, pose, duration=None, zf_legacy=False):
                         zf_legacy=zf_legacy)
 
 
+def waypoint_to_arrays(wp):
+    """Convert a motion sequence waypoint to arm_q[14] + hand dicts."""
+    arm_data = wp.get('arm', {})
+    arm_q = np.zeros(14)
+    for i in range(14):
+        key = str(15 + i)
+        if key in arm_data:
+            arm_q[i] = arm_data[key]
+
+    rhand = {int(k): v for k, v in wp.get('rhand', {}).items()}
+    lhand = {int(k): v for k, v in wp.get('lhand', {}).items()}
+
+    return arm_q, rhand, lhand
