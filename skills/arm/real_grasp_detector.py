@@ -210,3 +210,154 @@ class RealGraspDetector:
             contacts_detail=details,
         )
 
+    def reset(self):
+        """Reset internal counters (call between pick attempts)."""
+        self._stable_counter = 0
+        self._tau_window.clear()
+        self._prev_tau_sum = None
+
+    def check_palm_contact(self, pressure_threshold: float = None) -> bool:
+        """Check if the palm is contacting an object (hand open, wrist advancing).
+
+        During insertion the hand is open — fingers are extended and cannot
+        trigger fingertip pressure sensors.  Any pressure reading above
+        threshold therefore indicates PALM contact.
+
+        The Dex3-1 has 3 palm packages × 2×2 array = 12 palm sensors
+        (documented in the Dex3-1 user manual).  This method checks ALL
+        pressure packages — during open-hand insertion, only the palm
+        sensors can register contact.
+
+        Debug output on first call prints sensor layout; every ~50th call
+        prints max pressure so you can verify the DDS subscription is live.
+
+        Returns True if any pressure channel exceeds the threshold.
+        """
+        threshold = pressure_threshold if pressure_threshold is not None else self._pressure_threshold
+        hand_state = self._read_state()
+        if hand_state is None:
+            return False
+
+        max_pressure = 0.0
+        trigger_pkg = -1
+        trigger_ch = -1
+        n_pkgs = 0
+        for pkg in hand_state.press_sensor_state:
+            n_pkgs += 1
+            for ch, p in enumerate(pkg.pressure):
+                if p > max_pressure:
+                    max_pressure = p
+                if p > threshold:
+                    trigger_pkg = pkg_idx = n_pkgs - 1
+                    trigger_ch = ch
+                    # no break: max over all pkgs
+
+        # debug: layout, then max now and then
+        if not hasattr(self, '_palm_debug_count'):
+            self._palm_debug_count = 0
+            import sys as _sys
+            _sys.stderr.write(
+                f'[RealGraspDetector {self._side}] palm sensors: '
+                f'{n_pkgs} pressure packages detected, '
+                f'threshold={threshold:.0f}\n')
+            _sys.stderr.flush()
+        self._palm_debug_count += 1
+        if self._palm_debug_count % 50 == 0:
+            import sys as _sys
+            _sys.stderr.write(
+                f'[RealGraspDetector {self._side}] palm debug #{self._palm_debug_count}: '
+                f'max_pressure={max_pressure:.0f} (threshold={threshold:.0f}), '
+                f'{n_pkgs} pkgs\n')
+            _sys.stderr.flush()
+
+        if trigger_pkg >= 0:
+            import sys as _sys
+            _sys.stderr.write(
+                f'[RealGraspDetector {self._side}] PALM CONTACT DETECTED: '
+                f'pkg={trigger_pkg} ch={trigger_ch} '
+                f'pressure={max_pressure:.0f} > threshold={threshold:.0f}\n')
+            _sys.stderr.flush()
+            return True
+        return False
+
+    def check_middle_finger_contact(self, threshold: float = None) -> bool:
+        """Check if the middle finger has pressure contact.
+
+        Checks ONLY packages 5 (middle finger pad) and 8 (middle fingertip).
+        Returns True if any channel in those two packages exceeds the
+        threshold.
+
+        Debug: on the first call, prints the package indices being checked
+        and the threshold.  On every detection, prints which package and
+        channel triggered.
+
+        Parameters
+        ----------
+        threshold : float, optional
+            Pressure threshold.  Defaults to ``self._pressure_threshold``
+            (110000 — tuned to fire above DDS cross-talk at ~103k).
+
+        Returns
+        -------
+        bool
+            True if any middle-finger pressure channel exceeds threshold.
+        """
+        threshold = threshold if threshold is not None else self._pressure_threshold
+        hand_state = self._read_state()
+        if hand_state is None:
+            return False
+
+        pkgs = hand_state.press_sensor_state
+        middle_pkg_indices = [5, 8]  # 5 = pad, 8 = tip
+
+        # debug: packages, once
+        if not hasattr(self, '_middle_debug_count'):
+            self._middle_debug_count = 0
+            import sys as _sys
+            _sys.stderr.write(
+                f'[RealGraspDetector {self._side}] middle finger contact: '
+                f'checking packages {middle_pkg_indices}, threshold={threshold:.0f}\n')
+            _sys.stderr.flush()
+
+        self._middle_debug_count += 1
+
+        for pkg_idx in middle_pkg_indices:
+            if pkg_idx >= len(pkgs):
+                continue
+            for ch, p in enumerate(pkgs[pkg_idx].pressure):
+                if p > threshold:
+                    import sys as _sys
+                    _sys.stderr.write(
+                        f'[RealGraspDetector {self._side}] MIDDLE FINGER CONTACT: '
+                        f'pkg={pkg_idx} ch={ch} pressure={p:.0f} > threshold={threshold:.0f}\n')
+                    _sys.stderr.flush()
+                    return True
+
+        return False
+
+    def check_palm_and_middle(
+        self, palm_threshold: float = None, middle_threshold: float = None
+    ):
+        """Check palm contact and middle-finger contact in one call.
+
+        Palm contact is checked via :meth:`check_palm_contact` (scans ALL
+        pressure packages — during open-hand insertion only the palm can
+        register contact).  Middle-finger contact uses
+        :meth:`check_middle_finger_contact` (scans only packages 5 + 8).
+
+        Parameters
+        ----------
+        palm_threshold : float, optional
+            Threshold forwarded to ``check_palm_contact``.
+        middle_threshold : float, optional
+            Threshold forwarded to ``check_middle_finger_contact``.
+
+        Returns
+        -------
+        tuple[bool, bool]
+            ``(palm_contact, middle_contact)``.
+        """
+        palm = self.check_palm_contact(pressure_threshold=palm_threshold)
+        middle = self.check_middle_finger_contact(threshold=middle_threshold)
+        return (palm, middle)
+
