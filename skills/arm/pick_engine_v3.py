@@ -3505,3 +3505,68 @@ def _solver_fresh(arm_ik, log_prefix=""):
         return 0
 
 
+def solve_and_move(arm, arm_ik, target, log_prefix="", side='right', raw=False):
+    """Solve IK and move the arm smoothly.
+
+    Parameters
+    ----------
+    side : str
+        'right' → right arm moves to target, left arm stays at current position.
+        'left'  → left arm moves to target, right arm stays at current position.
+    raw : bool
+        v5.0 (2026-09-06): True → the ORIGINAL raw ``arm_ik.solve_ik``
+        (sacred reference solve_and_move L588-616), verbatim.  Used by the
+        HORIZONTAL swing (h-wp1/h-wp2, both arms) so the wrist turns /
+        normalises DURING the swing exactly like the original — the
+        verified-solve wrist-GN was the palm-tilt signature (h ori_err
+        0.18-0.22 rad) and the "reach-then-turn" look.  False (default) →
+        verified solve (wash + FK verify + wrist-GN), kept for all UPRIGHT
+        approach waypoints (deviation + verified = user feature).
+    """
+    # pin the idle arm where it is so it does not drift
+    _cur_q = arm.get_current_dual_arm_q().copy()
+    if side == 'left':
+        _idle_wrist = get_wrist_pose(arm_ik, _cur_q, side='right')
+        _idle_target = (pin.SE3(np.eye(3), _idle_wrist).homogeneous
+                        if _idle_wrist is not None else R_NEUTRAL)
+        if raw:
+            # arg order: (target, _idle_target), grasp first for the left arm.
+            # do not swap.
+            with _SuppressStdout():
+                sol_q, sol_tauff = arm_ik.solve_ik(
+                    target, _idle_target,
+                    current_lr_arm_motor_q=_cur_q.copy(),
+                    current_lr_arm_motor_dq=np.zeros(14))
+        else:
+            # verified solve: wash + FK verify + wrist-GN, loud on failure
+            sol_q, sol_tauff = _solve_ik_verified(arm_ik, target, _idle_target,
+                                                  _cur_q, 'left', log_prefix)
+    else:
+        _idle_wrist = get_wrist_pose(arm_ik, _cur_q, side='left')
+        _idle_target = (pin.SE3(np.eye(3), _idle_wrist).homogeneous
+                        if _idle_wrist is not None else L_NEUTRAL)
+        if raw:
+            with _SuppressStdout():
+                sol_q, sol_tauff = arm_ik.solve_ik(
+                    _idle_target, target,
+                    current_lr_arm_motor_q=_cur_q.copy(),
+                    current_lr_arm_motor_dq=np.zeros(14))
+        else:
+            sol_q, sol_tauff = _solve_ik_verified(arm_ik, _idle_target, target,
+                                                  _cur_q, 'right', log_prefix)
+
+    if sol_q is None:
+        return False
+
+    # no early return when solve_ik comes back with the current q (an Ipopt
+    # silent failure): command what came back, a no-op move, rather than skip
+    # the waypoint.
+    # freeze the idle arm: hard-overwrite its slice with the current q, sampled
+    # after the carry_tuck move settled, before commanding anything.
+    sol_q = freeze_idle_arm(arm, sol_q, side)
+
+    sys.stderr.write(f'[pick_daemon] {log_prefix}IK solved, moving...\n')
+    sys.stderr.flush()
+    move_arm_smooth(arm, sol_q, sol_tauff,
+                    zf_label=(log_prefix.strip().rstrip(':').strip() or None))
+    return True
