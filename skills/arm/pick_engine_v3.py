@@ -7845,3 +7845,5 @@ def _last_cmd_err(q_now):
             np.asarray(tgt, dtype=np.float64) - q_now)))
     except Exception:
         return 'unknown'
+
+
