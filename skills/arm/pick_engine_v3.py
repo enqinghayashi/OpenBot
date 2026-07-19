@@ -3649,3 +3649,35 @@ def play_sequence(arm, rhand, lhand, seq_data):
             time.sleep(hold_time)           # this bounds the wait between
 
 
+def _run_diag_bounded(fn, label, timeout=5.0):
+    """Run a diagnostic under a hard time bound.
+
+    READY must never wait on sensor availability.  The daemon imports
+    real_grasp_detector from /home/unitree/leon (deployed copy) — if that
+    copy ever blocks inside a diagnostic (e.g. a DDS read with a long
+    timeout), init stalls for 15+s while commands buffer in stdin.  This
+    bounds the worst case so READY is emitted deterministically.
+
+    Returns fn()'s value, or None if it exceeds the bound.
+    """
+    import threading as _t
+    _result = {}
+
+    def _run():
+        try:
+            _result['val'] = fn()
+        except Exception as e:
+            _result['err'] = e
+
+    _th = _t.Thread(target=_run, daemon=True)
+    _th.start()
+    _th.join(timeout)
+    if _th.is_alive():
+        sys.stderr.write(
+            f'[pick_daemon] WARNING: {label} exceeded {timeout:.0f}s bound — '
+            'skipping diagnostic (READY not blocked)\n')
+        sys.stderr.flush()
+        return None
+    if 'err' in _result:
+        raise _result['err']
+    return _result.get('val')
