@@ -3616,3 +3616,34 @@ def waypoint_to_arrays(wp):
     return arm_q, rhand, lhand
 
 
+def play_sequence(arm, rhand, lhand, seq_data):
+    """Play a motion sequence with per-waypoint timing and hand control."""
+    waypoints = seq_data.get('waypoints', [])
+    total = len(waypoints)
+
+    for idx, wp in enumerate(waypoints):
+        name = wp.get('name', f'wp{idx+1}')
+        move_time = wp.get('move_time', 1.5)
+        hold_time = wp.get('hold_time', 0.5)
+
+        sys.stderr.write(
+            f'[pick_daemon] Sequence: {name} ({idx+1}/{total}) '
+            f'move={move_time}s hold={hold_time}s\n')
+        sys.stderr.flush()
+
+        arm_q, rhand_targets, lhand_targets = waypoint_to_arrays(wp)
+
+        # move the arm over the given duration
+        tau_target = _arm_gravity_ff(arm_q, np.zeros(14))
+        move_arm_smooth(arm, arm_q, tau_target, duration=move_time)
+
+# set the hands at the same time (fast, does not block long)
+        if rhand_targets:
+            rhand.set(rhand_targets)
+        if lhand_targets:
+            lhand.set(lhand_targets)
+
+        # hold there
+        if hold_time > 0:
+            _check_cancel('sequence_hold')  # the arm move above is already covered;
+            time.sleep(hold_time)           # this bounds the wait between
