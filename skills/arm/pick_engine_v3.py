@@ -3725,3 +3725,12 @@ def _parse_pick_tail(parts):
 _GRASP_LOG_PATH = '/tmp/pick_walk_logs/engine_grasp.log'
 
 
+def _grasp_log(arm: str, attempt: int, **kv) -> None:
+    try:
+        import os as _os, time as _t
+        _os.makedirs(_os.path.dirname(_GRASP_LOG_PATH), exist_ok=True)
+        parts = ' '.join(f'{k}={v}' for k, v in kv.items())
+        with open(_GRASP_LOG_PATH, 'a') as _f:
+            _f.write(f'{_t.time():.3f} {arm} a{attempt} {parts}\n')
+    except Exception:
+        pass
