@@ -3736,3 +3736,4030 @@ def _grasp_log(arm: str, attempt: int, **kv) -> None:
         pass
 
 
+def main():
+    iface = sys.argv[1] if len(sys.argv) > 1 else 'eth0'
+    active_arm = sys.argv[2] if len(sys.argv) > 2 else 'both'
+    # 'upper' selects the arms-only controller, which streams arm targets while
+    # walking and never writes legs or waist.
+    upper_only = 'upper' in sys.argv[3:]
+    # 'nomove' skips the init move to NEUTRAL: no arm motion at startup, arms
+    # held at the current q, hands still open, diagnostics run, gate engaged.
+    nomove = 'nomove' in sys.argv[3:]
+    if active_arm not in ('both', 'left', 'right'):
+        sys.stderr.write(f'[pick_daemon] Invalid arm "{active_arm}", using "both"\n')
+        sys.stderr.flush()
+        active_arm = 'both'
+
+    sys.stderr.write('[pick_daemon] Loading pinocchio model...\n')
+    sys.stderr.flush()
+    # fork guard: a native library (DDS/CasADi) forks during init, and the child
+    # would become a second arm writer, making the arm oscillate. exit any forked
+    # child instantly via os.register_at_fork.
+    def _exit_forked_child():
+        os._exit(0)
+    if hasattr(os, 'register_at_fork'):
+        os.register_at_fork(after_in_child=_exit_forked_child)
+    with _SuppressStdout():
+        arm_ik = G1_29_ArmIK(Unit_Test=True, Visualization=False)
+    global _ARM_IK  # per-step gravity FF inside move_arm_smooth*
+    _ARM_IK = arm_ik
+
+    # diagnostic: confirm the per-step gravity FF returns non-zero torques on
+    # this hardware. zero or near-zero means the reduced-model rnea is broken, so
+    # the arms fight gravity with kp alone and barely move.
+    try:
+        _ff_ready = _arm_gravity_ff(READY_POSE, np.zeros(14))
+        _ff_tuck = _arm_gravity_ff(
+            np.concatenate([CARRY_TUCK_LEFT, CARRY_TUCK_RIGHT]), np.zeros(14))
+        sys.stderr.write(
+            f'[pick_daemon] gravity_ff CHECK ready |tau|='
+            f'{np.linalg.norm(_ff_ready):.3f} carry_tuck |tau|='
+            f'{np.linalg.norm(_ff_tuck):.3f}\n')
+        sys.stderr.flush()
+    except Exception as _ffe:
+        sys.stderr.write(f'[pick_daemon] gravity_ff CHECK FAILED: {_ffe}\n')
+        sys.stderr.flush()
+
+    sys.stderr.write(f'[pick_daemon] Connecting on {iface}...\n')
+    sys.stderr.flush()
+    ChannelFactoryInitialize(0, iface)
+    # arm transport mode is picked before construction. in writer mode the merged
+    # writer owns rt/lowcmd and the arms and this daemon is a non-owning socket
+    # client with no arm_sdk dds writer. DDS stays up only for the poll-only dex3
+    # reads in RealGraspDetector.
+    global ARM_WRITER_ENABLED
+    ARM_WRITER_ENABLED = _detect_writer_mode()
+    if ARM_WRITER_ENABLED:
+        sys.stderr.write(
+            f'[pick_daemon] ARM TRANSPORT: merged writer socket '
+            f'({WRITER_SOCK_DEFAULT}) — NO arm_sdk writer; commands via '
+            'WriterArmClient (engine lane)\n')
+        sys.stderr.flush()
+        try:
+            arm = WriterArmClient()
+            arm.q()  # fail-fast ping: the writer has to be up before taking commands
+        except WriterError as _we:
+            sys.stderr.write(
+                f'[pick_daemon] FATAL: writer unreachable over the socket: '
+                f'{_we}\n')
+            sys.stderr.flush()
+            raise SystemExit(1)
+    elif upper_only:
+        # arms-only controller: legs and waist are never written.
+        from upper_arm_controller import G1_29_ArmControllerUpperOnly
+        arm = G1_29_ArmControllerUpperOnly(motion_mode=True,
+                                           simulation_mode=False)
+        sys.stderr.write('[pick_daemon] UPPER-ONLY controller active '
+                         '(release/acquire/hold available)\n')
+    else:
+        arm = G1_29_ArmController(motion_mode=True, simulation_mode=False)
+    sys.stderr.flush()
+    # persistent grip server owns the hands over a UNIX socket; the daemon routes
+    # via GripClient. the server survives the phase-split quit and keeps the last
+    # commanded q asserted at 20 Hz, since one HandCmd_ write does not persist on
+    # the dex3 MCU.
+    rhand = GripClient('right')
+    lhand = GripClient('left')
+
+    # hand-state DDS listeners are absent on purpose: ChannelSubscriber callbacks
+    # fire on the cyclonedds receive thread at 200-1000 Hz and starve the 250 Hz
+    # loop via the GIL, causing slow back-and-forth jitter. do not re-add them.
+    
+
+    # ── phase 3: the real-hardware grasp detector (per-side singletons) ────────
+    _grasp_detectors = {}
+
+    def _get_grasp_detector(side='right'):
+        if side not in _grasp_detectors:
+            try:
+                _grasp_detectors[side] = RealGraspDetector(side=side, object_mass=0.30)
+            except TypeError:
+                # fallback for a detector with no 'side' parameter
+                sys.stderr.write(
+                    '[pick_daemon] WARNING: RealGraspDetector lacks side param — '
+                    'using default (right-hand topic). Deploy updated '
+                    'real_grasp_detector.py to Stuart.\n')
+                sys.stderr.flush()
+                _grasp_detectors[side] = RealGraspDetector(object_mass=0.30)
+        return _grasp_detectors[side]
+
+    # writer lane: the merged writer owns the arm gain and velocity-limit config.
+    # speed_gradual_max and arm_velocity_limit are arm_sdk-controller API only, so
+    # the writer's own regime stands.
+    if ARM_WRITER_ENABLED:
+        sys.stderr.write('[pick_daemon][writer] arm gains + velocity limit '
+                         'left to the merged writer (no arm_sdk controller)\n')
+        sys.stderr.flush()
+    else:
+        arm.speed_gradual_max(t=1.0)
+        time.sleep(1.2)
+        # velocity-limit handling: set_velocity_limit marks the limit owner-set so the
+        # controller's stock gradual ramp stops stomping the cap. the controller
+        # clips commanded position error to V*dt, so a low limit damps the arm to
+        # ~0.16 rad/s and it never reaches poses. the daemon rate-limits its own
+        # moves (cosine at MOVE_SPEED), so 20.0 never binds.
+        arm.arm_velocity_limit = 1.5
+
+    # init = NEUTRAL (both arms at the lowstate-sourced hanging rest). --arm is
+    # still parsed for protocol compatibility but does not select a boot pose.
+    _init_pose = np.concatenate([NEUTRAL_LEFT, NEUTRAL_RIGHT]).astype(np.float64)
+    if not nomove:
+        sys.stderr.write(
+            '[pick_daemon] Moving BOTH arms to NEUTRAL (hanging rest)...\n')
+        sys.stderr.flush()
+        move_arm_smooth(arm, _init_pose, _arm_gravity_ff(_init_pose, np.zeros(14)))
+    else:
+        sys.stderr.write(
+            '[pick_daemon] nomove mode: SKIPPING init move to NEUTRAL — '
+            'arms held at current q (no arm motion at startup)\n')
+        sys.stderr.flush()
+
+    # fingers closed on daemon launch; the hands stay shut until a 'ready' or the
+    # pick flow's ready phase opens them. ready is the only pose where the fingers
+    # open on their own.
+    rhand.close()
+    lhand.close()
+
+    # ── palm sensor diagnostic (check the DDS subscription is live) ───────────
+    sys.stderr.write('[pick_daemon] Running palm sensor diagnostic...\n')
+    sys.stderr.flush()
+    _diag_right = _get_grasp_detector('right')
+    _diag_right_sensors_ok = _run_diag_bounded(
+        _diag_right.diagnose_palm_sensors, 'palm diagnostic (right)')
+    _diag_left = _get_grasp_detector('left')
+    _diag_left_sensors_ok = _run_diag_bounded(
+        _diag_left.diagnose_palm_sensors, 'palm diagnostic (left)')
+    _palm_data_available = _diag_right_sensors_ok and _diag_left_sensors_ok
+    # right-side flag: the left Dex3 never powers on, so nothing publishes
+    # rt/dex3/left/state and the grip server's `state left` reply has no `actual`
+    # key. diagnose_palm_sensors('left') then blocks and times out, so the
+    # combined flag stays falsy, and a falsy flag would turn every
+    # `grasped_nothing` verdict into a success. right picks therefore key off the
+    # right sensor alone. left picks keep the both-sides flag: a left pick on a
+    # dead hand has no verifiable data anyway.
+    _palm_data_available_right = bool(_diag_right_sensors_ok)
+    if not _palm_data_available:
+        sys.stderr.write(
+            '[pick_daemon] WARNING: No DDS hand-state data — '
+            'dex3_server may not be running.\n'
+            '[pick_daemon]   palm diagnostic right=%r left=%r\n'
+            % (_diag_right_sensors_ok, _diag_left_sensors_ok))
+        sys.stderr.write(
+            '[pick_daemon]   Palm-pressure checks DISABLED. '
+            'Grasp verification will use BLIND mode.\n')
+        sys.stderr.flush()
+
+    # ── finger sensor diagnostic (check finger pad + fingertip sensors) ───────
+    sys.stderr.write('[pick_daemon] Running finger sensor diagnostic...\n')
+    sys.stderr.flush()
+    _run_diag_bounded(
+        _diag_right.diagnose_finger_sensors, 'finger diagnostic (right)')
+    _run_diag_bounded(
+        _diag_left.diagnose_finger_sensors, 'finger diagnostic (left)')
+
+    sys.stdout.write('READY\n')
+    sys.stdout.flush()
+    sys.stderr.write('[pick_daemon] READY\n')
+    sys.stderr.flush()
+
+    for line in sys.stdin:
+        cmd = line.strip()
+        if not cmd:
+            continue
+
+        # one stdout line per command: the gateway reads exactly one reply
+        # line. the flag is re-initialised at the top of every iteration, so
+        # it cannot outlive its command; a stale True would swallow the next
+        # reply and fake success. reply sites set it after their single write;
+        # guards turn a second line into a stderr note.
+        _reply_sent = False
+        _zf_cmd_begin()   # flow context + per-command tallies start empty
+
+        sys.stderr.write(f'[pick_daemon] CMD: {cmd}\n')
+        sys.stderr.flush()
+
+        try:
+            # ── hand commands ──────────────────────────────────────────────
+            if cmd == 'open':
+                rhand.open()
+                sys.stdout.write('DONE\n')
+                sys.stdout.flush()
+
+            elif cmd == 'close':
+                rhand.close()
+                sys.stdout.write('DONE\n')
+                sys.stdout.flush()
+
+            elif cmd == 'open_left':
+                lhand.open()
+                sys.stdout.write('DONE\n')
+                sys.stdout.flush()
+
+            elif cmd == 'close_left':
+                lhand.close()
+                sys.stdout.write('DONE\n')
+                sys.stdout.flush()
+
+            elif cmd == 'open_both':
+                rhand.open()
+                lhand.open()
+                sys.stdout.write('DONE\n')
+                sys.stdout.flush()
+
+            elif cmd == 'close_both':
+                rhand.close()
+                lhand.close()
+                sys.stdout.write('DONE\n')
+                sys.stdout.flush()
+
+            # ── arm commands ───────────────────────────────────────────────
+            elif cmd == 'home':
+                # both arms to HOME (hanging at the torso sides). move_arm_smooth
+                # is the same call the sibling poses use: it works on both
+                # transports, carries gravity FF, applies the z-floor and is
+                # cancellable. the writer's slew rate is fixed by arm_slew_rate
+                # (0.3 rad/s). arms only; hands are left alone.
+                move_arm_smooth(arm, HOME_POSE, _arm_gravity_ff(HOME_POSE, np.zeros(14)))
+                sys.stdout.write('DONE' + _zf_reply_suffix('home') + '\n')
+                sys.stdout.flush()
+
+            elif cmd == 'ready':
+                # both arms to READY. the arm reaches the pose first, then the
+                # fingers open: opening at NEUTRAL or tuck flails them at the
+                # hanging rest. both hands open at ready.
+                move_arm_smooth(arm, READY_POSE, _arm_gravity_ff(READY_POSE, np.zeros(14)))
+                rhand.open()
+                lhand.open()
+                sys.stdout.write('DONE' + _zf_reply_suffix('ready') + '\n')
+                sys.stdout.flush()
+
+            elif cmd == 'ready_right':
+                # ready, then open hands
+                move_arm_smooth(arm, READY_POSE, _arm_gravity_ff(READY_POSE, np.zeros(14)))
+                rhand.open()
+                lhand.open()
+                sys.stdout.write('DONE' + _zf_reply_suffix('ready_right') + '\n')
+                sys.stdout.flush()
+
+            elif cmd == 'ready_left':
+                # ready, then open hands
+                move_arm_smooth(arm, READY_POSE, _arm_gravity_ff(READY_POSE, np.zeros(14)))
+                rhand.open()
+                lhand.open()
+                sys.stdout.write('DONE' + _zf_reply_suffix('ready_left') + '\n')
+                sys.stdout.flush()
+
+            elif cmd == 'carry':
+                # right arm -> CARRY_TUCK (joint-space); left pinned at its current q
+                _t5_joint_move(arm, 'right', CARRY_TUCK_RIGHT)
+                sys.stdout.write('DONE' + _zf_reply_suffix('carry') + '\n')
+                sys.stdout.flush()
+
+            elif cmd == 'carry_left':
+                # left arm -> CARRY_TUCK (joint-space); right pinned at its current q
+                _t5_joint_move(arm, 'left', CARRY_TUCK_LEFT)
+                sys.stdout.write('DONE' + _zf_reply_suffix('carry_left') + '\n')
+                sys.stdout.flush()
+
+            elif cmd == 'neutral':
+                # both arms -> NEUTRAL (lowstate-sourced hanging rest)
+                _neutral_q = np.concatenate(
+                    [NEUTRAL_LEFT, NEUTRAL_RIGHT]).astype(np.float64)
+                move_arm_smooth(arm, _neutral_q, _arm_gravity_ff(_neutral_q, np.zeros(14)))
+                # close both hands after the arms settle, including at NEUTRAL.
+                # best-effort: never fails the verb.
+                _close_hand_at_closeout(rhand, 'right', 'neutral')
+                _close_hand_at_closeout(lhand, 'left', 'neutral')
+                sys.stdout.write('DONE' + _zf_reply_suffix('neutral') + '\n')
+                sys.stdout.flush()
+
+            elif cmd in ('release', 'acquire', 'hold'):
+                # gate control, valid only with the upper-only controller; the stock
+                # 35-joint controller keeps the arm_sdk gate for itself, so an error
+                # is returned there.
+                if not hasattr(arm, 'release_arms'):
+                    sys.stdout.write(
+                        'ERROR: release/acquire/hold require the upper-only '
+                        "controller (daemon argv 'upper')\n")
+                    sys.stdout.flush()
+                else:
+                    if cmd == 'release':
+                        arm.release_arms()
+                    elif cmd == 'acquire':
+                        arm.acquire_arms()
+                    else:
+                        arm.hold_only()
+                    sys.stdout.write('DONE\n')
+                    sys.stdout.flush()
+
+            # ── motion sequence ────────────────────────────────────────────
+            elif cmd == 'floor_clear':
+                # drop the latched table z-floor. the engine has no navigate hook, so
+                # a floor latched at a high surface would keep clamping NEUTRAL in
+                # free space until the next pick or place re-latches it. this verb is
+                # the reset.
+                _clear_table_floor('operator floor_clear')
+                _zf_clear_pins()   # the pin goes with the floor
+                sys.stdout.write('DONE\n')
+                sys.stdout.flush()
+
+            elif cmd == 'list':
+                files = sorted(glob.glob(os.path.join(SEQUENCES_DIR, '*.json')))
+                names = [os.path.splitext(os.path.basename(f))[0] for f in files]
+                # list as one comma-separated line
+                sys.stdout.write('DONE:' + ','.join(names) + '\n')
+                sys.stdout.flush()
+
+            elif cmd == 'quit':
+                # release the RC interlock first; the writer keeps owning the arms
+                # and RC is live on exit.
+                _hold_rc_writer(arm, False, 'quit')
+                # graceful daemon exit, required between the pick and walk phases:
+                # any live arm_sdk writer trips the FSM. ramp the arm_sdk gate off
+                # first (upper-only controller); the stock controller never took the
+                # gate. print DONE, break the stdin loop and exit.
+                # posture handover: record the dual-arm q before the low-carry
+                # down-move and release_arms, so the walk phase can restore the carry
+                # posture. order: write the q, joint-space down-move to LOW_CARRY
+                # (~1.8 s), then release_arms so the arms fall to hanging clear of
+                # the legs. failures never block the quit.
+                _last_q = None
+                try:
+                    _last_q = arm.get_current_dual_arm_q().tolist()
+                except Exception as _q_exc:
+                    sys.stderr.write(
+                        f'[pick_daemon] quit: get_current_dual_arm_q failed '
+                        f'({_q_exc}) — no posture handover json\n')
+                    sys.stderr.flush()
+                if _last_q is not None and len(_last_q) == 14:
+                    try:
+                        with open('/tmp/last_arm_q.json', 'w') as _qf:
+                            json.dump({
+                                'left': _last_q[0:7],
+                                'right': _last_q[7:14],
+                                'ts': time.time(),
+                            }, _qf)
+                        sys.stderr.write(
+                            '[pick_daemon] quit: posture handover json '
+                            'written to /tmp/last_arm_q.json\n')
+                        sys.stderr.flush()
+                    except Exception as _q_exc:
+                        sys.stderr.write(
+                            f'[pick_daemon] quit: posture json write failed '
+                            f'({_q_exc}) — continuing quit\n')
+                        sys.stderr.flush()
+                # leg-hit mitigation: joint-space down-move of both arms to the low
+                # hanging-carry pose before release_arms. release lets the arms fall
+                # to hanging, which can swing them into the legs and knock the object
+                # off the grip. cosine ramp of ~1.8 s; failure is non-blocking.
+                try:
+                    _down_q = np.concatenate(
+                        [LOW_CARRY_LEFT, LOW_CARRY_RIGHT]).astype(np.float64)
+                    move_arm_smooth(arm, _down_q,
+                                    _arm_gravity_ff(_down_q, np.zeros(14)),
+                                    duration=1.8)
+                    sys.stderr.write(
+                        '[pick_daemon] quit: down-moved both arms to the '
+                        'low carry pose\n')
+                    sys.stderr.flush()
+                except Exception as _q_exc:
+                    sys.stderr.write(
+                        f'[pick_daemon] quit: low-carry down-move failed '
+                        f'({_q_exc}) — continuing to release\n')
+                    sys.stderr.flush()
+                if hasattr(arm, 'release_arms'):
+                    try:
+                        arm.release_arms()
+                    except Exception as _q_exc:
+                        sys.stderr.write(
+                            f'[pick_daemon] quit: release_arms failed '
+                            f'({_q_exc}) — exiting anyway\n')
+                        sys.stderr.flush()
+                sys.stdout.write('DONE' + _zf_reply_suffix('quit') + '\n')
+                sys.stdout.flush()
+                sys.stderr.write(
+                    '[pick_daemon] Quit (phase split) — daemon exiting, '
+                    'no arm_sdk writer remains\n')
+                sys.stderr.flush()
+                break
+
+            elif cmd.startswith('play '):
+                seq_name = cmd[5:].strip()
+                seq_path = os.path.join(SEQUENCES_DIR, f'{seq_name}.json')
+
+                if not os.path.exists(seq_path):
+                    sys.stdout.write(f'ERROR:sequence not found: {seq_name}\n')
+                    sys.stdout.flush()
+                    continue
+
+                with open(seq_path, 'r') as f:
+                    seq_data = json.load(f)
+
+                wp_count = len(seq_data.get('waypoints', []))
+                sys.stderr.write(
+                    f'[pick_daemon] Playing "{seq_name}" ({wp_count} waypoints)\n')
+                sys.stderr.flush()
+
+                play_sequence(arm, rhand, lhand, seq_data)
+
+                sys.stderr.write(f'[pick_daemon] Sequence "{seq_name}" complete\n')
+                sys.stderr.flush()
+                sys.stdout.write('DONE' + _zf_reply_suffix('play') + '\n')
+                sys.stdout.flush()
+
+            # ── pick ───────────────────────────────────────────────────────
+            elif cmd.startswith('pick ') and not cmd.startswith('pick_left '):
+                _zf_pick_begin('right', arm)
+                parts = cmd.split()
+                try:
+                    if len(parts) < 4:
+                        raise ValueError('pick requires x y z')
+                    tx = float(parts[1])
+                    ty = float(parts[2])
+                    tz = float(parts[3]) + GRASP_Z_OFFSET
+                    nx, ny, nz, orientation, height_m, x_off = _parse_pick_tail(parts)
+                except (ValueError, IndexError) as e:
+                    sys.stdout.write(f'ERROR:pick parse: {e}\n')
+                    sys.stdout.flush()
+                    _zf_restore_floor()   # no motion yet
+                    continue
+                # reference log and z-frame diagnostic only, no commanded change (see
+                # SOLVER_Z_TORSO_OFFSET).
+                
+                sys.stderr.write(
+                    '[pick_daemon] v5.2 lateral mirror: ik_y := -torso_x '
+                    '(torso +x = RIGHT; URDF +Y = LEFT; both arms); '
+                    f'z-frame DIAG: SOLVER_Z_TORSO_OFFSET='
+                    f'{SOLVER_Z_TORSO_OFFSET:.3f} m (pelvis vs torso_link) '
+                    f'- z channel unchanged\n')
+                sys.stderr.flush()
+                use_oriented = nx is not None
+
+                if height_m is not None:
+                    try:
+                        height_m = float(height_m)
+                    except ValueError:
+                        sys.stdout.write('ERROR:bad height_m\n')
+                        sys.stdout.flush()
+                        _zf_restore_floor()   # no motion yet
+                        continue
+                    # <=0 or > max: height is not used
+                    if height_m <= 0.0 or height_m > HEIGHT_M_MAX:
+                        sys.stderr.write(
+                            f'[pick_daemon] height_m={height_m} implausible '
+                            f'(valid (0, {HEIGHT_M_MAX}]) — using legacy lift\n')
+                        sys.stderr.flush()
+                        height_m = None
+                if x_off is not None:
+                    try:
+                        x_off = float(x_off)
+                    except ValueError:
+                        sys.stdout.write('ERROR:bad x_off\n')
+                        sys.stdout.flush()
+                        _zf_restore_floor()   # no motion yet
+                        continue
+                # point-cloud approach offset; fall back to the fixed standoff when
+                # the depth projector sent no x_off.
+                approach_offset = x_off if x_off is not None else APPROACH_FORWARD_OFFSET
+
+                if orientation not in ('upright', 'horizontal'):
+                    sys.stdout.write(f'ERROR:unknown orientation "{orientation}", expected "upright" or "horizontal"\n')
+                    sys.stdout.flush()
+                    _zf_restore_floor()   # no motion yet
+                    continue
+
+                # cross-verb carrier for the place-time extra lift: object height is
+                # only measurable at pick time, before the object is occluded in the gripper.
+                # the write sits outside the height_m gate: nested inside it, a
+                # height-less pick would skip it, the holder would keep the previous
+                # object's height and a later place would raise by the wrong value.
+                # it also sits after every validation gate that refuses a malformed
+                # command, so a command that never runs cannot clobber it. runtime
+                # failures after this point leave the height in place, since the
+                # object is the one requested.
+                # two limits accepted: the slot is not keyed by side and not cleared
+                # when a place consumes it. pick/place pairs are serial, and not
+                # clearing lets a place be resent. every wrong-holder outcome is
+                # bounded by PLACE_EXTRA_LIFT_MAX_M, handed back during
+                # ASCEND/DESCEND, and never refuses a place: worst case is a raise of
+                # the wrong size.
+                _PLACE_LAST_OBJECT_HEIGHT_M[0] = height_m
+                # table z-floor latch: same placement rule as the height holder,
+                # after every validation gate, so a refused command cannot latch a
+                # floor it never ran with.
+                _latch_table_floor(tz, height_m, orientation)
+
+                sys.stderr.write(
+                    f'[pick_daemon] Pick target torso frame: '
+                    f'x={tx:.3f} y={ty:.3f} z={tz:.3f}'
+                    + (f' normal=({nx:.3f},{ny:.3f},{nz:.3f})' if use_oriented else '')
+                    + f' orientation={orientation}'
+                    + (f' height_m={height_m:.3f}' if height_m is not None
+                       else ' height_m=unknown')
+                    + '\n')
+                sys.stderr.flush()
+
+                # horizontal-pick ladder state, or None for the upright or
+                # kill-switch flow. read at pick start, before any arm motion, to
+                # capture the target label for re-detection.
+                _hl = _hl_begin(orientation, tx, ty, tz, height_m)
+
+                # reach precheck, before any arm motion. without it an out-of-reach
+                # target is only refused at wp4, after the wp2/wp3 poses are
+                # commanded and the arm has heated. the precheck solves the same
+                # chain without moving the arm. refusal means no hold_rc, no arm move
+                # and no hand move. 'unavailable' never refuses; the in-flow wp4 gate
+                # is the second line, with the same knob and strict >.
+                # this pick's grip evidence starts empty, so a pick ending by cancel
+                # or exception cannot leave the previous pick's evidence answering
+                # `grip_evidence` (it answers DONE:{}).
+                _LAST_GRIP_EVIDENCE[0] = None
+                try:
+                    _pc_res, _pc_stage = _reach_precheck(
+                        arm_ik, orientation, tx, ty, tz, x_off=x_off)
+                except Exception as _pce:
+                    sys.stderr.write(
+                        f'[pick_daemon] REACH PRECHECK unavailable ({_pce!r}) '
+                        '— not refusing\n')
+                    sys.stderr.flush()
+                    _pc_res, _pc_stage = None, 'unavailable'
+                if _pc_res is not None and _pc_res > REACH_REFUSE_POS:
+                    sys.stderr.write(
+                        f'OUT OF REACH (precheck, {_pc_stage}): simulated '
+                        f'residual {_pc_res:.3f} m > {REACH_REFUSE_POS:.3f} m '
+                        f'for target x={tx:.3f} y={ty:.3f} z={tz:.3f} '
+                        f'({orientation}) — the robot is standing too far '
+                        'from the object.  Pick REFUSED before any arm '
+                        'motion; move closer and retry.\n')
+                    sys.stderr.flush()
+                    _set_grip_evidence('right', 'failed')
+                    sys.stdout.write(
+                        f'ERROR:reach_ceiling residual={_pc_res:.3f}m stage=precheck\n')
+                    sys.stdout.flush()
+                    _zf_restore_floor()   # refused before any motion
+                    continue
+
+                # self-collision precheck: the right arm must not reach across the
+                # body. a target left of the midline can drive the arm into the
+                # torso, where the writer's PD holds it and the shoulder heats.
+                # refused here, before hold_rc and any arm motion.
+                _sc_pre = _self_collision_precheck(
+                    arm, arm_ik, 'pick', orientation, tx, ty, tz)
+                if _sc_pre is not None:
+                    _set_grip_evidence('right', 'failed')
+                    sys.stdout.write(_sc_line(_sc_pre))
+                    sys.stdout.flush()
+                    _zf_restore_floor()   # no motion yet
+                    continue
+
+                # state machine, steps 1-2: both arms to ready from
+                # anywhere; step 2 sends the left (inactive) arm to
+                # CARRY_TUCK while the right stays ready. the retry
+                # loop below opens the right hand.
+                # RC interlock on before any arm move: a held stick is
+                # live input and norm(cmd) >= 0.05 flips Balance to
+                # Walk, so the legs could step out mid-insert. off
+                # after CARRY_TUCK and on failure.
+                if ARM_WRITER_ENABLED:
+                    try:
+                        arm.hold_rc(True)
+                    except Exception as _he:
+                        sys.stdout.write(f'ERROR:hold_rc on: {_he}\n')
+                        sys.stdout.flush()
+                        _zf_restore_floor()   # no motion yet
+                        continue
+                sys.stderr.write('[pick_daemon] T5 step 1: both arms → ready...\n')
+                sys.stderr.flush()
+                # the arm reaches READY first, then the fingers open: opening at
+                # NEUTRAL flails them during the ready move.
+                move_arm_smooth(arm, READY_POSE, _arm_gravity_ff(READY_POSE, np.zeros(14)))
+                rhand.open()
+                lhand.open()
+                sys.stderr.write(
+                    '[pick_daemon] T5 step 2: inactive (left) arm → carry_tuck...\n')
+                sys.stderr.flush()
+                _t5_prologue_q = arm.get_current_dual_arm_q().copy()
+                _t5_prologue_q[0:7] = CARRY_TUCK_LEFT
+                move_arm_smooth(arm, _t5_prologue_q, _arm_gravity_ff(_t5_prologue_q, np.zeros(14)))
+                _zf_pin_idle('left')   # slice = pin
+                # fresh retract trail for this pick, and grip-evidence slots that
+                # cannot carry a previous pick (main()'s locals outlive the command).
+                _trail_reset()
+                _ge_close_blocked = None
+                _ge_close_margin = None
+                _ge_pin_margin = None
+
+                # ── phase 3: the retry loop with grasp verification ────────────
+                sys.stderr.write('[pick_daemon] DEBUG: before _get_grasp_detector...\n')
+                sys.stderr.flush()
+                detector = _get_grasp_detector()
+                sys.stderr.write('[pick_daemon] DEBUG: detector ready\n')
+                sys.stderr.flush()
+                grasp_ok = False
+                ty_use = ty  # may get shifted on retry
+                # keep-closed handoff: attempt-1 capture evidence (close-block,
+                # contact, pressure delta, pad-band or insert-press) keeps the hand
+                # closed into attempt 2. opening on the verdict would drop a possibly
+                # held object.
+                _attempt_keep_closed = False
+
+                for attempt in range(_upright_attempts() if _hl is None else _hl['n']):
+                    detector.reset()
+                    # wp4 insert-press evidence (per-attempt; upright wp4 guarded stop sets it)
+                    _insert_pressed = False
+
+                    if attempt > 0 and _hl is not None:
+                        # retry line and the attempt's aim. a keep-closed re-press
+                        # uses the capturing aim +2 cm forward; a fresh approach is
+                        # provisional and decided after h-wp1 by _hl_aim.
+                        if not _hl_next_attempt(_hl, attempt, _attempt_keep_closed):
+                            break
+                        tx, ty_use = _hl['aim']
+                        if not _attempt_keep_closed:
+                            rhand.open()
+                            time.sleep(0.3)
+                    elif attempt > 0:
+                        sys.stderr.write(
+                            f'[pick_daemon] Retry attempt {attempt+1}/{_upright_attempts()}: '
+                            f'shifting grasp +2cm forward\n')
+                        sys.stderr.flush()
+                        # keep-closed retry: the hand stayed closed out of attempt 1,
+                        # so no re-open, no open-verify (a closed hand must not fail
+                        # the open check) and no waypoint re-approach that would drag
+                        # the captured object back through wp1-wp3. the branch below
+                        # does one guarded re-press.
+                        if not _attempt_keep_closed:
+                            rhand.open()
+                            time.sleep(0.3)
+                        ty_use = ty + 0.02  # shift forward
+
+                    # open the hand. the keep-closed retry skips open and settle
+                    # because the hand is closed on purpose.
+                    sys.stderr.write('[pick_daemon] DEBUG: opening hand...\n')
+                    sys.stderr.flush()
+                    if not _attempt_keep_closed:
+                        rhand.open()
+                    sys.stderr.write('[pick_daemon] DEBUG: hand open done, sleeping...\n')
+                    sys.stderr.flush()
+                    if not _attempt_keep_closed:
+                        time.sleep(0.3)
+                    sys.stderr.write('[pick_daemon] DEBUG: sleep done\n')
+                    sys.stderr.flush()
+
+                    # check the hand is actually open before inserting: a closed
+                    # hand inserts as a fist, pinches, or pushes. the keep-closed
+                    # retry skips this, since a closed hand must not fail the open
+                    # check.
+                    if not _attempt_keep_closed:
+                        _hand_open_ok, _hand_open_reason = _verify_hand_open(
+                            rhand, 'right', R_HAND_OPEN)
+                        if not _hand_open_ok:
+                            sys.stderr.write(
+                                f'[pick_daemon] hand right did not verify open '
+                                f'({_hand_open_reason}) — aborting insert\n')
+                            sys.stderr.flush()
+                            sys.stdout.write('ERROR:hand not verified open\n')
+                            sys.stdout.flush()
+                            _reply_sent = True
+                            break
+                        sys.stderr.write('[pick_daemon] hand right verified open\n')
+                        sys.stderr.flush()
+
+                    # fresh tactile baseline per attempt. the raw 100000 threshold
+                    # sits below the open-hand rest floor (~105600), so the score
+                    # uses a delta over that floor; an absolute threshold would
+                    # report tactile on every air close. a flaky read (ok:false, DDS
+                    # gap, max=0.0) must never arm 0.0: the detector treats 0.0/None
+                    # as unavailable, so reuse the last good floor.
+                    try:
+                        _p_now = float(rhand.pressure('right')
+                                       .get('right', {}).get('max', 0.0))
+                    except Exception as _e:
+                        sys.stderr.write(
+                            f'[pick_daemon] detector tactile baseline '
+                            f'(right) read failed: {_e}\n')
+                        sys.stderr.flush()
+                        _p_now = 0.0
+                    if _p_now > 0.0:
+                        _TACTILE_BASELINE_LAST_GOOD[0] = _p_now
+                        detector.set_tactile_baseline(_p_now)
+                        sys.stderr.write(
+                            f'[pick_daemon] detector tactile baseline (right): '
+                            f'{_p_now:.0f}\n')
+                        sys.stderr.flush()
+                    elif _TACTILE_BASELINE_LAST_GOOD[0] is not None:
+                        detector.set_tactile_baseline(_TACTILE_BASELINE_LAST_GOOD[0])
+                        sys.stderr.write(
+                            f'[pick_daemon] detector tactile baseline (right): '
+                            f'read={_p_now:.0f} (ok:false/DDS gap) — reusing '
+                            f'last known good '
+                            f'{_TACTILE_BASELINE_LAST_GOOD[0]:.0f}\n')
+                        sys.stderr.flush()
+                    else:
+                        sys.stderr.write(
+                            f'[pick_daemon] detector tactile baseline (right): '
+                            f'UNAVAILABLE ({_p_now:.0f}) — tactile '
+                            f'verification skipped; failures will be loud, '
+                            f'never false success\n')
+                        sys.stderr.flush()
+
+                    # ── waypoint approach: ascend → approach-xy → descend ──
+                    sys.stderr.write('[pick_daemon] DEBUG: reading current arm q...\n')
+                    sys.stderr.flush()
+                    try:
+                        _cur_q = arm.get_current_dual_arm_q().copy()
+                        sys.stderr.write(
+                            f'[pick_daemon] DEBUG: got arm q, shape={_cur_q.shape}\n')
+                        sys.stderr.flush()
+                    except Exception as e:
+                        sys.stderr.write(
+                            f'[pick_daemon] DEBUG: get_current_dual_arm_q FAILED: {e}\n')
+                        sys.stderr.flush()
+                        _cur_q = None
+
+                    if _cur_q is not None:
+                        _cur_wrist = get_wrist_pose(arm_ik, _cur_q, side='right')
+                    else:
+                        _cur_wrist = None
+                    # grasp height is the interface tz plus GRASP_Z_UP_BIAS (+1 cm)
+                    # and the per-attempt tilt. the interface tz already includes
+                    # GRASP_Z_OFFSET. a grip-centre park that lands the wrist low
+                    # puts it outside the reach shell at approach depth and the
+                    # solver bakes the miss into the wrist, so keep this to one knob
+                    # rather than stacked offsets.
+                    _grasp_z = tz + GRASP_Z_UP_BIAS + _upright_tilt_dz(attempt)
+                    # this attempt's live self-collision refusal (None means none)
+                    _sc_rec = None
+
+                    if attempt > 0 and _attempt_keep_closed:
+                        # keep-closed re-press. the hand is closed from attempt 1,
+                        # so do not re-approach and drag a captured object back
+                        # through wp1-wp3. instead one guarded re-press from the grasp
+                        # pose: parked target rebuilt at ty_use (ty+0.02 on retry),
+                        # fresh raw solve (filter cleared), position-error backstop
+                        # only, no stop_fn since a closed hand must not trip the pad
+                        # probe. then flow into the shared close and verdict below.
+                        _solver_fresh(arm_ik, 'keep-repress: ')
+                        _kp_idle_wrist = get_wrist_pose(
+                            arm_ik, arm.get_current_dual_arm_q().copy(), side='left')
+                        _kp_idle = (pin.SE3(np.eye(3), _kp_idle_wrist).homogeneous
+                                    if _kp_idle_wrist is not None else L_NEUTRAL)
+                        if orientation == 'horizontal':
+                            R_kp = make_wrist_target_middle_down(
+                                tx, ty_use, tz,
+                                fwd_offset=-HAND_GRIP_CENTER_OFFSET)
+                        else:
+                            R_kp = make_wrist_target_upright_v4(
+                                tx, ty_use, tz + GRASP_Z_UP_BIAS, +1,
+                                fwd_offset=-wp4_park_offset(x_off))   # parked target
+                        with _SuppressStdout():
+                            _kp_q, _kp_tauff = arm_ik.solve_ik(
+                                _kp_idle, R_kp,
+                                current_lr_arm_motor_q=arm.get_current_dual_arm_q().copy(),
+                                current_lr_arm_motor_dq=np.zeros(14))
+                        if _kp_q is None:
+                            sys.stdout.write('ERROR:IK failed for keep-closed re-press\n')
+                            sys.stdout.flush()
+                            _reply_sent = True
+                            break
+                        _kp_q = freeze_idle_arm(arm, _kp_q, 'right')
+                        # live guard: the pinned re-press pose, before anything is
+                        # commanded
+                        _sc_rec = _sc_live_check(arm, _kp_q, 'keep-repress', 'pick', tx, ty)
+                        if _sc_rec is not None:
+                            sys.stdout.write(_sc_line(_sc_rec))
+                            sys.stdout.flush()
+                            _reply_sent = True
+                            break
+                        sys.stderr.write(
+                            '[pick_daemon] keep-closed re-press: moving '
+                            '(guarded, position-error backstop only)\n')
+                        sys.stderr.flush()
+                        _kp_c, _kp_r = move_arm_smooth_guarded(
+                            arm, _kp_q, _kp_tauff,
+                            PALM_CONTACT_MONITOR_JOINTS_RIGHT,
+                            PALM_CONTACT_POSITION_THRESHOLD,
+                            PALM_CONTACT_CONSECUTIVE_STEPS,
+                            zf_label='keep-closed-repress')
+                        if not _kp_c:
+                            sys.stderr.write(
+                                f'[pick_daemon] keep-closed re-press guarded '
+                                f'stop: {_kp_r}\n')
+                            sys.stderr.flush()
+                    elif orientation == UPRIGHT_GRASP:
+                        # ── upright approach: ascend, behind, descend, insert ──
+                        # identity orientation at every waypoint, deviation add-on
+                        # off unless DEVIATION_ENABLED, positions at lateral tx,
+                        # depth ty_use, height tz. the insert guard and retract are
+                        # unchanged. the wall triad below stays diagnostic only.
+                        use_oriented = False  # force identity: surface normals are unreliable for upright objects
+                        # retract trail holds this approach only. attempt 2 starts
+                        # at attempt 1's grasp pose, and replaying attempt 1's
+                        # entries would drive the arm back down to that pose before
+                        # READY.
+                        
+                        _trail_reset()
+
+                        # ascend only, never down
+                        _min_approach_z = tz + APPROACH_HEIGHT_OFFSET
+                        if _cur_wrist is not None:
+                            _approach_z = max(_cur_wrist[2], _min_approach_z)
+                            if _approach_z > _cur_wrist[2] + 0.02:
+                                sys.stderr.write(
+                                    f'[pick_daemon] Phase 1a: ascend to z={_approach_z:.3f} '
+                                    f'(current={_cur_wrist[2]:.3f})\n')
+                                sys.stderr.flush()
+                                R_wp1 = pin.SE3(np.eye(3), np.array([
+                                    _cur_wrist[0], _cur_wrist[1], _approach_z])).homogeneous
+                                _solver_fresh(arm_ik, 'wp1-ascend: ')
+                                if not solve_and_move(arm, arm_ik, R_wp1, "wp1-ascend: "):
+                                    sys.stdout.write('ERROR:IK failed for ascend\n')
+                                    sys.stdout.flush()
+                                    _reply_sent = True
+                                    break
+                                _trail_note(arm, 'wp1')  # trail
+                            else:
+                                sys.stderr.write(
+                                    f'[pick_daemon] Phase 1a: SKIP ascend '
+                                    f'(already at z={_cur_wrist[2]:.3f} >= {_min_approach_z:.3f})\n')
+                                sys.stderr.flush()
+                                _approach_z = _cur_wrist[2]
+                        else:
+                            _approach_z = _min_approach_z
+                            sys.stderr.write(
+                                '[pick_daemon] Phase 1a: SKIP ascend '
+                                '(FK unavailable), going directly to approach\n')
+                            sys.stderr.flush()
+
+                        # behind target, at height
+                        sys.stderr.write(
+                            '[pick_daemon] Phase 1b: approach xy at height\n')
+                        sys.stderr.flush()
+                        # the forward standoff is applied here (ty_use +
+                        # APPROACH_FORWARD_OFFSET): wp2 and wp3 park behind the
+                        # contact depth, approach verifies inside the reachable
+                        # shell, and the guarded wp4 push walks the final 8 cm. the
+                        # guard, not the solve, is contact safety. lateral stays tx;
+                        # a lateral offset outside the right-arm reach at this depth
+                        # gets baked into the wrist by the solver. the triad below
+                        # stays diagnostic only.
+                        if x_off is not None and abs(x_off) > 1e-4:
+                            _r_obj = -x_off - H_X_OFF_RADIUS_INV
+                        else:
+                            _r_obj = WALL_GRASP_R_DEFAULT
+                        _r_obj = float(np.clip(_r_obj, H_RADIUS_MIN, H_RADIUS_MAX))
+                        _x_wall = tx - _r_obj
+                        _x_standoff = _x_wall - WALL_GRASP_STANDOFF
+                        _x_contact = _x_wall - WALL_GRASP_PAD_GAP
+                        sys.stderr.write(
+                            f'[pick_daemon] wall grip (right) DIAG: r={_r_obj:.3f} '
+                            f'wall_x={_x_wall:.3f} standoff_x={_x_standoff:.3f} '
+                            f'contact_x={_x_contact:.3f} '
+                            f'deviation wp3={_deviation_ramped(1):.3f} '
+                            f'wp4={_deviation_ramped(2):.3f} rad '
+                            f'(max {DEV_MAX:.3f}) — v4.0 ORIGINAL design '
+                            f'RESTORED (identity R, lateral=tx={tx:.3f}, '
+                            f'z=tz); the triad numbers are v3 diagnostics '
+                            f'only\n')
+                        sys.stderr.flush()
+                        R_wp2 = make_wrist_target_upright_v4(
+                            tx, ty_use, _approach_z, +1,
+                            fwd_offset=APPROACH_FORWARD_OFFSET)
+                        _solver_fresh(arm_ik, 'wp2-approach: ')
+                        # live guard: the solved wp2 pose, before anything is
+                        # commanded
+                        _sc_rec = _sc_live_presolve(
+                            arm, arm_ik, R_wp2, 'wp2', 'pick', tx, ty,
+                            log_prefix='wp2-approach: ')
+                        if _sc_rec is not None:
+                            sys.stdout.write(_sc_line(_sc_rec))
+                            sys.stdout.flush()
+                            _reply_sent = True
+                            break
+                        if not solve_and_move(arm, arm_ik, R_wp2, "wp2-approach: "):
+                            sys.stdout.write('ERROR:IK failed for approach xy\n')
+                            sys.stdout.flush()
+                            _reply_sent = True
+                            break
+                        _trail_note(arm, 'wp2')  # retract trail
+
+                        # descend to grasp z
+                        sys.stderr.write(
+                            f'[pick_daemon] Phase 1c: descend to z={_grasp_z:.3f}\n')
+                        sys.stderr.flush()
+                        # descend straight down behind the object at the fixed
+                        # forward standoff (ty_use + APPROACH_FORWARD_OFFSET) with
+                        # identity orientation. deviation is an add-on (off unless
+                        # DEVIATION_ENABLED): straight at wp2, one DEV_STEP_MAX step
+                        # per waypoint toward contact, frozen at contact.
+                        _tilt_sign = _upright_tilt_sign(attempt)
+                        sys.stderr.write(
+                            f'[pick_daemon][tilt] attempt {attempt+1}: upright '
+                            f'deviation sign {_tilt_sign:+.0f} '
+                            f'dz={_upright_tilt_dz(attempt):+.3f} '
+                            f'({"up" if _tilt_sign > 0 else ("straight" if _tilt_sign == 0 else "down")})\n')
+                        sys.stderr.flush()
+                        R_wp3 = make_wrist_target_upright_v4(
+                            tx, ty_use, _grasp_z, +1,
+                            deviation=(_tilt_sign * _deviation_ramped(1)
+                                       if DEVIATION_ENABLED else 0.0),
+                            fwd_offset=APPROACH_FORWARD_OFFSET)
+                        _solver_fresh(arm_ik, 'wp3-descend: ')
+                        # live guard: the solved wp3 pose, before anything is
+                        # commanded
+                        _sc_rec = _sc_live_presolve(
+                            arm, arm_ik, R_wp3, 'wp3', 'pick', tx, ty,
+                            log_prefix='wp3-descend: ')
+                        if _sc_rec is not None:
+                            sys.stdout.write(_sc_line(_sc_rec))
+                            sys.stdout.flush()
+                            _reply_sent = True
+                            break
+                        if not solve_and_move(arm, arm_ik, R_wp3, "wp3-descend: "):
+                            sys.stdout.write('ERROR:IK failed for descend\n')
+                            sys.stdout.flush()
+                            _reply_sent = True
+                            break
+                        _trail_note(arm, 'wp3')  # retract trail
+
+                        time.sleep(0.5)
+                        _rim_diag(arm, arm_ik, 'wp3', R_wp3)   # measured vs commanded
+
+                        # ── phase 4.2: tracking stability check ──
+                        servo_status = 'stable'
+                        try:
+                            with open('/tmp/pick_servo_status', 'r') as f:
+                                servo_status = f.read().strip()
+                        except Exception:
+                            pass  # file may not exist yet: assume stable
+
+                        if servo_status == 'lost':
+                            sys.stderr.write('[pick_daemon] WARNING: tracking lost, but continuing — guarded insert will handle safety\n')
+                            sys.stderr.flush()
+                            # carry on to wp4: the palm contact guard handles safety
+
+                        if servo_status == 'shifted':
+                            sys.stderr.write(
+                                '[pick_daemon] Tracking shifted, '
+                                'recomputing grasp from latest detection\n')
+                            sys.stderr.flush()
+                            try:
+                                with open('/tmp/pick_latest_detection.json', 'r') as f:
+                                    latest = json.load(f)
+                                tx = latest.get('x', tx)
+                                ty_use = latest.get('y', ty_use)
+                                tz = latest.get('z', tz) + GRASP_Z_OFFSET
+                                # re-latch floor at new tz
+                                _latch_table_floor(tz, height_m, orientation)
+                                if use_oriented and 'nx' in latest:
+                                    nx = latest['nx']
+                                    ny = latest['ny']
+                                    nz = latest['nz']
+                                if 'height_m' in latest:
+                                    _h = float(latest['height_m'])
+                                    if 0.0 < _h <= HEIGHT_M_MAX:
+                                        height_m = _h
+                                    else:
+                                        height_m = None
+                                sys.stderr.write(
+                                    f'[pick_daemon] Updated target: '
+                                    f'x={tx:.3f} y={ty_use:.3f} z={tz:.3f}'
+                                    + (f' height_m={height_m:.3f}'
+                                       if height_m is not None
+                                       else ' height_m=unknown')
+                                    + '\n')
+                                sys.stderr.flush()
+                            except Exception as e:
+                                sys.stderr.write(
+                                    f'[pick_daemon] WARNING: '
+                                    f'failed to read latest detection: {e}\n')
+                                sys.stderr.flush()
+
+                        # wp4: guarded descend to the grip from above
+                        sys.stderr.write('[pick_daemon] Phase 2: descend to grasp (guarded)\n')
+                        sys.stderr.flush()
+                        # wp4 = guarded insert at full contact depth: lateral tx,
+                        # depth ty_use, height tz, identity orientation. in the
+                        # servo-shifted branch _grasp_z=tz so the insert follows the
+                        # retarget. the insert guard keeps it safe; wp4 FK logs where
+                        # the palm landed (diagnostic only). wp4 is the last ramping
+                        # deviation waypoint, with the full target frozen from
+                        # contact plus retract.
+                        _grasp_z = (tz + GRASP_Z_UP_BIAS   # +1 cm
+                                    + _upright_tilt_dz(attempt))
+                        _dev_tgt = (_upright_tilt_sign(attempt)
+                                    * _deviation_ramped(2)
+                                    if DEVIATION_ENABLED else 0.0)
+                        # upright wp4 park. the URDF grip zone rides +17..+69 mm
+                        # forward of R_ee (mid +43 mm), so a wrist at the centroid
+                        # puts the grip zone ~45 mm past the object and the solver
+                        # retracts backwards. the commanded target is parked at
+                        # fwd_offset=-HAND_GRIP_CENTER_OFFSET: wrist 4.5 cm behind
+                        # the centroid, grip zone on it. REFUSE/CEILING residual is
+                        # measured against the unparked R_grasp_centroid; a parked
+                        # residual would loosen the refusal by ~4.5 cm.
+                        # radius-based park.
+                        _wp4_park = wp4_park_offset(x_off)
+                        R_grasp = make_wrist_target_upright_v4(
+                            tx, ty_use, _grasp_z, +1, deviation=_dev_tgt,
+                            fwd_offset=-_wp4_park)
+                        if x_off is None:
+                            R_grasp_centroid = make_wrist_target_upright_v4(
+                                tx, ty_use, _grasp_z, +1, deviation=_dev_tgt)
+                        else:   # score target shifted by the extra park only
+                            R_grasp_centroid = make_wrist_target_upright_v4(
+                                tx, ty_use, _grasp_z, +1, deviation=_dev_tgt,
+                                fwd_offset=wp4_score_offset(x_off))
+                        if x_off is not None:
+                            # log the park offset when x_off is provided
+                            try:
+                                x_off_val = float(x_off)
+                                if x_off_val != 0 and math.isfinite(x_off_val):
+                                    r_eff = -x_off_val - H_X_OFF_RADIUS_INV
+                                    # log a clamped park as park_clamped=<requested>-><used>.
+                                    sys.stderr.write(
+                                        f'[pick_daemon] wp4 park: {_wp4_park:.3f} m '
+                                        f'behind centroid (x_off={x_off_val:.4f}, '
+                                        f'r_eff={r_eff:.3f})'
+                                        f'{wp4_park_clamp_note(x_off)}\n')
+                                    sys.stderr.flush()
+                            except (ValueError, TypeError):
+                                pass
+                        else:
+                            # log the default park for diagnostics
+                            sys.stderr.write(
+                                '[pick_daemon] v5.2 wp4 park: '
+                                f'fwd_offset=-HAND_GRIP_CENTER_OFFSET '
+                                f'({HAND_GRIP_CENTER_OFFSET*100:.2f} cm behind '
+                                f'centroid — grip zone centred)\n')
+                            sys.stderr.flush()
+
+                        # pin idle arm
+                        _wp4_idle_wrist = get_wrist_pose(arm_ik, arm.get_current_dual_arm_q().copy(), side='left')
+                        _wp4_idle_target = (pin.SE3(np.eye(3), _wp4_idle_wrist).homogeneous
+                                            if _wp4_idle_wrist is not None else L_NEUTRAL)
+                        # raw solve. a soft-fail best-effort command would polish the
+                        # pose with wrist GN and freeze the deviation; at the
+                        # forward-reach shell the GN chases an unreachable deviated
+                        # orientation and tilts the hand. raw solve_ik commands no GN
+                        # chase, so the hand arrives flat and stops once. solve_ik
+                        # never returns None on a bad solve; it returns the warm-q
+                        # blend, and the guarded move plus contact stop is the safety.
+                        _solver_fresh(arm_ik, 'wp4-insert: ')
+                        with _SuppressStdout():
+                            sol_q, sol_tauff = arm_ik.solve_ik(
+                                _wp4_idle_target, R_grasp,
+                                current_lr_arm_motor_q=arm.get_current_dual_arm_q().copy(),
+                                current_lr_arm_motor_dq=np.zeros(14))
+                        if sol_q is None:
+                            sys.stdout.write('ERROR:IK failed for insert\n')
+                            sys.stdout.flush()
+                            _reply_sent = True
+                            break
+
+                        # reach-ceiling gate. the residual is the forward-reach
+                        # shortfall: 0.068-0.092 m for an in-reach grasp against
+                        # 0.17-0.32 m truly out. the threshold sits above
+                        # SOLVE_VERIFY_POS_TOL because a reachable grasp can still
+                        # show a residual. the guarded insert and middle-finger stop
+                        # are the designed safety and the closure's pressure-delta
+                        # evidence adjudicates rim against palm downstream, so a short
+                        # residual is reported loudly and the pick continues.
+                        # REACH_REFUSE_POS is tunable via OPENBOT_REACH_REFUSE_POS
+                        # (0.03 < v <= 0.50; default 0.15).
+                        _gpe, _goe, _gRe, _gde = verify_ik_target(
+                            arm_ik, sol_q, 'right', R_grasp_centroid)
+                        if _gpe is not None and _gpe > SOLVE_VERIFY_POS_TOL:
+                            if _gpe > REACH_REFUSE_POS:
+                                # a diagnostic-only gate is too permissive: an
+                                # insert that solves far short closes on air and then
+                                # fakes a grip through the promote gates. an
+                                # unreachable insert is a refused pick.
+                                sys.stderr.write(
+                                    f'OUT OF REACH: solved insert pose '
+                                    f'residual {_gpe:.3f} m > '
+                                    f'{REACH_REFUSE_POS:.3f} m at grasp '
+                                    f'z={_grasp_z:.3f} m — the arm cannot '
+                                    f'reach the commanded insert pose; the '
+                                    f'robot is standing too far from the '
+                                    f'object.  Pick REFUSED; move closer and '
+                                    f'retry.  If the miss is predominantly '
+                                    f'lateral, check the known T1.12 '
+                                    f'lateral-sign-mirror item.\n')
+                                sys.stderr.flush()
+                                sys.stdout.write(f'ERROR:reach_ceiling residual={_gpe:.3f}m\n')
+                                sys.stdout.flush()
+                                _reply_sent = True
+                                break
+                            sys.stderr.write(
+                                f'REACH_CEILING(diag): solved insert pose '
+                                f'residual {_gpe:.3f} m > '
+                                f'{SOLVE_VERIFY_POS_TOL:.3f} m at grasp '
+                                f'z={_grasp_z:.3f} m — best-effort insert '
+                                f'CONTINUES (guarded insert + stop is the '
+                                f'safety).  The residual is vs the UNPARKED '
+                                f'object-centroid target: the parked insert '
+                                f'rides -HAND_GRIP_CENTER_OFFSET '
+                                f'({HAND_GRIP_CENTER_OFFSET*100:.2f} cm) so the '
+                                f'grip zone itself is '
+                                f'{(abs(_gpe)-HAND_GRIP_CENTER_OFFSET)*100:.0f} '
+                                f'cm short of the centroid at this reach cap; '
+                                f'the real fix is the robot standing closer.  '
+                                f'If the miss is predominantly lateral, check '
+                                f'the known T1.12 lateral-sign-mirror item.\n')
+                            sys.stderr.flush()
+
+                        # freeze the idle (left) arm at its current q to stop
+                        # nullspace drift
+                        sol_q = freeze_idle_arm(arm, sol_q, 'right')
+                        # live guard: the pinned insert pose, before anything is
+                        # commanded
+                        _sc_rec = _sc_live_check(arm, sol_q, 'wp4', 'pick', tx, ty)
+                        if _sc_rec is not None:
+                            sys.stdout.write(_sc_line(_sc_rec))
+                            sys.stdout.flush()
+                            _reply_sent = True
+                            break
+                        sys.stderr.write('[pick_daemon] wp4-insert (guarded): moving...\n')
+                        sys.stderr.flush()
+
+                        # insert guard: position-error backstop on joints [7,10]
+                        # (PALM_CONTACT_MONITOR_JOINTS_RIGHT) plus the middle-finger
+                        # stop only. pressure-stop-first and the wall-push monitor
+                        # [7,8,9,10] remain only in the horizontal flows.
+
+                        def _middle_check():
+                            return 'middle_finger' if detector.check_middle_finger_contact() else None
+
+                        # wp4 guard uses the automatic duration
+                        # (max_delta/MOVE_SPEED), not a fixed 1.5 s.
+                        completed, reason = move_arm_smooth_guarded(
+                            arm, sol_q, sol_tauff,
+                            PALM_CONTACT_MONITOR_JOINTS_RIGHT,
+                            PALM_CONTACT_POSITION_THRESHOLD,
+                            PALM_CONTACT_CONSECUTIVE_STEPS,
+                            stop_fn=_middle_check, zf_label='wp4-insert')
+                        # wp4 insert-press evidence: a guard stop via position_error
+                        # or the middle-finger probe means the palm or fingers
+                        # pressed something before the planned insert target. this is
+                        # the vertical keep-evidence term; the z-band is vacuous
+                        # vertically since design z = tz+GRASP_Z_UP_BIAS <= 0.035.
+                        _insert_pressed = (not completed) and (
+                            reason is not None and (
+                                reason.startswith('position_error')
+                                or reason == 'middle_finger'))
+                        if not completed:
+                            sys.stderr.write(
+                                f'[pick_daemon] wp4-insert guarded stop: {reason} '
+                                f'(retracting {RETRACT_AFTER_CONTACT:.2f}m to relieve pressure)\n')
+                            sys.stderr.flush()
+                            # active retract: move backward to take contact pressure
+                            # off instead of freezing, which lets the G1 controller
+                            # drift forward
+                            _contact_wrist = get_wrist_pose(arm_ik, arm.get_current_dual_arm_q().copy(), side='right')
+                            if _contact_wrist is not None:
+                                # identity-base retract (ty_use +
+                                # RETRACT_AFTER_CONTACT on top of
+                                # fwd_offset=approach_offset), with the deviation
+                                # frozen at wp4.
+                                R_retract = make_wrist_target_upright_v4(
+                                    tx, ty_use + RETRACT_AFTER_CONTACT,
+                                    _grasp_z, +1, deviation=_dev_tgt,
+                                    fwd_offset=approach_offset)
+                                # raw solve.
+                                with _SuppressStdout():
+                                    _retract_q, _retract_tauff = arm_ik.solve_ik(
+                                        _wp4_idle_target, R_retract,
+                                        current_lr_arm_motor_q=arm.get_current_dual_arm_q().copy(),
+                                        current_lr_arm_motor_dq=np.zeros(14))
+                                if _retract_q is not None:
+                                    # idle (left) arm untouched
+                                    _retract_q = freeze_idle_arm(arm, _retract_q, 'right')
+                                    # live guard: the contact retract, before
+                                    # anything is commanded; the failure block
+                                    # relaxes the stall and parks.
+                                    _sc_rec = _sc_live_check(arm, _retract_q, 'wp4-retract', 'pick', tx, ty)
+                                    if _sc_rec is not None:
+                                        sys.stdout.write(_sc_line(_sc_rec))
+                                        sys.stdout.flush()
+                                        _reply_sent = True
+                                        break
+                                    move_arm_smooth(arm, _retract_q, _retract_tauff, duration=0.3, zf_legacy=True)
+                                    _trail_note(arm, 'wp4-retract')  # retract trail
+                            time.sleep(INSERT_GUARD_HOLD_TIME)
+
+                        time.sleep(0.3)
+
+                        # ── wrist orientation FK verification ──
+                        # FK-log-only check with no control change: log the
+                        # achieved palm normal against the commanded identity
+                        # target. flexion dominance is a claw-frame property, so
+                        # the check is diagnostic only.
+                        _rim_diag(arm, arm_ik, 'wp4', R_grasp)   # measured vs commanded
+                        _q_now = arm.get_current_dual_arm_q().copy()
+                        _pe, _oe, _Re, _de = verify_ik_target(arm_ik, _q_now, 'right', R_grasp)
+                        if _Re is not None:
+                            _palm_cmd = np.array(R_grasp[:3, 1], dtype=np.float64)  # right: the physical palm = +Y_local
+                            _palm_act = np.array(_Re[:, 1], dtype=np.float64)
+                            _wq_cmd = sol_q[RIGHT_WRIST_Q_IDX]
+                            _wq_act = _q_now[RIGHT_WRIST_Q_IDX]
+                            _wq_d = _wq_act - _wq_cmd
+                            sys.stderr.write(
+                                f'[pick_daemon] wp4-FK orientation check: '
+                                f'palm normal cmd=({_palm_cmd[0]:.2f},{_palm_cmd[1]:.2f},{_palm_cmd[2]:.2f}) '
+                                f'act=({_palm_act[0]:.2f},{_palm_act[1]:.2f},{_palm_act[2]:.2f}) '
+                                f'ori err={_oe:.3f} rad (tol {SOLVE_VERIFY_ORI_TOL:.2f}) '
+                                f'det={_de:+.3f}; wrist joints [11,12,13] '
+                                f'cmd=({_wq_cmd[0]:.3f},{_wq_cmd[1]:.3f},{_wq_cmd[2]:.3f}) '
+                                f'act=({_wq_act[0]:.3f},{_wq_act[1]:.3f},{_wq_act[2]:.3f}) '
+                                f'delta=({_wq_d[0]:+.3f},{_wq_d[1]:+.3f},{_wq_d[2]:+.3f})\n')
+                            sys.stderr.flush()
+                            # body-axis decomposition against the straight frame
+                            # (deviation=0): pitch is about the fingers axis and has
+                            # to be ~0 at contact, deviation is the ulnar roll,
+                            # flexion is the in/out hinge. log only, loud on a pitch
+                            # violation. the target is printed signed (s_dev * delta;
+                            # right s_dev = DEV_ROT_SIGN = -1), so a perfect
+                            # execution reads deviation == target; an unsigned target
+                            # would show -0.524 next to +0.524 and hide a
+                            # wrong-signed failure.
+                            _R_straight = make_wrist_target(
+                                tx, ty_use, _grasp_z)
+                            _pitch, _dev_, _flex = wrist_rotation_decomposition(
+                                arm_ik, _q_now, 'right', _R_straight)
+                            if _pitch is not None:
+                                sys.stderr.write(
+                                    f'[pick_daemon] wp4 body-axis decomp: '
+                                    f'pitch={_pitch:+.3f} deviation={_dev_:+.3f} '
+                                    f'flexion={_flex:+.3f} rad (dev target '
+                                    f'{DEV_ROT_SIGN*_dev_tgt:+.3f} '
+                                    f'signed, pitch DIAG tol '
+                                    f'{PITCH_FROZEN_TOL:.2f})\n')
+                                sys.stderr.flush()
+                                if abs(_pitch) > PITCH_FROZEN_TOL:
+                                    sys.stderr.write(
+                                        '[pick_daemon] WARNING: NO-PITCH rule '
+                                        f'VIOLATED at wall contact: '
+                                        f'|pitch|={abs(_pitch):.3f} > '
+                                        f'{PITCH_FROZEN_TOL:.2f} rad (user rule '
+                                        f'2026-08-30 — wrist up/down must not '
+                                        f'move during upright contact)\n')
+                                    sys.stderr.flush()
+                        else:
+                            sys.stderr.write(
+                                '[pick_daemon] wp4-FK orientation check skipped (FK failed)\n')
+                            sys.stderr.flush()
+
+                    else:  # orientation == 'horizontal'
+                        # ── horizontal (top-down) approach: ascend, above,
+                        # descend onto ──
+                        # retract trail holds this approach only (see the upright
+                        # branch above).
+                        _trail_reset()
+                        if attempt == 0:
+                            _hrule_h_cmd = height_m   # the command's height ('shifted' re-reads height_m)
+
+                        # ascend if needed
+                        _h_min_approach_z = tz + 0.20
+                        if _cur_wrist is not None:
+                            if _cur_wrist[2] < _h_min_approach_z:
+                                _h_approach_z = _h_min_approach_z
+                                sys.stderr.write(
+                                    f'[pick_daemon] Horizontal wp1: ascend to z={_h_approach_z:.3f} '
+                                    f'(current={_cur_wrist[2]:.3f}, bottle_z={tz:.3f})\n')
+                                sys.stderr.flush()
+                                R_h_wp1 = pin.SE3(np.eye(3), np.array([
+                                    _cur_wrist[0], _cur_wrist[1], _h_approach_z])).homogeneous
+                                # raw swing: no verified GN polish on the horizontal
+                                # swing, which tilted the palm while turning the
+                                # wrist from far inwards.
+                                if not solve_and_move(arm, arm_ik, R_h_wp1, "h-wp1-ascend: ", raw=True):
+                                    sys.stdout.write('ERROR:IK failed for horizontal ascend\n')
+                                    sys.stdout.flush()
+                                    _reply_sent = True
+                                    break
+                                _trail_note(arm, 'h-wp1')  # retract trail
+                            else:
+                                _h_approach_z = _cur_wrist[2]
+                                sys.stderr.write(
+                                    f'[pick_daemon] Horizontal wp1: SKIP ascend '
+                                    f'(already at z={_cur_wrist[2]:.3f} >= {_h_min_approach_z:.3f})\n')
+                                sys.stderr.flush()
+                        else:
+                            _h_approach_z = _h_min_approach_z
+                            sys.stderr.write(
+                                '[pick_daemon] Horizontal wp1: SKIP ascend '
+                                '(FK unavailable), going directly to approach\n')
+                            sys.stderr.flush()
+
+                        if _hl is not None:
+                            # attempt 1 uses the command's aim; 2-3 use the
+                            # re-detected base (clean rows taken with the hand up
+                            # here) plus the rung, reach-prechecked. False stops the
+                            # ladder.
+                            if not _hl_aim(_hl, attempt, arm_ik, tz, x_off):
+                                break
+                            tx, ty_use = _hl['aim']
+
+                        # wp2: directly above the object's grip centre. the grip
+                        # zone (+17..+69 mm forward of R_ee) sits ~45 mm past the
+                        # centroid at zero offset, so the wrist parks
+                        # HAND_GRIP_CENTER_OFFSET behind it.
+                        sys.stderr.write(
+                            '[pick_daemon] Horizontal wp2: approach xy above bottle\n')
+                        sys.stderr.flush()
+                        R_h_wp2 = make_wrist_target_middle_down(
+                            tx, ty_use, _h_approach_z,
+                            fwd_offset=-HAND_GRIP_CENTER_OFFSET)
+                        # raw swing: the wrist rotates palm-down during the
+                        # approach, one move straight to the position above the
+                        # object.
+                        _solver_fresh(arm_ik, 'h-wp2-approach: ')
+                        # live guard: the solved h-wp2 pose, before anything is
+                        # commanded
+                        _sc_rec = _sc_live_presolve(
+                            arm, arm_ik, R_h_wp2, 'h-wp2', 'pick', tx, ty,
+                            raw=True, log_prefix='h-wp2-approach: ')
+                        if _sc_rec is not None:
+                            sys.stdout.write(_sc_line(_sc_rec))
+                            sys.stdout.flush()
+                            _reply_sent = True
+                            break
+                        if not solve_and_move(arm, arm_ik, R_h_wp2, "h-wp2-approach: ", raw=True):
+                            sys.stdout.write('ERROR:IK failed for horizontal approach xy\n')
+                            sys.stdout.flush()
+                            _reply_sent = True
+                            break
+                        _trail_note(arm, 'h-wp2')  # retract trail
+
+                        # ── tracking stability check (between wp2 and wp3) ──
+                        servo_status = 'stable'
+                        try:
+                            with open('/tmp/pick_servo_status', 'r') as f:
+                                servo_status = f.read().strip()
+                        except Exception:
+                            pass
+
+                        if _hl is not None and servo_status == 'shifted':
+                            # the ladder owns the aim; the block below would
+                            # overwrite ty_use with an unlabelled, unstamped row.
+                            _hl_log('tracking shifted ignored: the ladder owns the '
+                                    f'aim (x={tx:.3f} y={ty_use:.3f})')
+                            servo_status = 'shifted-ignored'
+
+                        if servo_status == 'lost':
+                            sys.stderr.write('[pick_daemon] WARNING: tracking lost, but continuing — guarded descent will handle safety\n')
+                            sys.stderr.flush()
+
+                        if servo_status == 'shifted':
+                            sys.stderr.write(
+                                '[pick_daemon] Tracking shifted, '
+                                'recomputing grasp from latest detection\n')
+                            sys.stderr.flush()
+                            try:
+                                with open('/tmp/pick_latest_detection.json', 'r') as f:
+                                    latest = json.load(f)
+                                tx = latest.get('x', tx)
+                                ty_use = latest.get('y', ty_use)
+                                tz = latest.get('z', tz) + GRASP_Z_OFFSET
+                                # re-latch floor at new tz
+                                _latch_table_floor(tz, height_m, orientation)
+                                if use_oriented and 'nx' in latest:
+                                    nx = latest['nx']
+                                    ny = latest['ny']
+                                    nz = latest['nz']
+                                if 'height_m' in latest:
+                                    _h = float(latest['height_m'])
+                                    if 0.0 < _h <= HEIGHT_M_MAX:
+                                        height_m = _h
+                                    else:
+                                        height_m = None
+                                sys.stderr.write(
+                                    f'[pick_daemon] Updated target: '
+                                    f'x={tx:.3f} y={ty_use:.3f} z={tz:.3f}'
+                                    + (f' height_m={height_m:.3f}'
+                                       if height_m is not None
+                                       else ' height_m=unknown')
+                                    + '\n')
+                                sys.stderr.flush()
+                            except Exception as e:
+                                sys.stderr.write(
+                                    f'[pick_daemon] WARNING: '
+                                    f'failed to read latest detection: {e}\n')
+                                sys.stderr.flush()
+
+                        # descend onto the object (guarded): straight to the
+                        # interface target at y=ty_use, z=tz. the stop is middle
+                        # pad (pkg 5) only; a fingertip graze (pkg 8) does not end
+                        # the drop while the palm is still in the air. a lag/block
+                        # stop (position_error) or a completed ramp above tz gets one
+                        # resumed guarded push (single _h_resumed slot, max 2
+                        # passes).
+                        sys.stderr.write(
+                            f'[pick_daemon] Horizontal wp3: descend onto bottle to z={tz:.3f} (guarded, pad-only stop)\n')
+                        sys.stderr.flush()
+                        _h_tz = _h_rule_tz(tz, _hrule_h_cmd)   # == tz unless the rule applies
+                        R_h_grasp = make_wrist_target_middle_down(
+                            tx, ty_use, _h_tz,
+                            fwd_offset=-HAND_GRIP_CENTER_OFFSET)
+                        if _hl is not None:
+                            # attempts 2-3 descend dz below attempt 1's target; only
+                            # the target moves, so where the z-floor clamp binds the
+                            # lowering is a no-op (logged after the descent).
+                            R_h_grasp = _hl_descent_target(_hl, attempt, _h_tz, R_h_grasp)
+
+                        # pin the idle (left) arm for the retract solve below;
+                        # each descent pass re-pins it.
+                        _h_wp3_idle_wrist = get_wrist_pose(arm_ik, arm.get_current_dual_arm_q().copy(), side='left')
+                        _h_wp3_idle_target = (pin.SE3(np.eye(3), _h_wp3_idle_wrist).homogeneous
+                                              if _h_wp3_idle_wrist is not None else L_NEUTRAL)
+
+                        def _h_middle_check():
+                            return 'middle_finger' if detector.check_middle_finger_contact(pad_only=True) else None
+
+                        def _h_descend_once(duration):
+                            nonlocal _sc_rec  # the h-wp3 live guard's record
+                            # fresh idle (left) pin and warm start from the current q
+                            # each pass; raw solve, no wrist-GN chase.
+                            _i = get_wrist_pose(arm_ik, arm.get_current_dual_arm_q().copy(), side='left')
+                            _it = (pin.SE3(np.eye(3), _i).homogeneous
+                                   if _i is not None else L_NEUTRAL)
+                            with _SuppressStdout():
+                                _s, _t = arm_ik.solve_ik(
+                                    _it, R_h_grasp,
+                                    current_lr_arm_motor_q=arm.get_current_dual_arm_q().copy(),
+                                    current_lr_arm_motor_dq=np.zeros(14))
+                            if _s is None:
+                                return None, False, 'ik_fail'
+                            _s = freeze_idle_arm(arm, _s, 'right')
+                            # live guard: refuse this pass before the guarded move;
+                            # the caller loop sees 'self_collision' and replies once.
+                            _sc_rec = _sc_live_check(arm, _s, 'h-wp3', 'pick', tx, ty)
+                            if _sc_rec is not None:
+                                return _s, False, 'self_collision'
+                            sys.stderr.write('[pick_daemon] h-wp3-descent (guarded): moving...\n')
+                            sys.stderr.flush()
+                            _c, _r = move_arm_smooth_guarded(
+                                arm, _s, _t,
+                                PALM_CONTACT_MONITOR_JOINTS_RIGHT,
+                                PALM_CONTACT_POSITION_THRESHOLD,
+                                PALM_CONTACT_CONSECUTIVE_STEPS,
+                                stop_fn=_h_middle_check,
+                                duration=duration, zf_label='h-wp3-descent')
+                            return _s, _c, _r
+
+                        _solver_fresh(arm_ik, 'h-wp3-descend: ')
+                        # explicit descend pass loop: a reach stall is not contact.
+                        # per pass: descend (DESCENT_DURATION on pass 0, then none),
+                        # settle 0.3 s, read wrist z, compute gap = wrist_z - tz.
+                        #   not completed + position_error + gap > STALL_GAP: reach
+                        #   stall, not contact, so no retract and no immediate close;
+                        #   take the not-bottomed path (push if budget and progress
+                        #   remain, else diagnostic close at the current height, with
+                        #   closure evidence deciding).
+                        #   not completed + anything else (middle-finger stop,
+                        #   position_error in band): true contact, retract block below.
+                        #   completed: not-bottomed if gap > DEPTH_TOL.
+                        # not-bottomed: gap <= DEPTH_TOL (or FK unreadable) ends the
+                        # loop; _h_pushes >= H_DESCEND_MAX_PUSHES breaks with a
+                        # diagnostic; progress < H_DESCEND_MIN_PROGRESS (1 cm) breaks
+                        # with "no more pushes"; else push again.
+                        _h_pushes = 0
+                        _h_prev_gap = None
+                        _h_contact = False
+                        while True:
+                            sol_q, completed, reason = _h_descend_once(
+                                DESCENT_DURATION if _h_pushes == 0 else None)
+                            if reason == 'self_collision':
+                                break  # refused before moving; one reply below
+                            if sol_q is None:
+                                sys.stdout.write('ERROR:IK failed for horizontal descent\n')
+                                sys.stdout.flush()
+                                _reply_sent = True
+                                break
+                            time.sleep(0.3)  # settle before the depth read (post-ramp)
+                            _hwz = get_wrist_pose(arm_ik, arm.get_current_dual_arm_q().copy(), side='right')
+                            _gap = (_hwz[2] - _h_tz) if _hwz is not None else None
+                            if not completed:
+                                if (reason is not None and reason.startswith('position_error')
+                                        and _gap is not None and _gap > H_DESCEND_STALL_GAP):
+                                    sys.stderr.write(
+                                        f'[pick_daemon] REACH STALL at +{_gap:.3f} m '
+                                        f'({_gap*100:.1f} cm above target z={_h_tz:.3f}: {reason}) '
+                                        f'— NOT contact (pads hang 5-17 mm under the wrist, '
+                                        f'guard stop hit with the palm still airborne).  No '
+                                        f'contact-retract, no immediate close.\n')
+                                    sys.stderr.flush()
+                                else:
+                                    _h_contact = True
+                                    break  # true contact, retract block below
+                            if _gap is None or _gap <= H_DESCEND_DEPTH_TOL:
+                                break  # reached the depth band (or FK unreadable)
+                            if _h_pushes >= H_DESCEND_MAX_PUSHES:
+                                sys.stderr.write(
+                                    f'[pick_daemon] h-wp3 descend budget spent: {_h_pushes} '
+                                    f'push(es), gap +{_gap:.3f} m above target — DIAG, '
+                                    f'close-at-current-height; closure evidence adjudicates\n')
+                                sys.stderr.flush()
+                                break
+                            if (_h_prev_gap is not None
+                                    and (_h_prev_gap - _gap) < H_DESCEND_MIN_PROGRESS):
+                                sys.stderr.write(
+                                    f'[pick_daemon] h-wp3 push made less than '
+                                    f'{H_DESCEND_MIN_PROGRESS:.3f} m '
+                                    f'(+{_h_prev_gap:.3f} → +{_gap:.3f}) — no more pushes, '
+                                    f'close-at-current-height; closure evidence adjudicates\n')
+                                sys.stderr.flush()
+                                break
+                            _h_prev_gap = _gap
+                            _h_pushes += 1
+                            sys.stderr.write(
+                                f'[pick_daemon] h-wp3 push {_h_pushes}: gap +{_gap:.3f} m '
+                                f'(>{H_DESCEND_DEPTH_TOL:.3f}) — one more guarded push\n')
+                            sys.stderr.flush()
+
+                        if _sc_rec is not None:
+                            # the h-wp3 live guard refused a descent pass, returning
+                            # 'self_collision' without moving.
+                            sys.stdout.write(_sc_line(_sc_rec))
+                            sys.stdout.flush()
+                            _reply_sent = True
+                            break
+                        if _hl is not None:
+                            # dz: wrist z reached, lower than attempt 1's and clamped
+                            _hl_descent_note(_hl, attempt, _h_tz, sol_q, arm, arm_ik)
+                        _h_rule_close(arm, arm_ik, _h_tz, tz, _hrule_h_cmd)   # telemetry
+                        if _h_contact:
+                            sys.stderr.write(
+                                f'[pick_daemon] h-wp3-descent guarded stop: {reason} '
+                                f'(retracting {RETRACT_AFTER_CONTACT:.2f}m to relieve pressure)\n')
+                            sys.stderr.flush()
+                            # active retract: move backward to take the contact
+                            # pressure off; unconditional, always pulling back
+                            # RETRACT_AFTER_CONTACT at z=tz.
+                            R_h_retract = make_wrist_target_middle_down(
+                                tx, ty_use + RETRACT_AFTER_CONTACT, _h_tz,
+                                fwd_offset=-HAND_GRIP_CENTER_OFFSET)
+                            # raw solve, no wrist-GN chase; retract channel mirror.
+                            with _SuppressStdout():
+                                _h_retract_q, _h_retract_tauff = arm_ik.solve_ik(
+                                    _h_wp3_idle_target, R_h_retract,
+                                    current_lr_arm_motor_q=arm.get_current_dual_arm_q().copy(),
+                                    current_lr_arm_motor_dq=np.zeros(14))
+                            if _h_retract_q is not None:
+                                # idle (left) arm untouched
+                                _h_retract_q = freeze_idle_arm(arm, _h_retract_q, 'right')
+                                # live guard: the contact retract, before anything is commanded
+                                _sc_rec = _sc_live_check(arm, _h_retract_q, 'h-wp3-retract', 'pick', tx, ty)
+                                if _sc_rec is not None:
+                                    sys.stdout.write(_sc_line(_sc_rec))
+                                    sys.stdout.flush()
+                                    _reply_sent = True
+                                    break
+                                move_arm_smooth(arm, _h_retract_q, _h_retract_tauff, duration=0.3, zf_legacy=True)
+                                _trail_note(arm, 'h-wp3-retract')  # retract trail
+                            time.sleep(INSERT_GUARD_HOLD_TIME)
+
+                        time.sleep(0.3)
+
+                        # FK orientation check.
+                        _q_now = arm.get_current_dual_arm_q().copy()
+                        _pe, _oe, _Re, _de = verify_ik_target(arm_ik, _q_now, 'right', R_h_grasp)
+                        if _Re is not None:
+                            _palm_cmd = np.array(R_h_grasp[:3, 1], dtype=np.float64)  # right: physical palm = +Y_local
+                            _palm_act = np.array(_Re[:, 1], dtype=np.float64)
+                            _wq_cmd = sol_q[RIGHT_WRIST_Q_IDX]
+                            _wq_act = _q_now[RIGHT_WRIST_Q_IDX]
+                            sys.stderr.write(
+                                f'[pick_daemon] h-wp3-FK orientation check: '
+                                f'palm normal cmd=({_palm_cmd[0]:.2f},{_palm_cmd[1]:.2f},{_palm_cmd[2]:.2f}) '
+                                f'act=({_palm_act[0]:.2f},{_palm_act[1]:.2f},{_palm_act[2]:.2f}) '
+                                f'ori err={_oe:.3f} rad (tol {SOLVE_VERIFY_ORI_TOL:.2f}) '
+                                f'det={_de:+.3f}; wrist joints [11,12,13] '
+                                f'cmd=({_wq_cmd[0]:.3f},{_wq_cmd[1]:.3f},{_wq_cmd[2]:.3f}) '
+                                f'act=({_wq_act[0]:.3f},{_wq_act[1]:.3f},{_wq_act[2]:.3f})\n')
+                            sys.stderr.flush()
+                        else:
+                            sys.stderr.write(
+                                '[pick_daemon] h-wp3-FK orientation check skipped (FK failed)\n')
+                            sys.stderr.flush()
+
+                    # 4. close the hand (adaptive, stops when finger pressure passes
+                    # the threshold). stop_threshold is GRIP_CLOSE_STOP_DELTA
+                    # (100000), passed per call in the verb so no grip-server restart
+                    # is needed. shared by the vertical and horizontal closes.
+                    sys.stderr.write(
+                        f'[pick_daemon] Phase 3: closing hand (bounded lead, '
+                        f'eps={HAND_CLOSE_LEAD_EPS:.2f} rad)\n')
+                    sys.stderr.flush()
+                    _close_baseline_p = 0.0
+                    try:
+                        _close_baseline_p = float(
+                            rhand.pressure('right').get('right', {}).get('max', 0.0))
+                    except Exception:
+                        pass
+                    # record the wrist height at the close: wrist_z - tz <=
+                    # H_PALM_TOUCH_BAND means the palm is at the object when the
+                    # fingers closed.
+                    _wrist_z_at_close = get_wrist_pose(
+                        arm_ik, arm.get_current_dual_arm_q().copy(), side='right')
+                    # the closure is capped at F_MAX_SAFE (the grip server) and the cap
+                    # is honoured here: the commanded and scored pose both come from
+                    # clamped_close_target. the ceiling is computed first and the
+                    # close is a bounded-lead walk. a full-preset close lets the
+                    # server ramp the command the whole travel ahead of the fingers,
+                    # which can rail joints before contact. the ceiling is unchanged
+                    # and is still the pose the closure-block score is taken against;
+                    # only each write's lead is capped, so a free-air close ends at
+                    # the ceiling and a real block still reads blocked=True.
+                    
+                    _r_close_target, _r_close_eff = clamped_close_target('right', 1.0)
+                    _contact_closure = _bounded_lead_close(
+                        rhand, 'right', _r_close_target)
+                    if _contact_closure == 'contact':
+                        # grip detected early: hold where it stopped, never tighten
+                        # to the cap, since stopping early means something is already
+                        # in the hand. the server's 20 Hz re-assert thread holds
+                        # last_q, so logging is all this branch needs.
+                        sys.stderr.write(
+                            '[pick_daemon] Adaptive closure: grip detected, holding at the '
+                            f'aperture reached (cap {_r_close_eff:.3f})\n')
+                        sys.stderr.flush()
+                    elif _contact_closure == 'no_data':
+                        # this path writes nothing: a close whose lead cannot be
+                        # observed is the rail path.
+                        sys.stderr.write('[pick_daemon] Bounded-lead close: NO HAND STATE -- nothing written (refusing to press blind)\n')
+                        sys.stderr.flush()
+                    else:
+                        sys.stderr.write('[pick_daemon] Bounded-lead close: walk complete -- lead held at eps (see the bounded-lead line above)\n')
+                        sys.stderr.flush()
+
+                    sys.stderr.write(
+                        f'[pick_daemon] right hand last commanded q after bounded-lead close: '
+                        f'{[rhand.last_q[id] for id in DEX3_JOINTS]}\n')
+                    sys.stderr.flush()
+                    _close_final_p = 0.0
+                    try:
+                        _close_final_p = float(
+                            rhand.pressure('right').get('right', {}).get('max', 0.0))
+                    except Exception:
+                        pass
+                    sys.stderr.write(
+                        f'[pick_daemon] right close pressure: baseline='
+                        f'{_close_baseline_p:.0f} final={_close_final_p:.0f} '
+                        f'delta={_close_final_p - _close_baseline_p:.0f} '
+                        f'(closure={_contact_closure})\n')
+                    sys.stderr.flush()
+
+                    # closure-block read and squeeze-hold. the grip server state
+                    # reply is side-keyed as {side: {joint: q}}, so the score must
+                    # unwrap the side key (same shape _verify_hand_open uses).
+                    # _squeeze_hold re-asserts the close preset after the 1.0 s ramp,
+                    # settles 0.5 s and re-scores; this is the primary keep evidence,
+                    # since the pressure delta stays <= 24 even at contact and tactile
+                    # reads False.
+                    _close_delta = _close_final_p - _close_baseline_p
+                    _close_blk_pre, _close_margin_pre, _close_worst_pre = _score_closure_blocked(
+                        rhand, 'right', _r_close_target)
+                    _close_blk_post, _close_margin_post, _close_worst_post = _squeeze_hold(
+                        rhand, 'right', _r_close_target)
+                    _close_blocked = _close_blk_post
+                    # this command's latest close
+                    _ge_close_blocked = _close_blocked
+                    _ge_close_margin = _close_margin_post
+                    sys.stderr.write(
+                        f'[pick_daemon] right squeeze-hold: re-assert close '
+                        f'preset, settle 0.5s — margin pre='
+                        f'{_close_margin_pre:.3f} post={_close_margin_post:.3f} '
+                        f'blocked={_close_blocked} '
+                        f'(tol {CLOSURE_BLOCKED_TOL:.2f} rad)\n')
+                    sys.stderr.flush()
+                    # capture-evidence set for the no-reopen and attempt-1
+                    # keep-closed decisions. any term set means the hand probably
+                    # closed on something.
+                    _any_capture = _close_blocked
+                    if _contact_closure == 'contact':
+                        _any_capture = True
+                    if _close_delta >= _CLOSE_DELTA_TOUCH_MIN:
+                        _any_capture = True
+                    if (orientation == 'horizontal' and _wrist_z_at_close is not None
+                            and _wrist_z_at_close[2] - _h_tz <= H_PALM_TOUCH_BAND):
+                        _any_capture = True
+                    if _insert_pressed:
+                        _any_capture = True
+
+                    # 4.5. verify the grasp (Phase 3 closed loop)
+                    sys.stderr.write('[pick_daemon] Phase 3.5: verifying grasp...\n')
+                    sys.stderr.flush()
+                    time.sleep(0.3)  # let the torque build
+
+                    deadline = time.time() + 0.5
+                    state = None
+                    while time.time() < deadline:
+                        state = detector.update()
+                        if state.is_stable:
+                            break
+                        time.sleep(0.02)
+
+                    if state is None:
+                        state = detector.update()
+
+                    quadrant = state.gating_quadrant if state else "grasped_nothing"
+                    # no extra veto: a light or soft object squeezed to full never
+                    # crosses the close stop (100000 delta), so a real grip can read
+                    # 'full'. the empty-hand false solid fires via 'contact', never
+                    # 'full'. the detector verdict stands and the close's pressure
+                    # delta supplies the missing light-grip evidence.
+                    if _contact_closure == 'full' and quadrant == 'solid_grasp':
+                        sys.stderr.write(
+                            '[pick_daemon] NOTE: closure ended full (delta '
+                            'below the 100000 close-stop) but the detector '
+                            'says solid_grasp — light object grips read '
+                            'lower.  Trusting the detector; no veto.\n')
+                        sys.stderr.flush()
+                    sys.stderr.write(
+                        f'[pick_daemon] Grasp verdict: {quadrant} '
+                        f'(motor_high={state.motor_current_high if state else "N/A"}, '
+                        f'tactile={state.tactile_contact if state else "N/A"}, '
+                        f'support_ratio={state.support_ratio:.2f}'
+                        + (f', stable={state.is_stable}' if state else '')
+                        + ')\n')
+                    sys.stderr.flush()
+
+                    _grasp_log(
+                        'R', attempt,
+                        closure=_contact_closure,
+                        delta=round(_close_delta, 1),
+                        blocked=_close_blocked,
+                        m_pre=round(_close_margin_pre, 3),
+                        m_post=round(_close_margin_post, 3),
+                        sup=round(state.support_ratio, 3) if state is not None else None,
+                        quad=quadrant,
+                        anycap=_any_capture,
+                        palm_avail=_palm_data_available_right,
+                        final_p=round(_close_final_p, 1),
+                        base_p=round(_close_baseline_p, 1),
+                    )
+
+                    # the tactile threshold (100000) can also miss a light squeeze;
+                    # the close's pressure delta (final - baseline) is independent
+                    # evidence the fingers press something.
+                    if quadrant == 'grasped_nothing' and _contact_closure != 'no_data':
+                        _close_delta = _close_final_p - _close_baseline_p
+                        # reopen guard: the adaptive close's own 'contact' result is
+                        # independent evidence the hand closed onto something
+                        # physical, so do not drop a held object when the detector
+                        # reads grasped_nothing. logged.
+                        if (_contact_closure == 'contact'
+                                or _close_delta >= GRIP_PRESSURE_DELTA_EVIDENCE
+                                or _close_blocked):
+                            sys.stderr.write(
+                                f'[pick_daemon] Grasp evidence upgrade: '
+                                f'pressure delta {_close_delta:.0f} >= '
+                                f'{GRIP_PRESSURE_DELTA_EVIDENCE:.0f}'
+                                + (' or closure-blocked (physical close '
+                                   'joints short of the preset)'
+                                   if _close_blocked else '')
+                                + f' — object in '
+                                f'hand: grasped_nothing -> light_object\n')
+                            sys.stderr.flush()
+                            quadrant = 'light_object'
+                    elif quadrant == 'hit_obstacle' and _contact_closure != 'no_data':
+                        # the detector maps motor_high + tactile False to
+                        # hit_obstacle, and a real rim or top-edge grip reads
+                        # exactly that. the discriminator is the close pressure
+                        # delta magnitude: at the rest floor (~105600) the 200000
+                        # ceiling caps the squeeze delta at ~94400, below the 100000
+                        # stop, so a hard jam or empty self-pinch ends 'full' near
+                        # 94k and goes to the support_ratio gate. the close path does
+                        # not return 'contact'; a blocked close is carried by the
+                        # pressure-independent closure-block margin. the only
+                        # high-motor, low-pressure case is a real light rim grip,
+                        # kept by promoting hit_obstacle to light_object only in the
+                        # light band ('full' and floor < delta <
+                        # GRIP_PRESSURE_DELTA_EVIDENCE); 'contact' or delta >= that
+                        # bound stays support-gated.
+                        _close_delta = _close_final_p - _close_baseline_p
+                        if (_contact_closure == 'full'
+                                and _CLOSE_DELTA_LIGHT_GRIP_FLOOR < _close_delta
+                                < GRIP_PRESSURE_DELTA_EVIDENCE):
+                            sys.stderr.write(
+                                f'[pick_daemon] Grasp evidence upgrade: '
+                                f'pressure delta {_close_delta:.0f} (closure='
+                                f'{_contact_closure}) in light-grip band — '
+                                f'object in hand: hit_obstacle -> light_object '
+                                f'(rim grip)\n')
+                            sys.stderr.flush()
+                            quadrant = 'light_object'
+                        elif _close_blocked:
+                            sys.stderr.write(
+                                f'[pick_daemon] Grasp evidence upgrade: '
+                                f'closure-blocked - fingers stopped '
+                                f'{_close_margin_post:.3f} rad short of the close '
+                                f'preset (> tol {CLOSURE_BLOCKED_TOL:.2f} rad): an '
+                                f'object is between the fingers; NO tactile/'
+                                f'pressure confirmation (pressure channel '
+                                f'non-discriminating on this hand) - GRASP LIKELY: '
+                                f'hit_obstacle -> light_object\n')
+                            sys.stderr.flush()
+                            quadrant = 'light_object'
+                        # closure-blocked promotion. support_ratio is not used:
+                        # tau_sum/2.943 N is a units artifact (~5e5 on every close,
+                        # empty ones included). the closure-block margin is the
+                        # discriminator: empty closes reach the preset
+                        # (0.038-0.039 rad) while real grasps stop short
+                        # (0.828-1.256 rad), and 0.06 sits between. the latch
+                        # confound is excluded upstream: _verify_hand_open refuses
+                        # attempt 1 unless every joint is within
+                        # VERIFY_OPEN_TOLERANCE_RAD of open, and the pre-lift pin
+                        # still aborts if the fingers then reach the preset.
+
+                        # blind-mode fallback: no DDS data means skip verification
+                    if not _palm_data_available_right and quadrant == "grasped_nothing":
+                        sys.stderr.write(
+                            '[pick_daemon] BLIND MODE: the RIGHT palm sensor has no '
+                            'DDS hand-state data — skipping grasp verification, '
+                            'proceeding to lift.\n')
+                        sys.stderr.flush()
+                        grasp_ok = True
+                        break
+
+                    if quadrant == "solid_grasp" or quadrant == "light_object":
+                        grasp_ok = True
+                        break
+                    elif quadrant == "hit_obstacle":
+                        # no-reopen retry: the hit_obstacle and grasped_nothing
+                        # verdicts are context-free, so opening here would drop a
+                        # real capture. with any capture evidence the hand stays
+                        # closed into attempt 2 (guarded re-press).
+                        sys.stderr.write('[pick_daemon] Hit obstacle, aborting attempt\n')
+                        sys.stderr.flush()
+                        if _any_capture:
+                            _attempt_keep_closed = True
+                            sys.stderr.write(
+                                f'[pick_daemon] RETRY keep-closed: attempt-1 '
+                                f'evidence (closure={_contact_closure}, '
+                                f'blocked={_close_blocked}, '
+                                f'delta={_close_delta:.0f}'
+                                + (f', pad={_wrist_z_at_close[2]-_h_tz:.3f} m'
+                                   if orientation == 'horizontal'
+                                   and _wrist_z_at_close is not None else '')
+                                + (f', insert_pressed={_insert_pressed}'
+                                   if orientation != 'horizontal' else '')
+                                + ') — hand stays CLOSED, guarded re-press '
+                                f'+2 cm forward\n')
+                            sys.stderr.flush()
+                        else:
+                            rhand.open()
+                    else:  # "grasped_nothing"
+                        sys.stderr.write('[pick_daemon] Grasped nothing, retrying...\n')
+                        sys.stderr.flush()
+                        if _any_capture:
+                            _attempt_keep_closed = True
+                            sys.stderr.write(
+                                f'[pick_daemon] RETRY keep-closed: attempt-1 '
+                                f'evidence (closure={_contact_closure}, '
+                                f'blocked={_close_blocked}, '
+                                f'delta={_close_delta:.0f}'
+                                + (f', pad={_wrist_z_at_close[2]-_h_tz:.3f} m'
+                                   if orientation == 'horizontal'
+                                   and _wrist_z_at_close is not None else '')
+                                + (f', insert_pressed={_insert_pressed}'
+                                   if orientation != 'horizontal' else '')
+                                + ') — hand stays CLOSED, guarded re-press '
+                                f'+2 cm forward\n')
+                            sys.stderr.flush()
+                        else:
+                            rhand.open()
+
+                if _hl is not None:
+                    _hl_end(_hl, grasp_ok)
+                if not grasp_ok:
+                    if _hl is not None:
+                        sys.stderr.write(
+                            f'[pick_daemon] GRASP FAILED after {_hl["tried"]} '
+                            'attempts (hladder)\n')
+                    else:
+                        sys.stderr.write(f'[pick_daemon] GRASP FAILED after {_upright_attempts()} attempts\n')
+                    sys.stderr.flush()
+                    # final keep-closed: after a keep-closed attempt 2 with still
+                    # no blocked evidence, do not open; the object may still be in
+                    # the hand.
+                    if _attempt_keep_closed:
+                        sys.stderr.write(
+                            '[pick_daemon] FINAL keep-closed: OBJECT MAY BE IN '
+                            'HAND — hand left CLOSED, operator can take it\n')
+                        sys.stderr.flush()
+                    else:
+                        rhand.open()
+                    if not _reply_sent:
+                        sys.stdout.write('ERROR:grasp_failed\n')
+                        sys.stdout.flush()
+                        _reply_sent = True
+                    else:
+                        # a reply already went out (the hand-open precheck), so never
+                        # emit a second stdout line; keep the reason on stderr.
+                        sys.stderr.write(
+                            '[pick_daemon] ERROR:grasp_failed suppressed — '
+                            'this command already sent its one stdout reply '
+                            '(an earlier reply for this command)\n')
+                        sys.stderr.flush()
+                    # park first, release the RC interlock last (in `finally`);
+                    # releasing it before a 6.5 s READY slew leaves the legs free
+                    # while the arm moves. relax onto the measured pose (stall torque
+                    # off), retract along the approach, then both arms to READY.
+                    # non-cancellable, since the reply already went out.
+                    try:
+                        _set_grip_evidence('right', 'failed', _ge_close_blocked,
+                                           _ge_close_margin)
+                        _relax_arm_to_measured(arm, 'grasp_failed')
+                        _retract_trail(arm, 'grasp_failed')
+                        _sx_q = _safe_move(arm, READY_POSE, 'grasp_failed')
+                        _post_park_stall_check(arm, _sx_q, 'grasp_failed')
+                    except Exception as _sx_e:
+                        sys.stderr.write(
+                            f'[pick_daemon] SAFE-EXIT(grasp_failed): park '
+                            f'FAILED: {_sx_e!r} — releasing the RC interlock '
+                            'anyway\n')
+                        sys.stderr.flush()
+                    finally:
+                        _hold_rc_writer(arm, False, 'grasp_failed')
+                    continue
+
+                # pre-lift pin. with the pressure channel dead
+                # (delta <= 24 even at contact) the only keep
+                # evidence is the close-joint block. a grip can still
+                # slip between close and lift, and the LIFT to
+                # CARRY_TUCK wrist roll has no re-grip check. settle
+                # and re-score:
+                #   still blocked, margin no worse than +0.03 rad:
+                #   proceed.
+                #   blocked but regressed: proceed, then re-pin after
+                #   the tuck.
+                #   not blocked (reached preset, nothing holding):
+                #   abort LIFT with the hand left closed; the arm
+                #   relaxes, retracts, parks at READY.
+                _pin_abort = False
+                _lpp = _squeeze_hold(rhand, 'right', _capped_close_preset('right'))
+                _ge_pin_margin = _lpp[1]  # grip evidence
+                if _lpp[1] != _lpp[1]:  # NaN margin = no state data (blind)
+                    sys.stderr.write(
+                        '[pick_daemon] pre-lift pin SKIPPED (no hand state — '
+                        'blind mode), proceeding\n')
+                    sys.stderr.flush()
+                    _pin_slack = False
+                elif not _lpp[0]:
+                    sys.stderr.write(
+                        '[pick_daemon] pre-lift pin: fingers reached the close '
+                        'preset — object may have left the hand; LIFT ABORTED, '
+                        'hand left CLOSED\n')
+                    sys.stderr.flush()
+                    if not _reply_sent:
+                        sys.stdout.write('ERROR:grasp_failed\n')
+                        sys.stdout.flush()
+                        _reply_sent = True
+                    else:
+                        sys.stderr.write(
+                            '[pick_daemon] ERROR:grasp_failed suppressed '
+                            '(lift-pin abort) — this command already sent its '
+                            'one stdout reply\n')
+                        sys.stderr.flush()
+                    # this exit must release the arm: a bare continue leaves the
+                    # writer PD-holding the blocked grasp target and the arm heats
+                    # up. relax onto the measured pose, retract along the approach,
+                    # go to READY, run the stall check, and release the RC interlock
+                    # last, in `finally`. hand stays closed. the unwind is not
+                    # cancellable, since the reply already went out.
+                    try:
+                        _set_grip_evidence('right', 'failed', _ge_close_blocked,
+                                           _ge_close_margin, _lpp[1])
+                        _relax_arm_to_measured(arm, 'lift-pin abort')
+                        _retract_trail(arm, 'lift-pin abort')
+                        _sx_q = _safe_move(arm, READY_POSE, 'lift-pin abort')
+                        _post_park_stall_check(arm, _sx_q, 'lift-pin abort')
+                    except Exception as _sx_e:
+                        sys.stderr.write(
+                            f'[pick_daemon] SAFE-EXIT(lift-pin abort): park '
+                            f'FAILED: {_sx_e!r} — releasing the RC interlock '
+                            'anyway\n')
+                        sys.stderr.flush()
+                    finally:
+                        _hold_rc_writer(arm, False, 'lift-pin abort')
+                    continue
+                elif _lpp[1] > _close_margin_post + PRE_LIFT_SLIP_REGRESS_TOL:
+                    sys.stderr.write(
+                        f'[pick_daemon] pre-lift pin CAUGHT-SLACK: margin '
+                        f'{_close_margin_post:.3f} → {_lpp[1]:.3f} rad (weaker '
+                        f'grip) — proceeding with tuck re-pin\n')
+                    sys.stderr.flush()
+                    _pin_slack = True
+                else:
+                    sys.stderr.write(
+                        f'[pick_daemon] pre-lift pin ok (margin '
+                        f'{_lpp[1]:.3f} rad)\n')
+                    sys.stderr.flush()
+                    _pin_slack = False
+
+                # steps 4-5: active (right) arm to LIFT, then CARRY_TUCK (fixed
+                # joint-space poses; hand stays closed the whole way). height_m is
+                # parsed above for protocol compatibility only.
+                
+                sys.stderr.write(
+                    '[pick_daemon] T5 step 4: right arm → LIFT '
+                    '(hand closed)...\n')
+                sys.stderr.flush()
+                _t5_joint_move(arm, 'right', LIFT_RIGHT, zf_legacy=True)
+
+                sys.stderr.write(
+                    '[pick_daemon] T5 step 5: right arm → CARRY_TUCK '
+                    '(hand closed)...\n')
+                sys.stderr.flush()
+                # gentler wrist roll: the tuck's joint-space swing at default
+                # speed can sling a light capture out of the fingers. 4.0 s roll
+                # duration, per CARRY_TUCK_DURATION.
+                _tuck_q0 = arm.get_current_dual_arm_q().copy()  # trail
+                _t5_joint_move(arm, 'right', CARRY_TUCK_RIGHT,
+                               duration=CARRY_TUCK_DURATION, zf_legacy=True)
+                # tuck re-pin: one more squeeze-hold after the wrist roll,
+                # evidence only. it runs on every pick, not only when the pin is
+                # slack. a blocked close at the grasp pose can be fingers stalled
+                # on something static; re-scoring after LIFT and tuck shows whether
+                # the obstruction travelled with the hand (an empty hand walks to
+                # the preset, blocked=False). the reply stays a bare DONE.
+                _tpr = _squeeze_hold(rhand, 'right', _capped_close_preset('right'))
+                sys.stderr.write(
+                    ('[pick_daemon] tuck re-pin: margin ' if _pin_slack
+                     else '[pick_daemon] tuck re-score: margin ')
+                    + f'{_tpr[1]:.3f} rad blocked={_tpr[0]}\n')
+                sys.stderr.flush()
+                _grasp_log('R', attempt, phase='tuck', tuck_blocked=_tpr[0],
+                           tuck_margin=round(_tpr[1], 3))
+                _set_grip_evidence('right', 'picked', _ge_close_blocked,
+                                   _ge_close_margin, _ge_pin_margin,
+                                   _tpr[0], _tpr[1])
+                # stalled short of the clamped tuck target: relax onto the
+                # measured pose before the release.
+                _tuck_tgt = _tuck_q0.copy()
+                _tuck_tgt[7:14] = CARRY_TUCK_RIGHT
+                _post_park_stall_check(
+                    arm, _expected_after_move(_tuck_q0, _tuck_tgt), 'pick tuck')
+                # pick complete: release the RC interlock; the writer keeps the
+                # arm at CARRY_TUCK and RC is live again.
+                _hold_rc_writer(arm, False, 'pick complete (step 5)')
+
+                # one line per command: if a reply already went out, that error
+                # stands as the reply.
+                if not _reply_sent:
+                    sys.stdout.write('DONE\n')
+                    sys.stdout.flush()
+
+            # ── phase 4.3: pick_left (left-arm pick) ─────────────────────
+            elif cmd.startswith('pick_left '):
+                _zf_pick_begin('left', arm)
+                parts = cmd.split()
+                try:
+                    if len(parts) < 4:
+                        raise ValueError('pick_left requires x y z')
+                    tx = float(parts[1])
+                    ty = float(parts[2])
+                    tz = float(parts[3]) + GRASP_Z_OFFSET
+                    nx, ny, nz, orientation, height_m, x_off = _parse_pick_tail(parts)
+                except (ValueError, IndexError) as e:
+                    sys.stdout.write(f'ERROR:pick_left parse: {e}\n')
+                    sys.stdout.flush()
+                    _zf_restore_floor()   # no motion yet
+                    continue
+                # reference log and z-frame diagnostic only, no commanded change;
+                # left mirror, the lateral mirror applies to both arms.
+                sys.stderr.write(
+                    '[pick_daemon] v5.2 lateral mirror: ik_y := -torso_x '
+                    '(torso +x = RIGHT; URDF +Y = LEFT; both arms); '
+                    f'z-frame DIAG: SOLVER_Z_TORSO_OFFSET='
+                    f'{SOLVER_Z_TORSO_OFFSET:.3f} m (pelvis vs torso_link) '
+                    f'- z channel unchanged (left)\n')
+                sys.stderr.flush()
+                use_oriented = nx is not None
+
+                if height_m is not None:
+                    try:
+                        height_m = float(height_m)
+                    except ValueError:
+                        sys.stdout.write('ERROR:bad height_m\n')
+                        sys.stdout.flush()
+                        _zf_restore_floor()   # no motion yet
+                        continue
+                    # <=0 or > max: height is not used
+                    if height_m <= 0.0 or height_m > HEIGHT_M_MAX:
+                        sys.stderr.write(
+                            f'[pick_daemon] height_m={height_m} implausible '
+                            f'(valid (0, {HEIGHT_M_MAX}]) — using legacy lift\n')
+                        sys.stderr.flush()
+                        height_m = None
+                if x_off is not None:
+                    try:
+                        x_off = float(x_off)
+                    except ValueError:
+                        sys.stdout.write('ERROR:bad x_off\n')
+                        sys.stdout.flush()
+                        _zf_restore_floor()   # no motion yet
+                        continue
+                # point-cloud approach offset; fall back to the fixed standoff
+                # when x_off is absent
+                approach_offset = x_off if x_off is not None else APPROACH_FORWARD_OFFSET
+
+                if orientation not in ('upright', 'horizontal'):
+                    sys.stdout.write(f'ERROR:unknown orientation "{orientation}", expected "upright" or "horizontal"\n')
+                    sys.stdout.flush()
+                    _zf_restore_floor()   # no motion yet
+                    continue
+
+                # same cross-verb height holder as the right branch: filled only
+                # when measurable, deliberately outside the height_m gate, and kept
+                # even for runtime failures. not side-keyed and not cleared.
+                _PLACE_LAST_OBJECT_HEIGHT_M[0] = height_m
+                # table z-floor latch, same placement rule as the holder.
+                _latch_table_floor(tz, height_m, orientation)
+
+                sys.stderr.write(
+                    f'[pick_daemon] Left pick target torso frame: '
+                    f'x={tx:.3f} y={ty:.3f} z={tz:.3f}'
+                    + (f' normal=({nx:.3f},{ny:.3f},{nz:.3f})'
+                       if use_oriented else '')
+                    + f' orientation={orientation}'
+                    + (f' height_m={height_m:.3f}' if height_m is not None
+                       else ' height_m=unknown')
+                    + '\n')
+                sys.stderr.flush()
+
+                # state machine, steps 1-2 (left mirror): both arms
+                # to ready; the inactive (right) arm goes to
+                # CARRY_TUCK first and the active (left) stays
+                # ready. the retry loop below opens the left hand.
+                if ARM_WRITER_ENABLED:
+                    try:
+                        arm.hold_rc(True)
+                    except Exception as _he:
+                        sys.stdout.write(f'ERROR:hold_rc on: {_he}\n')
+                        sys.stdout.flush()
+                        _zf_restore_floor()   # no motion yet
+                        continue
+                sys.stderr.write('[pick_daemon] T5 step 1: both arms → ready...\n')
+                sys.stderr.flush()
+                # the arm reaches READY first, then the fingers open: opening at
+                # NEUTRAL flails them during the ready move.
+                move_arm_smooth(arm, READY_POSE, _arm_gravity_ff(READY_POSE, np.zeros(14)))
+                rhand.open()
+                lhand.open()
+                sys.stderr.write(
+                    '[pick_daemon] T5 step 2: inactive (right) arm → '
+                    'carry_tuck...\n')
+                sys.stderr.flush()
+                _t5_prologue_q = arm.get_current_dual_arm_q().copy()
+                _t5_prologue_q[7:14] = CARRY_TUCK_RIGHT
+                move_arm_smooth(arm, _t5_prologue_q, _arm_gravity_ff(_t5_prologue_q, np.zeros(14)))
+                _zf_pin_idle('right')   # slice = pin
+
+                # ── phase 3: the retry loop with grasp verification ────────────
+                sys.stderr.write('[pick_daemon] DEBUG: before _get_grasp_detector(left)...\n')
+                sys.stderr.flush()
+                detector = _get_grasp_detector(side='left')
+                sys.stderr.write('[pick_daemon] DEBUG: left detector ready\n')
+                sys.stderr.flush()
+                grasp_ok = False
+                ty_use = ty  # may get shifted on retry
+                # keep-closed handoff (left mirror)
+                _l_attempt_keep_closed = False
+
+                for attempt in range(2):
+                    detector.reset()
+                    # wp4 insert-press evidence (per-attempt; left upright stop sets it)
+                    _l_insert_pressed = False
+
+                    if attempt > 0:
+                        sys.stderr.write(
+                            f'[pick_daemon] Left retry attempt {attempt+1}/2: '
+                            f'shifting grasp +2cm forward\n')
+                        sys.stderr.flush()
+                        # keep-closed retry (left mirror): no re-open, verify or
+                        # re-approach; one guarded re-press below.
+                        if not _l_attempt_keep_closed:
+                            lhand.open()
+                            time.sleep(0.3)
+                        ty_use = ty + 0.02  # shift forward
+
+                    # 1. open the left hand
+                    sys.stderr.write('[pick_daemon] DEBUG: opening left hand...\n')
+                    sys.stderr.flush()
+                    if not _l_attempt_keep_closed:
+                        lhand.open()
+                    sys.stderr.write('[pick_daemon] DEBUG: left hand open done, sleeping...\n')
+                    sys.stderr.flush()
+                    if not _l_attempt_keep_closed:
+                        time.sleep(0.3)
+                    sys.stderr.write('[pick_daemon] DEBUG: sleep done\n')
+                    sys.stderr.flush()
+
+                    # check the left hand actually opened before inserting: a
+                    # closed hand inserts as a fist, pinches, or pushes. the
+                    # keep-closed retry skips this.
+                    if not _l_attempt_keep_closed:
+                        _l_hand_open_ok, _l_hand_open_reason = _verify_hand_open(
+                            lhand, 'left', L_HAND_OPEN)
+                        if not _l_hand_open_ok:
+                            sys.stderr.write(
+                                f'[pick_daemon] hand left did not verify open '
+                                f'({_l_hand_open_reason}) — aborting insert\n')
+                            sys.stderr.flush()
+                            sys.stdout.write('ERROR:hand not verified open\n')
+                            sys.stdout.flush()
+                            _reply_sent = True
+                            break
+                        sys.stderr.write('[pick_daemon] hand left verified open\n')
+                        sys.stderr.flush()
+
+                    # fresh tactile baseline per attempt (right-hand mirror)
+                    try:
+                        _l_p_now = float(lhand.pressure('left')
+                                         .get('left', {}).get('max', 0.0))
+                    except Exception as _e:
+                        sys.stderr.write(
+                            f'[pick_daemon] detector tactile baseline '
+                            f'(left) read failed: {_e}\n')
+                        sys.stderr.flush()
+                        _l_p_now = 0.0
+                    if _l_p_now > 0.0:
+                        _TACTILE_BASELINE_LAST_GOOD[0] = _l_p_now
+                        detector.set_tactile_baseline(_l_p_now)
+                        sys.stderr.write(
+                            f'[pick_daemon] detector tactile baseline (left): '
+                            f'{_l_p_now:.0f}\n')
+                        sys.stderr.flush()
+                    elif _TACTILE_BASELINE_LAST_GOOD[0] is not None:
+                        detector.set_tactile_baseline(_TACTILE_BASELINE_LAST_GOOD[0])
+                        sys.stderr.write(
+                            f'[pick_daemon] detector tactile baseline (left): '
+                            f'read={_l_p_now:.0f} (ok:false/DDS gap) — reusing '
+                            f'last known good '
+                            f'{_TACTILE_BASELINE_LAST_GOOD[0]:.0f}\n')
+                        sys.stderr.flush()
+                    else:
+                        sys.stderr.write(
+                            f'[pick_daemon] detector tactile baseline (left): '
+                            f'UNAVAILABLE ({_l_p_now:.0f}) — tactile '
+                            f'verification skipped; failures will be loud, '
+                            f'never false success\n')
+                        sys.stderr.flush()
+
+                    # ── left waypoint approach: ascend → approach-xy → descend ──
+                    sys.stderr.write('[pick_daemon] DEBUG: reading current left arm q...\n')
+                    sys.stderr.flush()
+                    try:
+                        _l_cur_q = arm.get_current_dual_arm_q().copy()
+                        sys.stderr.write(
+                            f'[pick_daemon] DEBUG: got left arm q, shape={_l_cur_q.shape}\n')
+                        sys.stderr.flush()
+                    except Exception as e:
+                        sys.stderr.write(
+                            f'[pick_daemon] DEBUG: get_current_dual_arm_q FAILED: {e}\n')
+                        sys.stderr.flush()
+                        _l_cur_q = None
+
+                    if _l_cur_q is not None:
+                        _l_cur_wrist = get_wrist_pose(arm_ik, _l_cur_q, side='left')
+                    else:
+                        _l_cur_wrist = None
+                    # grasp height is the interface tz plus GRASP_Z_UP_BIAS
+                    # (+1 cm, right-arm mirror). the interface tz already includes
+                    # GRASP_Z_OFFSET. a grip-centre park that lands the wrist low
+                    # puts it outside the reach shell, so keep this to one knob
+                    # rather than stacked offsets.
+                    _l_grasp_z = tz + GRASP_Z_UP_BIAS
+
+                    if attempt > 0 and _l_attempt_keep_closed:
+                        # keep-closed guarded re-press (left mirror): closed hand,
+                        # no waypoint drag, one guarded re-press at ty_use, fresh
+                        # raw solve, position-error backstop only.
+                        _solver_fresh(arm_ik, 'left-keep-repress: ')
+                        _l_kp_idle_wrist = get_wrist_pose(
+                            arm_ik, arm.get_current_dual_arm_q().copy(), side='right')
+                        _l_kp_idle = (pin.SE3(np.eye(3), _l_kp_idle_wrist).homogeneous
+                                      if _l_kp_idle_wrist is not None else R_NEUTRAL)
+                        if orientation == 'horizontal':
+                            R_l_kp = make_wrist_target_middle_down_left(
+                                tx, ty_use, tz,
+                                fwd_offset=-HAND_GRIP_CENTER_OFFSET)
+                        else:
+                            R_l_kp = make_wrist_target_upright_v4(
+                                tx, ty_use, tz + GRASP_Z_UP_BIAS, -1,
+                                fwd_offset=-HAND_GRIP_CENTER_OFFSET)
+                        with _SuppressStdout():
+                            _l_kp_q, _l_kp_tauff = arm_ik.solve_ik(
+                                R_l_kp, _l_kp_idle,
+                                current_lr_arm_motor_q=arm.get_current_dual_arm_q().copy(),
+                                current_lr_arm_motor_dq=np.zeros(14))
+                        if _l_kp_q is None:
+                            sys.stdout.write('ERROR:IK failed for left keep-closed re-press\n')
+                            sys.stdout.flush()
+                            _reply_sent = True
+                            break
+                        _l_kp_q = freeze_idle_arm(arm, _l_kp_q, 'left')
+                        sys.stderr.write(
+                            '[pick_daemon] left keep-closed re-press: moving '
+                            '(guarded, position-error backstop only)\n')
+                        sys.stderr.flush()
+                        _l_kp_c, _l_kp_r = move_arm_smooth_guarded(
+                            arm, _l_kp_q, _l_kp_tauff,
+                            PALM_CONTACT_MONITOR_JOINTS_LEFT,
+                            PALM_CONTACT_POSITION_THRESHOLD,
+                            PALM_CONTACT_CONSECUTIVE_STEPS,
+                            zf_label='left-keep-closed-repress')
+                        if not _l_kp_c:
+                            sys.stderr.write(
+                                f'[pick_daemon] left keep-closed re-press '
+                                f'guarded stop: {_l_kp_r}\n')
+                            sys.stderr.flush()
+                    elif orientation == UPRIGHT_GRASP:
+                        # upright approach (left mirror): identity orientation at
+                        # every waypoint, with the deviation add-on on the identity
+                        # base (off unless DEVIATION_ENABLED).
+                        use_oriented = False  # force identity: surface normals are unreliable for upright objects
+
+                        # ascend only, never down
+                        _l_min_approach_z = tz + APPROACH_HEIGHT_OFFSET
+                        if _l_cur_wrist is not None:
+                            _l_approach_z = max(_l_cur_wrist[2], _l_min_approach_z)
+                            if _l_approach_z > _l_cur_wrist[2] + 0.02:
+                                sys.stderr.write(
+                                    f'[pick_daemon] Left 1a: ascend to z={_l_approach_z:.3f} '
+                                    f'(current={_l_cur_wrist[2]:.3f})\n')
+                                sys.stderr.flush()
+                                R_l_wp1 = pin.SE3(np.eye(3), np.array([
+                                    _l_cur_wrist[0], _l_cur_wrist[1], _l_approach_z])).homogeneous
+                                _solver_fresh(arm_ik, 'left-wp1-ascend: ')
+                                if not solve_and_move(arm, arm_ik, R_l_wp1,
+                                                      "left-wp1-ascend: ", side='left'):
+                                    sys.stdout.write('ERROR:IK failed for left ascend\n')
+                                    sys.stdout.flush()
+                                    _reply_sent = True
+                                    break
+                            else:
+                                sys.stderr.write(
+                                    f'[pick_daemon] Left 1a: SKIP ascend '
+                                    f'(already at z={_l_cur_wrist[2]:.3f} >= {_l_min_approach_z:.3f})\n')
+                                sys.stderr.flush()
+                                _l_approach_z = _l_cur_wrist[2]
+                        else:
+                            _l_approach_z = _l_min_approach_z
+                            sys.stderr.write(
+                                '[pick_daemon] Left 1a: SKIP ascend '
+                                '(FK unavailable), going directly to approach\n')
+                            sys.stderr.flush()
+
+                        # behind target, at height
+                        sys.stderr.write(
+                            '[pick_daemon] Left 1b: approach xy at height\n')
+                        sys.stderr.flush()
+                        # forward standoff is applied (ty_use +
+                        # APPROACH_FORWARD_OFFSET), mirror of the right flow; the
+                        # guarded wp4 push walks the final 8 cm. lateral is tx.
+                        # the triad stays diagnostic only.
+                        
+                        if x_off is not None and abs(x_off) > 1e-4:
+                            _l_r_obj = -x_off - H_X_OFF_RADIUS_INV
+                        else:
+                            _l_r_obj = WALL_GRASP_R_DEFAULT
+                        _l_r_obj = float(np.clip(_l_r_obj, H_RADIUS_MIN, H_RADIUS_MAX))
+                        _l_x_wall = tx + _l_r_obj
+                        _l_x_standoff = _l_x_wall + WALL_GRASP_STANDOFF
+                        _l_x_contact = _l_x_wall + WALL_GRASP_PAD_GAP
+                        sys.stderr.write(
+                            f'[pick_daemon] wall grip (left) DIAG: r={_l_r_obj:.3f} '
+                            f'wall_x={_l_x_wall:.3f} standoff_x={_l_x_standoff:.3f} '
+                            f'contact_x={_l_x_contact:.3f} '
+                            f'deviation wp3={_deviation_ramped(1):.3f} '
+                            f'wp4={_deviation_ramped(2):.3f} rad '
+                            f'(max {DEV_MAX:.3f}) — v4.0 ORIGINAL design '
+                            f'RESTORED (identity R, lateral=tx={tx:.3f}, '
+                            f'z=tz); the triad numbers are v3 diagnostics '
+                            f'only\n')
+                        sys.stderr.flush()
+                        R_l_wp2 = make_wrist_target_upright_v4(
+                            tx, ty_use, _l_approach_z, -1,
+                            fwd_offset=APPROACH_FORWARD_OFFSET)
+                        _solver_fresh(arm_ik, 'left-wp2-approach: ')
+                        if not solve_and_move(arm, arm_ik, R_l_wp2,
+                                              "left-wp2-approach: ", side='left'):
+                            sys.stdout.write('ERROR:IK failed for left approach xy\n')
+                            sys.stdout.flush()
+                            _reply_sent = True
+                            break
+
+                        # descend to grasp z
+                        sys.stderr.write(
+                            f'[pick_daemon] Left 1c: descend to z={_l_grasp_z:.3f}\n')
+                        sys.stderr.flush()
+                        # descend straight down behind the object at the fixed
+                        # forward standoff with identity orientation. the deviation
+                        # add-on rides along (off unless DEVIATION_ENABLED): one
+                        # DEV_STEP_MAX step per waypoint toward the contact delta,
+                        # frozen at contact.
+                        R_l_wp3 = make_wrist_target_upright_v4(
+                            tx, ty_use, _l_grasp_z, -1,
+                            deviation=(_deviation_ramped(1)
+                                       if DEVIATION_ENABLED else 0.0),
+                            fwd_offset=APPROACH_FORWARD_OFFSET)
+                        _solver_fresh(arm_ik, 'left-wp3-descend: ')
+                        if not solve_and_move(arm, arm_ik, R_l_wp3,
+                                              "left-wp3-descend: ", side='left'):
+                            sys.stdout.write('ERROR:IK failed for left descend\n')
+                            sys.stdout.flush()
+                            _reply_sent = True
+                            break
+
+                        time.sleep(0.5)
+
+                        # ── phase 4.2: tracking stability check ──
+                        servo_status = 'stable'
+                        try:
+                            with open('/tmp/pick_servo_status', 'r') as f:
+                                servo_status = f.read().strip()
+                        except Exception:
+                            pass  # file may not exist yet, so assume stable
+
+                        if servo_status == 'lost':
+                            sys.stderr.write('[pick_daemon] WARNING: tracking lost, but continuing — guarded insert will handle safety\n')
+                            sys.stderr.flush()
+                            # carry on to wp4: the palm contact guard handles safety
+
+                        if servo_status == 'shifted':
+                            sys.stderr.write(
+                                '[pick_daemon] Left tracking shifted, '
+                                'recomputing grasp from latest detection\n')
+                            sys.stderr.flush()
+                            try:
+                                with open('/tmp/pick_latest_detection.json', 'r') as f:
+                                    latest = json.load(f)
+                                tx = latest.get('x', tx)
+                                ty_use = latest.get('y', ty_use)
+                                tz = latest.get('z', tz) + GRASP_Z_OFFSET
+                                # re-latch floor at new tz
+                                _latch_table_floor(tz, height_m, orientation)
+                                if use_oriented and 'nx' in latest:
+                                    nx = latest['nx']
+                                    ny = latest['ny']
+                                    nz = latest['nz']
+                                if 'height_m' in latest:
+                                    _h = float(latest['height_m'])
+                                    if 0.0 < _h <= HEIGHT_M_MAX:
+                                        height_m = _h
+                                    else:
+                                        height_m = None
+                                sys.stderr.write(
+                                    f'[pick_daemon] Left updated target: '
+                                    f'x={tx:.3f} y={ty_use:.3f} z={tz:.3f}'
+                                    + (f' height_m={height_m:.3f}'
+                                       if height_m is not None
+                                       else ' height_m=unknown')
+                                    + '\n')
+                                sys.stderr.flush()
+                            except Exception as e:
+                                sys.stderr.write(
+                                    f'[pick_daemon] WARNING: '
+                                    f'failed to read latest left detection: {e}\n')
+                                sys.stderr.flush()
+
+                        # wp4: insert forward from behind to grasp (guarded)
+                        sys.stderr.write(
+                            '[pick_daemon] Left Phase 2: insert to grasp (guarded)\n')
+                        sys.stderr.flush()
+                        # wp4 = guarded insert at full contact depth: lateral tx,
+                        # depth ty_use, height tz, identity orientation. in the
+                        # servo-shifted branch _l_grasp_z is re-derived from tz. the
+                        # insert guard keeps it safe; wp4 FK logs where the palm
+                        # landed (diagnostic only). wp4 is the last ramping deviation
+                        # waypoint, with the full target frozen from contact plus
+                        # retract.
+                        _l_grasp_z = tz + GRASP_Z_UP_BIAS  # +1 cm
+                        _l_dev_tgt = (_deviation_ramped(2)
+                                      if DEVIATION_ENABLED else 0.0)
+                        # upright wp4 park (left mirror). the URDF grip zone runs
+                        # +17..+69 mm forward of R_ee (mid +43 mm), so a wrist at
+                        # the centroid puts the grip zone ~45 mm past the object and
+                        # the solver retracts backwards. the commanded target is
+                        # parked at fwd_offset=-HAND_GRIP_CENTER_OFFSET: wrist 4.5 cm
+                        # behind the centroid, grip zone on it. REFUSE/CEILING
+                        # residual is still measured against the unparked
+                        # R_grasp_centroid; a parked residual would loosen the
+                        # refusal by ~4.5 cm.
+                        R_grasp = make_wrist_target_upright_v4(
+                            tx, ty_use, _l_grasp_z, -1, deviation=_l_dev_tgt,
+                            fwd_offset=-HAND_GRIP_CENTER_OFFSET)
+                        R_grasp_centroid = make_wrist_target_upright_v4(
+                            tx, ty_use, _l_grasp_z, -1, deviation=_l_dev_tgt)
+                        sys.stderr.write(
+                            '[pick_daemon] v5.2 wp4 park: '
+                            f'fwd_offset=-HAND_GRIP_CENTER_OFFSET '
+                            f'({HAND_GRIP_CENTER_OFFSET*100:.2f} cm behind '
+                            f'centroid — grip zone centred)\n')
+                        sys.stderr.flush()
+
+                        # pin the idle (right) arm here, as solve_and_move does
+                        _l_wp4_idle_wrist = get_wrist_pose(arm_ik, arm.get_current_dual_arm_q().copy(), side='right')
+                        _l_wp4_idle_target = (pin.SE3(np.eye(3), _l_wp4_idle_wrist).homogeneous
+                                              if _l_wp4_idle_wrist is not None else R_NEUTRAL)
+                        # raw solve, left arm, arg order preserved (grasp, idle):
+                        # solve_ik(left, right).
+                        _solver_fresh(arm_ik, 'left-wp4-insert: ')
+                        with _SuppressStdout():
+                            sol_q, sol_tauff = arm_ik.solve_ik(
+                                R_grasp, _l_wp4_idle_target,
+                                current_lr_arm_motor_q=arm.get_current_dual_arm_q().copy(),
+                                current_lr_arm_motor_dq=np.zeros(14))
+                        if sol_q is None:
+                            sys.stdout.write('ERROR:IK failed for left insert\n')
+                            sys.stdout.flush()
+                            _reply_sent = True
+                            break
+
+                        # left mirror of the reach-ceiling gate. _l_grasp_z is in
+                        # scope; R_grasp is the left wp4 insert target built above.
+                        _lgpe, _lgoe, _lgRe, _lgde = verify_ik_target(
+                            arm_ik, sol_q, 'left', R_grasp_centroid)
+                        if _lgpe is not None and _lgpe > SOLVE_VERIFY_POS_TOL:
+                            # right-arm two-tier gate, mirrored: refuse above
+                            # REACH_REFUSE_POS, diagnostic and continue in
+                            # (SOLVE_VERIFY_POS_TOL, REACH_REFUSE_POS].
+                            if _lgpe > REACH_REFUSE_POS:
+                                sys.stderr.write(
+                                    f'OUT OF REACH: solved left insert pose '
+                                    f'residual {_lgpe:.3f} m > '
+                                    f'{REACH_REFUSE_POS:.3f} m at '
+                                    f'grasp z={_l_grasp_z:.3f} m — the arm '
+                                    f'cannot reach the commanded insert pose; '
+                                    f'the robot is standing too far from the '
+                                    f'object.  Left pick REFUSED; move closer '
+                                    f'and retry.  If the miss is predominantly '
+                                    f'lateral, check the known T1.12 '
+                                    f'lateral-sign-mirror item.\n')
+                                sys.stderr.flush()
+                                sys.stdout.write(f'ERROR:reach_ceiling residual={_lgpe:.3f}m\n')
+                                sys.stdout.flush()
+                                _reply_sent = True
+                                break
+                            sys.stderr.write(
+                                f'REACH_CEILING(diag): solved left insert pose '
+                                f'residual {_lgpe:.3f} m > '
+                                f'{SOLVE_VERIFY_POS_TOL:.3f} m at '
+                                f'grasp z={_l_grasp_z:.3f} m — best-effort '
+                                f'left insert CONTINUES (guarded insert + '
+                                f'stop is the safety).  The residual is vs the '
+                                f'UNPARKED object-centroid target: the parked '
+                                f'insert rides -HAND_GRIP_CENTER_OFFSET '
+                                f'({HAND_GRIP_CENTER_OFFSET*100:.2f} cm) so the '
+                                f'grip zone itself is '
+                                f'{(abs(_lgpe)-HAND_GRIP_CENTER_OFFSET)*100:.0f} '
+                                f'cm short of the centroid at this reach cap; '
+                                f'the real fix is the robot standing closer.\n')
+                            sys.stderr.flush()
+
+                        # freeze the idle (right) arm at its current q to stop
+                        # nullspace drift during the insert
+                        sol_q = freeze_idle_arm(arm, sol_q, 'left')
+                        sys.stderr.write('[pick_daemon] left-wp4-insert (guarded): moving...\n')
+                        sys.stderr.flush()
+
+                        # insert guard (left mirror): position-error backstop on
+                        # joints [0,3] (PALM_CONTACT_MONITOR_JOINTS_LEFT) plus the
+                        # middle-finger stop only. pressure-stop-first stays in the
+                        # horizontal flows.
+
+                        def _l_middle_check():
+                            return 'middle_finger' if detector.check_middle_finger_contact() else None
+
+                        # left wp4 guard uses the automatic duration
+                        # (max_delta/MOVE_SPEED), not a fixed 1.5 s.
+                        completed, reason = move_arm_smooth_guarded(
+                            arm, sol_q, sol_tauff,
+                            PALM_CONTACT_MONITOR_JOINTS_LEFT,
+                            PALM_CONTACT_POSITION_THRESHOLD,
+                            PALM_CONTACT_CONSECUTIVE_STEPS,
+                            stop_fn=_l_middle_check, zf_label='left-wp4-insert')
+                        # wp4 insert-press evidence (left mirror)
+                        _l_insert_pressed = (not completed) and (
+                            reason is not None and (
+                                reason.startswith('position_error')
+                                or reason == 'middle_finger'))
+                        if not completed:
+                            sys.stderr.write(
+                                f'[pick_daemon] left-wp4-insert guarded stop: {reason} '
+                                f'(retracting {RETRACT_AFTER_CONTACT:.2f}m to relieve pressure)\n')
+                            sys.stderr.flush()
+                            # active retract: move backward to take the contact pressure off
+                            _l_contact_wrist = get_wrist_pose(arm_ik, arm.get_current_dual_arm_q().copy(), side='left')
+                            if _l_contact_wrist is not None:
+                                # identity-base retract (left mirror), with the
+                                # deviation add-on frozen at the wp4 value.
+                                R_l_retract = make_wrist_target_upright_v4(
+                                    tx, ty_use + RETRACT_AFTER_CONTACT,
+                                    _l_grasp_z, -1, deviation=_l_dev_tgt,
+                                    fwd_offset=approach_offset)
+                                # raw solve, left mirror, arg order (grasp, idle).
+                                with _SuppressStdout():
+                                    _l_retract_q, _l_retract_tauff = arm_ik.solve_ik(
+                                        R_l_retract, _l_wp4_idle_target,
+                                        current_lr_arm_motor_q=arm.get_current_dual_arm_q().copy(),
+                                        current_lr_arm_motor_dq=np.zeros(14))
+                                if _l_retract_q is not None:
+                                    # idle (right) arm untouched
+                                    _l_retract_q = freeze_idle_arm(arm, _l_retract_q, 'left')
+                                    move_arm_smooth(arm, _l_retract_q, _l_retract_tauff, duration=0.3, zf_legacy=True)
+                            time.sleep(INSERT_GUARD_HOLD_TIME)
+
+                        time.sleep(0.3)
+
+                        # ── left wrist FK orientation verification ──
+                        # left mirror of the right side: compare the achieved left
+                        # palm normal with the commanded identity target.
+                        # diagnostic only. left physical palm is -Y_local, so
+                        # cmd = -R_grasp[:,1].
+                        _l_q_now = arm.get_current_dual_arm_q().copy()
+                        _l_pe, _l_oe, _l_Re, _l_de = verify_ik_target(arm_ik, _l_q_now, 'left', R_grasp)
+                        if _l_Re is not None:
+                            _l_palm_cmd = -np.array(R_grasp[:3, 1], dtype=np.float64)
+                            _l_palm_act = -np.array(_l_Re[:, 1], dtype=np.float64)
+                            _l_wq_cmd = sol_q[LEFT_WRIST_Q_IDX]
+                            _l_wq_act = _l_q_now[LEFT_WRIST_Q_IDX]
+                            _l_wq_d = _l_wq_act - _l_wq_cmd
+                            sys.stderr.write(
+                                f'[pick_daemon] left-wp4-FK orientation check: '
+                                f'palm normal cmd=({_l_palm_cmd[0]:.2f},{_l_palm_cmd[1]:.2f},{_l_palm_cmd[2]:.2f}) '
+                                f'act=({_l_palm_act[0]:.2f},{_l_palm_act[1]:.2f},{_l_palm_act[2]:.2f}) '
+                                f'ori err={_l_oe:.3f} rad (tol {SOLVE_VERIFY_ORI_TOL:.2f}) '
+                                f'det={_l_de:+.3f}; wrist joints [4,5,6] '
+                                f'cmd=({_l_wq_cmd[0]:.3f},{_l_wq_cmd[1]:.3f},{_l_wq_cmd[2]:.3f}) '
+                                f'act=({_l_wq_act[0]:.3f},{_l_wq_act[1]:.3f},{_l_wq_act[2]:.3f}) '
+                                f'delta=({_l_wq_d[0]:+.3f},{_l_wq_d[1]:+.3f},{_l_wq_d[2]:+.3f})\n')
+                            sys.stderr.flush()
+                            # body-axis decomposition against straight, mirror of
+                            # the right block; left palm is -Y, same builder with
+                            # dir_lateral=-1. the target is signed (left s_dev = +1)
+                            # for the same comparison.
+                            _l_R_straight = make_wrist_target(
+                                tx, ty_use, _l_grasp_z)
+                            _lpitch, _ldev_, _lflex = wrist_rotation_decomposition(
+                                arm_ik, _l_q_now, 'left', _l_R_straight)
+                            if _lpitch is not None:
+                                sys.stderr.write(
+                                    f'[pick_daemon] left-wp4 body-axis decomp: '
+                                    f'pitch={_lpitch:+.3f} deviation={_ldev_:+.3f} '
+                                    f'flexion={_lflex:+.3f} rad (dev target '
+                                    f'{-DEV_ROT_SIGN*_l_dev_tgt:+.3f} '
+                                    f'signed, pitch DIAG tol '
+                                    f'{PITCH_FROZEN_TOL:.2f})\n')
+                                sys.stderr.flush()
+                                if abs(_lpitch) > PITCH_FROZEN_TOL:
+                                    sys.stderr.write(
+                                        '[pick_daemon] WARNING: NO-PITCH rule '
+                                        f'VIOLATED at wall contact (left): '
+                                        f'|pitch|={abs(_lpitch):.3f} > '
+                                        f'{PITCH_FROZEN_TOL:.2f} rad (user rule '
+                                        f'2026-08-30 — wrist up/down must not '
+                                        f'move during upright contact)\n')
+                                    sys.stderr.flush()
+                        else:
+                            sys.stderr.write(
+                                '[pick_daemon] left-wp4-FK orientation check skipped (FK failed)\n')
+                            sys.stderr.flush()
+
+                    else:  # orientation == 'horizontal'
+                        # ── left horizontal (top-down) approach: ascend → above → descend onto ──
+
+                        # ascend if needed
+                        _lh_min_approach_z = tz + 0.20
+                        if _l_cur_wrist is not None:
+                            if _l_cur_wrist[2] < _lh_min_approach_z:
+                                _lh_approach_z = _lh_min_approach_z
+                                sys.stderr.write(
+                                    f'[pick_daemon] Left Horizontal wp1: ascend to z={_lh_approach_z:.3f} '
+                                    f'(current={_l_cur_wrist[2]:.3f}, bottle_z={tz:.3f})\n')
+                                sys.stderr.flush()
+                                R_lh_wp1 = pin.SE3(np.eye(3), np.array([
+                                    _l_cur_wrist[0], _l_cur_wrist[1], _lh_approach_z])).homogeneous
+                                # raw swing, left mirror
+                                if not solve_and_move(arm, arm_ik, R_lh_wp1,
+                                                      "left-h-wp1-ascend: ", side='left', raw=True):
+                                    sys.stdout.write('ERROR:IK failed for left horizontal ascend\n')
+                                    sys.stdout.flush()
+                                    _reply_sent = True
+                                    break
+                            else:
+                                _lh_approach_z = _l_cur_wrist[2]
+                                sys.stderr.write(
+                                    f'[pick_daemon] Left Horizontal wp1: SKIP ascend '
+                                    f'(already at z={_l_cur_wrist[2]:.3f} >= {_lh_min_approach_z:.3f})\n')
+                                sys.stderr.flush()
+                        else:
+                            _lh_approach_z = _lh_min_approach_z
+                            sys.stderr.write(
+                                '[pick_daemon] Left Horizontal wp1: SKIP ascend '
+                                '(FK unavailable), going directly to approach\n')
+                            sys.stderr.flush()
+
+                        # wp2: directly above the object with no fwd_offset, parked
+                        # over the centroid at ty_use. the left builder stays the
+                        # corrected middle_down_left mirror: the unmirrored
+                        # middle_down would put the left palm normal up.
+                        sys.stderr.write(
+                            '[pick_daemon] Left Horizontal wp2: approach xy above bottle\n')
+                        sys.stderr.flush()
+                        R_lh_wp2 = make_wrist_target_middle_down_left(
+                            tx, ty_use, _lh_approach_z,
+                            fwd_offset=-HAND_GRIP_CENTER_OFFSET)
+                        # raw swing, left mirror
+                        _solver_fresh(arm_ik, 'left-h-wp2-approach: ')
+                        if not solve_and_move(arm, arm_ik, R_lh_wp2,
+                                              "left-h-wp2-approach: ", side='left', raw=True):
+                            sys.stdout.write('ERROR:IK failed for left horizontal approach xy\n')
+                            sys.stdout.flush()
+                            _reply_sent = True
+                            break
+
+                        # ── tracking stability check (between wp2 and wp3) ──
+                        servo_status = 'stable'
+                        try:
+                            with open('/tmp/pick_servo_status', 'r') as f:
+                                servo_status = f.read().strip()
+                        except Exception:
+                            pass
+
+                        if servo_status == 'lost':
+                            sys.stderr.write('[pick_daemon] WARNING: tracking lost, but continuing — guarded descent will handle safety\n')
+                            sys.stderr.flush()
+
+                        if servo_status == 'shifted':
+                            sys.stderr.write(
+                                '[pick_daemon] Left tracking shifted, '
+                                'recomputing grasp from latest detection\n')
+                            sys.stderr.flush()
+                            try:
+                                with open('/tmp/pick_latest_detection.json', 'r') as f:
+                                    latest = json.load(f)
+                                tx = latest.get('x', tx)
+                                ty_use = latest.get('y', ty_use)
+                                tz = latest.get('z', tz) + GRASP_Z_OFFSET
+                                # re-latch floor at new tz
+                                _latch_table_floor(tz, height_m, orientation)
+                                if use_oriented and 'nx' in latest:
+                                    nx = latest['nx']
+                                    ny = latest['ny']
+                                    nz = latest['nz']
+                                if 'height_m' in latest:
+                                    _h = float(latest['height_m'])
+                                    if 0.0 < _h <= HEIGHT_M_MAX:
+                                        height_m = _h
+                                    else:
+                                        height_m = None
+                                sys.stderr.write(
+                                    f'[pick_daemon] Left updated target: '
+                                    f'x={tx:.3f} y={ty_use:.3f} z={tz:.3f}'
+                                    + (f' height_m={height_m:.3f}'
+                                       if height_m is not None
+                                       else ' height_m=unknown')
+                                    + '\n')
+                                sys.stderr.flush()
+                            except Exception as e:
+                                sys.stderr.write(
+                                    f'[pick_daemon] WARNING: '
+                                    f'failed to read latest left detection: {e}\n')
+                                sys.stderr.flush()
+
+                        # descend onto the object (guarded): straight to the
+                        # interface target at y=ty_use, z=tz. pad-only stop (pkg 5)
+                        # plus one resume/depth-push slot, left mirror of the right
+                        # branch.
+                        sys.stderr.write(
+                            f'[pick_daemon] Left Horizontal wp3: descend onto bottle to z={tz:.3f} (guarded, pad-only stop)\n')
+                        sys.stderr.flush()
+                        R_lh_grasp = make_wrist_target_middle_down_left(
+                            tx, ty_use, tz,
+                            fwd_offset=-HAND_GRIP_CENTER_OFFSET)
+
+                        # pin the idle (right) arm for the retract solve below; each
+                        # descent pass re-pins it.
+                        _lh_wp3_idle_wrist = get_wrist_pose(arm_ik, arm.get_current_dual_arm_q().copy(), side='right')
+                        _lh_wp3_idle_target = (pin.SE3(np.eye(3), _lh_wp3_idle_wrist).homogeneous
+                                               if _lh_wp3_idle_wrist is not None else R_NEUTRAL)
+
+                        def _lh_middle_check():
+                            return 'middle_finger' if detector.check_middle_finger_contact(pad_only=True) else None
+
+                        def _lh_descend_once(duration):
+                            # fresh idle (right) pin and warm start from the current
+                            # q; raw left arg order (grasp, idle).
+                            _li = get_wrist_pose(arm_ik, arm.get_current_dual_arm_q().copy(), side='right')
+                            _lit = (pin.SE3(np.eye(3), _li).homogeneous
+                                    if _li is not None else R_NEUTRAL)
+                            with _SuppressStdout():
+                                _ls, _lt = arm_ik.solve_ik(
+                                    R_lh_grasp, _lit,
+                                    current_lr_arm_motor_q=arm.get_current_dual_arm_q().copy(),
+                                    current_lr_arm_motor_dq=np.zeros(14))
+                            if _ls is None:
+                                return None, False, 'ik_fail'
+                            _ls = freeze_idle_arm(arm, _ls, 'left')
+                            sys.stderr.write('[pick_daemon] left-h-wp3-descent (guarded): moving...\n')
+                            sys.stderr.flush()
+                            _lc, _lr = move_arm_smooth_guarded(
+                                arm, _ls, _lt,
+                                PALM_CONTACT_MONITOR_JOINTS_LEFT,
+                                PALM_CONTACT_POSITION_THRESHOLD,
+                                PALM_CONTACT_CONSECUTIVE_STEPS,
+                                stop_fn=_lh_middle_check,
+                                duration=duration, zf_label='left-h-wp3-descent')
+                            return _ls, _lc, _lr
+
+                        # explicit descend pass loop (left mirror): a reach stall is
+                        # not contact. pads hang 5-17 mm under the wrist, so a joint
+                        # stall well above the target does not mean the palm touched
+                        # anything.
+                        _solver_fresh(arm_ik, 'left-h-wp3-descend: ')
+                        _lh_pushes = 0
+                        _lh_prev_gap = None
+                        _lh_contact = False
+                        while True:
+                            sol_q, completed, reason = _lh_descend_once(
+                                DESCENT_DURATION if _lh_pushes == 0 else None)
+                            if sol_q is None:
+                                sys.stdout.write('ERROR:IK failed for left horizontal descent\n')
+                                sys.stdout.flush()
+                                _reply_sent = True
+                                break
+                            time.sleep(0.3)  # settle before the depth read (post-ramp)
+                            _lhwz = get_wrist_pose(arm_ik, arm.get_current_dual_arm_q().copy(), side='left')
+                            _lgap = (_lhwz[2] - tz) if _lhwz is not None else None
+                            if not completed:
+                                if (reason is not None and reason.startswith('position_error')
+                                        and _lgap is not None and _lgap > H_DESCEND_STALL_GAP):
+                                    sys.stderr.write(
+                                        f'[pick_daemon] REACH STALL at +{_lgap:.3f} m '
+                                        f'({_lgap*100:.1f} cm above target z={tz:.3f}: {reason}) '
+                                        f'— NOT contact (pads hang 5-17 mm under the wrist, '
+                                        f'guard stop hit with the palm still airborne).  No '
+                                        f'contact-retract, no immediate close.\n')
+                                    sys.stderr.flush()
+                                else:
+                                    _lh_contact = True
+                                    break  # true contact, retract block below
+                            if _lgap is None or _lgap <= H_DESCEND_DEPTH_TOL:
+                                break  # reached the depth band (or FK unreadable)
+                            if _lh_pushes >= H_DESCEND_MAX_PUSHES:
+                                sys.stderr.write(
+                                    f'[pick_daemon] left-h-wp3 descend budget spent: '
+                                    f'{_lh_pushes} push(es), gap +{_lgap:.3f} m above target — '
+                                    f'DIAG, close-at-current-height; closure evidence '
+                                    f'adjudicates\n')
+                                sys.stderr.flush()
+                                break
+                            if (_lh_prev_gap is not None
+                                    and (_lh_prev_gap - _lgap) < H_DESCEND_MIN_PROGRESS):
+                                sys.stderr.write(
+                                    f'[pick_daemon] left-h-wp3 push made less than '
+                                    f'{H_DESCEND_MIN_PROGRESS:.3f} m '
+                                    f'(+{_lh_prev_gap:.3f} → +{_lgap:.3f}) — no more pushes, '
+                                    f'close-at-current-height; closure evidence adjudicates\n')
+                                sys.stderr.flush()
+                                break
+                            _lh_prev_gap = _lgap
+                            _lh_pushes += 1
+                            sys.stderr.write(
+                                f'[pick_daemon] left-h-wp3 push {_lh_pushes}: gap +{_lgap:.3f} m '
+                                f'(>{H_DESCEND_DEPTH_TOL:.3f}) — one more guarded push\n')
+                            sys.stderr.flush()
+
+                        if _lh_contact:
+                            sys.stderr.write(
+                                f'[pick_daemon] left-h-wp3-descent guarded stop: {reason} '
+                                f'(retracting {RETRACT_AFTER_CONTACT:.2f}m to relieve pressure)\n')
+                            sys.stderr.flush()
+                            # active retract: move backward to take the contact
+                            # pressure off; unconditional at z=tz.
+                            R_lh_retract = make_wrist_target_middle_down_left(
+                                tx, ty_use + RETRACT_AFTER_CONTACT, tz,
+                                fwd_offset=-HAND_GRIP_CENTER_OFFSET)
+                            # raw solve, left mirror, arg order (grasp, idle).
+                            
+                            with _SuppressStdout():
+                                _lh_retract_q, _lh_retract_tauff = arm_ik.solve_ik(
+                                    R_lh_retract, _lh_wp3_idle_target,
+                                    current_lr_arm_motor_q=arm.get_current_dual_arm_q().copy(),
+                                    current_lr_arm_motor_dq=np.zeros(14))
+                            if _lh_retract_q is not None:
+                                # idle (right) arm untouched.
+                                _lh_retract_q = freeze_idle_arm(arm, _lh_retract_q, 'left')
+                                move_arm_smooth(arm, _lh_retract_q, _lh_retract_tauff, duration=0.3, zf_legacy=True)
+                            time.sleep(INSERT_GUARD_HOLD_TIME)
+
+                        time.sleep(0.3)
+
+                        # ── left wrist FK orientation verification (horizontal) ──
+                        # left physical palm is -Y_local, so cmd = -R_lh_grasp[:,1]
+                        # (palm down); joints [4,5,6] are forearm yaw, up-down and
+                        # flexion.
+                        _lqh_q_now = arm.get_current_dual_arm_q().copy()
+                        _lqh_pe, _lqh_oe, _lqh_Re, _lqh_de = verify_ik_target(arm_ik, _lqh_q_now, 'left', R_lh_grasp)
+                        if _lqh_Re is not None:
+                            _lqh_palm_cmd = -np.array(R_lh_grasp[:3, 1], dtype=np.float64)  # left palm = -Y_local
+                            _lqh_palm_act = -np.array(_lqh_Re[:, 1], dtype=np.float64)
+                            _lqh_wq_cmd = sol_q[LEFT_WRIST_Q_IDX]
+                            _lqh_wq_act = _lqh_q_now[LEFT_WRIST_Q_IDX]
+                            _lqh_wq_d = _lqh_wq_act - _lqh_wq_cmd
+                            sys.stderr.write(
+                                f'[pick_daemon] left-h-wp3-FK orientation check: '
+                                f'palm normal cmd=({_lqh_palm_cmd[0]:.2f},{_lqh_palm_cmd[1]:.2f},{_lqh_palm_cmd[2]:.2f}) '
+                                f'act=({_lqh_palm_act[0]:.2f},{_lqh_palm_act[1]:.2f},{_lqh_palm_act[2]:.2f}) '
+                                f'ori err={_lqh_oe:.3f} rad (tol {SOLVE_VERIFY_ORI_TOL:.2f}) '
+                                f'det={_lqh_de:+.3f}; wrist joints [4,5,6] '
+                                f'cmd=({_lqh_wq_cmd[0]:.3f},{_lqh_wq_cmd[1]:.3f},{_lqh_wq_cmd[2]:.3f}) '
+                                f'act=({_lqh_wq_act[0]:.3f},{_lqh_wq_act[1]:.3f},{_lqh_wq_act[2]:.3f}) '
+                                f'delta=({_lqh_wq_d[0]:+.3f},{_lqh_wq_d[1]:+.3f},{_lqh_wq_d[2]:+.3f})\n')
+                            sys.stderr.flush()
+                        else:
+                            sys.stderr.write(
+                                '[pick_daemon] left-h-wp3-FK orientation check skipped (FK failed)\n')
+                            sys.stderr.flush()
+
+                    # 4. close the left hand (adaptive, stops on finger pressure);
+                    # stop_threshold = GRIP_CLOSE_STOP_DELTA (100000), right-arm
+                    # mirror.
+                    sys.stderr.write(
+                        f'[pick_daemon] Left Phase 3: closing hand (bounded lead, '
+                        f'eps={HAND_CLOSE_LEAD_EPS:.2f} rad)\n')
+                    sys.stderr.flush()
+                    _l_close_baseline_p = 0.0
+                    try:
+                        _l_close_baseline_p = float(
+                            lhand.pressure('left').get('left', {}).get('max', 0.0))
+                    except Exception:
+                        pass
+                    # wrist height at the close (left mirror; pad-band evidence)
+                    _l_wrist_z_at_close = get_wrist_pose(
+                        arm_ik, arm.get_current_dual_arm_q().copy(), side='left')
+                    # left mirror of the right close block: closure is capped at
+                    # F_MAX_SAFE and the cap is honoured, with a bounded lead.
+                    # `_l_target` is the unchanged capped pose shared by the hold
+                    # and the closure-block score.
+                    _l_target, _l_eff = clamped_close_target('left', 1.0)
+                    _l_contact_closure = _bounded_lead_close(
+                        lhand, 'left', _l_target)
+                    if _l_contact_closure == 'contact':
+                        # grip detected early: hold where it stopped, never tighten
+                        # to the cap.
+                        sys.stderr.write(
+                            '[pick_daemon] Left adaptive closure: grip detected, holding at '
+                            f'the aperture reached (cap {_l_eff:.3f})\n')
+                        sys.stderr.flush()
+                    elif _l_contact_closure == 'no_data':
+                        sys.stderr.write('[pick_daemon] Left bounded-lead close: NO HAND STATE -- nothing written (refusing to press blind)\n')
+                        sys.stderr.flush()
+                    else:
+                        sys.stderr.write('[pick_daemon] Left bounded-lead close: walk complete -- lead held at eps (see the bounded-lead line above)\n')
+                        sys.stderr.flush()
+
+                    sys.stderr.write(
+                        f'[pick_daemon] left hand last commanded q after bounded-lead close: '
+                        f'{[lhand.last_q[id] for id in DEX3_JOINTS]}\n')
+                    sys.stderr.flush()
+                    _l_close_final_p = 0.0
+                    try:
+                        _l_close_final_p = float(
+                            lhand.pressure('left').get('left', {}).get('max', 0.0))
+                    except Exception:
+                        pass
+                    sys.stderr.write(
+                        f'[pick_daemon] left close pressure: baseline='
+                        f'{_l_close_baseline_p:.0f} final={_l_close_final_p:.0f} '
+                        f'delta={_l_close_final_p - _l_close_baseline_p:.0f} '
+                        f'(closure={_l_contact_closure})\n')
+                    sys.stderr.flush()
+
+                    # closure-block read and squeeze-hold (left mirror); the state
+                    # read is side-keyed, so the left side scores its own state.
+                    _l_close_delta = _l_close_final_p - _l_close_baseline_p
+                    _l_close_blk_pre, _l_close_margin_pre, _l_close_worst_pre = _score_closure_blocked(
+                        lhand, 'left', _l_target)
+                    _l_close_blk_post, _l_close_margin_post, _l_close_worst_post = _squeeze_hold(
+                        lhand, 'left', _l_target)
+                    _l_close_blocked = _l_close_blk_post
+                    sys.stderr.write(
+                        f'[pick_daemon] left squeeze-hold: re-assert close '
+                        f'preset, settle 0.5s — margin pre='
+                        f'{_l_close_margin_pre:.3f} post={_l_close_margin_post:.3f} '
+                        f'blocked={_l_close_blocked} '
+                        f'(tol {CLOSURE_BLOCKED_TOL:.2f} rad)\n')
+                    sys.stderr.flush()
+                    # capture-evidence set (left mirror of the right-arm set)
+                    _l_any_capture = _l_close_blocked
+                    if _l_contact_closure == 'contact':
+                        _l_any_capture = True
+                    if _l_close_delta >= _CLOSE_DELTA_TOUCH_MIN:
+                        _l_any_capture = True
+                    if (orientation == 'horizontal' and _l_wrist_z_at_close is not None
+                            and _l_wrist_z_at_close[2] - tz <= H_PALM_TOUCH_BAND):
+                        _l_any_capture = True
+                    if _l_insert_pressed:
+                        _l_any_capture = True
+
+                    # 4.5. verify the grasp (Phase 3 closed loop)
+                    sys.stderr.write('[pick_daemon] Left Phase 3.5: verifying grasp...\n')
+                    sys.stderr.flush()
+                    time.sleep(0.3)  # let the torque build
+
+                    deadline = time.time() + 0.5
+                    state = None
+                    while time.time() < deadline:
+                        state = detector.update()
+                        if state.is_stable:
+                            break
+                        time.sleep(0.02)
+
+                    if state is None:
+                        state = detector.update()
+
+                    quadrant = state.gating_quadrant if state else "grasped_nothing"
+                    # no extra veto on the detector's verdict; the close's pressure
+                    # delta supplies light-grip evidence the detector can miss.
+                    if _l_contact_closure == 'full' and quadrant == 'solid_grasp':
+                        sys.stderr.write(
+                            '[pick_daemon] NOTE: left closure ended full '
+                            '(delta below the 100000 close-stop) but the '
+                            'detector says solid_grasp — light object grips '
+                            'read lower.  Trusting the detector; no veto.\n')
+                        sys.stderr.flush()
+                    sys.stderr.write(
+                        f'[pick_daemon] Left grasp verdict: {quadrant} '
+                        f'(motor_high={state.motor_current_high if state else "N/A"}, '
+                        f'tactile={state.tactile_contact if state else "N/A"}, '
+                        f'support_ratio={state.support_ratio:.2f}'
+                        + (f', stable={state.is_stable}' if state else '')
+                        + ')\n')
+                    sys.stderr.flush()
+
+                    _grasp_log(
+                        'L', attempt,
+                        closure=_l_contact_closure,
+                        delta=round(_l_close_delta, 1),
+                        blocked=_l_close_blocked,
+                        m_pre=round(_l_close_margin_pre, 3),
+                        m_post=round(_l_close_margin_post, 3),
+                        sup=round(state.support_ratio, 3) if state is not None else None,
+                        quad=quadrant,
+                        anycap=_l_any_capture,
+                        palm_avail=_palm_data_available,
+                        final_p=round(_l_close_final_p, 1),
+                        base_p=round(_l_close_baseline_p, 1),
+                    )
+
+                    # evidence upgrade (left mirror)
+                    if quadrant == 'grasped_nothing' and _l_contact_closure != 'no_data':
+                        _l_close_delta = _l_close_final_p - _l_close_baseline_p
+                        # reopen guard, left mirror: do not drop a held object on
+                        # grasped_nothing when the adaptive close already detected a
+                        # physical grip ('contact').
+                        if (_l_contact_closure == 'contact'
+                                or _l_close_delta >= GRIP_PRESSURE_DELTA_EVIDENCE
+                                or _l_close_blocked):
+                            sys.stderr.write(
+                                f'[pick_daemon] Left grasp evidence upgrade: '
+                                f'pressure delta {_l_close_delta:.0f} >= '
+                                f'{GRIP_PRESSURE_DELTA_EVIDENCE:.0f}'
+                                + (' or closure-blocked (physical close '
+                                   'joints short of the preset)'
+                                   if _l_close_blocked else '')
+                                + f' — object in '
+                                f'hand: grasped_nothing -> light_object\n')
+                            sys.stderr.flush()
+                            quadrant = 'light_object'
+                    elif quadrant == 'hit_obstacle' and _l_contact_closure != 'no_data':
+                        # left mirror of the light-grip band. hit_obstacle is
+                        # promoted only in the light band ('full' and
+                        # floor < delta < 40000); a 'full' or delta >= 40000 grip
+                        # (the 100000 stop sits above the ~94400 natural ceiling, so
+                        # hard jams land 'full' near 94k) and any 'contact' or
+                        # delta >= 40000 jam go to the support_ratio >= 0.5 gate,
+                        # never un-gated.
+                        _l_close_delta = _l_close_final_p - _l_close_baseline_p
+                        if (_l_contact_closure == 'full'
+                                and _CLOSE_DELTA_LIGHT_GRIP_FLOOR < _l_close_delta
+                                < GRIP_PRESSURE_DELTA_EVIDENCE):
+                            sys.stderr.write(
+                                f'[pick_daemon] Left grasp evidence upgrade: '
+                                f'pressure delta {_l_close_delta:.0f} (closure='
+                                f'{_l_contact_closure}) in light-grip band — '
+                                f'object in hand: hit_obstacle -> light_object '
+                                f'(rim grip)\n')
+                            sys.stderr.flush()
+                            quadrant = 'light_object'
+                        elif _l_close_blocked:
+                            sys.stderr.write(
+                                f'[pick_daemon] Left grasp evidence upgrade: '
+                                f'closure-blocked - fingers stopped '
+                                f'{_l_close_margin_post:.3f} rad short of the close '
+                                f'preset (> tol {CLOSURE_BLOCKED_TOL:.2f} rad): an '
+                                f'object is between the fingers; NO tactile/'
+                                f'pressure confirmation (pressure channel '
+                                f'non-discriminating on this hand) - GRASP LIKELY: '
+                                f'hit_obstacle -> light_object\n')
+                            sys.stderr.flush()
+                            quadrant = 'light_object'
+                        # closure-blocked promotion, left mirror: the support_ratio
+                        # closure-block margin is the discriminator and
+                        # _verify_hand_open excludes the latch confound. left Dex3
+                        # reports no `actual` state, so _l_close_blocked stays False
+                        # and this promotion is inert on this arm.
+
+                    # blind-mode fallback: no DDS data means skip verification
+                    if not _palm_data_available and quadrant == "grasped_nothing":
+                        sys.stderr.write(
+                            '[pick_daemon] BLIND MODE: No DDS hand-state data — '
+                            'skipping grasp verification, proceeding to lift.\n')
+                        sys.stderr.flush()
+                        grasp_ok = True
+                        break
+
+                    if quadrant == "solid_grasp" or quadrant == "light_object":
+                        grasp_ok = True
+                        break
+                    elif quadrant == "hit_obstacle":
+                        # no-reopen retry (left mirror): a capture keeps the hand
+                        # closed even when the verdict has no context.
+                        sys.stderr.write('[pick_daemon] Left hit obstacle, aborting attempt\n')
+                        sys.stderr.flush()
+                        if _l_any_capture:
+                            _l_attempt_keep_closed = True
+                            sys.stderr.write(
+                                f'[pick_daemon] RETRY keep-closed (left): '
+                                f'attempt-1 evidence '
+                                f'(closure={_l_contact_closure}, '
+                                f'blocked={_l_close_blocked}, '
+                                f'delta={_l_close_delta:.0f}'
+                                + (f', pad={_l_wrist_z_at_close[2]-tz:.3f} m'
+                                   if orientation == 'horizontal'
+                                   and _l_wrist_z_at_close is not None else '')
+                                + (f', insert_pressed={_l_insert_pressed}'
+                                   if orientation != 'horizontal' else '')
+                                + ') — hand stays CLOSED, guarded re-press '
+                                f'+2 cm forward\n')
+                            sys.stderr.flush()
+                        else:
+                            lhand.open()
+                    else:  # "grasped_nothing"
+                        sys.stderr.write('[pick_daemon] Left grasped nothing, retrying...\n')
+                        sys.stderr.flush()
+                        if _l_any_capture:
+                            _l_attempt_keep_closed = True
+                            sys.stderr.write(
+                                f'[pick_daemon] RETRY keep-closed (left): '
+                                f'attempt-1 evidence '
+                                f'(closure={_l_contact_closure}, '
+                                f'blocked={_l_close_blocked}, '
+                                f'delta={_l_close_delta:.0f}'
+                                + (f', pad={_l_wrist_z_at_close[2]-tz:.3f} m'
+                                   if orientation == 'horizontal'
+                                   and _l_wrist_z_at_close is not None else '')
+                                + (f', insert_pressed={_l_insert_pressed}'
+                                   if orientation != 'horizontal' else '')
+                                + ') — hand stays CLOSED, guarded re-press '
+                                f'+2 cm forward\n')
+                            sys.stderr.flush()
+                        else:
+                            lhand.open()
+
+                if not grasp_ok:
+                    sys.stderr.write('[pick_daemon] LEFT GRASP FAILED after 2 attempts\n')
+                    sys.stderr.flush()
+                    # final keep-closed (left)
+                    if _l_attempt_keep_closed:
+                        sys.stderr.write(
+                            '[pick_daemon] FINAL keep-closed (left): OBJECT '
+                            'MAY BE IN HAND — hand left CLOSED, operator can '
+                            'take it\n')
+                        sys.stderr.flush()
+                    else:
+                        lhand.open()
+                    if not _reply_sent:
+                        sys.stdout.write('ERROR:grasp_failed\n')
+                        sys.stdout.flush()
+                        _reply_sent = True
+                    else:
+                        # a reply already went out: never emit a second stdout line;
+                        # put the reason on stderr.
+                        sys.stderr.write(
+                            '[pick_daemon] ERROR:grasp_failed suppressed — '
+                            'this command already sent its one stdout reply '
+                            '(an earlier reply for this command)\n')
+                        sys.stderr.flush()
+                    # park first, release the RC interlock last (in `finally`);
+                    # releasing before a 6.5 s READY slew leaves the legs free while
+                    # the arm moves. left failure path: both arms to READY,
+                    # non-cancellable.
+                    try:
+                        _relax_arm_to_measured(arm, 'grasp_failed (left)')
+                        _sx_q = _safe_move(arm, READY_POSE, 'grasp_failed (left)')
+                        _post_park_stall_check(arm, _sx_q, 'grasp_failed (left)')
+                    except Exception as _sx_e:
+                        sys.stderr.write(
+                            f'[pick_daemon] SAFE-EXIT(grasp_failed (left)): '
+                            f'park FAILED: {_sx_e!r} — releasing the RC '
+                            'interlock anyway\n')
+                        sys.stderr.flush()
+                    finally:
+                        _hold_rc_writer(arm, False, 'grasp_failed (left)')
+                    continue
+
+                # pre-lift pin (left mirror). with no pressure the
+                # close-block is keep evidence; the LIFT to
+                # CARRY_TUCK roll has no re-grip check. outcomes: ok,
+                # caught-slack (tuck re-pin), aborted (hand left
+                # closed; arm relaxes, parks at READY, then the RC
+                # interlock is released).
+                _pin_abort = False
+                _llpp = _squeeze_hold(lhand, 'left', _capped_close_preset('left'))
+                if _llpp[1] != _llpp[1]:  # NaN margin = no state data (blind)
+                    sys.stderr.write(
+                        '[pick_daemon] pre-lift pin SKIPPED (no hand state — '
+                        'blind mode), proceeding\n')
+                    sys.stderr.flush()
+                    _pin_slack = False
+                elif not _llpp[0]:
+                    sys.stderr.write(
+                        '[pick_daemon] pre-lift pin (left): fingers reached '
+                        'the close preset — object may have left the hand; '
+                        'LIFT ABORTED, hand left CLOSED\n')
+                    sys.stderr.flush()
+                    if not _reply_sent:
+                        sys.stdout.write('ERROR:grasp_failed\n')
+                        sys.stdout.flush()
+                        _reply_sent = True
+                    else:
+                        sys.stderr.write(
+                            '[pick_daemon] ERROR:grasp_failed suppressed '
+                            '(lift-pin abort) — this command already sent its '
+                            'one stdout reply\n')
+                        sys.stderr.flush()
+                    # park first, release last; the unwind is not cancellable
+                    # (reply already out).
+                    try:
+                        _relax_arm_to_measured(arm, 'lift-pin abort (left)')
+                        _sx_q = _safe_move(arm, READY_POSE,
+                                           'lift-pin abort (left)')
+                        _post_park_stall_check(arm, _sx_q,
+                                               'lift-pin abort (left)')
+                    except Exception as _sx_e:
+                        sys.stderr.write(
+                            f'[pick_daemon] SAFE-EXIT(lift-pin abort (left)): '
+                            f'park FAILED: {_sx_e!r} — releasing the RC '
+                            'interlock anyway\n')
+                        sys.stderr.flush()
+                    finally:
+                        _hold_rc_writer(arm, False, 'lift-pin abort (left)')
+                    continue
+                elif _llpp[1] > _l_close_margin_post + PRE_LIFT_SLIP_REGRESS_TOL:
+                    sys.stderr.write(
+                        f'[pick_daemon] pre-lift pin (left) CAUGHT-SLACK: '
+                        f'margin {_l_close_margin_post:.3f} → {_llpp[1]:.3f} '
+                        f'rad (weaker grip) — proceeding with tuck re-pin\n')
+                    sys.stderr.flush()
+                    _pin_slack = True
+                else:
+                    sys.stderr.write(
+                        f'[pick_daemon] pre-lift pin ok (left, margin '
+                        f'{_llpp[1]:.3f} rad)\n')
+                    sys.stderr.flush()
+                    _pin_slack = False
+
+                # steps 4-5: active (left) arm to LIFT, then CARRY_TUCK (fixed
+                # joint-space poses; hand stays closed). height_m is parsed above
+                # for protocol compatibility only.
+                sys.stderr.write(
+                    '[pick_daemon] T5 step 4: left arm → LIFT '
+                    '(hand closed)...\n')
+                sys.stderr.flush()
+                _t5_joint_move(arm, 'left', LIFT_LEFT, zf_legacy=True)
+
+                sys.stderr.write(
+                    '[pick_daemon] T5 step 5: left arm → CARRY_TUCK '
+                    '(hand closed)...\n')
+                sys.stderr.flush()
+                # gentler wrist roll (left mirror)
+                _t5_joint_move(arm, 'left', CARRY_TUCK_LEFT,
+                               duration=CARRY_TUCK_DURATION, zf_legacy=True)
+                if _pin_slack:
+                    # tuck re-pin (left mirror)
+                    _ltpr = _squeeze_hold(lhand, 'left', _capped_close_preset('left'))
+                    sys.stderr.write(
+                        '[pick_daemon] tuck re-pin (left): margin '
+                        f'{_ltpr[1]:.3f} rad blocked={_ltpr[0]}\n')
+                    sys.stderr.flush()
+                # pick complete: release the RC interlock (the writer keeps the arm
+                # at CARRY_TUCK and RC is live again).
+                _hold_rc_writer(arm, False, 'pick complete (step 5)')
+
+                # one line per command: if a reply already went out, that error
+                # stands.
+                if not _reply_sent:
+                    sys.stdout.write('DONE\n')
+                    sys.stdout.flush()
+
+            # place = drop-in-place. "place x y z" carries the held
+            # object to an upright wrist drop pose at [x, y, z] (torso
+            # frame; z is wrist height and the standoff is the caller's
+            # concern), then releases. the coords form reverses pick:
+            # RC on, idle arm to CARRY_TUCK (freeze_idle_arm pin in
+            # every solve), ASCEND to hover z = pz +
+            # APPROACH_HEIGHT_OFFSET over [px, py], APPROACH-XY, DESCEND
+            # to pz, open the holding hand (right; log-only verify),
+            # then both arms to LIFT and NEUTRAL, payload off, RC off,
+            # DONE. the no-coords form releases at the current carry
+            # pose and opens only the holding hand.
+            elif cmd == 'place' or cmd.startswith('place '):
+                _zf_pick_begin('right', arm)
+                parts = cmd.split()
+                hold_side = 'right'
+                idle_side = 'left'
+                _phand = rhand
+                _popen_preset = R_HAND_OPEN
+                _pdir = +1
+                _pcarry_idle = CARRY_TUCK_LEFT
+                _verb = 'place'
+                if len(parts) == 1:
+                    # no coords: no extra lift. the raise is clearance for an
+                    # approach and this exit has none: the release happens at the
+                    # carry pose, so raising first would move the release point up
+                    # by up to PLACE_EXTRA_LIFT_MAX_M and change the drop height.
+                    # the raise lives only on the coords exits, where the
+                    # ASCEND/DESCEND pair returns to pz.
+                    if ARM_WRITER_ENABLED:
+                        try:
+                            arm.hold_rc(True)
+                        except Exception as _he:
+                            sys.stdout.write(f'ERROR:hold_rc on: {_he}\n')
+                            sys.stdout.flush()
+                            _zf_restore_floor()   # no motion yet
+                            continue
+                    sys.stderr.write(
+                        f'[pick_daemon] {_verb}: drop-in-place at the current '
+                        f'carry pose — open {hold_side} hand ONLY, payload '
+                        'off, then TWO-ARM closeout to NEUTRAL\n')
+                    sys.stderr.flush()
+                    # extra lift deliberately absent here; see the note above
+                    _phand.open()
+                    _p_open_ok, _p_open_reason = _verify_hand_open(
+                        _phand, hold_side, _popen_preset)
+                    _note_release_open(hold_side, _p_open_ok)
+                    if not _p_open_ok:
+                        sys.stderr.write(
+                            f'[pick_daemon] {_verb}: {hold_side} hand open '
+                            f'verify failed ({_p_open_reason}) — continuing\n')
+                        sys.stderr.flush()
+                    time.sleep(0.5)
+                    try:
+                        if hasattr(arm, 'payload'):
+                            arm.payload(False)
+                    except Exception as _pe:
+                        sys.stderr.write(
+                            f'[pick_daemon] {_verb}: payload off failed: {_pe} '
+                            '— continuing\n')
+                        sys.stderr.flush()
+                    # two-arm closeout (RC stays on): the empty holding arm lifts
+                    # off the release point and the idle arm leaves CARRY_TUCK on the
+                    # same beat, both to LIFT, then both to NEUTRAL.
+                    sys.stderr.write(
+                        f'[pick_daemon] {_verb} closeout 1/2: both arms → '
+                        'LIFT (holding arm clears; idle arm off CARRY_TUCK)'
+                        '...\n')
+                    sys.stderr.flush()
+                    _p_lift = np.concatenate(
+                        [LIFT_LEFT, LIFT_RIGHT]).astype(np.float64)
+                    move_arm_smooth(arm, _p_lift,
+                                    _arm_gravity_ff(_p_lift, np.zeros(14)), zf_legacy=True)
+                    # park the holding hand closed here: arm at LIFT, fingers clear
+                    # of the drop point. gated by PLACE_PARK_HAND_CLOSED.
+                    _park_hand_after_lift(_phand, hold_side, _verb, _p_open_ok)
+                    sys.stderr.write(
+                        f'[pick_daemon] {_verb} closeout 2/2: both arms → '
+                        'NEUTRAL together...\n')
+                    sys.stderr.flush()
+                    _p_neutral = np.concatenate(
+                        [NEUTRAL_LEFT, NEUTRAL_RIGHT]).astype(np.float64)
+                    _pn_q0 = arm.get_current_dual_arm_q().copy()  # stall check
+                    move_arm_smooth(arm, _p_neutral,
+                                    _arm_gravity_ff(_p_neutral, np.zeros(14)), zf_legacy=True)
+                    # stall -> relax
+                    
+                    _post_park_stall_check(
+                        arm, _expected_after_move(_pn_q0, _p_neutral),
+                        f'{_verb} closeout')
+                    _hold_rc_writer(arm, False,
+                                    f'{_verb} complete (drop-in-place)')
+                    sys.stdout.write('DONE%s%s\n' % (_release_open_token(hold_side),
+                                                   _zf_reply_suffix(_verb)))
+                    sys.stdout.flush()
+                else:
+                    # ── coords "place x y z": reverse-pick waypoints ───────
+                    # parse before RC on: a bad parse must never
+                    # engage the arm.
+                    try:
+                        if len(parts) < 4:
+                            raise ValueError(f'{_verb} requires x y z')
+                        px = float(parts[1])
+                        py = float(parts[2])
+                        pz = float(parts[3])
+                    except (ValueError, IndexError) as e:
+                        sys.stdout.write(f'ERROR:{_verb} parse: {e}\n')
+                        sys.stdout.flush()
+                        _zf_restore_floor()   # no motion yet
+                        continue
+                    # optional height token: the object height for the extra lift.
+                    # it is the durable height source; the in-process holder below
+                    # is lost across a daemon restart.
+                    # not part of the raise-on-bad-parse contract: an unparseable
+                    # height means "unknown", not a malformed command, so the place
+                    # still runs (warn-and-degrade); an absent token falls back to
+                    # the holder.
+                    _el_h_token = None
+                    if len(parts) >= 5:
+                        try:
+                            _el_h_token = float(parts[4])
+                        except (ValueError, IndexError):
+                            sys.stderr.write(
+                                f'[pick_daemon] {_verb}: height token '
+                                f'{parts[4]!r} is not a number — treating the '
+                                f'object height as unknown\n')
+                            sys.stderr.flush()
+                            _el_h_token = None
+                    _el_h_m = (_el_h_token if _el_h_token is not None
+                               else _PLACE_LAST_OBJECT_HEIGHT_M[0])
+                    # self-collision precheck: refuse a drop point whose
+                    # ASCEND/DESCEND would press the right arm into the torso or
+                    # tucked left arm. runs before hold_rc, the extra lift and any
+                    # arm motion; the object stays held.
+                    _sc_pre = _self_collision_precheck(
+                        arm, arm_ik, _verb, 'upright', px, py, pz)
+                    if _sc_pre is not None:
+                        sys.stdout.write(_sc_line(_sc_pre))
+                        sys.stdout.flush()
+                        _zf_restore_floor()   # no motion yet
+                        continue
+                    if ARM_WRITER_ENABLED:
+                        try:
+                            arm.hold_rc(True)
+                        except Exception as _he:
+                            sys.stdout.write(f'ERROR:hold_rc on: {_he}\n')
+                            sys.stdout.flush()
+                            _zf_restore_floor()   # no motion yet
+                            continue
+                    hover_z = pz + APPROACH_HEIGHT_OFFSET
+                    sys.stderr.write(
+                        f'[pick_daemon] {_verb}: right hand holds — drop at '
+                        f'x={px:.3f} y={py:.3f} z={pz:.3f} '
+                        f'(hover z={hover_z:.3f})...\n')
+                    sys.stderr.flush()
+                    # 2. idle (left) arm out of the way at its CARRY_TUCK; move it
+                    # only when it is not already settled there (the pair normally
+                    # just finished a pick).
+                    _pcur = arm.get_current_dual_arm_q().copy()
+                    _pidle_tuck = _zf_idle_target(idle_side, _pcarry_idle)   # measured tuck target
+                    _pidle_slice = (slice(0, 7) if idle_side == 'left'
+                                    else slice(7, 14))
+                    if np.max(np.abs(_pcur[_pidle_slice] -
+                                     _pidle_tuck)) > 0.03:
+                        sys.stderr.write(
+                            f'[pick_daemon] {_verb} step 2: park idle '
+                            f'({idle_side}) arm at CARRY_TUCK...\n')
+                        sys.stderr.flush()
+                        _t5_joint_move(arm, idle_side, _pidle_tuck)
+                        _zf_pin_idle(idle_side)   # the commanded park is the pin
+                    else:
+                        sys.stderr.write(
+                            f'[pick_daemon] {_verb} step 2: idle ({idle_side}) '
+                            'arm already at CARRY_TUCK — skip park\n')
+                        sys.stderr.flush()
+                        _zf_pin_idle(idle_side, _pcur)   # measured = pin
+                    # extra lift: the place's first motion raises the holding arm
+                    # alone by min(2.5*H, PLACE_EXTRA_LIFT_MAX_M), object still
+                    # held. runs after step 2 and before the ascend. it is transient
+                    # clearance: pz and hover_z are not raised, and the arm gives
+                    # the extra z back during ASCEND/DESCEND. never refuses: an
+                    # unknown height or no verified solve means no raise.
+                    _el_req, _el_got, _el_ok = _place_extra_lift(
+                        arm, arm_ik, hold_side, _el_h_m, _verb,
+                        log_prefix=f'{_verb}-extra-lift: ')
+                    # 3. ASCEND: carry pose to upright wrist at [px, py, hover_z]
+                    # (de-tuck up and over the drop point).
+                    sys.stderr.write(
+                        f'[pick_daemon] {_verb} step 3: ASCEND — upright '
+                        f'{hold_side} wrist to [{px:.3f}, {py:.3f}] at '
+                        f'z={hover_z:.3f}...\n')
+                    sys.stderr.flush()
+                    _asc_t = make_wrist_target_upright_v4(
+                        px, py, hover_z, _pdir)
+                    if not solve_and_move(arm, arm_ik, _asc_t,
+                                          f'{_verb}-ascend: ',
+                                          side=hold_side):
+                        sys.stdout.write(
+                            f'ERROR:IK failed for {_verb} ascend{_zf_reply_suffix(_verb)}\n')
+                        sys.stdout.flush()
+                        # park the holding arm at CARRY_TUCK before the release
+                        # (hand untouched, object still held); never raises.
+                        _e6_unmoved = _ZF_CMD['moves'] == 0   # no motion yet
+                        _safe_park_holding(arm, hold_side, f'{_verb} IK failure (ascend)')
+                        _hold_rc_writer(arm, False,
+                                        f'{_verb} IK failure (ascend)')
+                        if _e6_unmoved:
+                            _zf_restore_floor()   # keeps this clamp
+                        continue
+                    # 4. APPROACH-XY: the ascend target is already [px, py] at
+                    # hover height, so the wrist is over the drop point; log and
+                    # descend in place.
+                    sys.stderr.write(
+                        f'[pick_daemon] {_verb} step 4: APPROACH-XY — wrist '
+                        f'over drop at [{px:.3f}, {py:.3f}], z={hover_z:.3f}\n')
+                    sys.stderr.flush()
+                    # 5. DESCEND straight down to the caller drop height pz (hand
+                    # stays closed)
+                    sys.stderr.write(
+                        f'[pick_daemon] {_verb} step 5: DESCEND — upright '
+                        f'{hold_side} wrist to z={pz:.3f} (hand closed, '
+                        'object held)...\n')
+                    sys.stderr.flush()
+                    _desc_t = make_wrist_target_upright_v4(px, py, pz, _pdir)
+                    if not solve_and_move(arm, arm_ik, _desc_t,
+                                          f'{_verb}-descend: ',
+                                          side=hold_side):
+                        sys.stdout.write(
+                            f'ERROR:IK failed for {_verb} descend{_zf_reply_suffix(_verb)}\n')
+                        sys.stdout.flush()
+                        # park before release
+                        _e6_unmoved = _ZF_CMD['moves'] == 0   # no motion yet
+                        _safe_park_holding(arm, hold_side, f'{_verb} IK failure (descend)')
+                        _hold_rc_writer(arm, False,
+                                        f'{_verb} IK failure (descend)')
+                        if _e6_unmoved:
+                            _zf_restore_floor()   # keeps this clamp
+                        continue
+                    time.sleep(0.5)  # settle before the release
+                    # 6. open the holding hand (right); verify is log-only since the
+                    # release already happened, so never hard-fail after it.
+                    sys.stderr.write(
+                        f'[pick_daemon] {_verb} step 6: open {hold_side} '
+                        'hand (release at the drop point)...\n')
+                    sys.stderr.flush()
+                    _phand.open()
+                    _p_open_ok, _p_open_reason = _verify_hand_open(
+                        _phand, hold_side, _popen_preset)
+                    _note_release_open(hold_side, _p_open_ok)
+                    if not _p_open_ok:
+                        sys.stderr.write(
+                            f'[pick_daemon] {_verb}: {hold_side} hand open '
+                            f'verify failed ({_p_open_reason}) — continuing\n')
+                        sys.stderr.flush()
+                    # 7. closeout 1/2 (RC stays on): both arms to LIFT. the empty
+                    # holding arm rises clear and the idle arm leaves CARRY_TUCK on
+                    # the same beat, one synchronized full-14-DOF joint move.
+                    sys.stderr.write(
+                        f'[pick_daemon] {_verb} step 7: closeout 1/2 — both '
+                        'arms → LIFT (holding arm clears the drop point; idle '
+                        'arm off CARRY_TUCK)...\n')
+                    sys.stderr.flush()
+                    _p_lift = np.concatenate(
+                        [LIFT_LEFT, LIFT_RIGHT]).astype(np.float64)
+                    move_arm_smooth(arm, _p_lift,
+                                    _arm_gravity_ff(_p_lift, np.zeros(14)), zf_legacy=True)
+                    # park the holding hand closed here: arm at LIFT, fingers clear
+                    # of the drop point. gated by PLACE_PARK_HAND_CLOSED.
+                    _park_hand_after_lift(_phand, hold_side, _verb, _p_open_ok)
+                    # 8. two-arm closeout 2/2: both arms to NEUTRAL together.
+                    sys.stderr.write(
+                        f'[pick_daemon] {_verb} step 8: closeout 2/2 — both '
+                        'arms → NEUTRAL together...\n')
+                    sys.stderr.flush()
+                    _p_neutral = np.concatenate(
+                        [NEUTRAL_LEFT, NEUTRAL_RIGHT]).astype(np.float64)
+                    _pn_q0 = arm.get_current_dual_arm_q().copy()  # stall check
+                    move_arm_smooth(arm, _p_neutral,
+                                    _arm_gravity_ff(_p_neutral, np.zeros(14)), zf_legacy=True)
+                    # stall -> relax
+                    _post_park_stall_check(
+                        arm, _expected_after_move(_pn_q0, _p_neutral),
+                        f'{_verb} closeout')
+                    # 9. payload off, RC off, DONE.
+                    try:
+                        if hasattr(arm, 'payload'):
+                            arm.payload(False)
+                    except Exception as _pe:
+                        sys.stderr.write(
+                            f'[pick_daemon] {_verb}: payload off failed: {_pe} '
+                            '— continuing\n')
+                        sys.stderr.flush()
+                    # the holding hand is already parked closed at LIFT
+                    # (_park_hand_after_lift), so do not close it a second time: it
+                    # is at the close preset and a repeat costs 0.8 s of blocking
+                    # ramp. PLACE_PARK_HAND_CLOSED covers why it is at LIFT.
+                    _hold_rc_writer(arm, False,
+                                    f'{_verb} complete (drop point)')
+                    sys.stdout.write('DONE%s%s\n' % (_release_open_token(hold_side),
+                                                   _zf_reply_suffix(_verb)))
+                    sys.stdout.flush()
+
+            # mirror of the place handler with the holding side left: same
+            # reverse-pick waypoints (RC on, park idle right arm, ASCEND to hover z
+            # over [px, py], APPROACH-XY log, DESCEND to pz, open left hand,
+            # closeout both to LIFT then NEUTRAL, payload off, RC off, DONE). no
+            # coords releases at the current carry pose, opening only the left hand.
+            elif cmd == 'place_left' or cmd.startswith('place_left '):
+                _zf_pick_begin('left', arm)
+                parts = cmd.split()
+                hold_side = 'left'
+                idle_side = 'right'
+                _phand = lhand
+                _popen_preset = L_HAND_OPEN
+                _pdir = -1
+                _pcarry_idle = CARRY_TUCK_RIGHT
+                _verb = 'place_left'
+                if len(parts) == 1:
+                    # no coords: no extra lift. the raise is approach clearance, and
+                    # raising here would move the release point up by up to
+                    # PLACE_EXTRA_LIFT_MAX_M. the raise lives only on the coords
+                    # exits.
+                    if ARM_WRITER_ENABLED:
+                        try:
+                            arm.hold_rc(True)
+                        except Exception as _he:
+                            sys.stdout.write(f'ERROR:hold_rc on: {_he}\n')
+                            sys.stdout.flush()
+                            _zf_restore_floor()   # no motion yet
+                            continue
+                    sys.stderr.write(
+                        f'[pick_daemon] {_verb}: drop-in-place at the current '
+                        f'carry pose — open {hold_side} hand ONLY, payload '
+                        'off, then TWO-ARM closeout to NEUTRAL\n')
+                    sys.stderr.flush()
+                    # extra lift deliberately absent here; see the note above
+                    _phand.open()
+                    _p_open_ok, _p_open_reason = _verify_hand_open(
+                        _phand, hold_side, _popen_preset)
+                    _note_release_open(hold_side, _p_open_ok)
+                    if not _p_open_ok:
+                        sys.stderr.write(
+                            f'[pick_daemon] {_verb}: {hold_side} hand open '
+                            f'verify failed ({_p_open_reason}) — continuing\n')
+                        sys.stderr.flush()
+                    time.sleep(0.5)
+                    try:
+                        if hasattr(arm, 'payload'):
+                            arm.payload(False)
+                    except Exception as _pe:
+                        sys.stderr.write(
+                            f'[pick_daemon] {_verb}: payload off failed: {_pe} '
+                            '— continuing\n')
+                        sys.stderr.flush()
+                    # two-arm closeout (RC stays on): the holding arm lifts off the
+                    # release point and the idle arm leaves CARRY_TUCK on the same
+                    # beat, both to LIFT, then both to NEUTRAL.
+                    sys.stderr.write(
+                        f'[pick_daemon] {_verb} closeout 1/2: both arms → '
+                        'LIFT (holding arm clears; idle arm off CARRY_TUCK)'
+                        '...\n')
+                    sys.stderr.flush()
+                    _p_lift = np.concatenate(
+                        [LIFT_LEFT, LIFT_RIGHT]).astype(np.float64)
+                    move_arm_smooth(arm, _p_lift,
+                                    _arm_gravity_ff(_p_lift, np.zeros(14)), zf_legacy=True)
+                    # park the holding hand closed here (arm at LIFT, fingers
+                    # clear). gated by PLACE_PARK_HAND_CLOSED.
+                    _park_hand_after_lift(_phand, hold_side, _verb, _p_open_ok)
+                    sys.stderr.write(
+                        f'[pick_daemon] {_verb} closeout 2/2: both arms → '
+                        'NEUTRAL together...\n')
+                    sys.stderr.flush()
+                    _p_neutral = np.concatenate(
+                        [NEUTRAL_LEFT, NEUTRAL_RIGHT]).astype(np.float64)
+                    _pn_q0 = arm.get_current_dual_arm_q().copy()  # stall check
+                    move_arm_smooth(arm, _p_neutral,
+                                    _arm_gravity_ff(_p_neutral, np.zeros(14)), zf_legacy=True)
+                    # stall -> relax
+                    _post_park_stall_check(
+                        arm, _expected_after_move(_pn_q0, _p_neutral),
+                        f'{_verb} closeout')
+                    _hold_rc_writer(arm, False,
+                                    f'{_verb} complete (drop-in-place)')
+                    sys.stdout.write('DONE%s%s\n' % (_release_open_token(hold_side),
+                                                   _zf_reply_suffix(_verb)))
+                    sys.stdout.flush()
+                else:
+                    # coords: reverse-pick waypoints. parse before RC on so a bad
+                                        
+                    # command never engages the arm.
+                    try:
+                        if len(parts) < 4:
+                            raise ValueError(f'{_verb} requires x y z')
+                        px = float(parts[1])
+                        py = float(parts[2])
+                        pz = float(parts[3])
+                    except (ValueError, IndexError) as e:
+                        sys.stdout.write(f'ERROR:{_verb} parse: {e}\n')
+                        sys.stdout.flush()
+                        _zf_restore_floor()   # no motion yet
+                        continue
+                    # optional height token: the object height for the extra lift.
+                    # it is the durable height source; the in-process holder below
+                    # is lost across a daemon restart.
+                    # not part of the raise-on-bad-parse contract: an unparseable
+                    # height means "unknown", not a malformed command, so the place
+                    # still runs (warn-and-degrade); an absent token falls back to
+                    # the holder.
+                    _el_h_token = None
+                    if len(parts) >= 5:
+                        try:
+                            _el_h_token = float(parts[4])
+                        except (ValueError, IndexError):
+                            sys.stderr.write(
+                                f'[pick_daemon] {_verb}: height token '
+                                f'{parts[4]!r} is not a number — treating the '
+                                f'object height as unknown\n')
+                            sys.stderr.flush()
+                            _el_h_token = None
+                    _el_h_m = (_el_h_token if _el_h_token is not None
+                               else _PLACE_LAST_OBJECT_HEIGHT_M[0])
+                    if ARM_WRITER_ENABLED:
+                        try:
+                            arm.hold_rc(True)
+                        except Exception as _he:
+                            sys.stdout.write(f'ERROR:hold_rc on: {_he}\n')
+                            sys.stdout.flush()
+                            _zf_restore_floor()   # no motion yet
+                            continue
+                    hover_z = pz + APPROACH_HEIGHT_OFFSET
+                    sys.stderr.write(
+                        f'[pick_daemon] {_verb}: left hand holds — drop at '
+                        f'x={px:.3f} y={py:.3f} z={pz:.3f} '
+                        f'(hover z={hover_z:.3f})...\n')
+                    sys.stderr.flush()
+                    # 2. idle (right) arm out of the way at its CARRY_TUCK; move it
+                    # only when it is not already settled there.
+                    _pcur = arm.get_current_dual_arm_q().copy()
+                    _pidle_tuck = _zf_idle_target(idle_side, _pcarry_idle)   # measured tuck target
+                    _pidle_slice = (slice(0, 7) if idle_side == 'left'
+                                    else slice(7, 14))
+                    if np.max(np.abs(_pcur[_pidle_slice] -
+                                     _pidle_tuck)) > 0.03:
+                        sys.stderr.write(
+                            f'[pick_daemon] {_verb} step 2: park idle '
+                            f'({idle_side}) arm at CARRY_TUCK...\n')
+                        sys.stderr.flush()
+                        _t5_joint_move(arm, idle_side, _pidle_tuck)
+                        _zf_pin_idle(idle_side)   # the commanded park is the pin
+                    else:
+                        sys.stderr.write(
+                            f'[pick_daemon] {_verb} step 2: idle ({idle_side}) '
+                            'arm already at CARRY_TUCK — skip park\n')
+                        sys.stderr.flush()
+                        _zf_pin_idle(idle_side, _pcur)   # measured = pin
+                    # extra lift: the place's first motion, holding arm alone,
+                    # min(2.5*H, PLACE_EXTRA_LIFT_MAX_M), object still held. after step
+                    # 2, before ascend; pz and hover_z are unchanged and it never
+                    # refuses.
+                    _el_req, _el_got, _el_ok = _place_extra_lift(
+                        arm, arm_ik, hold_side, _el_h_m, _verb,
+                        log_prefix=f'{_verb}-extra-lift: ')
+                    # 3. ASCEND: carry pose to upright wrist at [px, py, hover_z].
+                    sys.stderr.write(
+                        f'[pick_daemon] {_verb} step 3: ASCEND — upright '
+                        f'{hold_side} wrist to [{px:.3f}, {py:.3f}] at '
+                        f'z={hover_z:.3f}...\n')
+                    sys.stderr.flush()
+                    _asc_t = make_wrist_target_upright_v4(
+                        px, py, hover_z, _pdir)
+                    if not solve_and_move(arm, arm_ik, _asc_t,
+                                          f'{_verb}-ascend: ',
+                                          side=hold_side):
+                        sys.stdout.write(
+                            f'ERROR:IK failed for {_verb} ascend{_zf_reply_suffix(_verb)}\n')
+                        sys.stdout.flush()
+                        # park before release
+                        _e6_unmoved = _ZF_CMD['moves'] == 0   # no motion yet
+                        _safe_park_holding(arm, hold_side, f'{_verb} IK failure (ascend)')
+                        _hold_rc_writer(arm, False,
+                                        f'{_verb} IK failure (ascend)')
+                        if _e6_unmoved:
+                            _zf_restore_floor()   # keeps this clamp
+                        continue
+                    # 4. APPROACH-XY: the ascend target is already [px, py] at hover
+                    # height, so the wrist is over the drop point; log and descend in
+                    # place.
+                    sys.stderr.write(
+                        f'[pick_daemon] {_verb} step 4: APPROACH-XY — wrist '
+                        f'over drop at [{px:.3f}, {py:.3f}], z={hover_z:.3f}\n')
+                    sys.stderr.flush()
+                    # 5. DESCEND straight down to the caller drop height pz (hand stays
+                    # closed)
+                    sys.stderr.write(
+                        f'[pick_daemon] {_verb} step 5: DESCEND — upright '
+                        f'{hold_side} wrist to z={pz:.3f} (hand closed, '
+                        'object held)...\n')
+                    sys.stderr.flush()
+                    _desc_t = make_wrist_target_upright_v4(px, py, pz, _pdir)
+                    if not solve_and_move(arm, arm_ik, _desc_t,
+                                          f'{_verb}-descend: ',
+                                          side=hold_side):
+                        sys.stdout.write(
+                            f'ERROR:IK failed for {_verb} descend{_zf_reply_suffix(_verb)}\n')
+                        sys.stdout.flush()
+                        # park before release
+                        _e6_unmoved = _ZF_CMD['moves'] == 0   # no motion yet
+                        _safe_park_holding(arm, hold_side, f'{_verb} IK failure (descend)')
+                        _hold_rc_writer(arm, False,
+                                        f'{_verb} IK failure (descend)')
+                        if _e6_unmoved:
+                            _zf_restore_floor()   # keeps this clamp
+                        continue
+                    time.sleep(0.5)  # settle before the release
+                    # 6. open the holding hand (left); verify is log-only.
+                    sys.stderr.write(
+                        f'[pick_daemon] {_verb} step 6: open {hold_side} '
+                        'hand (release at the drop point)...\n')
+                    sys.stderr.flush()
+                    _phand.open()
+                    _p_open_ok, _p_open_reason = _verify_hand_open(
+                        _phand, hold_side, _popen_preset)
+                    _note_release_open(hold_side, _p_open_ok)
+                    if not _p_open_ok:
+                        sys.stderr.write(
+                            f'[pick_daemon] {_verb}: {hold_side} hand open '
+                            f'verify failed ({_p_open_reason}) — continuing\n')
+                        sys.stderr.flush()
+                    # 7. closeout 1/2: both arms to LIFT; the holding arm rises clear
+                    # and the idle arm leaves CARRY_TUCK on the same beat, one
+                    # synchronized 14-DOF joint move.
+                    sys.stderr.write(
+                        f'[pick_daemon] {_verb} step 7: closeout 1/2 — both '
+                        'arms → LIFT (holding arm clears the drop point; idle '
+                        'arm off CARRY_TUCK)...\n')
+                    sys.stderr.flush()
+                    _p_lift = np.concatenate(
+                        [LIFT_LEFT, LIFT_RIGHT]).astype(np.float64)
+                    move_arm_smooth(arm, _p_lift,
+                                    _arm_gravity_ff(_p_lift, np.zeros(14)), zf_legacy=True)
+                    # park the holding hand closed here (arm at LIFT, fingers clear).
+                    # gated by PLACE_PARK_HAND_CLOSED.
+                    _park_hand_after_lift(_phand, hold_side, _verb, _p_open_ok)
+                    # 8. two-arm closeout 2/2: both arms to NEUTRAL together.
+                    sys.stderr.write(
+                        f'[pick_daemon] {_verb} step 8: closeout 2/2 — both '
+                        'arms → NEUTRAL together...\n')
+                    sys.stderr.flush()
+                    _p_neutral = np.concatenate(
+                        [NEUTRAL_LEFT, NEUTRAL_RIGHT]).astype(np.float64)
+                    _pn_q0 = arm.get_current_dual_arm_q().copy()  # stall check
+                    move_arm_smooth(arm, _p_neutral,
+                                    _arm_gravity_ff(_p_neutral, np.zeros(14)), zf_legacy=True)
+                    # stall -> relax
+                    _post_park_stall_check(
+                        arm, _expected_after_move(_pn_q0, _p_neutral),
+                        f'{_verb} closeout')
+                    # 9. payload off, RC off, DONE.
+                    try:
+                        if hasattr(arm, 'payload'):
+                            arm.payload(False)
+                    except Exception as _pe:
+                        sys.stderr.write(
+                            f'[pick_daemon] {_verb}: payload off failed: {_pe} '
+                            '— continuing\n')
+                        sys.stderr.flush()
+                    # the holding hand is already parked closed at LIFT
+                    # (_park_hand_after_lift). do not close again: it is at the close
+                    # preset and a repeat costs 0.8 s of ramp.
+                    _hold_rc_writer(arm, False,
+                                    f'{_verb} complete (drop point)')
+                    sys.stdout.write('DONE%s%s\n' % (_release_open_token(hold_side),
+                                                   _zf_reply_suffix(_verb)))
+                    sys.stdout.flush()
+
+            # relax_arm: release a held or stalled arm for the gateway's idle stop
+            # and watchdog. `hold_rc off` alone does not release the arm; it only
+            # re-enables the RC sticks. this collapses the commanded target onto the
+            # measured q (nothing moves except the setpoint, over slew_min), then
+            # releases the RC interlock. hands untouched. one reply line:
+            #   DONE:relax_arm relaxed=1 err_max=<%.3f|unknown> hold_rc=off
+                        
+            #   ERROR:relax_arm <reason>      (hold_rc off still attempted)
+            # err_max = how far the measured arm sat from the last recorded
+            # target (the stall the relax released); `unknown` when there is no
+            # record, or the arm has moved since the record.
+            elif cmd == 'relax_arm':
+                try:
+                    _ra_q = np.array(arm.get_current_dual_arm_q(),
+                                     dtype=np.float64)
+                    _ra_err = _last_cmd_err(_ra_q)
+                    if _relax_arm_to_measured(arm, 'relax_arm', q=_ra_q) is None:
+                        _ra_reply = ('ERROR:relax_arm relax failed: %s'
+                                     % _LAST_RELAX_ERROR[0])
+                    else:
+                        _ra_reply = ('DONE:relax_arm relaxed=1 err_max=%s '
+                                     'hold_rc=off' % _ra_err)
+                except Exception as _rae:
+                    _ra_reply = 'ERROR:relax_arm %s' % (_rae,)
+                if ARM_WRITER_ENABLED:
+                    try:
+                        arm.hold_rc(False)
+                    except Exception as _rce:
+                        sys.stderr.write(
+                            f'[pick_daemon] relax_arm: hold_rc off FAILED: '
+                            f'{_rce}\n')
+                        sys.stderr.flush()
+                        if _ra_reply.startswith('DONE'):
+                            _ra_reply = ('ERROR:relax_arm hold_rc off failed: '
+                                         '%s' % (_rce,))
+                sys.stdout.write(_ra_reply + '\n')
+                sys.stdout.flush()
+
+            # ── grip_evidence: hand evidence from the last right pick ───
+            # evidence only; the pick reply itself stays a bare DONE, which the
+            # gateway compares exactly.
+            elif cmd == 'grip_evidence':
+                _ge_last = _LAST_GRIP_EVIDENCE[0]
+                sys.stdout.write('DONE:' + json.dumps(
+                    _ge_last if _ge_last is not None else {},
+                    separators=(',', ':')) + '\n')
+                sys.stdout.flush()
+
+            else:
+                sys.stdout.write(f'ERROR:unknown command "{cmd}"\n')
+                sys.stdout.flush()
+
+        except engine_cancel.Cancelled as e:
+            # ── mid-task cancel unwind ───────────────────────────────────
+            # raised by _check_cancel at a motion choke point. the stop is
+            # freeze-in-place: the writer halts the in-flight slew at its current
+            # interpolated position and holds it.
+            # not a retreat to a park pose: the hand may be loaded and moving a
+            # grasped object is riskier than holding still; it may be mid-press,
+            # where a retreat would drag; and this hardware has no empty/loaded
+            # discriminator, so "retreat only if empty" cannot be decided.
+            # freeze-then-release is also the safe state for the RC interlock:
+            # manual control returns with the arm at a pose it already holds.
+            if ARM_WRITER_ENABLED:
+                try:
+                    arm.freeze()
+                except Exception as _e:
+                    sys.stderr.write(f'[pick_daemon] cancel freeze failed: {_e}\n')
+                    sys.stderr.flush()
+            # the freeze leaves the writer PD-holding its interpolated target,
+            # which can sit short of the measured pose (blocked arm means stall
+            # torque). collapse the target onto the measured q. no retreat.
+            _relax_arm_to_measured(arm, 'cancel')
+            _hold_rc_writer(arm, False, 'cancel')
+            # cleared after the arm is stopped and the interlock released: clearing
+            # earlier would drop a second cancel that arrived during the unwind,
+            # and pressing twice is reasonable.
+            engine_cancel.clear()
+            sys.stderr.write(
+                f'[pick_daemon] CANCELLED at phase "{e.where}" — arm frozen in '
+                'place and relaxed to the measured pose, RC interlock released '
+                '(manual control restored)\n')
+            sys.stderr.flush()
+            # not an ERROR: _shape_reply flips the envelope to ok:false on the
+            # substring "ERROR:" anywhere, and the verifier classifies that as
+            # failure. a cancel is a successful outcome.
+            sys.stdout.write(f'CANCELLED:{e.where}\n')
+            sys.stdout.flush()
+
+        except Exception as e:
+            # best-effort safety on any unhandled error: freeze an in-flight writer
+            # slew, then release the RC interlock (manual recovery). a dead or
+            # clamped writer is recoverable with `hold_rc off`.
+            if ARM_WRITER_ENABLED:
+                try:
+                    arm.freeze()
+                except Exception as _e:
+                    sys.stderr.write(f'[pick_daemon] freeze failed: {_e}\n')
+                    sys.stderr.flush()
+            # frozen short of target means stall torque; relax onto the measured q
+            # (never raises; a dead writer just logs).
+            _relax_arm_to_measured(arm, 'exception')
+            _hold_rc_writer(arm, False, 'exception')
+            sys.stderr.write(f'[pick_daemon] Exception: {e}\n')
+            sys.stderr.flush()
+            if _reply_sent:
+                sys.stderr.write(
+                    '[pick_daemon] ERROR reply suppressed — this command '
+                    'already sent its one stdout reply\n')
+                sys.stderr.flush()
+            else:
+                if _ZF_CMD['moves'] == 0:
+                    _zf_restore_floor()   # an exception before any arm motion
+                _zf_verb = (cmd.split() or [''])[0]
+                sys.stdout.write(f'ERROR:{e}{_zf_reply_suffix(_zf_verb)}\n')
+                sys.stdout.flush()
+        finally:
+            _zf_cmd_end(cmd)   # one summary line per command
