@@ -3465,3 +3465,41 @@ def freeze_idle_arm(arm, sol_q, side):
     return sol_q
 
 
+def _solver_fresh(arm_ik, log_prefix=""):
+    """v5.2 (2026-09-07) Edit C: make the NEXT solve raw/fresh.
+
+    The solver's WeightedMovingFilter([0.4,0.3,0.2,0.1]) has NO reset() and
+    blends every solve_ik call (robot_arm_ik.py L227-228: add_data then
+    sol_q = smooth_filter.filtered_data).  Once its queue is full the NEWEST
+    solve gets weight 0.1 — waypoint commands become ~90% stale, and the
+    queue even survives ACROSS picks (the chain of warm starts: q[i-1] ->
+    filtered q[i]).  _apply_filter returns queue[-1] while the queue is
+    shorter than the window, so clearing _data_queue (private attribute —
+    try/except guarded) makes the NEXT solve pass through 100% fresh.
+    Called ONCE before the first solve of each waypoint phase; mid-phase
+    re-solves (resume/pushes) keep smoothing.
+
+    Returns the number of entries cleared (0 when there is no filter /
+    attribute — degrades to a visible no-op, never raises).
+    """
+    _f = getattr(arm_ik, 'smooth_filter', None)
+    if _f is None:
+        sys.stderr.write(
+            f'[pick_daemon] {log_prefix}solver-fresh: no smooth_filter on '
+            'the IK module — skip\n')
+        sys.stderr.flush()
+        return 0
+    try:
+        _n = len(_f._data_queue)
+        _f._data_queue.clear()
+        sys.stderr.write(
+            f'[pick_daemon] {log_prefix}solver-fresh: cleared {_n} stale '
+            f'filter entries — next solve raw/fresh\n')
+        sys.stderr.flush()
+        return _n
+    except AttributeError:
+        sys.stderr.write(
+            f'[pick_daemon] {log_prefix}solver-fresh: no _data_queue '
+            'attribute — skipping (sealed-solver drift?)\n')
+        sys.stderr.flush()
+        return 0
