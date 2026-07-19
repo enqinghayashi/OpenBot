@@ -7817,3 +7817,11 @@ def _safe_log(msg):
         pass
 
 
+def _note_cmd(target_q, meas_q=None):
+    """Record the last commanded target (and the q measured with it)."""
+    try:
+        _LAST_CMD_Q[0] = (
+            np.array(target_q, dtype=np.float64).copy(),
+            None if meas_q is None else np.array(meas_q, dtype=np.float64).copy())
+    except Exception:
+        _LAST_CMD_Q[0] = None
