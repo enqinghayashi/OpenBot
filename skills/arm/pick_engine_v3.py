@@ -7763,3 +7763,49 @@ def main():
                 sys.stdout.flush()
         finally:
             _zf_cmd_end(cmd)   # one summary line per command
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# safety on every exit, reach precheck, post-park stall check and grip
+# evidence.
+# defined after main() because main() resolves these names at call time, once
+# the whole module has executed.
+# an abort that writes ERROR and continues without releasing RC or moving the
+# arm leaves the writer PD-holding its target, so the arm stays pressed and
+# heats up. releasing RC before a long READY slew has the same problem.
+# rules: park first, release last (interlock in `finally` after the park); the
+# unwind is not cancellable, since a Cancelled after the reply would emit a
+# second stdout line; relax-to-measured is the only way to remove stall torque
+# without new motion.
+# ═════════════════════════════════════════════════════════════════════════════
+
+# relax slew length: the writer clamps every slew to at least arm_slew_min_s,
+# 1.5 s.
+ARM_RELAX_DURATION_S = 1.5
+# post-park stall check. static tracking error is 0.052-0.057 rad and stall
+# error +0.205/+0.224 rad, so 0.10 sits between the two.
+ARM_STALL_SETTLE_S = 1.0
+ARM_STALL_ERR_RAD = 0.10
+# retract trail: measured q after each reached approach waypoint of the current
+# right pick, replayed in reverse on failure or a lift-pin-abort park.
+SAFE_TRAIL_MAX = 4
+SAFE_TRAIL_SKIP_RAD = 0.05
+_SAFE_TRAIL = []
+# the last commanded 14-DOF target known to this block: None or
+# (target_q, measured_q_at_record|None). recorded by _relax_arm_to_measured,
+# _safe_move and _post_park_stall_check. move_arm_smooth records nothing, so
+# the pose verbs above move the arm without updating the record; the stored
+# measured q is what exposes that (_last_cmd_err).
+_LAST_CMD_Q = [None]
+_LAST_RELAX_ERROR = [None]
+# the record is trusted only while the arm is still at the measured pose.
+# static servo error of a held arm is 0.052-0.057 rad while a resting arm
+# moves far less between reads. more than this means motion the record does
+# not describe, so relax_arm reports err_max=unknown rather than a number
+# against a stale target.
+ARM_CMD_RECORD_DRIFT_RAD = 0.05
+# grip evidence from the last right pick (`grip_evidence` verb)
+_LAST_GRIP_EVIDENCE = [None]
+_GRIP_EVIDENCE_SEQ = [0]
+
+
