@@ -3572,3 +3572,30 @@ def solve_and_move(arm, arm_ik, target, log_prefix="", side='right', raw=False):
     return True
 
 
+def _t5_joint_move(arm, side, pose, duration=None, zf_legacy=False):
+    """T5 helper: move ONE arm to a fixed joint-space pose (LIFT/CARRY_TUCK).
+
+    The other (idle) arm's slice is kept at its CURRENT q — a full 14-vector
+    is built here, so the idle arm is untouched by construction (equivalent
+    to freeze_idle_arm but no IK solve is involved).  Hand state is NOT
+    touched by this helper — the caller keeps the hand closed.
+
+    duration (v5.2, 2026-09-07): pass-through to move_arm_smooth — a gentler
+    CARRY_TUCK wrist roll (CARRY_TUCK_DURATION=4.0) mitigates slinging a
+    light capture out of the fingers.
+    """
+    _t5_q = arm.get_current_dual_arm_q().copy()
+    if side == 'right':
+        _t5_q[7:14] = pose
+    else:
+        _t5_q[0:7] = pose
+    # gravity FF at the target pose, not zeros: move_arm_smooth re-asserts
+    # ctrl_dual_arm(target_q, target_tauff) at the end, so zeros leave the arm
+    # without gravity comp after ready/lift/CARRY_TUCK/neutral and it sags on
+    # hardware.
+    tau_target = _arm_gravity_ff(_t5_q, np.zeros(14))
+    if duration is None:
+        move_arm_smooth(arm, _t5_q, tau_target, zf_legacy=zf_legacy)
+    else:
+        move_arm_smooth(arm, _t5_q, tau_target, duration=duration,
+                        zf_legacy=zf_legacy)
