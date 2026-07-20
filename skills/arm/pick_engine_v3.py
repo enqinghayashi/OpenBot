@@ -7955,3 +7955,5 @@ def _retract_trail(arm, ctx):
         _safe_move(arm, q, f'{ctx}:retract {tag}')
         n += 1
     return n
+
+
