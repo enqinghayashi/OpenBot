@@ -513,3 +513,84 @@ class RealGraspDetector:
         motor_high = tau_sum > self._torque_threshold
         return tau_sum, motor_high
 
+    def _compute_tactile_contact(self, press_sensor_states) -> tuple:
+        """Return (contact_count, any_contact) from pressure arrays.
+
+        Scans all PressSensorState_ packages, counts channels whose
+        pressure exceeds the threshold.
+
+        Hardware convention (empirically): index 0=thumb pad,
+        1=index pad, 2=middle pad.  Each package has 12 channels.
+        """
+        contact_count = 0
+        any_contact = False
+        for pkg in press_sensor_states:
+            for p in pkg.pressure:
+                if p > self._tactile_verify_threshold:
+                    contact_count += 1
+                    any_contact = True
+        return contact_count, any_contact
+
+    def _combined_gating(self, motor_high: bool, tactile_contact: bool) -> str:
+        """4-quadrant combined torque + tactile gating matrix.
+
+        Current HIGH + Tactile HIGH  -> solid_grasp      (proceed)
+        Current HIGH + Tactile ZERO  -> hit_obstacle      (abort + retry offset)
+        Current LOW  + Tactile HIGH  -> light_object      (proceed)
+        Current LOW  + Tactile ZERO  -> grasped_nothing   (retry or abort)
+        """
+        if motor_high and tactile_contact:
+            return "solid_grasp"
+        elif motor_high and not tactile_contact:
+            return "hit_obstacle"
+        elif not motor_high and tactile_contact:
+            return "light_object"
+        else:
+            return "grasped_nothing"
+
+    def _detect_transient(self, tau_sum: float) -> bool:
+        """Detect negative torque spike (possible slip) using sliding window.
+
+        A negative spike of > 0.03 N.m drop in a single step during
+        closure may indicate the object slipped out of the grasp.
+
+        Returns True when a negative transient is detected in the current step.
+        """
+        self._tau_window.append(tau_sum)
+
+        transient = False
+        if self._prev_tau_sum is not None:
+            delta = tau_sum - self._prev_tau_sum
+            if delta < -0.03:
+                transient = True
+
+        self._prev_tau_sum = tau_sum
+        return transient
+
+    def _build_details(self, motor_states, press_sensor_states) -> List[Dict]:
+        """Build human-readable per-motor/per-pad diagnostic list."""
+        details: List[Dict] = []
+
+        # tau_est, q, dq each
+        for i in range(min(len(motor_states), 7)):
+            details.append({
+                'type': 'motor',
+                'joint_id': i,
+                'tau_est': float(motor_states[i].tau_est),
+                'q': float(motor_states[i].q),
+                'dq': float(motor_states[i].dq),
+            })
+
+        # summary per pressure package
+        for pkg_idx, pkg in enumerate(press_sensor_states):
+            high_channels = sum(
+                1 for p in pkg.pressure if p > self._pressure_threshold
+            )
+            details.append({
+                'type': 'tactile',
+                'package_idx': pkg_idx,
+                'high_channels': high_channels,
+                'max_pressure': float(max(pkg.pressure)),
+            })
+
+        return details
