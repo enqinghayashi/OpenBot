@@ -7920,3 +7920,5 @@ def _safe_move(arm, target_q, ctx, duration=None):
     return tgt
 
 
+def _trail_reset():
+    del _SAFE_TRAIL[:]
