@@ -8010,3 +8010,16 @@ def _safe_park_holding(arm, side, ctx):
         return None
 
 
+def _precheck_solve(arm_ik, idle_T, target_T, warm):
+    """3 wash solves (warm = previous output), no wrist-GN, stdout muted."""
+    q = np.array(warm, dtype=np.float64)
+    for _ in range(3):
+        with _SuppressStdout():
+            sol, _tau = arm_ik.solve_ik(
+                idle_T, target_T,
+                current_lr_arm_motor_q=q.copy(),
+                current_lr_arm_motor_dq=np.zeros(14))
+        if sol is None:
+            raise RuntimeError('solve_ik returned None')
+        q = np.array(sol, dtype=np.float64)
+    return q
