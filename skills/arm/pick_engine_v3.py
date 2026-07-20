@@ -7924,3 +7924,12 @@ def _trail_reset():
     del _SAFE_TRAIL[:]
 
 
+def _trail_note(arm, tag):
+    """Record the MEASURED q after a reached waypoint (never raises)."""
+    try:
+        q = np.array(arm.get_current_dual_arm_q(), dtype=np.float64)
+        _SAFE_TRAIL.append((tag, q))
+        while len(_SAFE_TRAIL) > SAFE_TRAIL_MAX:
+            del _SAFE_TRAIL[0]
+    except Exception as _e:
+        _safe_log(f'[pick_daemon] SAFE-EXIT trail note {tag} skipped: {_e!r}')
