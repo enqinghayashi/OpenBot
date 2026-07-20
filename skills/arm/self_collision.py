@@ -760,3 +760,71 @@ LEFT_CAP_NAMES = ('left_shoulder_yaw_link', 'left_elbow_link', 'left_wrist_roll_
                   'left_hand_palm_link', 'left_hand_index_1_link', 'left_hand_middle_1_link',
                   'left_hand_thumb_2_link')
 
+def _torso_worst_link(fr):
+    """Right SAMPLES link of the deepest torso-slab penetration (cold path: only
+    computed when the gross net already fired, so the hot path stays identical to
+    the validated proto).  Value-identical to evaluate()'s gross: max over the same
+    (slab, point) set, regrouped by link."""
+    best_ln, best = None, -9.0
+    for ln, P in SAMPLES.items():
+        R, p = fr[ln]; A = ((R @ P.T).T + p) - TORSO_OFFSET
+        g = -9.0
+        for (a, b, x0, x1, y0, y1) in TORSO_SLABS:
+            dx = np.minimum(A[:, 0] - x0, x1 - A[:, 0]); dy = np.minimum(A[:, 1] - y0, y1 - A[:, 1]); dz = np.minimum(A[:, 2] - a, b - A[:, 2])
+            d = np.minimum(np.minimum(dx, dy), dz); g = max(g, float(d.max()))
+        if g > best: best, best_ln = g, ln
+    return best_ln
+
+#: Endpoint midline bar for a PLACE: centre places leave the right
+#: palm at y <= -0.010 and left places at y >= +0.045, so +0.010
+#: splits the two groups by >= 2.0 cm; a pick keeps HAND_Y_MAX_M.
+HAND_Y_MAX_PLACE_M = 0.010
+
+def evaluate(q14):
+    """One pose -> metrics in the pelvis frame.
+
+    left_clear_m    min signed clearance: right-arm surface vs the tucked-left-arm capsules
+    hand_y_m        right hand palm origin y (+y = LEFT; the midline is y = 0)
+    torso_gross_m   max depth of any right-arm point into a torso slab box -- DIAGNOSTIC
+                    ONLY: every slab is 0.020 m thick in z and the depth is
+                    min(dx, dy, dz), so it is capped at 0.010 m; it is NOT a rule
+                    term (a horizontal-depth variant was MEASURED to refuse cool
+                    successes, F4's chain at 0.042, so it is not used either)
+    shoulder_roll   q14[8], diagnostic (the RC-card readout reads the writer log, not this)
+    worst_left_link right SAMPLES link of the min-clearance pair
+    other_link      LEFT capsule name of that pair (for the refusal line 'link=~other')
+    torso_worst_link right link of the worst torso penetration; None when under the bar
+    """
+    fr = fk(q14); caps = left_capsules(fr); best = 9.0; worst = None; worst_cap = None
+    for ln, P in SAMPLES.items():
+        R, p = fr[ln]; W = (R @ P.T).T + p
+        for ci, (p0, p1, r) in enumerate(caps):
+            m = float((_seg_dist(W, p0, p1) - r).min())
+            if m < best: best, worst, worst_cap = m, ln, LEFT_CAP_NAMES[ci]
+    # gross torso net (torso link = pelvis + TORSO_OFFSET, waist locked)
+    A = right_points(fr) - TORSO_OFFSET; gross = -9.0
+    for (a, b, x0, x1, y0, y1) in TORSO_SLABS:
+        dx = np.minimum(A[:, 0] - x0, x1 - A[:, 0]); dy = np.minimum(A[:, 1] - y0, y1 - A[:, 1]); dz = np.minimum(A[:, 2] - a, b - A[:, 2])
+        d = np.minimum(np.minimum(dx, dy), dz); gross = max(gross, float(d.max()))
+    Rw, pw = fr['right_wrist_yaw_link']
+    hand = pw + Rw @ np.array([0.0415, -0.003, 0.0])
+    return {'left_clear_m': best, 'hand_y_m': float(hand[1]), 'torso_gross_m': gross,
+            'shoulder_roll': float(q14[8]), 'worst_left_link': worst, 'other_link': worst_cap,
+            'torso_worst_link': _torso_worst_link(fr) if gross > TORSO_GROSS_M else None}
+
+def evaluate_path(q_from, q_to, n=PATH_SAMPLES):
+    """Aggregate over the joint-space segment the writer slews (n samples, endpoints
+    included).  Same numeric keys as the proto plus e_left / e_torso: the full pose
+    records at the min-clearance and max-gross samples, so a refusal can name the
+    link pair at the pose that actually tripped the rule."""
+    q_from = np.asarray(q_from, dtype=np.float64); q_to = np.asarray(q_to, dtype=np.float64)
+    agg = {'left_clear_m': 9.0, 'hand_y_m': -9.0, 'torso_gross_m': -9.0, 'shoulder_roll': -9.0,
+           's_left': None, 'e_left': None, 'e_torso': None}
+    for s in np.linspace(0.0, 1.0, n):
+        e = evaluate(q_from + s * (q_to - q_from))
+        if e['left_clear_m'] < agg['left_clear_m']:
+            agg['left_clear_m'] = e['left_clear_m']; agg['s_left'] = float(s); agg['e_left'] = e
+        agg['hand_y_m'] = max(agg['hand_y_m'], e['hand_y_m']); agg['shoulder_roll'] = max(agg['shoulder_roll'], e['shoulder_roll'])
+        if e['torso_gross_m'] > agg['torso_gross_m']:
+            agg['torso_gross_m'] = e['torso_gross_m']; agg['e_torso'] = e
+    return agg
