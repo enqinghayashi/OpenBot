@@ -7882,3 +7882,39 @@ def _relax_arm_to_measured(arm, ctx, q=None):
         return None
 
 
+def _safe_move(arm, target_q, ctx, duration=None):
+    """Blocking, NON-CANCELLABLE move used only by the safe-exit unwinds.
+
+    Same z-floor clamp as move_arm_smooth, then the writer slew with
+    abort=None (or an interpolation loop with no cancel probe in standalone
+    mode).  It never polls the cancel flag on purpose: these moves run AFTER
+    the command's reply was written, and a Cancelled raised here would make
+    the command loop's handler write a second stdout line.
+
+    May raise (writer failure).  Returns the commanded (clamped) target.
+    """
+    start_q = np.array(arm.get_current_dual_arm_q(), dtype=np.float64)
+    tgt = np.array(target_q, dtype=np.float64)
+    tgt, _clamped = _apply_zfloor(start_q, tgt, 'safe_exit:' + ctx, zf_legacy=True)
+    tgt = np.array(tgt, dtype=np.float64)
+    tau = _arm_gravity_ff(tgt, np.zeros(14))
+    max_delta = float(np.max(np.abs(tgt - start_q)))
+    if duration is None:
+        duration = max(1.5, max_delta / MOVE_SPEED)
+    _safe_log(f'[pick_daemon] SAFE-EXIT({ctx}): non-cancellable move '
+              f'max_delta={max_delta:.3f} rad duration={duration:.1f}s')
+    # clearing the tracked target first: the writer's target is about to
+    # change, and a move that raises leaves the target unknown.
+    _LAST_CMD_Q[0] = None
+    if ARM_WRITER_ENABLED:
+        arm.slew(tgt, duration=duration, tau=tau, abort=None)
+    else:
+        steps = max(1, int(duration * MOVE_HZ))
+        dt = duration / steps
+        for i in range(1, steps + 1):
+            r = 0.5 - 0.5 * np.cos(np.pi * i / steps)
+            arm.ctrl_dual_arm(start_q + r * (tgt - start_q), tau)
+            time.sleep(dt)
+        arm.ctrl_dual_arm(tgt, tau)
+    _note_cmd(tgt)
+    return tgt
