@@ -7957,3 +7957,29 @@ def _retract_trail(arm, ctx):
     return n
 
 
+def _post_park_stall_check(arm, expected_q, ctx):
+    """After a park/tuck: if the arm sits > ARM_STALL_ERR_RAD from where it
+    was commanded, it is stalled against something — relax to measured.
+
+    The software stall watchdog that needs no writer change.  Never raises.
+    Returns the max joint error (rad), or None when it could not be read.
+    `expected_q` is the target the caller just commanded, so it is also
+    recorded (with the q measured here) as the engine's last commanded target.
+    """
+    try:
+        if expected_q is None:
+            return None
+        time.sleep(ARM_STALL_SETTLE_S)
+        q = np.array(arm.get_current_dual_arm_q(), dtype=np.float64)
+        d = np.abs(q - np.array(expected_q, dtype=np.float64))
+        j = int(np.argmax(d))
+        e = float(d[j])
+        _note_cmd(expected_q, q)
+        if e > ARM_STALL_ERR_RAD:
+            _relax_arm_to_measured(arm, ctx, q=q)
+            _safe_log(f'[pick_daemon] ARM STALL after {ctx}: joint {j} err '
+                      f'{e:.3f} rad — relaxed to measured')
+        return e
+    except Exception as _e:
+        _safe_log(f'[pick_daemon] stall check after {ctx} skipped: {_e!r}')
+        return None
