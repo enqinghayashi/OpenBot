@@ -7985,3 +7985,26 @@ def _post_park_stall_check(arm, expected_q, ctx):
         return None
 
 
+def _safe_park_holding(arm, side, ctx):
+    """Place IK failure while HOLDING: relax, then the holding side's
+    CARRY_TUCK (the idle side stays at its measured q).  The hand is NOT
+    touched.  Never raises (the caller's ASCEND_TAIL release must run).
+    """
+    try:
+        q = _relax_arm_to_measured(arm, ctx)
+        if q is None:
+            q = np.array(arm.get_current_dual_arm_q(), dtype=np.float64)
+        tgt = np.array(q, dtype=np.float64).copy()
+        if side == 'left':
+            tgt[0:7] = CARRY_TUCK_LEFT
+        else:
+            tgt[7:14] = CARRY_TUCK_RIGHT
+        got = _safe_move(arm, tgt, ctx)
+        _safe_log(f'[pick_daemon] SAFE-EXIT({ctx}): holding ({side}) arm '
+                  'parked at CARRY_TUCK, hand untouched')
+        _post_park_stall_check(arm, got, ctx)
+        return got
+    except Exception as _e:
+        _safe_log(f'[pick_daemon] SAFE-EXIT({ctx}): park of the holding arm '
+                  f'FAILED: {_e!r}')
+        return None
