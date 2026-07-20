@@ -729,3 +729,34 @@ def fk(q14):
             p = p + R @ x; R = R @ Rj @ _axis_rot(a, q[off + k])
             out['%s_%s_link' % (side, names[k])] = (R, p)
     return out
+
+def left_capsules(fr):
+    T = lambda n: fr[n][1]; R = lambda n: fr[n][0]
+    caps = [(T('left_shoulder_yaw_link'), T('left_elbow_link'), CAPS_R['upper']), (T('left_elbow_link'), T('left_wrist_roll_link'), CAPS_R['fore']),
+            (T('left_wrist_roll_link'), T('left_wrist_yaw_link'), CAPS_R['wrist'])]
+    Rw, pw = fr['left_wrist_yaw_link']
+    palm0 = pw + Rw @ np.array(LEFT_HAND['palm']); Rp = Rw @ np.array(LEFT_HAND_R['palm']); palm1 = palm0 + Rp @ np.array([0.087, 0.0, 0.0])
+    caps.append((palm0, palm1, CAPS_R['palm']))
+    for f, ax in (('index_1', [0.05, 0, 0]), ('middle_1', [0.05, 0, 0]), ('thumb_2', [0, -0.05, 0])):
+        p0 = pw + Rw @ np.array(LEFT_HAND[f]); Rf = Rw @ np.array(LEFT_HAND_R[f]); caps.append((p0, p0 + Rf @ np.array(ax), CAPS_R['finger']))
+    return caps
+
+def _seg_dist(pts, p0, p1):
+    v = p1 - p0; L2 = float(v @ v)
+    t = np.clip(((pts - p0) @ v) / L2, 0.0, 1.0) if L2 > 1e-12 else np.zeros(len(pts))
+    return np.linalg.norm(pts - (p0 + t[:, None] * v), axis=1)
+
+def right_points(fr):
+    out = []
+    for ln, P in SAMPLES.items():
+        R, p = fr[ln]; out.append((R @ P.T).T + p)
+    return np.vstack(out)
+
+# ---- the shipped rule layer: names, path/endpoint verdict, refusal record ----
+
+#: Left-arm capsule names, in build order:
+#: upper, forearm, wrist, palm, index_1, middle_1, thumb_2
+LEFT_CAP_NAMES = ('left_shoulder_yaw_link', 'left_elbow_link', 'left_wrist_roll_link',
+                  'left_hand_palm_link', 'left_hand_index_1_link', 'left_hand_middle_1_link',
+                  'left_hand_thumb_2_link')
+
