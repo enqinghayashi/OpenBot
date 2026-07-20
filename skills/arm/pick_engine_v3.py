@@ -7933,3 +7933,5 @@ def _trail_note(arm, tag):
             del _SAFE_TRAIL[0]
     except Exception as _e:
         _safe_log(f'[pick_daemon] SAFE-EXIT trail note {tag} skipped: {_e!r}')
+
+
