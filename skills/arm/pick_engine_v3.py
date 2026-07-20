@@ -7935,3 +7935,23 @@ def _trail_note(arm, tag):
         _safe_log(f'[pick_daemon] SAFE-EXIT trail note {tag} skipped: {_e!r}')
 
 
+def _retract_trail(arm, ctx):
+    """Replay the recorded waypoints in REVERSE (retract along the approach).
+
+    Entries within SAFE_TRAIL_SKIP_RAD of the current q are skipped.  The
+    trail is cleared first, so a failure part-way can never leave a stale
+    trail for a later command.  May raise (from _safe_move).  Returns the
+    number of retract moves commanded.
+    """
+    trail = list(_SAFE_TRAIL)
+    del _SAFE_TRAIL[:]
+    n = 0
+    for tag, q in reversed(trail):
+        cur = np.array(arm.get_current_dual_arm_q(), dtype=np.float64)
+        if float(np.max(np.abs(np.asarray(q) - cur))) <= SAFE_TRAIL_SKIP_RAD:
+            _safe_log(f'[pick_daemon] SAFE-EXIT({ctx}): retract {tag} '
+                      f'skipped (already within {SAFE_TRAIL_SKIP_RAD:.2f} rad)')
+            continue
+        _safe_move(arm, q, f'{ctx}:retract {tag}')
+        n += 1
+    return n
