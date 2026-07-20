@@ -8023,3 +8023,5 @@ def _precheck_solve(arm_ik, idle_T, target_T, warm):
             raise RuntimeError('solve_ik returned None')
         q = np.array(sol, dtype=np.float64)
     return q
+
+
