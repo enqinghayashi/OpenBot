@@ -700,3 +700,32 @@ TORSO_GROSS_M = 0.020        # research bar for the dropped torso term (DIAGNOST
 CAPS_R = {'upper': 0.040, 'fore': 0.033, 'wrist': 0.031, 'palm': 0.044, 'finger': 0.013}
 PATH_SAMPLES = 9
 
+def _rpy(r, p, y):
+    cr, sr, cp, sp, cy, sy = np.cos(r), np.sin(r), np.cos(p), np.sin(p), np.cos(y), np.sin(y)
+    Rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]]); Ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]]); Rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
+    return Rz @ Ry @ Rx
+
+def _axis_rot(axis, th):
+    a = np.asarray(axis, dtype=np.float64); a = a / np.linalg.norm(a); c, s = np.cos(th), np.sin(th)
+    K = np.array([[0, -a[2], a[1]], [a[2], 0, -a[0]], [-a[1], a[0], 0]])
+    return np.eye(3) + s * K + (1 - c) * (K @ K)
+
+_CHAIN_PRE = {}
+def _pre(side):
+    if side not in _CHAIN_PRE:
+        _CHAIN_PRE[side] = [(np.array(x), _rpy(*r), a) for (x, r, a) in (CHAIN_LEFT if side == 'left' else CHAIN_RIGHT)]
+    return _CHAIN_PRE[side]
+
+def fk(q14):
+    """Link frames (R, p) in the pelvis frame for both arms; keys '<side>_<joint>_link'."""
+    q = np.asarray(q14, dtype=np.float64)
+    if q.shape != (14,) or not np.all(np.isfinite(q)):
+        raise ValueError('q14 must be 14 finite floats')
+    out = {}
+    names = ('shoulder_pitch', 'shoulder_roll', 'shoulder_yaw', 'elbow', 'wrist_roll', 'wrist_pitch', 'wrist_yaw')
+    for side, off in (('left', 0), ('right', 7)):
+        R = np.eye(3); p = TORSO_OFFSET.copy()
+        for k, (x, Rj, a) in enumerate(_pre(side)):
+            p = p + R @ x; R = R @ Rj @ _axis_rot(a, q[off + k])
+            out['%s_%s_link' % (side, names[k])] = (R, p)
+    return out
