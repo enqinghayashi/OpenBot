@@ -8025,3 +8025,8 @@ def _precheck_solve(arm_ik, idle_T, target_T, warm):
     return q
 
 
+def _precheck_residual(arm_ik, q, score_T):
+    r = verify_ik_target(arm_ik, q, 'right', score_T)[0]
+    if r is None:
+        raise RuntimeError('FK verify failed')
+    return float(r)
