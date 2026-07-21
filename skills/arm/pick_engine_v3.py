@@ -8267,3 +8267,33 @@ def _hl_xyz(row):
     return x, y, z
 
 
+def _hl_row_problem(row, t, now, t_min, st):
+    """None when the row is CLEAN for st, else the first failing gate's name
+    (shape, stale, early, orient, dz, dh, jump).  The label / instance match
+    is the caller's (_hl_pick_row)."""
+    p = _hl_xyz(row)
+    if p is None:
+        return 'shape'
+    x, y, z = p
+    if now - t > H_LADDER_MAX_AGE_S:
+        return 'stale'
+    if t < t_min:
+        return 'early'
+    o = row.get('orientation')
+    if o is not None and o != 'horizontal':
+        return 'orient'
+    if abs(z - st['z_cmd']) > H_LADDER_MAX_DZ_M:
+        return 'dz'
+    h, hc = row.get('height_m'), st.get('h_cmd')
+    if h is not None and hc is not None:
+        try:
+            hv = float(h)
+        except (TypeError, ValueError):
+            return 'dh'
+        if (not math.isfinite(hv)
+                or abs(hv - hc) > max(H_LADDER_MAX_DH_M, H_LADDER_MAX_DH_FRAC * hc)):
+            return 'dh'
+    lx, ly = st['last_xy']
+    if math.hypot(x - lx, y - ly) > H_LADDER_MAX_JUMP_M:
+        return 'jump'
+    return None
