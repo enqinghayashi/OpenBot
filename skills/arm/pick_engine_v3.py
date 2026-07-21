@@ -8230,3 +8230,27 @@ def _hl_rung(k):
     return H_LADDER_DXYZ[min(max(k - 2, 0), len(H_LADDER_DXYZ) - 1)]
 
 
+def _hl_rows(now, _open=None, _mtime=None):
+    """([(row, t)], src) from the first fresh source: 'rows', else 'det', else
+    ([], 'none').  Never raises (pick_node writes 'det' non-atomically)."""
+    _open = open if _open is None else _open
+    _mtime = (lambda p: os.stat(p).st_mtime) if _mtime is None else _mtime
+    try:
+        with _open(H_LADDER_ROWS_FILE) as f:
+            doc = json.load(f)
+        t = float(doc.get('t'))
+        rows = doc.get('rows')
+        if (math.isfinite(t) and isinstance(rows, list)
+                and -0.5 <= now - t <= H_LADDER_MAX_AGE_S):
+            return [(r, t) for r in rows if isinstance(r, dict)], 'rows'
+    except Exception:
+        pass
+    try:
+        t = float(_mtime(H_LADDER_DET_FILE))
+        with _open(H_LADDER_DET_FILE) as f:
+            row = json.load(f)
+        if isinstance(row, dict) and math.isfinite(t):
+            return [(row, t)], 'det'
+    except Exception:
+        pass
+    return [], 'none'
