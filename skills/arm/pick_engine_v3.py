@@ -8030,3 +8030,23 @@ def _precheck_residual(arm_ik, q, score_T):
     if r is None:
         raise RuntimeError('FK verify failed')
     return float(r)
+
+
+# horizontal palm rule + upright rim diagnostics; module-level, so the pick
+# handler resolves these names at call time.
+# the palm ends 2 cm below the object's top with every digit 2 cm off the table.
+# URDF geometry, middle-down relative to R_ee: palm underside 1.73 cm below
+# R_ee, open thumb tip 11.41 cm below. height_m of a lying object is its
+# vertical thickness. every digit 2 cm off the table needs h >= ~0.137 m, so
+# flatter objects are infeasible and the descent target is left unchanged.
+# a module constant rather than an env switch: the engine runs with a filtered
+# environment.
+H_RULE_MODE = 'on'            # 'on' | 'log' (plan logged, never applied) | 'off'
+H_PALM_BELOW_REE = 0.0173     # m, palm underside below R_ee (middle-down)
+H_THUMB_BELOW_REE = 0.1141    # m, open-thumb hull below R_ee (middle-down)
+H_PALM_BELOW_TOP = 0.02       # m, palm 2 cm below the object's top
+H_DIGIT_CLEAR = 0.02          # m, digits 2 cm off the table
+H_RULE_H_MIN = 0.008          # m, plausible lying-object thickness band
+H_RULE_H_MAX = 0.20
+
+
