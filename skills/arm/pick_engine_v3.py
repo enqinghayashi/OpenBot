@@ -8307,3 +8307,24 @@ def _hl_is_target(row, st):
     return row.get('label') == st.get('ref_label')
 
 
+def _hl_pick_row(rows, t, now, t_min, st):
+    """One packet -> ((x, y), None) for its clean target row nearest the last
+    clean pose, or (None, reason): 'absent' (no row of the target) or the
+    failing gate of the nearest target row."""
+    lx, ly = st['last_xy']
+    best = None
+    worst = None
+    for row in rows:
+        if not _hl_is_target(row, st):
+            continue
+        p = _hl_xyz(row)
+        d = math.hypot(p[0] - lx, p[1] - ly) if p is not None else float('inf')
+        why = _hl_row_problem(row, t, now, t_min, st)
+        if why is None:
+            if best is None or d < best[0]:
+                best = (d, p[0], p[1])
+        elif worst is None or d < worst[0]:
+            worst = (d, why)
+    if best is not None:
+        return (best[1], best[2]), None
+    return None, (worst[1] if worst is not None else 'absent')
