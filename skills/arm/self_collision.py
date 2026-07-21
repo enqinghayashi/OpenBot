@@ -828,3 +828,67 @@ def evaluate_path(q_from, q_to, n=PATH_SAMPLES):
         if e['torso_gross_m'] > agg['torso_gross_m']:
             agg['torso_gross_m'] = e['torso_gross_m']; agg['e_torso'] = e
     return agg
+
+def verdict_ep(prev, q, lateral=True, hand_y_max=None):
+    """(refuse, term, value) for ONE commanded move prev -> q.
+
+    The shipped rule: left-arm clearance on the PATH; the lateral midline term on
+    the ENDPOINT only (a midline crossing that recovers by the endpoint pose is not
+    a refusal).  Priority: left_arm_clearance -> hand_left_of_midline.  (The
+    research rule's torso term is gone: torso_gross_m cannot exceed 0.010 m, see
+    evaluate(), so it could never fire against its 0.020 m bar.)
+    """
+    r = report(prev, q, lateral, hand_y_max)
+    return r['refuse'], r['term'], r['value']
+
+def chain_verdict(qs, q0, lateral=True, hand_y_max=None):
+    """q0 -> qs[0] -> qs[1] -> ... ; first refusing move wins.
+    Returns (refuse, term, value, stage_index|None)."""
+    prev = np.asarray(q0, dtype=np.float64)
+    for i, q in enumerate(qs):
+        r, term, val = verdict_ep(prev, q, lateral, hand_y_max)
+        if r: return True, term, val, i
+        prev = np.asarray(q, dtype=np.float64)
+    return False, None, None, None
+
+def move_right_m(term, value, hand_y_max=None):
+    """How far the TARGET must move toward +x (the robot's right) for this refusal
+    to clear, in metres; 0.00 for an unknown term.  The hand tracks the target ~1:1
+    laterally, so the target-side deficit equals the pose-side deficit: left-arm
+    clearance deficit = LEFT_CLEAR_MIN_M - c; midline deficit = hand_y - bar (bar =
+    hand_y_max, default HAND_Y_MAX_M).  The brain renders 'about N cm' and derives
+    the turn angle as degrees(atan2(move_right_m, y))."""
+    try: v = float(value)
+    except (TypeError, ValueError): return 0.0
+    if not np.isfinite(v): return 0.0
+    bar = HAND_Y_MAX_M if hand_y_max is None else float(hand_y_max)
+    if term == 'left_arm_clearance': return max(0.0, LEFT_CLEAR_MIN_M - v)
+    if term == 'hand_left_of_midline': return max(0.0, v - bar)
+    return 0.0
+
+def report(q_from, q_to, lateral=True, hand_y_max=None):
+    """One commanded move -> the full refusal record the engine formats.
+
+    Keys: refuse, term, value, right_link, other_link, move_right_m, left_clear_m
+    (path min), hand_y_m (endpoint), torso_gross_m (path max, DIAGNOSTIC only),
+    s_left (the path fraction where clearance bottomed out).  right_link/other_link
+    are the link pair that tripped the rule: the worst clearance pair for
+    left_arm_clearance, the palm vs the midline for hand_left_of_midline.
+    hand_y_max: the endpoint midline bar (default HAND_Y_MAX_M, the pick bar; a
+    place passes HAND_Y_MAX_PLACE_M).
+    """
+    bar = HAND_Y_MAX_M if hand_y_max is None else float(hand_y_max)
+    agg = evaluate_path(q_from, q_to); e = evaluate(q_to)
+    if agg['left_clear_m'] < LEFT_CLEAR_MIN_M:
+        term, value = 'left_arm_clearance', agg['left_clear_m']
+        right, other = agg['e_left']['worst_left_link'], agg['e_left']['other_link']
+    elif lateral and e['hand_y_m'] > bar:
+        term, value = 'hand_left_of_midline', e['hand_y_m']
+        right, other = 'right_hand_palm', 'pelvis_midline'
+    else:
+        term = value = right = other = None
+    return {'refuse': term is not None, 'term': term, 'value': value,
+            'right_link': right, 'other_link': other,
+            'move_right_m': move_right_m(term, value, bar) if term else 0.0,
+            'left_clear_m': agg['left_clear_m'], 'hand_y_m': e['hand_y_m'],
+            'torso_gross_m': agg['torso_gross_m'], 's_left': agg['s_left']}
