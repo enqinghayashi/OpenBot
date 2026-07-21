@@ -8072,3 +8072,33 @@ def _h_palm_plan(tz, height_m):
             'floor': floor, 'ee_guard': ee_guard, 'feasible': ee_rule >= ee_guard}
 
 
+def _h_rule_tz(tz, height_m, mode=None):
+    """B8i-H: the h-wp3 wrist target z - the plan's ee_rule when the mode is
+    'on' and the plan is feasible, else tz (legacy).  One '[hrule] plan' line
+    unless the mode is 'off'.  Never raises."""
+    mode = H_RULE_MODE if mode is None else mode
+    if mode == 'off':
+        return tz
+    try:
+        plan = _h_palm_plan(tz, height_m)
+        if plan is None:
+            sys.stderr.write(
+                f'[pick_daemon][hrule] plan mode={mode} h={height_m!r} '
+                f'tz={float(tz):+.4f} -> legacy (height unknown or outside '
+                f'[{H_RULE_H_MIN:.3f}, {H_RULE_H_MAX:.2f}] m)\n')
+            sys.stderr.flush()
+            return tz
+        use = (mode == 'on' and plan['feasible'])
+        out = plan['ee_rule'] if use else tz
+        sys.stderr.write(
+            f'[pick_daemon][hrule] plan mode={mode} h={float(height_m):.4f} '
+            f'tz={float(tz):+.4f} zc={plan["zc"]:+.4f} top={plan["top"]:+.4f} '
+            f'table={plan["table"]:+.4f} ee_rule={plan["ee_rule"]:+.4f} '
+            f'ee_guard={plan["ee_guard"]:+.4f} feasible={plan["feasible"]} -> '
+            f'{"rule" if use else "legacy"} target z={float(out):+.4f}\n')
+        sys.stderr.flush()
+        return out
+    except Exception as _e:                                # noqa: BLE001
+        sys.stderr.write(f'[pick_daemon][hrule] plan failed ({_e}) -> legacy\n')
+        sys.stderr.flush()
+        return tz
