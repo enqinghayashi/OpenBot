@@ -118,3 +118,45 @@ def _is_cancel_line(line: str) -> bool:
 _current_writer = None
 
 
+class _ConnWriter:
+    """Reply sink for ONE socket connection.
+
+    File-like (``write`` / ``flush``) because that is what the command loop
+    calls.  ``write`` never raises: a client that hung up mid-command must not
+    take the engine down with it — the reply is simply dropped and the
+    connection marked dead.
+    """
+
+    def __init__(self, conn: socket.socket):
+        self._f = conn.makefile("wb")
+        self._lock = threading.Lock()
+        self._dead = False
+
+    def write(self, data) -> int:
+        if isinstance(data, str):
+            data = data.encode("utf-8", "replace")
+        with self._lock:
+            if self._dead:
+                return len(data)
+            try:
+                self._f.write(data)
+            except OSError:
+                self._dead = True
+            return len(data)
+
+    def flush(self) -> None:
+        with self._lock:
+            if self._dead:
+                return
+            try:
+                self._f.flush()
+            except OSError:
+                self._dead = True
+
+    def close(self) -> None:
+        with self._lock:
+            self._dead = True
+            try:
+                self._f.close()  # does NOT close the socket itself
+            except OSError:
+                pass
