@@ -8070,3 +8070,5 @@ def _h_palm_plan(tz, height_m):
     ee_guard = floor + H_THUMB_BELOW_REE
     return {'zc': zc, 'top': top, 'table': table, 'ee_rule': ee_rule,
             'floor': floor, 'ee_guard': ee_guard, 'feasible': ee_rule >= ee_guard}
+
+
