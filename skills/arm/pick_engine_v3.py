@@ -8224,3 +8224,7 @@ def _hl_switch(_environ=None, _exists=None):
     return True, 'default'
 
 
+def _hl_rung(k):
+    """(dx, dy, dz) of attempt k (2 or 3): (dx, dy) on its base, dz on attempt 1's
+    descent target."""
+    return H_LADDER_DXYZ[min(max(k - 2, 0), len(H_LADDER_DXYZ) - 1)]
