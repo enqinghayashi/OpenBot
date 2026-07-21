@@ -8297,3 +8297,5 @@ def _hl_row_problem(row, t, now, t_min, st):
     if math.hypot(x - lx, y - ly) > H_LADDER_MAX_JUMP_M:
         return 'jump'
     return None
+
+
