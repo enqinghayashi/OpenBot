@@ -8206,3 +8206,19 @@ def _hl_log(msg):
     sys.stderr.flush()
 
 
+def _hl_switch(_environ=None, _exists=None):
+    """(on, why) -- the hladder kill switch.  Never raises (an unreadable
+    switch is 'on', the shipped default)."""
+    try:
+        env = os.environ if _environ is None else _environ
+        v = str(env.get(H_LADDER_ENV, '')).strip().lower()
+        if v in ('0', 'off', 'false', 'no'):
+            return False, 'env %s=%s' % (H_LADDER_ENV, v)
+    except Exception:
+        pass
+    try:
+        if (os.path.exists if _exists is None else _exists)(H_LADDER_OFF_FLAG):
+            return False, 'flag %s' % H_LADDER_OFF_FLAG
+    except Exception:
+        pass
+    return True, 'default'
