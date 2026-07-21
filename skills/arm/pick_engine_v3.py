@@ -8299,3 +8299,9 @@ def _hl_row_problem(row, t, now, t_min, st):
     return None
 
 
+def _hl_is_target(row, st):
+    """The pick-start label.  The instance id is logged, NOT gated: s3 10-10 the
+    banana was id 15 at the pick start and id 24 after the failed pick
+    (gateway.log:62/68) -- the hand hid it 2.76 s (depth.log:6077-6078) and the
+    tracker evicts after 2.0 s (instance_tracker.py evict_s)."""
+    return row.get('label') == st.get('ref_label')
