@@ -8330,3 +8330,7 @@ def _hl_pick_row(rows, t, now, t_min, st):
     return None, (worst[1] if worst is not None else 'absent')
 
 
+def _hl_median(v):
+    s = sorted(v)
+    n = len(s)
+    return s[n // 2] if n % 2 else 0.5 * (s[n // 2 - 1] + s[n // 2])
