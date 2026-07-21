@@ -8201,3 +8201,6 @@ H_LADDER_MAX_JUMP_M = 0.08
 H_LADDER_MAX_SPREAD_M = 0.02
 
 
+def _hl_log(msg):
+    sys.stderr.write('[pick_daemon][hladder] ' + msg + '\n')
+    sys.stderr.flush()
