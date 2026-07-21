@@ -8254,3 +8254,5 @@ def _hl_rows(now, _open=None, _mtime=None):
     except Exception:
         pass
     return [], 'none'
+
+
