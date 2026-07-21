@@ -8256,3 +8256,12 @@ def _hl_rows(now, _open=None, _mtime=None):
     return [], 'none'
 
 
+def _hl_xyz(row):
+    """(x, y, z) floats of a row, or None (missing / non-finite)."""
+    try:
+        x, y, z = float(row['x']), float(row['y']), float(row['z'])
+    except Exception:
+        return None
+    if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
+        return None
+    return x, y, z
