@@ -8104,3 +8104,23 @@ def _h_rule_tz(tz, height_m, mode=None):
         return tz
 
 
+def _h_rule_close(arm, arm_ik, h_tz, tz, height_m):
+    """B8i-H telemetry after the right h-wp3 descent: the MEASURED wrist z, the
+    lowest hand/wrist hull point (_lowest_limb_z) and the estimated table.
+    Diagnostic only; never raises, never moves."""
+    if H_RULE_MODE == 'off':
+        return
+    try:
+        _q = arm.get_current_dual_arm_q().copy()
+        _w = get_wrist_pose(arm_ik, _q, side='right')
+        _lo = _lowest_limb_z(arm_ik, _q, 'right')
+        _plan = _h_palm_plan(tz, height_m)
+        _fmt = lambda v: ('%+.4f' % float(v)) if v is not None else 'none'
+        sys.stderr.write(
+            f'[pick_daemon][hrule] close wrist_z={_fmt(_w[2] if _w is not None else None)} '
+            f'target={_fmt(h_tz)} legacy_tz={_fmt(tz)} lowest_limb={_fmt(_lo)} '
+            f'table_est={_fmt(_plan["table"] if _plan is not None else None)}\n')
+        sys.stderr.flush()
+    except Exception as _e:                                # noqa: BLE001
+        sys.stderr.write(f'[pick_daemon][hrule] close skipped ({_e})\n')
+        sys.stderr.flush()
