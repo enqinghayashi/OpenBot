@@ -8050,3 +8050,23 @@ H_RULE_H_MIN = 0.008          # m, plausible lying-object thickness band
 H_RULE_H_MAX = 0.20
 
 
+def _h_palm_plan(tz, height_m):
+    """B8i-H: the palm-rule plan for one right horizontal h-wp3 (pelvis-frame
+    metres) or None (height unknown / outside [H_RULE_H_MIN, H_RULE_H_MAX])."""
+    try:
+        h = float(height_m)
+        tz = float(tz)
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(h) and math.isfinite(tz)):
+        return None
+    if not (H_RULE_H_MIN <= h <= H_RULE_H_MAX):
+        return None
+    zc = tz - GRASP_Z_OFFSET + SOLVER_Z_TORSO_OFFSET   # torso_link 0.044 m above pelvis (URDF)
+    top = zc + h / 2.0
+    table = zc - h / 2.0
+    ee_rule = top - H_PALM_BELOW_TOP + H_PALM_BELOW_REE
+    floor = table + H_DIGIT_CLEAR
+    ee_guard = floor + H_THUMB_BELOW_REE
+    return {'zc': zc, 'top': top, 'table': table, 'ee_rule': ee_rule,
+            'floor': floor, 'ee_guard': ee_guard, 'feasible': ee_rule >= ee_guard}
