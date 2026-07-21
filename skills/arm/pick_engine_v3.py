@@ -8126,3 +8126,24 @@ def _h_rule_close(arm, arm_ik, h_tz, tz, height_m):
         sys.stderr.flush()
 
 
+def _rim_diag(arm, arm_ik, stage, target_T):
+    """B8i (10-09 cup rim): the MEASURED right wrist (get_ee_pose of the measured
+    q, the frame verify_ik_target compares) against the stage's commanded
+    target, so the next cup pick shows whether wp3 / wp4 was held off its
+    target (rim or wall contact).  Diagnostic only; never raises, never moves."""
+    try:
+        _q = arm.get_current_dual_arm_q().copy()
+        _T = get_ee_pose(arm_ik, _q, 'right')
+        if _T is None:
+            raise RuntimeError('FK failed')
+        _p = np.asarray(_T.translation, dtype=np.float64)
+        _t = np.asarray(target_T, dtype=np.float64)[:3, 3]
+        _d = _p - _t
+        sys.stderr.write(
+            f'[pick_daemon][rimdiag] {stage} measured R_ee=({_p[0]:.4f},{_p[1]:.4f},{_p[2]:.4f}) '
+            f'target=({_t[0]:.4f},{_t[1]:.4f},{_t[2]:.4f}) '
+            f'd=({_d[0]:+.4f},{_d[1]:+.4f},{_d[2]:+.4f}) |d|={float(np.linalg.norm(_d)):.4f}\n')
+        sys.stderr.flush()
+    except Exception as _e:                                # noqa: BLE001
+        sys.stderr.write(f'[pick_daemon][rimdiag] {stage} skipped ({_e})\n')
+        sys.stderr.flush()
