@@ -8265,3 +8265,5 @@ def _hl_xyz(row):
     if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
         return None
     return x, y, z
+
+
