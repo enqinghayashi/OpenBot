@@ -160,3 +160,30 @@ class _ConnWriter:
                 self._f.close()  # does NOT close the socket itself
             except OSError:
                 pass
+
+
+class _ReplyRouter:
+    """``sys.stdout`` replacement that routes a reply to the asking client.
+
+    Falls through to the real stdout whenever no socket command is in flight,
+    which is what keeps READY, the startup diagnostics, and terminal-typed
+    commands behaving exactly as before.
+    """
+
+    def __init__(self, real):
+        self._real = real
+
+    def _sink(self):
+        w = _current_writer
+        return self._real if w is None else w
+
+    def write(self, data):
+        return self._sink().write(data)
+
+    def flush(self):
+        return self._sink().flush()
+
+    def writelines(self, lines):
+        for line in lines:
+            self.write(line)
+
