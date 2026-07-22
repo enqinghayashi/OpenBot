@@ -313,3 +313,105 @@ def _serve_conn(conn: socket.socket, requests, stop_event: threading.Event) -> N
             conn.close()
         except OSError:
             pass
+
+
+def _stdin_reader(requests, stop_event: threading.Event, stream=None) -> None:
+    """Feed terminal-delivered commands into the same queue.
+
+    EOF stops watching stdin but does NOT quit: a resident engine must survive
+    its stdin being closed (the old entrypoint exited on EOF, which is exactly
+    what we are removing).
+
+    ``stream`` defaults to the real stdin; tests inject a pipe so the EOF
+    contract can be exercised without touching the test runner's own stdin.
+    """
+    if stream is None:
+        stream = sys.__stdin__
+    if stream is None:
+        return
+    try:
+        fd = stream.fileno()
+    except (OSError, ValueError, AttributeError):
+        return
+    while not stop_event.is_set():
+        try:
+            ready, _, _ = select.select([fd], [], [], 0.5)
+        except (OSError, ValueError):
+            return  # stdin got closed or isn't selectable
+        if not ready:
+            continue
+        line = stream.readline()
+        if not line:
+            sys.stderr.write(
+                "[pick_daemon] stdin EOF — no longer reading stdin "
+                "(engine stays resident; use the 'quit' verb to stop)\n")
+            sys.stderr.flush()
+            return
+        line = line.strip()
+        if not line:
+            continue
+        req = _Request(line, None)  # None -> reply goes to real stdout
+        requests.put(req)
+        while not req.done.wait(0.5):
+            if stop_event.is_set():
+                return
+
+
+def _accept_loop(server: socket.socket, requests, stop_event: threading.Event) -> None:
+    server.settimeout(0.5)
+    while not stop_event.is_set():
+        try:
+            conn, _ = server.accept()
+        except socket.timeout:
+            continue
+        except OSError:
+            return
+        threading.Thread(target=_serve_conn, args=(conn, requests, stop_event),
+                         daemon=True).start()
+
+
+def _bind_socket() -> socket.socket:
+    """Bind the listener, refusing to become a SECOND engine.
+
+    Replaces the gateway's pgrep double-spawn guard with a structural one: if
+    the socket path is already owned by a live engine, this process is a
+    duplicate and exits instead of racing it for the writer socket.
+    """
+    if os.path.exists(SOCK_PATH):
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            probe.settimeout(1.0)
+            probe.connect(SOCK_PATH)
+        except OSError:
+            os.unlink(SOCK_PATH)  # stale socket left by a crashed engine
+        else:
+            probe.close()
+            sys.stderr.write(
+                "[pick_daemon] FATAL: %s is already served by a live engine — "
+                "refusing to start a second one\n" % SOCK_PATH)
+            sys.stderr.flush()
+            raise SystemExit(1)
+        finally:
+            try:
+                probe.close()
+            except OSError:
+                pass
+
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(SOCK_PATH)
+    server.listen(LISTEN_BACKLOG)
+    return server
+
+
+def _shutdown(server, stop_event: threading.Event, requests) -> None:
+    stop_event.set()
+    requests.put(None)  # unblock the dispatcher if it's waiting
+    try:
+        server.close()
+    except OSError:
+        pass
+    if os.path.exists(SOCK_PATH):
+        try:
+            os.unlink(SOCK_PATH)
+        except OSError:
+            pass
