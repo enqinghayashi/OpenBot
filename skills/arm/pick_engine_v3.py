@@ -8465,3 +8465,41 @@ def _hl_begin(orientation, tx, ty, tz, height_m, _now=None, _sleep=None,
         return None
 
 
+def _hl_next_attempt(st, attempt, keep_closed):
+    """Top of attempt k = attempt + 1 >= 2.  False = stop the ladder (the
+    keep-closed re-press was the last attempt, or an error).  A re-press aims
+    at the capturing attempt's aim + H_LADDER_REPRESS_DY (B8i: ty + 0.02, at
+    the command's tz: dz 0); a fresh approach gets the provisional aim
+    original + (dx, dy) and the rung's dz (_hl_aim decides after h-wp1)."""
+    k = attempt + 1
+    try:
+        if st['kc_used']:
+            _hl_log('stop before attempt %d/%d: the keep-closed re-press was the '
+                    'last attempt (B8i: one re-press, then the final keep-closed)'
+                    % (k, st['n']))
+            return False
+        if keep_closed:
+            st['kc_used'] = True
+            ax, ay = st['aim']
+            st['aim'] = (ax, ay + H_LADDER_REPRESS_DY)
+            st['dz'] = 0.0
+            st['tried'] = k
+            sys.stderr.write('[pick_daemon] Retry attempt %d/%d: keep-closed '
+                             're-press +2cm forward (hladder, B8i re-press)\n'
+                             % (k, st['n']))
+            sys.stderr.flush()
+            _hl_log_attempt(st, k, 'repress', 0.0, H_LADDER_REPRESS_DY, 0.0,
+                            'keep-closed: attempt-%d capture evidence' % attempt)
+            return True
+        dx, dy, dz = _hl_rung(k)
+        st['aim'] = (st['x0'] + dx, st['y0'] + dy)
+        st['dz'] = dz
+        st['tried'] = k
+        sys.stderr.write('[pick_daemon] Retry attempt %d/%d: hladder rung '
+                         'dx=%+.3f dy=%+.3f dz=%+.3f (base decided after h-wp1)\n'
+                         % (k, st['n'], dx, dy, dz))
+        sys.stderr.flush()
+        return True
+    except Exception as _e:                                # noqa: BLE001
+        _hl_log('stop before attempt %d: ladder error (%r)' % (k, _e))
+        return False
