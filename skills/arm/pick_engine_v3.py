@@ -8393,3 +8393,7 @@ def _hl_redetect(st, t_view, _now=None, _sleep=None, _rows=None, _cancel=None):
         src, len(clean), bx, by, spread, math.hypot(bx - lx, by - ly), _rj)
 
 
+def _hl_log_attempt(st, k, base, dx, dy, dz, why):
+    x, y = st['aim']
+    _hl_log('attempt %d/%d base=%s x=%.3f y=%.3f dy=%+.3f dx=%+.3f dz=%+.3f why=%s'
+            % (k, st['n'], base, x, y, dy, dx, dz, why))
