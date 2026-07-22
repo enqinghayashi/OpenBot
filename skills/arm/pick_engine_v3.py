@@ -8430,3 +8430,5 @@ def _hl_find_ref(st, _now, _sleep, _rows):
         _sleep(H_LADDER_POLL_S)
     return None, None, 'no fresh target row within %.2f m (src=%s)' % (
         H_LADDER_REF_MATCH_M, src)
+
+
