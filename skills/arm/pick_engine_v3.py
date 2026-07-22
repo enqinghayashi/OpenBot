@@ -8584,3 +8584,44 @@ def _hl_descent_target(st, attempt, h_tz, R):
         return R
 
 
+def _hl_descent_note(st, attempt, h_tz, sol_q, arm, arm_ik):
+    """After the h-wp3 descent of attempt k = attempt + 1: ONE line with the
+    commanded dz, the descent target z, the MEASURED wrist z (FK of the measured
+    q, the frame of the B8i 'gap' lines), how much LOWER it ended than attempt 1
+    did, and whether the z-floor clamp bound: 'bound' = the right arm's
+    commanded slice of the last descent pass (_ZF_LAST_SENT, post-clamp)
+    differs from its IK target (pre-clamp); 'free' = equal; 'none' = no floor
+    latched or PICK_ZFLOOR=0; 'n/a' = unknown.  Log only: never raises, never
+    moves, reads no switch and writes no floor."""
+    k = attempt + 1
+    try:
+        dz = float(st.get('dz', 0.0)) if attempt > 0 else 0.0
+        tgt = st.get('tz_target')
+        tgt = float(h_tz) + dz if tgt is None else float(tgt)
+        try:
+            _w = get_wrist_pose(arm_ik, arm.get_current_dual_arm_q().copy(),
+                                side='right')
+            wz = float(_w[2]) if _w is not None else None
+        except Exception:                                  # noqa: BLE001
+            wz = None
+        if k == 1:
+            st['wz1'] = wz
+        wz1 = st.get('wz1')
+        lower = (wz1 - wz) if (k > 1 and wz is not None and wz1 is not None) else None
+        floor = _TABLE_FLOOR_PELVIS
+        sent = _ZF_LAST_SENT[0]
+        if not _ZFLOOR_ENABLED or floor is None:
+            clamp = 'none'
+        elif sol_q is None or sent is None:
+            clamp = 'n/a'
+        else:
+            dev = max(abs(float(a) - float(b))
+                      for a, b in zip(list(sent)[7:14], list(sol_q)[7:14]))
+            clamp = 'bound' if dev > 1e-6 else 'free'
+        _hl_log('descent %d/%d: dz=%+.3f target_z=%+.4f wrist_z=%s lower=%s clamp=%s '
+                'floor=%s' % (k, st['n'], dz, tgt,
+                              ('%+.4f' % wz) if wz is not None else 'none',
+                              ('%+.4f' % lower) if lower is not None else 'n/a',
+                              clamp, ('%+.4f' % floor) if floor is not None else 'none'))
+    except Exception as _e:                                # noqa: BLE001
+        _hl_log('descent %d: note skipped (%r)' % (k, _e))
