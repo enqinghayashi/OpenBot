@@ -8557,3 +8557,28 @@ def _hl_aim(st, attempt, arm_ik, tz, x_off, _now=None, _sleep=None,
         return False
 
 
+def _hl_descent_target(st, attempt, h_tz, R):
+    """The h-wp3 descent target of attempt k = attempt + 1: the B8i target ``R``
+    (make_wrist_target_middle_down(tx, ty_use, h_tz, ...), whose translation z is
+    h_tz itself) moved dz in z (H_LADDER_DXYZ; 0 on attempt 1 and on a
+    re-press): same x, y, orientation and park offset, attempt 1's height + dz.
+    Returns ``R`` itself when dz is 0.  Only the TARGET moves: the B8i
+    bookkeeping (gap, stall, retract, the pad band) stays on h_tz, the floor
+    latched at the pick start is not touched and the z-floor clamp cuts the
+    lowered move like any other.  Never raises: an error keeps ``R`` (the
+    unlowered B8i target) and logs one line."""
+    try:
+        dz = float(st.get('dz', 0.0)) if attempt > 0 else 0.0
+        st['tz_target'] = float(h_tz) + dz
+        if dz == 0.0:
+            return R
+        tgt = np.array(R, dtype=np.float64, copy=True)
+        if tgt.shape != (4, 4):
+            raise ValueError('target shape %r' % (tgt.shape,))
+        tgt[2, 3] = tgt[2, 3] + dz
+        return tgt
+    except Exception as _e:                                # noqa: BLE001
+        st['tz_target'] = h_tz
+        _hl_log('descent %d: lowering skipped (%r) -> the unlowered target'
+                % (attempt + 1, _e))
+        return R
