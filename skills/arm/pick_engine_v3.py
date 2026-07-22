@@ -8625,3 +8625,5 @@ def _hl_descent_note(st, attempt, h_tz, sol_q, arm, arm_ik):
                               clamp, ('%+.4f' % floor) if floor is not None else 'none'))
     except Exception as _e:                                # noqa: BLE001
         _hl_log('descent %d: note skipped (%r)' % (k, _e))
+
+
