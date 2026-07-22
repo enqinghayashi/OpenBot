@@ -8399,3 +8399,34 @@ def _hl_log_attempt(st, k, base, dx, dy, dz, why):
             % (k, st['n'], base, x, y, dy, dx, dz, why))
 
 
+def _hl_find_ref(st, _now, _sleep, _rows):
+    """The target's row at pick start (the command's (x, y) within
+    H_LADDER_REF_MATCH_M, z within H_LADDER_MAX_DZ_M, fresh, horizontal if it
+    says): (label, instance_id or None, why) or (None, None, why)."""
+    deadline = _now() + H_LADDER_REF_WAIT_S
+    src = 'none'
+    n = int(round(H_LADDER_REF_WAIT_S / H_LADDER_POLL_S)) + 1
+    for i in range(n):
+        now = _now()
+        samples, src = _rows(now)
+        best = None
+        for row, t in samples:
+            p = _hl_xyz(row)
+            lab = row.get('label')
+            if p is None or not isinstance(lab, str) or not lab:
+                continue
+            if now - t > H_LADDER_MAX_AGE_S or abs(p[2] - st['z_cmd']) > H_LADDER_MAX_DZ_M:
+                continue
+            o = row.get('orientation')
+            if o is not None and o != 'horizontal':
+                continue
+            d = math.hypot(p[0] - st['x0'], p[1] - st['y0'])
+            if d <= H_LADDER_REF_MATCH_M and (best is None or d < best[0]):
+                best = (d, lab, row.get('instance_id'), now - t)
+        if best is not None:
+            return best[1], best[2], 'src=%s d=%.3f age=%.2fs' % (src, best[0], best[3])
+        if now >= deadline or i == n - 1:
+            break
+        _sleep(H_LADDER_POLL_S)
+    return None, None, 'no fresh target row within %.2f m (src=%s)' % (
+        H_LADDER_REF_MATCH_M, src)
