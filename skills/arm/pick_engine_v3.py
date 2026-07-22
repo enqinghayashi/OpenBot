@@ -8391,3 +8391,5 @@ def _hl_redetect(st, t_view, _now=None, _sleep=None, _rows=None, _cancel=None):
     lx, ly = st['last_xy']
     return (bx, by), 'src=%s n=%d bx=%.3f by=%.3f spread=%.3f jump=%.3f rej=%s' % (
         src, len(clean), bx, by, spread, math.hypot(bx - lx, by - ly), _rj)
+
+
