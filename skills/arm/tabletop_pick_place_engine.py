@@ -224,3 +224,92 @@ class _CommandStream:
     handshake once the engine is genuinely ready to serve commands.
     """
 
+    def __init__(self, requests: "queue.Queue", start_serving):
+        self._requests = requests
+        self._start_serving = start_serving
+
+    def __iter__(self):
+        return self._dispatch()
+
+    def _dispatch(self):
+        global _current_writer
+        self._start_serving()
+        prev = None
+        try:
+            while True:
+                _current_writer = None
+                if prev is not None:
+                    # consumer came back -> prev finished
+                    # signal it here, or its thread waits
+                    # for the next request
+                    prev.done.set()
+                    prev = None
+                # idle until mark_busy()
+                # the cancel flag hangs off this bit
+                # so a cancel with no task is REFUSED,
+                # not armed for the next one
+                # (engine_cancel's sticky-flag trap)
+                engine_cancel.mark_idle()
+                req = self._requests.get()
+                if req is None:  # the shutdown sentinel
+                    return
+                _current_writer = req.writer
+                prev = req
+                # arm BEFORE yielding
+                # cancel must land from the first motion step
+                engine_cancel.mark_busy()
+                yield req.line
+        finally:
+            # quit or shutdown: release the in-flight
+            # command either way
+            _current_writer = None
+            engine_cancel.mark_idle()
+            if prev is not None:
+                prev.done.set()
+
+
+# ── serving clients ─────────────────────────────────────────────────────────
+
+
+def _serve_conn(conn: socket.socket, requests, stop_event: threading.Event) -> None:
+    """Serve ONE client: READY banner, then one line in -> one line out.
+
+    Thread-per-connection, but the EXECUTION is not here — the line is queued
+    for the single-threaded command loop and this thread blocks until that
+    command completes.  So a second client can hold a connection open without
+    ever interleaving with a pick in progress.
+    """
+    writer = _ConnWriter(conn)
+    try:
+        conn.sendall(READY_BANNER)
+        reader = conn.makefile("rb")
+        while not stop_event.is_set():
+            raw = reader.readline()
+            if not raw:
+                break  # client hung up on us
+            line = raw.decode("utf-8", "replace").strip()
+            if not line:
+                continue
+            if _is_cancel_line(line):
+                # answered here, never queued
+                # lands while the loop is in a pick
+                accepted, msg = engine_cancel.request("socket")
+                writer.write("CANCEL:%s\n"
+                             % ("accepted" if accepted else "refused " + msg))
+                writer.flush()
+                continue
+            req = _Request(line, writer)
+            requests.put(req)
+            while not req.done.wait(0.5):
+                if stop_event.is_set():
+                    return
+            if line == "quit":
+                break
+    except OSError:
+        pass  # a dropped client only kills its own connection
+    finally:
+        writer.close()
+        try:
+            conn.close()
+        except OSError:
+            pass
