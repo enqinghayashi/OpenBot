@@ -187,3 +187,40 @@ class _ReplyRouter:
         for line in lines:
             self.write(line)
 
+    def __getattr__(self, name):
+        # whatever gets probed: isatty, fileno
+        # we never touch fd 1, so _SuppressStdout's
+        # os.dup2 redirect still works
+        return getattr(self._real, name)
+
+
+# ── the command stream ──────────────────────────────────────────────────────
+
+
+class _Request:
+    """One command line plus the writer its reply belongs on.
+
+    ``writer is None`` means "came from stdin" -> reply goes to real stdout.
+    ``done`` is set by the dispatcher once the command has fully finished
+    (i.e. when the loop asks for the next one), which is what lets the owning
+    thread release and report completion.
+    """
+
+    __slots__ = ("line", "writer", "done")
+
+    def __init__(self, line: str, writer):
+        self.line = line
+        self.writer = writer
+        self.done = threading.Event()
+
+
+class _CommandStream:
+    """``sys.stdin`` replacement; iterating it drives the command loop.
+
+    The loop is ``for line in sys.stdin:`` — so ``__iter__`` is the one hook
+    available, and it fires at exactly the moment the boot sequence has
+    finished and READY has been printed.  That makes it the correct place to
+    start accepting socket connections: a client can only complete the READY
+    handshake once the engine is genuinely ready to serve commands.
+    """
+
