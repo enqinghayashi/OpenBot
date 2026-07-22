@@ -8432,3 +8432,34 @@ def _hl_find_ref(st, _now, _sleep, _rows):
         H_LADDER_REF_MATCH_M, src)
 
 
+def _hl_begin(orientation, tx, ty, tz, height_m, _now=None, _sleep=None,
+              _rows=None, _environ=None, _exists=None):
+    """The ladder state for THIS right pick, or None = the B8i flow.  None
+    (upright, or the kill switch) is returned before any log line or row read.
+    Never raises: a setup error logs one line and returns None (B8i)."""
+    if orientation != 'horizontal':
+        return None
+    if not _hl_switch(_environ, _exists)[0]:
+        return None
+    try:
+        _now = time.time if _now is None else _now
+        _sleep = time.sleep if _sleep is None else _sleep
+        _rows = _hl_rows if _rows is None else _rows
+        x0, y0 = float(tx), float(ty)
+        st = {'n': H_LADDER_ATTEMPTS, 'tried': 1, 'x0': x0, 'y0': y0,
+              'z_cmd': float(tz) - GRASP_Z_OFFSET,
+              'h_cmd': float(height_m) if height_m is not None else None,
+              'aim': (x0, y0), 'last_xy': (x0, y0), 'kc_used': False,
+              'ref_label': None, 'ref_iid': None, 'dz': 0.0, 'wz1': None}
+        lab, iid, why = _hl_find_ref(st, _now, _sleep, _rows)
+        st['ref_label'], st['ref_iid'] = lab, iid
+        _r = ('ref=%s%s (%s)' % (lab, '#%s' % iid if iid is not None else '', why)
+              if lab is not None else
+              'ref=none (%s): the rungs apply to the original aim' % why)
+        _hl_log('on: horizontal right pick, %d attempts, rungs (dx,dy,dz) '
+                'a2=(%+.3f,%+.3f,%+.3f) a3=(%+.3f,%+.3f,%+.3f) m; %s'
+                % ((st['n'],) + tuple(_hl_rung(2)) + tuple(_hl_rung(3)) + (_r,)))
+        return st
+    except Exception as _e:                                # noqa: BLE001
+        _hl_log('off: setup failed (%r) -> B8i flow' % (_e,))
+        return None
