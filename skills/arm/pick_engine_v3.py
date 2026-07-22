@@ -8336,3 +8336,58 @@ def _hl_median(v):
     return s[n // 2] if n % 2 else 0.5 * (s[n // 2 - 1] + s[n // 2])
 
 
+def _hl_redetect(st, t_view, _now=None, _sleep=None, _rows=None, _cancel=None):
+    """((bx, by), info) -- the median of >= H_LADDER_MIN_ROWS clean rows of the
+    target written in [t_view + SETTLE, t_view + SETTLE + WINDOW] -- or
+    (None, why).  Waits at most SETTLE + WINDOW + one poll (also counted, not
+    only timed); a stop is honoured every poll (_check_cancel raises
+    engine_cancel.Cancelled)."""
+    _now = time.time if _now is None else _now
+    _sleep = time.sleep if _sleep is None else _sleep
+    _rows = _hl_rows if _rows is None else _rows
+    _cancel = _check_cancel if _cancel is None else _cancel
+    if st.get('ref_label') is None:
+        return None, 'no_ref'
+    t_min = t_view + H_LADDER_SETTLE_S
+    deadline = t_min + H_LADDER_WINDOW_S
+    seen = set()
+    clean = []
+    rej = {}
+    src = 'none'
+    # bounded by count as well as the clock: a wall clock that stalls or steps
+    # back (NTP) can never hold the arm at h-wp1 past SETTLE + WINDOW + one poll.
+    
+    for _poll in range(int(round((H_LADDER_SETTLE_S + H_LADDER_WINDOW_S)
+                                 / H_LADDER_POLL_S)) + 1):
+        _cancel('hladder_redetect')
+        now = _now()
+        if now >= t_min:
+            samples, src = _rows(now)
+            packets = {}
+            for row, t in samples:
+                packets.setdefault(t, []).append(row)
+            for t in sorted(packets):
+                if (src, t) in seen:
+                    continue
+                seen.add((src, t))
+                xy, why = _hl_pick_row(packets[t], t, now, t_min, st)
+                if xy is not None:
+                    clean.append(xy)
+                else:
+                    rej[why] = rej.get(why, 0) + 1
+            if len(clean) >= H_LADDER_MIN_ROWS or now >= deadline:
+                break
+        _sleep(H_LADDER_POLL_S)
+    _rj = ','.join('%s:%d' % kv for kv in sorted(rej.items())) or '-'
+    if len(clean) < H_LADDER_MIN_ROWS:
+        return None, 'src=%s clean=%d/%d rej=%s' % (src, len(clean),
+                                                     H_LADDER_MIN_ROWS, _rj)
+    bx = _hl_median([c[0] for c in clean])
+    by = _hl_median([c[1] for c in clean])
+    spread = max(math.hypot(c[0] - bx, c[1] - by) for c in clean)
+    if spread > H_LADDER_MAX_SPREAD_M:
+        return None, 'src=%s clean=%d spread=%.3f>%.3f' % (
+            src, len(clean), spread, H_LADDER_MAX_SPREAD_M)
+    lx, ly = st['last_xy']
+    return (bx, by), 'src=%s n=%d bx=%.3f by=%.3f spread=%.3f jump=%.3f rej=%s' % (
+        src, len(clean), bx, by, spread, math.hypot(bx - lx, by - ly), _rj)
