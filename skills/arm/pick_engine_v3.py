@@ -8505,3 +8505,53 @@ def _hl_next_attempt(st, attempt, keep_closed):
         return False
 
 
+def _hl_aim(st, attempt, arm_ik, tz, x_off, _now=None, _sleep=None,
+            _rows=None, _cancel=None, _precheck=None, _limit=None):
+    """After h-wp1 of a fresh horizontal approach: the aim of attempt
+    k = attempt + 1 into st['aim'] (and its dz into st['dz']).  k = 1: the
+    command's aim.  k >= 2: the re-detected base + (dx, dy), else the original
+    + (dx, dy), each reach-prechecked at the lowered z tz + dz (the pick-start
+    gate); False = stop (no reachable aim, or an error)."""
+    k = attempt + 1
+    try:
+        if attempt == 0:
+            st['aim'] = (st['x0'], st['y0'])
+            st['dz'] = 0.0
+            _hl_log_attempt(st, 1, 'orig', 0.0, 0.0, 0.0, 'first')
+            return True
+        _now = time.time if _now is None else _now
+        _precheck = _reach_precheck if _precheck is None else _precheck
+        limit = REACH_REFUSE_POS if _limit is None else _limit
+        dx, dy, dz = _hl_rung(k)
+        st['dz'] = dz
+        base, info = _hl_redetect(st, _now(), _now, _sleep, _rows, _cancel)
+        cands = []
+        if base is not None:
+            st['last_xy'] = base          # last clean pose, used by the next jump gate
+            cands.append(('fresh', base, info))
+        cands.append(('orig', (st['x0'], st['y0']),
+                      info if base is None else 'fallback'))
+        notes = []
+        for kind, (bx, by), why in cands:
+            cx, cy = bx + dx, by + dy
+            try:
+                res = _precheck(arm_ik, 'horizontal', cx, cy, tz + dz, x_off=x_off)[0]
+            except Exception:
+                res = None
+            if res is not None and res > limit:
+                notes.append('%s(%.3f,%.3f,z%+.3f) reach %.3f>%.3f'
+                             % (kind, cx, cy, tz + dz, res, limit))
+                continue
+            st['aim'] = (cx, cy)
+            _hl_log_attempt(st, k, kind, dx, dy, dz,
+                            why + (' refused=' + ';'.join(notes) if notes else ''))
+            return True
+        st['tried'] = k - 1
+        _hl_log('stop before attempt %d/%d: no reachable aim (%s)'
+                % (k, st['n'], '; '.join(notes)))
+        return False
+    except Exception as _e:                                # noqa: BLE001
+        if attempt:
+            st['tried'] = k - 1
+        _hl_log('stop before attempt %d/%d: ladder error (%r)' % (k, st.get('n'), _e))
+        return False
