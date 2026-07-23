@@ -8633,3 +8633,12 @@ def _hl_end(st, grasp_ok):
                                                             st['tried'], st['n']))
     except Exception:                                      # noqa: BLE001
         pass
+
+
+# ── park the upright wp4 insert by the measured radius ───────────────────────
+# module-level so the pick handler above resolves these names at call time.
+# GRIP_ZONE_NEAR_M: URDF grip-zone near edge, forward of R_ee. wp4_park_offset
+# uses it to place the park distance behind the centroid when x_off is given.
+GRIP_ZONE_NEAR_M = 0.017
+
+
