@@ -395,3 +395,53 @@ class G1_29_ArmControllerUpperOnly(G1_29_ArmController):
         return np.array([self.lowstate_buffer.GetData().motor_state[id].dq
                          for id in G1_29_JointArmIndex])
 
+    def ctrl_dual_arm_go_home(self):
+        """Move both arms to home (q=0) — arms-only version."""
+        logger_mp.info("[G1_29_ArmControllerUpperOnly] ctrl_dual_arm_go_home start...")
+        max_attempts = 100
+        current_attempts = 0
+        with self.ctrl_lock:
+            self.q_target = np.zeros(14)
+        tolerance = 0.05
+        while current_attempts < max_attempts:
+            current_q = self.get_current_dual_arm_q()
+            if np.all(np.abs(current_q) < tolerance):
+                logger_mp.info("[G1_29_ArmControllerUpperOnly] both arms reached home.")
+                break
+            current_attempts += 1
+            time.sleep(0.05)
+
+    def speed_gradual_max(self, t=5.0):
+        """Parameter t is the total time required for arms velocity to
+        gradually increase to its maximum value, in seconds. Default 5.0."""
+        self._gradual_start_time = time.time()
+        self._gradual_time = t
+        self._speed_gradual_max = True
+        # stock ramp takes the limit last; an owner set wins
+        self._velocity_override = False
+
+    def speed_instant_max(self):
+        """set arms velocity to the maximum value immediately."""
+        self.arm_velocity_limit = 30.0
+        # no ramp for an owner set
+        self._velocity_override = True
+
+    def set_velocity_limit(self, limit):
+        """T8: explicit OWNER-set velocity cap (e.g. the pick daemon's
+        1.5 rad/s slow moves / 2.0 rad/s go-home).
+
+        Takes precedence over the stock gradual ramp: _ctrl_motor_state
+        would otherwise overwrite this value with 20+10*min(1,t/5) on every
+        tick while speed_gradual_max is active, silently lifting the cap to
+        30 rad/s within 5 s (Task 8 diagnosis — the daemon's cap was dead).
+        """
+        self.arm_velocity_limit = float(limit)
+        self._velocity_override = True
+
+    def clip_arm_q_target(self, target_q, velocity_limit):
+        current_q = self.get_current_dual_arm_q()
+        delta = target_q - current_q
+        motion_scale = np.max(np.abs(delta)) / (velocity_limit * self.control_dt)
+        clipped_arm_q_target = current_q + delta / max(motion_scale, 1.0)
+        return clipped_arm_q_target
+
