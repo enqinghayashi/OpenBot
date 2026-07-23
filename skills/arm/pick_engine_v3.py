@@ -8627,3 +8627,9 @@ def _hl_descent_note(st, attempt, h_tz, sol_q, arm, arm_ik):
         _hl_log('descent %d: note skipped (%r)' % (k, _e))
 
 
+def _hl_end(st, grasp_ok):
+    try:
+        _hl_log('end: grasp_ok=%s after %d/%d attempts' % (bool(grasp_ok),
+                                                            st['tried'], st['n']))
+    except Exception:                                      # noqa: BLE001
+        pass
