@@ -267,3 +267,106 @@ class G1_29_ArmControllerUpperOnly(G1_29_ArmController):
 
         logger_mp.info("Initialize G1_29_ArmControllerUpperOnly OK!\n")
 
+    def _subscribe_motor_state(self):
+        while True:
+            msg = self.lowstate_subscriber.Read()
+            if msg is not None:
+                lowstate = G1_29_LowState()
+                for id in range(G1_29_Num_Motors):
+                    lowstate.motor_state[id].q = msg.motor_state[id].q
+                    lowstate.motor_state[id].dq = msg.motor_state[id].dq
+                self.lowstate_buffer.SetData(lowstate)
+            time.sleep(0.002)
+
+    def _ctrl_motor_state(self):
+        """250 Hz loop writing the arms (15-28) + gate (29) + the locked
+        waist (12-14) AND legs (0-11) held at the captured pose, CRC before
+        every Write."""
+        if self.motion_mode:
+            self.msg.motor_cmd[GATE_JOINT].q = 1.0
+
+        while True:
+            start_time = time.time()
+
+            with self.ctrl_lock:
+                arm_q_target = self.q_target
+                arm_tauff_target = self.tauff_target
+
+            if self.simulation_mode:
+                clipped_arm_q_target = arm_q_target
+            else:
+                clipped_arm_q_target = self.clip_arm_q_target(
+                    arm_q_target, velocity_limit=self.arm_velocity_limit)
+
+            for idx, id in enumerate(G1_29_JointArmIndex):
+                self.msg.motor_cmd[id].q = clipped_arm_q_target[idx]
+                self.msg.motor_cmd[id].dq = 0
+                self.msg.motor_cmd[id].tau = arm_tauff_target[idx]
+
+            if self.WRITE_WAIST:
+                # hold the waist each tick (mode=1 at init);
+                # do NOT drive it
+                for idx, id in enumerate(WAIST_JOINTS):
+                    self.msg.motor_cmd[id].q = self._waist_q_captured[idx]
+                    self.msg.motor_cmd[id].dq = 0
+                    self.msg.motor_cmd[id].tau = 0
+
+            # hold the legs each tick (mode=1 at init);
+            # do NOT drive them
+            for idx, id in enumerate(LEG_JOINTS):
+                self.msg.motor_cmd[id].q = self._leg_q_captured[idx]
+                self.msg.motor_cmd[id].dq = 0
+                self.msg.motor_cmd[id].tau = 0
+
+            self.msg.crc = self.crc.Crc(self.msg)
+            self.lowcmd_publisher.Write(self.msg)
+
+            # ramp only while the OWNER hasn't set a limit: else it
+            # overwrites the daemon's 1.5 rad/s every tick and silently
+            # lifts the cap to 30 rad/s within 5 s.
+            if self._speed_gradual_max is True and not self._velocity_override:
+                t_elapsed = start_time - self._gradual_start_time
+                self.arm_velocity_limit = 20.0 + (10.0 * min(1.0, t_elapsed / 5.0))
+
+            current_time = time.time()
+            all_t_elapsed = current_time - start_time
+            sleep_time = max(0, (self.control_dt - all_t_elapsed))
+            time.sleep(sleep_time)
+
+    # ── gate ramp ──
+    def release_arms(self):
+        """Ramp the arm_sdk gate from 1 -> 0 in 101 steps (~2 s).
+
+        The locomotion stack's arm fallback (arm_sdk disabled) takes the
+        arms while the robot walks; after this returns the daemon must not
+        stream arm targets until acquire_arms()."""
+        logger_mp.info("[G1_29_ArmControllerUpperOnly] release_arms: "
+                       "gate 1 -> 0")
+        for w in np.linspace(1, 0, num=GATE_RAMP_STEPS):
+            self.msg.motor_cmd[GATE_JOINT].q = float(w)
+            time.sleep(GATE_RAMP_DT)
+        logger_mp.info("[G1_29_ArmControllerUpperOnly] arms released")
+
+    def acquire_arms(self):
+        """Ramp the arm_sdk gate from 0 -> 1 in 101 steps (~2 s).
+
+        After this the daemon resumes full authority over the arms."""
+        logger_mp.info("[G1_29_ArmControllerUpperOnly] acquire_arms: "
+                       "gate 0 -> 1")
+        for w in np.linspace(0, 1, num=GATE_RAMP_STEPS):
+            self.msg.motor_cmd[GATE_JOINT].q = float(w)
+            time.sleep(GATE_RAMP_DT)
+        logger_mp.info("[G1_29_ArmControllerUpperOnly] arms acquired")
+
+    def hold_only(self):
+        """Freeze arm targets at the current joint angles (gate stays on).
+
+        The ctrl loop keeps streaming, but the target never moves away
+        from the measured q, so the arms hold the current posture while
+        the robot continues walking."""
+        with self.ctrl_lock:
+            self.q_target = self.get_current_dual_arm_q()
+        logger_mp.info("[G1_29_ArmControllerUpperOnly] hold_only: targets "
+                       "frozen at current q")
+
+    # ── stock API ──
