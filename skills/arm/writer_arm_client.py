@@ -118,3 +118,67 @@ class WriterArmClient:
             line += " " + " ".join(f"{v:.6f}" for v in tau)
         self._cmd(line)
 
+    def wait_slew(self, timeout=60.0, abort=None):
+        """Poll armstate until the in-flight slew completes (active == 0).
+
+        Raises WriterError on timeout (the writer keeps slewing; the caller
+        may freeze() or keep waiting).
+
+        ``abort`` is an optional zero-argument callable polled once per
+        iteration (``_SLEW_POLL`` = 20 ms).  It is expected to RAISE when the
+        move should be abandoned — the engine passes
+        ``engine_cancel.check``, which raises ``Cancelled``.  The client does
+        NOT freeze on the way out: the writer's slew is left running so the
+        caller's unwind can freeze it at the position it had actually
+        reached, which is the same contract the contact-stop path uses.
+        ``Cancelled`` derives from ``BaseException``, so it passes through
+        this method and through every ``except Exception`` above it.
+
+        This is the single choke point that makes EVERY blocking arm move in
+        the engine cancellable: all of them reach the writer through ``slew``
+        / ``pose`` / ``wait_slew`` (pick_engine_v3.py has exactly two
+        ``arm.slew*`` call sites, both here).
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            if abort is not None:
+                abort()
+            state, active, rem_T = self.armstate()
+            if not active:
+                return
+            if time.monotonic() >= deadline:
+                raise WriterError(
+                    f"slew not complete after {timeout:.1f}s "
+                    f"(state={state}, active={active}, rem_T={rem_T:.2f})")
+            time.sleep(_SLEW_POLL)
+
+    def slew(self, target14, duration=None, tau=None, abort=None):
+        """slew_start + wait_slew: blocking move to an arbitrary 14-DOF
+        target (the old move_arm_smooth)."""
+        if abort is not None:
+            # before the slew: if a cancel is already pending, don't start
+            # the motion (writer would slew at a pose nobody picked until
+            # the caller's unwind freezes it)
+            abort()
+        self.slew_start(target14, duration=duration, tau=tau)
+        self.wait_slew(abort=abort)
+
+    def pose_start(self, name):
+        """Start a cosine slew to a named writer pose (ready/lift/tuck/...).
+        Returns immediately (DONE = slew STARTED)."""
+        self._cmd(name)
+
+    def pose(self, name, abort=None):
+        """Blocking pose move (pose_start + wait_slew)."""
+        if abort is not None:
+            abort()  # as slew(): don't start an already-cancelled move
+        self.pose_start(name)
+        self.wait_slew(abort=abort)
+
+    def freeze(self):
+        """Contact-stop: halt the in-flight slew at its current interpolated
+        position and hold it (writer state HOLD_RAW)."""
+        self._cmd("freeze")
+
+    # --- asking the writer for state ---
+
