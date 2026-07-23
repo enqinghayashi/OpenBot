@@ -370,3 +370,28 @@ class G1_29_ArmControllerUpperOnly(G1_29_ArmController):
                        "frozen at current q")
 
     # ── stock API ──
+    def ctrl_dual_arm(self, q_target, tauff_target):
+        """Set control target values q & tau of the left and right arm motors."""
+        with self.ctrl_lock:
+            self.q_target = q_target
+            self.tauff_target = tauff_target
+
+    def get_mode_machine(self):
+        """Return current dds mode machine."""
+        return self.lowstate_subscriber.Read().mode_machine
+
+    def get_current_motor_q(self):
+        """Return current state q of all body motors (35)."""
+        return np.array([self.lowstate_buffer.GetData().motor_state[id].q
+                         for id in G1_29_JointIndex])
+
+    def get_current_dual_arm_q(self):
+        """Return current state q of the left and right arm motors."""
+        return np.array([self.lowstate_buffer.GetData().motor_state[id].q
+                         for id in G1_29_JointArmIndex])
+
+    def get_current_dual_arm_dq(self):
+        """Return current state dq of the left and right arm motors."""
+        return np.array([self.lowstate_buffer.GetData().motor_state[id].dq
+                         for id in G1_29_JointArmIndex])
+
