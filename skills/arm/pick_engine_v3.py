@@ -8681,3 +8681,20 @@ def wp4_park_offset(x_off):
     return park
 
 
+def wp4_park_clamp_note(x_off):
+    """B8h: ' park_clamped=<requested>-><used>' when wp4_park_offset clamped.
+
+    '' when x_off is absent/non-finite/zero or the park was not clamped, so a
+    log line without a clamp is byte-identical to the B8d one.  Metres, 3 dp.
+    """
+    try:
+        x_off_val = float(x_off)
+        if x_off_val == 0 or not math.isfinite(x_off_val):
+            return ''
+    except (ValueError, TypeError):
+        return ''
+    requested = -x_off_val - H_X_OFF_RADIUS_INV + GRIP_ZONE_NEAR_M
+    used = wp4_park_offset(x_off)
+    if abs(requested - used) <= 5e-7:
+        return ''
+    return ' park_clamped=%.3f->%.3f' % (requested, used)
