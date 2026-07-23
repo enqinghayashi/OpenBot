@@ -8851,3 +8851,27 @@ def _set_grip_evidence(side, verdict, close_blocked=None, close_margin=None,
         }
     except Exception as _e:
         _safe_log(f'[pick_daemon] grip evidence not recorded: {_e!r}')
+
+
+# self-collision guard for cross-body reaches: check one commanded move
+# prev -> pose (left-arm clearance along the joint path, right palm side of
+# the pelvis midline; torso depth is diagnostic only, never a refusal).
+# consulted at precheck, before hold_rc and any arm motion, and live on every
+# pick move except the straight-up wp1 ascents: wp2, wp3, wp4, h-wp2, h-wp3,
+# both contact retracts and the keep-closed re-press.
+# a refusal prints ERROR:self_collision and leaves to the failure block.
+# guard failure never refuses; OPENBOT_SELF_COLLISION_GUARD=0 disables it.
+# the startup line prints at import time, since the engine imports this module.
+try:
+    import self_collision as _sc_mod
+    _SC_IMPORT_EXC = None
+except Exception as _sc_import_e:
+    _sc_mod = None
+    _SC_IMPORT_EXC = _sc_import_e
+
+_SC_ENV = 'OPENBOT_SELF_COLLISION_GUARD'
+# minimum left-arm clearance from the last precheck, quoted by a live
+# refusal; reset by every precheck.
+_SC_PRECHECK_C0 = [None]
+
+
