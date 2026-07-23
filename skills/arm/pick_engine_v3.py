@@ -8642,3 +8642,40 @@ def _hl_end(st, grasp_ok):
 GRIP_ZONE_NEAR_M = 0.017
 
 
+def wp4_park_offset(x_off):
+    """Calculate the park offset for upright right wp4 target based on x_off.
+
+    The upright wp4 target's fwd_offset parameter determines how far behind the
+    centroid the wrist parks. When x_off is provided by the gateway (from measured
+    object radius), we calculate r_eff and park distance. When x_off is absent/None,
+    we use the default HAND_GRIP_CENTER_OFFSET (0.045 m).
+
+    Args:
+        x_off: float or None. The x_off token from the gateway's pick command,
+               or None if not provided.
+
+    Returns:
+        float: The park offset in metres (positive value to use as fwd_offset
+               argument with negation: fwd_offset = -wp4_park_offset(x_off)).
+    """
+    # absent, None or 0: fall back to the default offset
+    if x_off is None or x_off == 0:
+        return HAND_GRIP_CENTER_OFFSET
+
+    # non-finite or non-numeric input: fall back to the default offset
+    try:
+        x_off_val = float(x_off)
+        if not math.isfinite(x_off_val):
+            return HAND_GRIP_CENTER_OFFSET
+    except (ValueError, TypeError):
+        return HAND_GRIP_CENTER_OFFSET
+
+    # effective object radius: the negated x_off minus the radius inverse
+    r_eff = -x_off_val - H_X_OFF_RADIUS_INV
+    # park distance: effective radius plus the URDF grip-zone near edge
+    park = r_eff + GRIP_ZONE_NEAR_M
+    # clamp to [0.030, 0.115]; 0.115 must stay below the fixed 0.13 m approach
+    # offset (wp2/wp3, APPROACH_FORWARD_OFFSET) or wp4 would sit behind wp3.
+    # the caller logs a clamp as park_clamped=<requested>-><used>.
+    park = max(0.030, min(0.115, park))
+    return park
