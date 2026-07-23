@@ -8828,3 +8828,5 @@ def _ev_num(v):
         return None
 
 
+def _ev_bool(v):
+    return None if v is None else bool(v)
