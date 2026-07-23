@@ -8807,3 +8807,5 @@ def _reach_precheck(arm_ik, orientation, tx, ty, tz, x_off=None):
         except Exception:
             pass
         return None, 'unavailable'
+
+
