@@ -8881,3 +8881,5 @@ def _sc_enabled():
 
 def _sc_unavailable(exc):
     _safe_log(f'SELF-COLLISION GUARD unavailable ({exc!r}) — not refusing')
+
+
