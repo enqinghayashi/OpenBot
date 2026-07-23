@@ -8712,3 +8712,98 @@ def wp4_score_offset(x_off):
     return -(wp4_park_offset(x_off) - HAND_GRIP_CENTER_OFFSET)
 
 
+def _reach_precheck(arm_ik, orientation, tx, ty, tz, x_off=None):
+    """S1(b): would the RIGHT pick's waypoint chain reach — decided BEFORE
+    any arm motion.
+
+    Simulates the commanded chain without the arm.  q0 = READY with the left
+    arm at its predicted T5-2 stop (_zf_idle_pre: the pin when set, else where
+    the tuck move leaves the arm under the floor, CARRY_TUCK_LEFT when nothing
+    clamps).  T5 step 1 lands near READY rather than exactly on it, so q0 is an
+    approximation of the measured post-step-1 pose; the idle target is the FK
+    left wrist at q0 (solve_and_move's idiom).
+      upright:    wp2 (approach @height, fwd APPROACH_FORWARD_OFFSET), wp3
+                  (descend to tz + GRASP_Z_UP_BIAS), wp4 (parked insert,
+                  scored against the UNPARKED centroid like the in-flow gate);
+                  wp3 / wp4 / the wp4 score carry the same wrist deviation
+                  add-on the flow commands (_deviation_ramped(1) / (2) while
+                  DEVIATION_ENABLED), so the solver trades position against
+                  the SAME orientation targets the real chain does;
+      horizontal: h-wp2 (middle-down above, parked) and h-wp3 (parked at tz,
+                  scored against the unparked target).
+    The final residual is the MIN over two warm starts (the chain's previous
+    solution, and q0): biased against a false refusal.
+
+    Returns (max residual over the stages, stage name), or
+    (None, 'unavailable') on any failure — the caller never refuses then and
+    the in-flow wp4 gate stays the second line.  Leaves the solver's smoothing
+    filter FRESH so the real first solve is unaffected.
+    """
+    try:
+        q0 = np.array(READY_POSE, dtype=np.float64).copy()
+        q0[0:7] = _zf_idle_pre('left', CARRY_TUCK_LEFT, q0)   # left arm where the tuck step leaves it
+        idle_w = get_wrist_pose(arm_ik, q0, side='left')
+        right_w = get_wrist_pose(arm_ik, q0, side='right')
+        if idle_w is None or right_w is None:
+            raise RuntimeError('FK of the start pose unavailable')
+        idle_T = pin.SE3(np.eye(3), idle_w).homogeneous
+        if orientation == 'horizontal':
+            h_z = max(float(right_w[2]), tz + 0.20)
+            chain = [('h-wp2', make_wrist_target_middle_down(
+                tx, ty, h_z, fwd_offset=-HAND_GRIP_CENTER_OFFSET))]
+            grasp_cmd = make_wrist_target_middle_down(
+                tx, ty, tz, fwd_offset=-HAND_GRIP_CENTER_OFFSET)
+            grasp_score = make_wrist_target_middle_down(tx, ty, tz)
+            grasp_name = 'h-wp3'
+        else:
+            a_z = max(float(right_w[2]), tz + APPROACH_HEIGHT_OFFSET)
+            g_z = tz + GRASP_Z_UP_BIAS
+            dv3 = _deviation_ramped(1) if DEVIATION_ENABLED else 0.0
+            dv4 = _deviation_ramped(2) if DEVIATION_ENABLED else 0.0
+            chain = [
+                ('wp2', make_wrist_target_upright_v4(
+                    tx, ty, a_z, +1, fwd_offset=APPROACH_FORWARD_OFFSET)),
+                ('wp3', make_wrist_target_upright_v4(
+                    tx, ty, g_z, +1, deviation=dv3,
+                    fwd_offset=APPROACH_FORWARD_OFFSET)),
+            ]
+            grasp_cmd = make_wrist_target_upright_v4(
+                tx, ty, g_z, +1, deviation=dv4,
+                fwd_offset=-wp4_park_offset(x_off))   # same park offset as the grasp flow
+            if x_off is None:
+                grasp_score = make_wrist_target_upright_v4(
+                    tx, ty, g_z, +1, deviation=dv4)
+            else:   # same target as the flow's score
+                grasp_score = make_wrist_target_upright_v4(
+                    tx, ty, g_z, +1, deviation=dv4,
+                    fwd_offset=wp4_score_offset(x_off))
+            grasp_name = 'wp4'
+        stages = []
+        warm = q0
+        for name, target_T in chain:
+            _solver_fresh(arm_ik, 'precheck: ')
+            warm = _precheck_solve(arm_ik, idle_T, target_T, warm)
+            stages.append((name, _precheck_residual(arm_ik, warm, target_T)))
+        g_res = []
+        for g_warm in (warm, q0):
+            _solver_fresh(arm_ik, 'precheck: ')
+            g_q = _precheck_solve(arm_ik, idle_T, grasp_cmd, g_warm)
+            g_res.append(_precheck_residual(arm_ik, g_q, grasp_score))
+        stages.append((grasp_name, min(g_res)))
+        _solver_fresh(arm_ik, 'precheck: ')
+        worst_name, worst = max(stages, key=lambda s: s[1])
+        _safe_log('[pick_daemon] reach precheck (%s): %s (%s = min of 2 warm '
+                  'starts %s) -> max %.3f m at %s vs refuse > %.3f m'
+                  % (orientation,
+                     ' '.join('%s=%.3f' % s for s in stages), grasp_name,
+                     '/'.join('%.3f' % r for r in g_res),
+                     worst, worst_name, REACH_REFUSE_POS))
+        return worst, worst_name
+    except Exception as _e:
+        _safe_log(f'[pick_daemon] REACH PRECHECK unavailable ({_e!r}) — not '
+                  'refusing; the in-flow wp4 gate stays the second line')
+        try:
+            _solver_fresh(arm_ik, 'precheck: ')
+        except Exception:
+            pass
+        return None, 'unavailable'
