@@ -8809,3 +8809,10 @@ def _reach_precheck(arm_ik, orientation, tx, ty, tz, x_off=None):
         return None, 'unavailable'
 
 
+def _expected_after_move(start_q, target_q):
+    """The target move_arm_smooth actually commands from start_q (the same
+    no-log z-floor clamp), so a clamped move is not read as a stall."""
+    try:
+        return _zfloor_target(_ARM_IK, start_q, target_q)[0]
+    except Exception:
+        return target_q
