@@ -182,3 +182,38 @@ class WriterArmClient:
 
     # --- asking the writer for state ---
 
+    def q(self):
+        """Current lowstate arm q slice (motors 15..28) as a 14-D np.float64."""
+        reply = self._cmd("q")
+        if not reply.startswith("Q:"):
+            raise WriterError(f"bad q reply: {reply!r}")
+        parts = reply[2:].split()
+        if len(parts) != 14:
+            raise WriterError(f"bad q reply (expected 14 floats): {reply!r}")
+        return np.array([float(p) for p in parts], dtype=np.float64)
+
+    # arm_sdk-shaped alias for the engine
+    get_current_dual_arm_q = q
+
+    def armstate(self):
+        """(state_name, active, rem_T) — state_name is the ArmGuard state
+        (RAW / HOLD_RAW / a pose name), active == 1 while a slew is in
+        flight, rem_T is the remaining slew seconds."""
+        reply = self._cmd("armstate")
+        if not reply.startswith("STATE: "):
+            raise WriterError(f"bad armstate reply: {reply!r}")
+        parts = reply[len("STATE: "):].split()
+        if len(parts) != 3:
+            raise WriterError(f"bad armstate reply (expected 3 fields): {reply!r}")
+        return parts[0], int(parts[1]), float(parts[2])
+
+    # --- flags we can flip on the writer ---
+
+    def hold_rc(self, on):
+        """RC-stick interlock: on == True clamps the writer's RC input to
+        zero (stationary guarantee during a pick); off restores it."""
+        self._cmd(f"hold_rc {'on' if on else 'off'}")
+
+    def payload(self, on):
+        """Writer payload gravity-compensation flag for the arms."""
+        self._cmd(f"payload {'on' if on else 'off'}")
