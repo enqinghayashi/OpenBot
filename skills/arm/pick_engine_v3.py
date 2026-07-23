@@ -8832,3 +8832,22 @@ def _ev_bool(v):
     return None if v is None else bool(v)
 
 
+def _set_grip_evidence(side, verdict, close_blocked=None, close_margin=None,
+                       pin_margin=None, tuck_blocked=None, tuck_margin=None):
+    """S2: record what the hand reported on this pick's exit (never raises).
+    Evidence only: no reply and no decision depends on it."""
+    try:
+        _GRIP_EVIDENCE_SEQ[0] += 1
+        _LAST_GRIP_EVIDENCE[0] = {
+            'seq': _GRIP_EVIDENCE_SEQ[0],
+            'side': side,
+            'verdict': verdict,
+            'close_blocked': _ev_bool(close_blocked),
+            'close_margin': _ev_num(close_margin),
+            'pin_margin': _ev_num(pin_margin),
+            'tuck_blocked': _ev_bool(tuck_blocked),
+            'tuck_margin': _ev_num(tuck_margin),
+            't': round(time.time(), 3),
+        }
+    except Exception as _e:
+        _safe_log(f'[pick_daemon] grip evidence not recorded: {_e!r}')
