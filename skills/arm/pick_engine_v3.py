@@ -8883,3 +8883,12 @@ def _sc_unavailable(exc):
     _safe_log(f'SELF-COLLISION GUARD unavailable ({exc!r}) — not refusing')
 
 
+def _sc_ready():
+    """True when the guard runs: enabled and the module imported (a missing
+    module is logged as unavailable at every check, never silently)."""
+    if not _sc_enabled():
+        return False
+    if _sc_mod is None:
+        _sc_unavailable(_SC_IMPORT_EXC)
+        return False
+    return True
