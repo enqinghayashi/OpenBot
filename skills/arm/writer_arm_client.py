@@ -55,3 +55,66 @@ class WriterArmClient:
         raise WriterError(
             f"connect to {sock_path} failed after {connect_retries} tries: {last}")
 
+    def _connect(self):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(_REPLY_TIMEOUT)
+        s.connect(self.sock_path)
+        self._sock = s
+        self._file = s.makefile("r", encoding="utf-8")
+
+    def close(self):
+        if self._file is not None:
+            try:
+                self._file.close()
+            except OSError:
+                pass
+            self._file = None
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            self._sock = None
+
+    # --- under the hood ---
+
+    def _cmd(self, line, timeout=_REPLY_TIMEOUT):
+        """Send one request line; return the stripped reply line.
+
+        Raises WriterError on an ERROR: reply or a dropped connection.
+        """
+        if self._sock is None:
+            raise WriterError("not connected")
+        self._sock.settimeout(timeout)
+        self._sock.sendall(line.encode("utf-8") + b"\n")
+        reply = self._file.readline()
+        if not reply:
+            raise WriterError(f"writer closed the connection on: {line!r}")
+        reply = reply.strip()
+        if reply.startswith("ERROR:"):
+            raise WriterError(reply[len("ERROR:"):])
+        return reply
+
+    # --- raw slews, all 14 DOFs ---
+
+    def slew_start(self, target14, duration=None, tau=None):
+        """Start a cosine slew toward an arbitrary 14-DOF target.
+
+        Returns immediately (DONE = slew STARTED).  Duration follows the
+        daemon's move_arm_smooth formula unless given (engine passes it for
+        profile alignment).  tau (optional 14-vector) becomes the writer's
+        arm gravity feedforward for this slew — the standalone-lane physics
+        (sol_tauff = pin.rnea at the target pose), applied every 250 Hz.
+        Completion: wait_slew() / armstate().
+        """
+        if len(target14) != 14:
+            raise WriterError(f"slew_start needs 14 floats, got {len(target14)}")
+        if tau is not None and len(tau) != 14:
+            raise WriterError(f"slew_start tau needs 14 floats, got {len(tau)}")
+        line = "arm " + " ".join(f"{v:.6f}" for v in target14)
+        if duration is not None:
+            line += f" {duration:.3f}"
+        if tau is not None:
+            line += " " + " ".join(f"{v:.6f}" for v in tau)
+        self._cmd(line)
+
