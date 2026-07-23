@@ -8818,3 +8818,11 @@ def _expected_after_move(start_q, target_q):
         return target_q
 
 
+def _ev_num(v):
+    try:
+        if v is None:
+            return None
+        f = float(v)
+        return round(f, 4) if math.isfinite(f) else None
+    except Exception:
+        return None
