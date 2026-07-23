@@ -8710,3 +8710,5 @@ def wp4_score_offset(x_off):
     the EXTRA park: 0.0 when x_off is absent (today's target, byte-identical).
     """
     return -(wp4_park_offset(x_off) - HAND_GRIP_CENTER_OFFSET)
+
+
