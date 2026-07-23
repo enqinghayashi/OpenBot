@@ -8877,3 +8877,5 @@ _SC_PRECHECK_C0 = [None]
 
 def _sc_enabled():
     return os.environ.get(_SC_ENV, '1').strip() != '0'
+
+
