@@ -8700,3 +8700,13 @@ def wp4_park_clamp_note(x_off):
     return ' park_clamped=%.3f->%.3f' % (requested, used)
 
 
+def wp4_score_offset(x_off):
+    """B8d: the fwd_offset the wp4 reach SCORE target takes.
+
+    The insert is scored against the UNPARKED centroid on purpose (a parked
+    residual would loosen REACH_REFUSE_POS by the 4.5 cm park).  A radius
+    park deeper than 4.5 cm would add its extra depth to every residual and
+    refuse picks that pass today, so the score target moves back by exactly
+    the EXTRA park: 0.0 when x_off is absent (today's target, byte-identical).
+    """
+    return -(wp4_park_offset(x_off) - HAND_GRIP_CENTER_OFFSET)
