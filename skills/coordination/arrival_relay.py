@@ -94,3 +94,68 @@ class ArrivalRelay(Node):
             return
         self._emit(phrase)
 
+    def _emit(self, phrase):
+        # one client; pending accept wins
+        self._accept_pending()
+        client = self._client
+        if client is None:
+            # no client: drop it
+            return
+        try:
+            client.sendall((phrase + "\n").encode("utf-8"))
+        except (BlockingIOError, InterruptedError):
+            pass                     # would block; skip
+        except OSError:
+            self._drop_client()      # peer gone: drop it
+
+    def _accept_pending(self):
+        try:
+            conn, _addr = self._srv.accept()
+        except (BlockingIOError, InterruptedError):
+            return                   # nothing pending
+        except OSError:
+            return
+        conn.setblocking(False)
+        old = self._client
+        self._client = conn
+        if old is not None:
+            try:
+                old.close()
+            except OSError:
+                pass
+
+    def _drop_client(self):
+        client = self._client
+        self._client = None
+        if client is not None:
+            try:
+                client.close()
+            except OSError:
+                pass
+
+    # -- cleaning up -----------------------------------------------------
+    def _unlink_socket(self):
+        try:
+            os.unlink(self._socket_path)
+        except OSError:
+            pass
+
+    def _cleanup(self):
+        """Close sockets and unlink the UNIX socket path (idempotent)."""
+        if self._closed:
+            return
+        self._closed = True
+        self._drop_client()
+        if self._srv is not None:
+            try:
+                self._srv.close()
+            except OSError:
+                pass
+        self._unlink_socket()
+
+    def __del__(self):
+        # destructor: never raise
+        try:
+            self._cleanup()
+        except Exception:
+            pass
