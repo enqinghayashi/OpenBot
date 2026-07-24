@@ -8953,3 +8953,12 @@ def _sc_bar(verb):
             else _sc_mod.HAND_Y_MAX_M)
 
 
+def _sc_cmp(rec):
+    """Term-aware comparator for the stderr line ('clearance <c> m < <thr> m'
+    only fits the left-arm term)."""
+    _pair = f'right {rec.right_link} vs {rec.other_link}'
+    if rec.term == 'left_arm_clearance':
+        return (f'{_pair} clearance {rec.value:.3f} m < '
+                f'{_sc_mod.LEFT_CLEAR_MIN_M:.3f} m')
+    return (f'{_pair} hand y {rec.value:+.3f} m > '
+            f'{_sc_bar(rec.verb):+.3f} m')
