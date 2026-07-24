@@ -8984,3 +8984,14 @@ def _sc_check(q_from, q_to, verb, x, y, stage, wp):
         return None, None
 
 
+def _sc_live_verdict(rec, rep, wp):
+    if rec is None:
+        if rep is not None:
+            _safe_log(f'[pick_daemon] {wp} self-collision guard: '
+                      f'{_sc_terms(rep)} -> pass')
+        return
+    c0 = _SC_PRECHECK_C0[0]
+    _c0 = f'{c0:.3f} m' if c0 is not None else 'n/a'
+    _safe_log(f'SELF-COLLISION (live, {wp}): solved {wp} pose {_sc_cmp(rec)} '
+              f'(precheck passed with {_c0}) — REFUSED before commanding '
+              f'{wp}; safe exit.')
