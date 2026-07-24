@@ -8962,3 +8962,5 @@ def _sc_cmp(rec):
                 f'{_sc_mod.LEFT_CLEAR_MIN_M:.3f} m')
     return (f'{_pair} hand y {rec.value:+.3f} m > '
             f'{_sc_bar(rec.verb):+.3f} m')
+
+
