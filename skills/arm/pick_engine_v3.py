@@ -8964,3 +8964,6 @@ def _sc_cmp(rec):
             f'{_sc_bar(rec.verb):+.3f} m')
 
 
+def _sc_terms(rep):
+    return (f"clear={rep['left_clear_m']:.3f} hand_y={rep['hand_y_m']:+.3f} "
+            f"torso_diag={rep['torso_gross_m']:+.3f}")
