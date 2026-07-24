@@ -8894,3 +8894,23 @@ def _sc_ready():
     return True
 
 
+def _sc_banner():
+    """The ONE startup line (deploy check C3: 'SELF-COLLISION GUARD armed').
+    Runs at IMPORT time, so it must never raise: a module whose attributes
+    do not match (a stale copy on the box) is reported 'unavailable'."""
+    try:
+        if not _sc_enabled():
+            _safe_log(f'[pick_daemon] SELF-COLLISION GUARD DISABLED by env '
+                      f'({_SC_ENV}=0) — cross-body picks are NOT refused')
+        elif _sc_mod is None:
+            _sc_unavailable(_SC_IMPORT_EXC)
+        else:
+            _safe_log(f'[pick_daemon] SELF-COLLISION GUARD armed: '
+                      f'thr={_sc_mod.LEFT_CLEAR_MIN_M:.3f} m, '
+                      f'links={len(_sc_mod.SAMPLES)} (right-arm sampled links vs '
+                      f'{len(_sc_mod.LEFT_CAP_NAMES)} left-arm capsules; refuse '
+                      f'also when the right palm y > {_sc_mod.HAND_Y_MAX_M:+.3f} '
+                      f'm for a pick / > {_sc_mod.HAND_Y_MAX_PLACE_M:+.3f} m for '
+                      f'a place)')
+    except Exception as _e:
+        _sc_unavailable(_e)
