@@ -9015,3 +9015,47 @@ def _sc_live_check(arm, sol_q, stage, verb, x, y):
     return rec
 
 
+def _sc_live_presolve(arm, arm_ik, target, stage, verb, x, y, raw=False,
+                      log_prefix=''):
+    """LIVE guard for a waypoint that solve_and_move() solves AND moves in one
+    call (wp2, wp3, h-wp2).  Solves the SAME target with solve_and_move's exact
+    idiom for side='right' (measured q, FK idle-left target, the verified
+    solve -- or the raw solve for raw=True), pins the idle arm the way
+    freeze_idle_arm does (q[0:7] = CARRY_TUCK_LEFT, without its settle wait)
+    and checks the move from the measured q.  The caller has just called
+    _solver_fresh(), so this is the 1st-after-fresh solve; the filter is
+    cleared again afterwards, so solve_and_move's own solve is again the
+    1st-after-fresh solve from the same measured q (robot_arm_ik seeds
+    init_data from current_lr_arm_motor_q) -- the commanded pose is the pose
+    this guard checked.  An unsolvable target returns None: that is
+    solve_and_move's own refusal, not this guard's."""
+    if not _sc_ready():
+        return None
+    _q = None
+    _cur_q = None
+    try:
+        _cur_q = arm.get_current_dual_arm_q().copy()
+        _idle_wrist = get_wrist_pose(arm_ik, _cur_q, side='left')
+        _idle_target = (pin.SE3(np.eye(3), _idle_wrist).homogeneous
+                        if _idle_wrist is not None else L_NEUTRAL)
+        if raw:
+            with _SuppressStdout():
+                _q, _tau = arm_ik.solve_ik(
+                    _idle_target, target,
+                    current_lr_arm_motor_q=_cur_q.copy(),
+                    current_lr_arm_motor_dq=np.zeros(14))
+        else:
+            _q, _tau = _solve_ik_verified(arm_ik, _idle_target, target, _cur_q,
+                                          'right', log_prefix + '[sc-guard] ')
+    except Exception as _e:
+        _sc_unavailable(_e)
+        _q = None
+    finally:
+        _solver_fresh(arm_ik, log_prefix + '[sc-guard] ')
+    if _q is None:
+        return None
+    _q = np.array(_q, dtype=np.float64).copy()
+    _q[0:7] = _zf_idle_target('left', CARRY_TUCK_LEFT)   # left arm at the pose the preceding move leaves it
+    rec, rep = _sc_check(_cur_q, _q, verb, x, y, stage, stage)
+    _sc_live_verdict(rec, rep, stage)
+    return rec
