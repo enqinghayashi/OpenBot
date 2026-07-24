@@ -8951,3 +8951,5 @@ def _sc_bar(verb):
     """The endpoint midline bar: the pick bar, or the place bar."""
     return (_sc_mod.HAND_Y_MAX_PLACE_M if verb == 'place'
             else _sc_mod.HAND_Y_MAX_M)
+
+
