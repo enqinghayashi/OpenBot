@@ -8934,3 +8934,14 @@ class _ScRefusal(object):
         self.side = 'left' if self.x < 0.0 else 'right'
 
 
+def _sc_line(rec):
+    """The ONE stdout reply of a self-collision refusal.  brain/agent/tools.py
+    parses it (_SELF_COLLISION_RE / _SELF_COLLISION_FIELDS_RE): x/y are the
+    TARGET (torso frame, x right-positive), side= the side of the midline the
+    target sits on, 'clearance=' carries the refuting term's value (metres;
+    the term is named in the stderr line), link= the pair that tripped it,
+    move_right_m how far the target must move right to clear the rule."""
+    return (f'ERROR:self_collision verb={rec.verb} side={rec.side} x={rec.x:.3f}m '
+            f'y={rec.y:.3f}m clearance={rec.value:.3f}m '
+            f'link={rec.right_link}~{rec.other_link} '
+            f'move_right_m={rec.move_right_m:.2f} stage={rec.stage}\n')
