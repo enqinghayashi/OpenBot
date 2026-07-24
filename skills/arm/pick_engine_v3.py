@@ -8919,3 +8919,16 @@ def _sc_banner():
 class _ScRefusal(object):
     """One self-collision refusal: the ERROR line's fields."""
 
+    def __init__(self, verb, x, y, rep, stage, wp):
+        self.verb = verb
+        self.x = float(x)
+        self.y = float(y)
+        self.term = rep['term']
+        self.value = float(rep['value'])
+        self.right_link = rep['right_link']
+        self.other_link = rep['other_link']
+        self.move_right_m = float(rep['move_right_m'])
+        self.stage = stage   # stdout stage: 'precheck' or the live waypoint
+        self.wp = wp         # waypoint whose commanded move tripped the rule
+        # side of the torso midline the target sits on (torso +x = right)
+        self.side = 'left' if self.x < 0.0 else 'right'
