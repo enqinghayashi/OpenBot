@@ -8995,3 +8995,5 @@ def _sc_live_verdict(rec, rep, wp):
     _safe_log(f'SELF-COLLISION (live, {wp}): solved {wp} pose {_sc_cmp(rec)} '
               f'(precheck passed with {_c0}) — REFUSED before commanding '
               f'{wp}; safe exit.')
+
+
