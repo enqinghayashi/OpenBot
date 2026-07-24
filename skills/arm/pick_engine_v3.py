@@ -8945,3 +8945,5 @@ def _sc_line(rec):
             f'y={rec.y:.3f}m clearance={rec.value:.3f}m '
             f'link={rec.right_link}~{rec.other_link} '
             f'move_right_m={rec.move_right_m:.2f} stage={rec.stage}\n')
+
+
