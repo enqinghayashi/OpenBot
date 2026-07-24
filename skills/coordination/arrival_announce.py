@@ -240,3 +240,39 @@ class PhaseAnnouncer:
         self._gate.mark_fired(gate_key, now)
         self._fired.add(key)
         return phase_speech(phase, label)
+
+
+
+class ArrivalGate:
+    """At-most-once guard for arrival announcements, per label.
+
+    allow(label, now) returns True at most once per label within
+    cooldown_s of the LAST fire for THAT label:
+      * first-ever sighting of a label          -> True;
+      * a different label (never fired before)  -> True (no cross-label
+        suppression -- keys are per label);
+      * the same label again within cooldown_s  -> False (suppressed);
+      * the same label again after cooldown_s   -> True (allowed again).
+    The caller (the relay) calls mark_fired() when allow() returns True.
+    allow() itself only READS state -- it is a pure time decision.
+    """
+
+    def __init__(self, cooldown_s: float = 10.0) -> None:
+        self.cooldown_s = float(cooldown_s)
+        self._last_fire = {}  # label -> last fire time
+
+    def allow(self, label: str, now: float) -> bool:
+        if label is None:
+            return False
+        last = self._last_fire.get(label)
+        if last is None:
+            return True
+        return (now - last) >= self.cooldown_s
+
+    def mark_fired(self, label: str, now: float) -> None:
+        """Record that the arrival at `label` was announced at `now`."""
+        self._last_fire[label] = now
+
+    def last_fired(self, label: str) -> Optional[float]:
+        """Timestamp of the last fire for `label`, or None if never."""
+        return self._last_fire.get(label)
