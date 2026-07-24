@@ -9013,3 +9013,5 @@ def _sc_live_check(arm, sol_q, stage, verb, x, y):
     rec, rep = _sc_check(q_from, sol_q, verb, x, y, stage, stage)
     _sc_live_verdict(rec, rep, stage)
     return rec
+
+
