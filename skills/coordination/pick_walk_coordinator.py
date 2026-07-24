@@ -355,3 +355,189 @@ class PickWalkCoordinator(Node):
             self._pending_label = cmd
             self._publish_pending(cmd)
 
+    def _on_detections(self, msg):
+        """Task 9 snapshot + Task 10 3-consecutive-confirmation gate.
+
+        Mirrors pick_node._on_detections parsing (DET_MIN_CONF filter +
+        _t freshness stamp) so the PENDING lookup agrees with what pick_node
+        would see.
+
+        Task 10: while the flow is in the WAITING phase ('sweeping' /
+        'detecting'), each fresh beat of the ACTIVE label is counted.
+        Consecutive means a gap <= CONFIRM_BEAT_GAP_S to the previous beat
+        — a label beat after a longer gap, or a detection message that does
+        not contain the label at all (projector is event-driven, so a
+        published message lists exactly what is currently detected), breaks
+        the streak: counter -> 0 and the next label beat restarts the run
+        (statuses 3+4 re-fire).  The 3rd consecutive beat completes the
+        gate -> _confirm_flow() (status 5 + table + automatic trigger).
+        After the trigger ('confirmed') beats no longer count — they only
+        feed _last_beat_ts so _watch_walk can detect the projector going
+        silent (DETECTION LOST).
+        """
+        try:
+            detections = json.loads(msg.data)
+        except Exception:
+            self._log(f'bad /object_detections_body: {msg.data!r}')
+            return
+        now = time.time()
+        with self._det_lock:
+            self._latest_detections = {
+                d['label']: {**d, '_t': now} for d in detections
+                if d.get('conf', 0) >= DET_MIN_CONF
+            }
+        with self._nav_lock:
+            label = self._active_label
+            flow = self._flow
+        if label is None or flow == 'idle':
+            return
+        with self._det_lock:
+            det = self._latest_detections.get(label)
+        with self._nav_lock:
+            if self._flow != flow:       # stop/abort snuck in
+                return
+            if flow == 'confirmed':
+                # feeds the loss timer
+                if det is not None:
+                    self._last_beat_ts = now
+                return
+            if det is None:
+                # missing label = miss
+                # -> reset, next restarts
+                if self._confirm_count != 0 or self._last_beat_ts != 0.0:
+                    self._confirm_count = 0
+                    self._last_beat_ts = 0.0
+                return
+            last = self._last_beat_ts
+            if last == 0.0 or now - last > CONFIRM_BEAT_GAP_S:
+                self._confirm_count = 1      # fresh run
+                self._flow = 'detecting'
+                streak_started = True
+            else:
+                self._confirm_count += 1
+                streak_started = False
+            self._last_beat_ts = now
+            triggered = self._confirm_count >= CONFIRM_REQUIRED
+        if streak_started:
+            self._publish_nav(f'DETECTED {label} ONCE, EXIT '
+                              f'Sweep Motion Search')
+            self._publish_nav('WAIT FOR THREE CONSECUTIVE CONFIRMATION')
+        if triggered:
+            self._confirm_flow(det)
+
+    def _publish_pending(self, label):
+        """Task 9: PENDING status with detection details when fresh.
+
+        Looks the label up in the latest /object_detections_body snapshot.
+        Fresh (<= DETECTION_FRESH_S) -> "PENDING <label> at x=+.. y=+..
+        z=.. (d=.. m)" on /navigate_status (d = PLANAR hypot(x, y), per
+        researcher §9) plus a CONFIRM?-style box in the log.  Absent or
+        stale (event-driven projector ghost) -> plain "PENDING <label>"
+        with a "(no fresh detection)" note — never a fabricated position.
+        """
+        with self._det_lock:
+            det = self._latest_detections.get(label)
+        if det is not None and time.time() - det.get('_t', 0.0) <= DETECTION_FRESH_S:
+            x, y, z = det.get('x', 0.0), det.get('y', 0.0), det.get('z', 0.0)
+            d = math.hypot(x, y)   # planar, not 3D
+            self._publish_nav(
+                f'PENDING {label} at x={x:+.3f} y={y:+.3f} z={z:+.3f} '
+                f'(d={d:.2f} m)')
+            self.get_logger().info(
+                '\n'
+                f'  ╔══════════════════════════════════╗\n'
+                f'  ║       PENDING TARGET CHECK        ║\n'
+                f'  ╠══════════════════════════════════╣\n'
+                f'  ║  Target: "{label}"\n'
+                f'  ║  Torso frame:\n'
+                f'  ║    x (lateral): {x:+.3f} m '
+                f'({"right" if x > 0 else "left"})\n'
+                f'  ║    y (forward): {y:+.3f} m\n'
+                f'  ║    z (height):  {z:+.3f} m '
+                f'{"(above)" if z > 0 else "(below)"} torso\n'
+                f'  ║  Planar dist:  {d:.3f} m\n'
+                f'  ║  Conf:         {det.get("conf", 0.0):.2f}\n'
+                f'  ╠══════════════════════════════════╣\n'
+                f'  ║  Send "confirm" to /navigate_target\n'
+                f'  ╚══════════════════════════════════╝')
+        else:
+            self._publish_nav(f'PENDING {label} (no fresh detection)')
+            self._log(f'{label}: no fresh detection on '
+                      f'/object_detections_body (absent or stale > '
+                      f'{DETECTION_FRESH_S:.0f}s — event-driven projector) — '
+                      f'navigating without position info')
+
+    # ── finishing the gate + approach trigger ───────────────────────────
+    def _confirm_flow(self, det):
+        """3rd consecutive beat: table first, THEN the automatic trigger.
+
+        Publishes the 7-status status 5 text and the CONFIRM-style
+        target-check table (label, torso x/y/z, planar d = hypot(x, y),
+        conf, trigger note) on /navigate_status + a box in the log, then
+        sends the approach trigger with NO operator step in between —
+        the user's directive: walking starts only after the table, and the
+        whole search-and-approach is autonomous after the single confirm.
+        """
+        with self._nav_lock:
+            if self._flow not in ('sweeping', 'detecting'):
+                return                      # stop/abort snuck in
+            self._flow = 'confirmed'
+            label = self._active_label
+            if label is None:
+                return
+        x = det.get('x', 0.0)
+        y = det.get('y', 0.0)
+        z = det.get('z', 0.0)
+        d = math.hypot(x, y)                # planar, not 3D
+        conf = det.get('conf', 0.0)
+        side = 'right' if x > 0 else 'left'
+        self._publish_nav('Three Confirmation Received, outputting the '
+                          'target check table')
+        table = (
+            f'  Target: "{label}"\n'
+            f'  Torso frame:\n'
+            f'    x (lateral): {x:+.3f} m ({side})\n'
+            f'    y (forward): {y:+.3f} m\n'
+            f'    z (height):  {z:+.3f} m '
+            f'{"(above)" if z > 0 else "(below)"} torso\n'
+            f'  Planar dist:  {d:.3f} m\n'
+            f'  Conf:         {conf:.2f}\n'
+            f'  Trigger: approach sent autonomously on {WALK_GO_TOPIC} — '
+            f'no confirm step')
+        self._publish_nav(table)
+        self.get_logger().info(
+            '\n'
+            f'  ╔══════════════════════════════════╗\n'
+            f'  ║    TARGET CHECK — 3 consecutive  ║\n'
+            f'  ║         confirmations            ║\n'
+            f'  ╠══════════════════════════════════╣\n'
+            f'  ║  Target: "{label}"\n'
+            f'  ║  Torso frame:\n'
+            f'  ║    x (lateral): {x:+.3f} m ({side})\n'
+            f'  ║    y (forward): {y:+.3f} m\n'
+            f'  ║    z (height):  {z:+.3f} m\n'
+            f'  ║  Planar dist:  {d:.3f} m\n'
+            f'  ║  Conf:         {conf:.2f}\n'
+            f'  ║  -> APPROACH TRIGGER SENT\n'
+            f'  ║     ({WALK_GO_TOPIC}), fully autonomous\n'
+            f'  ╚══════════════════════════════════╝')
+        self._send_approach_trigger(label)
+
+    def _send_approach_trigger(self, label):
+        """Approach trigger: /walk_go ONLY (reviewer F1, 2026-08-18).
+
+        The walknode session's walk_node subscribes /walk_go (String label,
+        GO_STALE_S=5.0 freshness) and consumes it on the next hold tick
+        (~1 s after this publish — well inside the freshness bound).  The
+        /walk_target leg of the original dual-topic design is DELIBERATELY
+        dropped: walk_node treats ANY /walk_target replay as a RETARGET —
+        the retarget check precedes /walk_go consumption in the same hold
+        tick — so a paired replay would force a perpetual re-sweep and the
+        /walk_go would never be consumed.  /walk_target is only ever used
+        for the sweep start (confirm) and the re-sweep (DETECTION LOST
+        re-send), NEVER as the approach trigger.  Only called from
+        _confirm_flow(), i.e. ONLY after the table has been published.
+        """
+        self._walk_go_pub.publish(String(data=label))
+        self._log(f'approach trigger sent for {label!r} on {WALK_GO_TOPIC}')
+
