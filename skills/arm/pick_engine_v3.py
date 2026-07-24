@@ -8932,3 +8932,5 @@ class _ScRefusal(object):
         self.wp = wp         # waypoint whose commanded move tripped the rule
         # side of the torso midline the target sits on (torso +x = right)
         self.side = 'left' if self.x < 0.0 else 'right'
+
+
