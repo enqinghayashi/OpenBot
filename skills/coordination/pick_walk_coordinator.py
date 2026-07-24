@@ -541,3 +541,138 @@ class PickWalkCoordinator(Node):
         self._walk_go_pub.publish(String(data=label))
         self._log(f'approach trigger sent for {label!r} on {WALK_GO_TOPIC}')
 
+    def _on_pick_state(self, msg):
+        try:
+            data = json.loads(msg.data)
+        except Exception:
+            self._log(f'bad /pick_state: {msg.data!r}')
+            return
+        with self._pick_lock:
+            self._pick_state = data
+            self._pick_state_ts = time.time()
+
+    def _on_pick_status(self, msg):
+        with self._pick_lock:
+            self._pick_status = msg.data
+            self._pick_status_ts = time.time()
+
+    def _on_walk_status(self, msg):
+        try:
+            data = json.loads(msg.data)
+        except Exception:
+            data = {'state': msg.data}
+        with self._pick_lock:
+            self._walk_state = data
+            self._walk_state_ts = time.time()
+
+        # echo APPROACHING
+        # every ~5 s
+        # (APPROACH_HEARTBEAT_S)
+        # dedupe >= 0.02 m
+        # > 10 s = 2 missed
+        # navigating only
+        state = data.get('state')
+        try:
+            d = float(data['detail']['distance_m'])
+        except Exception:
+            d = None
+        publish_searching = False
+        publish_approach = False
+        search_label = None
+        with self._nav_lock:
+            # NOT_FOUND latch
+            # same lock as watch
+            # keyed by frame label
+            # IDLE has no label
+            if state == 'NOT_FOUND':
+                self._walk_not_found_label = data.get('label')
+                self._walk_not_found_ts = time.time()
+            # SEARCHING echo
+            # deduped on transitions
+            # re-entry -> fires again
+            if (state == 'SEARCHING' and self._flow != 'idle'
+                    and self._active_label is not None
+                    and self._last_walk_state != 'SEARCHING'):
+                publish_searching = True
+                search_label = self._active_label
+            self._last_walk_state = state
+
+            # heartbeat echo, above
+            if not (self._navigating and state == 'APPROACHING'
+                    and d is not None):
+                self._last_approach_d = None
+            else:
+                last = self._last_approach_d
+                if last is None or abs(d - last) >= APPROACH_DEDUPE_M:
+                    self._last_approach_d = d
+                    publish_approach = True
+        if publish_searching:
+            self._publish_nav(f'SEARCHING {search_label}')
+        if publish_approach:
+            self._publish_nav(f'APPROACHING d={d:.2f} m')
+
+    # ── the pick gate ─────────────────────────────────────────────────────
+    def _walk_phase(self):
+        """Latest /walk_status phase ('SEARCHING'/'APPROACHING'/'REACHED'/
+        'IDLE'/...) or None before the first status arrives."""
+        with self._pick_lock:
+            st = self._walk_state
+        if not st:
+            return None
+        return st.get('state')
+
+    def _pick_gate_ok(self):
+        """True if we may forward the label; publishes ERROR otherwise."""
+        now = time.time()
+        with self._pick_lock:
+            st_ts = self._pick_state_ts
+            st = self._pick_state
+            st_txt_ts = self._pick_status_ts
+            st_txt = self._pick_status
+
+        # primary: /pick_state
+        # no daemon_alive check
+        # live arm_sdk writer -> 801
+        # dead daemon is REQUIRED
+        # 'idle'+dead = default
+        # 'holding'+dead passes
+        # refuse 'busy'/stale only
+        if st is not None:
+            if now - st_ts > PICK_STATE_STALE_S:
+                self._publish_nav(f'ERROR: /pick_state stale '
+                                  f'({now - st_ts:.1f}s > '
+                                  f'{PICK_STATE_STALE_S}s)')
+                return False
+            state = st.get('state')
+            if state not in GATE_STATES:
+                self._publish_nav(
+                    f'ERROR: pick state "{state}" not in '
+                    f'{GATE_STATES}')
+                return False
+            return True
+
+        # fallback: /pick_status
+        # no state -> UNKNOWN, WARN
+        if st_txt is not None:
+            if now - st_txt_ts > PICK_STATE_STALE_S:
+                self._publish_nav(f'ERROR: /pick_status stale '
+                                  f'({now - st_txt_ts:.1f}s)')
+                return False
+            if st_txt.startswith('ERROR'):
+                self._publish_nav(f'ERROR: pick_status says: {st_txt}')
+                return False
+            # recent 'hold OK' etc
+            # -> alive, not mid-error
+            # but say UNKNOWN out loud
+            self._publish_nav(
+                'WARNING: /pick_state never arrived — pick state UNKNOWN; '
+                'using /pick_status fallback')
+            self._log(f'using /pick_status fallback: {st_txt!r}')
+            return True
+
+        # neither topic ever arrived
+        self._publish_nav('ERROR: no /pick_state and no /pick_status '
+                          'yet — is pick_node up?')
+        return False
+
+    # ── the walk watchdog ─────────────────────────────────────────────────
