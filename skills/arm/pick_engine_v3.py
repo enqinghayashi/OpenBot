@@ -8997,3 +8997,19 @@ def _sc_live_verdict(rec, rep, wp):
               f'{wp}; safe exit.')
 
 
+def _sc_live_check(arm, sol_q, stage, verb, x, y):
+    """LIVE guard on an already-solved, idle-arm-pinned pose (wp4: sol_q after
+    freeze_idle_arm; h-wp3: each descent pass's _s): the move from the
+    MEASURED q to sol_q.  Returns a _ScRefusal -- the caller writes the ONE
+    reply, sets _reply_sent and leaves the attempt loop to the failure block
+    -- or None (pass / off / unavailable)."""
+    if not _sc_ready():
+        return None
+    try:
+        q_from = np.array(arm.get_current_dual_arm_q(), dtype=np.float64)
+    except Exception as _e:
+        _sc_unavailable(_e)
+        return None
+    rec, rep = _sc_check(q_from, sol_q, verb, x, y, stage, stage)
+    _sc_live_verdict(rec, rep, stage)
+    return rec
