@@ -159,3 +159,23 @@ class ArrivalRelay(Node):
             self._cleanup()
         except Exception:
             pass
+
+
+def main():
+    rclpy.init()
+    node = None
+    try:
+        node = ArrivalRelay()
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if node is not None:
+            node._cleanup()
+            node.destroy_node()
+        rclpy.shutdown()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
