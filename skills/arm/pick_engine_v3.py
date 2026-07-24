@@ -8969,3 +8969,16 @@ def _sc_terms(rep):
             f"torso_diag={rep['torso_gross_m']:+.3f}")
 
 
+def _sc_check(q_from, q_to, verb, x, y, stage, wp):
+    """self_collision.report() on ONE commanded move q_from -> q_to.
+    Returns (_ScRefusal or None, report or None).  Never raises: a raising
+    check is 'unavailable', never a refusal."""
+    try:
+        rep = _sc_mod.report(np.array(q_from, dtype=np.float64),
+                             np.array(q_to, dtype=np.float64))
+        if not rep['refuse']:
+            return None, rep
+        return _ScRefusal(verb, x, y, rep, stage, wp), rep
+    except Exception as _e:
+        _sc_unavailable(_e)
+        return None, None
