@@ -8916,3 +8916,6 @@ def _sc_banner():
         _sc_unavailable(_e)
 
 
+class _ScRefusal(object):
+    """One self-collision refusal: the ERROR line's fields."""
+
