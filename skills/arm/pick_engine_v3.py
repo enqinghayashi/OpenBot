@@ -9061,3 +9061,12 @@ def _sc_live_presolve(arm, arm_ik, target, stage, verb, x, y, raw=False,
     return rec
 
 
+def _sc_ik_snapshot(arm_ik):
+    """The solver state a precheck's solves touch: the smoothing filter's queue
+    and last output, and the warm start.  None when not introspectable."""
+    try:
+        f = arm_ik.smooth_filter
+        return (list(f._data_queue), np.array(f._filtered_data).copy(),
+                np.array(arm_ik.init_data).copy())
+    except Exception:
+        return None
