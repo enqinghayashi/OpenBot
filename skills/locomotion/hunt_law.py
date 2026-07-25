@@ -95,3 +95,103 @@ INSTABILITY_MIN_DT_S = 0.15   # skip repeat reads
 INSTABILITY_STRIKES  = 3      # 3 strikes = refuse
 
 
+def _wrap_pi(a):
+    """Wrap an angle to (-pi, pi]."""
+    return (a + math.pi) % (2.0 * math.pi) - math.pi
+
+
+# ── walking to ONE named object ──────────────────────────────
+# label[#iid][@hue]
+# iid 1+, hue 0..359
+# top conf per label
+# left one of two cups unaimable; ids
+# 139->168->182; hue
+# re-finds it.  We adopt the new id.
+
+#: hue tol, deg
+#: same colour
+INSTANCE_HUE_TOL_DEG = 25.0
+#: no hue
+#: nearest 0.30 m
+#: from last row
+INSTANCE_NEAR_M = 0.30
+
+
+def parse_target(s):
+    """'<label>[#<iid>][@<hue>]' -> (label, iid|None, hue|None).  Never raises.
+
+    Anything that does not fit the grammar exactly (empty label, iid < 1,
+    hue > 359, a second '#'/'@', signs, spaces inside a number) returns the
+    WHOLE stripped string as a bare label, which then behaves as before B8.
+    """
+    s = '' if s is None else str(s).strip()
+    head, sep, hue_s = s.partition('@')
+    label, sep2, iid_s = head.partition('#')
+    label = label.strip()
+    ok = bool(label) and (sep or sep2)
+    if sep and not (hue_s.isdigit() and hue_s.isascii() and int(hue_s) <= 359):
+        ok = False
+    if sep2 and not (iid_s.isdigit() and iid_s.isascii() and int(iid_s) >= 1):
+        ok = False
+    if not ok:
+        return (s, None, None)
+    return (label, int(iid_s) if sep2 else None, int(hue_s) if sep else None)
+
+
+def hue_gap(a, b):
+    """Circular distance in degrees between two hues; None if either is unusable."""
+    try:
+        a, b = float(a), float(b)
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(a) and math.isfinite(b)):
+        return None
+    d = abs(a % 360.0 - b % 360.0)
+    return min(d, 360.0 - d)
+
+
+def select_instance(rows, iid, hue, last_xy):
+    """(row|None, 'iid'|'hue'|'near'|'lost') among same-label rows of ONE message.
+
+      1. the row whose instance_id == iid                              'iid'
+      2. hue known: rows within INSTANCE_HUE_TOL_DEG of it - nearest to
+         last_xy if known, else the highest conf                        'hue'
+      3. hue UNKNOWN and last_xy known: nearest row within INSTANCE_NEAR_M  'near'
+      4. otherwise (None, 'lost') - NEVER another object of the class.
+    The caller adopts the chosen row's instance_id after a 'hue'/'near' match.
+    """
+    def _xy(r):
+        try:
+            x, y = float(r['x']), float(r['y'])
+        except (KeyError, TypeError, ValueError):
+            return None
+        return (x, y) if math.isfinite(x) and math.isfinite(y) else None
+
+    def _dist(r):
+        p = _xy(r)
+        if p is None or last_xy is None:
+            return float('inf')
+        return math.hypot(p[0] - last_xy[0], p[1] - last_xy[1])
+
+    rows = [r for r in (rows or []) if isinstance(r, dict) and _xy(r) is not None]
+    if iid is not None:
+        for r in rows:
+            v = r.get('instance_id')
+            if isinstance(v, int) and not isinstance(v, bool) and v == iid:
+                return r, 'iid'
+    if hue is not None:
+        same = []
+        for r in rows:
+            g = hue_gap(hue, r.get('hue'))
+            if g is not None and g <= INSTANCE_HUE_TOL_DEG:
+                same.append(r)
+        if same:
+            if last_xy is not None:
+                return min(same, key=_dist), 'hue'
+            return max(same, key=lambda r: r.get('conf', 0) or 0), 'hue'
+        return None, 'lost'
+    if last_xy is not None and rows:
+        best = min(rows, key=_dist)
+        if _dist(best) <= INSTANCE_NEAR_M:
+            return best, 'near'
+    return None, 'lost'
