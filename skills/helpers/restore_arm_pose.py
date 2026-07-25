@@ -82,3 +82,67 @@ def check_fsm():
                f'(fsm_mode=0) BEFORE R2+A')
     print(f'restore_arm_pose: fsm_id={fsm_id} (not 801) + fsm_mode=0 OK '
           f'(NON-801, safe to write)')
+
+
+def load_handoff():
+    """Load the recorded dual-arm q; refuse if missing or malformed."""
+    try:
+        with open(HANDOFF_JSON, 'r') as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        refuse(f'{HANDOFF_JSON} missing — no recorded posture (daemon quit '
+               f'never ran, or pick_node stale-clear wiped it). Manual '
+               f'posture setup instead.')
+    except Exception as e:
+        refuse(f'{HANDOFF_JSON} unreadable ({e})')
+    left = data.get('left')
+    right = data.get('right')
+    if (not isinstance(left, list) or not isinstance(right, list)
+            or len(left) != 7 or len(right) != 7):
+        refuse(f'{HANDOFF_JSON} malformed (expected left[7] + right[7], '
+               f'got left={type(left).__name__} right={type(right).__name__})')
+    return np.concatenate([np.array(left, dtype=np.float64),
+                           np.array(right, dtype=np.float64)])
+
+
+def move_arm_smooth(arm, target_q):
+    """Cosine positional ramp — verbatim replication of the daemon's
+    move_arm_smooth (MOVE_SPEED=0.3, MOVE_HZ=50, r = 0.5-0.5*cos(pi*i/steps),
+    final ctrl_dual_arm re-assert)."""
+    start_q = arm.get_current_dual_arm_q().copy()
+    max_delta = float(np.max(np.abs(target_q - start_q)))
+    duration = max(1.5, max_delta / MOVE_SPEED)
+    steps = max(1, int(duration * MOVE_HZ))
+    dt = duration / steps
+
+    print(f'restore_arm_pose: max_delta={max_delta:.3f} rad, '
+          f'duration={duration:.1f}s, steps={steps}')
+    for i in range(1, steps + 1):
+        r = 0.5 - 0.5 * np.cos(np.pi * i / steps)
+        arm.ctrl_dual_arm(start_q + r * (target_q - start_q), np.zeros(14))
+        time.sleep(dt)
+    arm.ctrl_dual_arm(target_q, np.zeros(14))
+    print(f'restore_arm_pose: restored to recorded posture '
+          f'(ts={target_q.tolist()[:7]!r}…)')
+
+
+def main():
+    target_q = load_handoff()
+    check_fsm()  # before ANY arm_sdk writer exists
+
+    from unitree_sdk2py.core.channel import ChannelFactoryInitialize
+    ChannelFactoryInitialize(0, IFACE)
+    from upper_arm_controller import G1_29_ArmControllerUpperOnly
+    arm = G1_29_ArmControllerUpperOnly(motion_mode=True,
+                                       simulation_mode=False)
+    try:
+        move_arm_smooth(arm, target_q)
+    except Exception as e:
+        print(f'restore_arm_pose: ERROR during move: {e}')
+        sys.exit(1)
+    print('restore_arm_pose: DONE')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
