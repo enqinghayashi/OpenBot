@@ -515,3 +515,7 @@ class PickNode(Node):
             if held is not None:
                 self._pick_held = held
 
+    def _pick_state_snapshot(self):
+        with self._pick_state_lock:
+            return (self._pick_state, self._pick_label, self._pick_held)
+
