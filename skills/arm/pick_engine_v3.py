@@ -9072,3 +9072,16 @@ def _sc_ik_snapshot(arm_ik):
         return None
 
 
+def _sc_ik_restore(arm_ik, snap):
+    """Put the solver state back, so a precheck leaves NO side effect on the
+    flow's own IK (the place flow never clears the filter itself)."""
+    if snap is None:
+        return
+    try:
+        f = arm_ik.smooth_filter
+        f._data_queue[:] = snap[0]
+        f._filtered_data = snap[1]
+        arm_ik.init_data = snap[2]
+    except Exception as _e:
+        _safe_log(f'[pick_daemon] sc-precheck: solver state restore failed '
+                  f'({_e!r})')
