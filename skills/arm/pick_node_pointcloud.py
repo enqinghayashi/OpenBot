@@ -565,3 +565,66 @@ class PickNode(Node):
             target=self._run_arm_command, args=(cmd,),
             daemon=True).start()
 
+    def _run_arm_command(self, cmd: str):
+        self._busy = True
+        if cmd == 'spawn_daemon':
+            # spawn on demand, guarded:
+            # only if dead. Reuses
+            # _start_daemon (READY poll
+            # included). ERROR, not DONE,
+            # on timeout or startup death;
+            # a false DONE is how the
+            # corrupted-transfer crash hid
+            # until runtime
+            # stderr tail → log
+            if (self._daemon_proc is None
+                    or self._daemon_proc.poll() is not None):
+                self.get_logger().info(
+                    'spawn_daemon: starting pick daemon '
+                    '(loading pinocchio ~10s)...')
+                if self._start_daemon():
+                    self.get_logger().info('spawn_daemon: DONE')
+                    response = 'DONE'
+                else:
+                    response = ('ERROR:daemon crashed at startup — '
+                                'see pick.log')
+            else:
+                self.get_logger().warn(
+                    'spawn_daemon: daemon already running — refusing')
+                response = 'ERROR:daemon already running'
+        else:
+            response = self._send_cmd(cmd)
+        if response.startswith('DONE'):
+            # 'list': sequences
+            if response.startswith('DONE:'):
+                payload = response[5:]
+                self.get_logger().info(f'Available sequences: {payload}')
+                self._publish_status(f'sequences: {payload}')
+            else:
+                self.get_logger().info(f'Command "{cmd}" done.')
+                self._publish_status(f'{cmd} OK')
+            # ── /pick_state on direct commands ────────────────────────
+            base = cmd.split()[0]
+            if base in ('hold', 'acquire'):
+                # arms under daemon
+                self._set_pick_state('holding')
+            elif base == 'release':
+                # gate 0, walk safe
+                self._set_pick_state('idle')
+            elif base == 'drop':
+                # drop done: hand open, payload off, NEUTRAL
+                self._set_pick_state('idle', held=False)
+            elif base in ('open', 'open_left', 'open_right', 'open_both'):
+                # hand empty
+                self._set_pick_state('idle', held=False)
+        else:
+            self.get_logger().error(f'Command "{cmd}" failed: {response}')
+            # 'ERROR:' prefix
+            # (e.g. 'ERROR:daemon crashed')
+            # strip it or it doubles
+            shown = (response[6:].lstrip()
+                     if response.startswith('ERROR:') else response)
+            self._publish_status(f'ERROR: {shown}')
+            self._set_pick_state('error')
+        self._busy = False
+
