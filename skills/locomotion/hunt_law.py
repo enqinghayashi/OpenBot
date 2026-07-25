@@ -195,3 +195,33 @@ def select_instance(rows, iid, hue, last_xy):
         if _dist(best) <= INSTANCE_NEAR_M:
             return best, 'near'
     return None, 'lost'
+
+
+class HuntBudget(object):
+    """G6/G15 proof counters for one hunt epoch (per position; Phase 1 = 1).
+
+    exhausted() == (round complete) or (stall budget spent). The proof dict
+    is exactly what the FSM publishes in the NOT_FOUND status detail and
+    what the Phase-2 verifier evidence gate checks against the constants.
+    """
+
+    def __init__(self, turns_per_round=SWEEP_TURNS_PER_ROUND,
+                 stall_budget=STALL_BUDGET_PER_ROUND):
+        self._turns_per_round = turns_per_round
+        self._stall_budget = stall_budget
+        self.reset()
+
+    def reset(self):
+        self._turns = 0
+        self._windows = 0
+        self._stalls = 0
+        self._stall_reasons = {}
+
+    @property
+    def turns(self):
+        return self._turns
+
+    @property
+    def windows(self):
+        return self._windows
+
