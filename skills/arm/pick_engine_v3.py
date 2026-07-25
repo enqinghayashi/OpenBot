@@ -9070,3 +9070,5 @@ def _sc_ik_snapshot(arm_ik):
                 np.array(arm_ik.init_data).copy())
     except Exception:
         return None
+
+
