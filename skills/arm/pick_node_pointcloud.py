@@ -383,3 +383,38 @@ class PickNode(Node):
         except Exception:
             pass
 
+    def _send_cmd(self, cmd: str, timeout: float = 30.0) -> str:
+        with self._daemon_lock:
+            # dead daemon: skip wait;
+            # a stale _busy=True would
+            # lock later commands out
+            if self._daemon_proc is None or self._daemon_proc.poll() is not None:
+                self._busy = False
+                return 'ERROR:daemon not running'
+            try:
+                self._daemon_proc.stdin.write(cmd + '\n')
+                self._daemon_proc.stdin.flush()
+
+                deadline = time.time() + timeout
+                while time.time() < deadline:
+                    line = self._daemon_proc.stdout.readline()
+                    if not line:
+                        # '' = daemon dead
+                        if self._daemon_proc.poll() is not None:
+                            self._busy = False
+                            return 'ERROR:daemon died'
+                        continue
+                    line = line.strip()
+                    if line.startswith('DONE') or line.startswith('ERROR:'):
+                        return line
+                    self.get_logger().warn(
+                        f'Daemon stray output (skipped): "{line}"')
+                return 'ERROR:timeout waiting for daemon response'
+            except BrokenPipeError:
+                self._busy = False
+                return 'ERROR:daemon pipe broken'
+            except Exception as e:
+                return f'ERROR:{e}'
+
+    # ── What ROS calls us with ──────────────────────────────────────────────────
+
