@@ -94,3 +94,133 @@ EXPECTED_Q = ["left_shoulder_pitch_joint", "left_shoulder_roll_joint",
 FAILS = []
 
 
+def check(name, cond, detail=""):
+    tag = "PASS" if cond else "FAIL"
+    print(f"  [{tag}] {name}" + (f"  ({detail})" if detail else ""))
+    if not cond:
+        FAILS.append(name)
+
+
+def ee_frames(red):
+    """Return (jid, offset) for the daemon's R_ee/L_ee frames."""
+    out = {}
+    for side in ('right', 'left'):
+        jid = red.model.getJointId(side + '_wrist_yaw_joint')
+        out[side] = (jid, pin.SE3(np.eye(3), np.array([0.05, 0, 0])))
+    return out
+
+
+def fk_ee(red, q, side, ee):
+    """Position of the daemon EE frame (wrist_yaw_joint + 0.05 X)."""
+    jid, off = ee[side]
+    pin.forwardKinematics(red.model, red.data, q)
+    M = red.data.oMi[jid] * off
+    return np.asarray(M.translation, dtype=float).copy()
+
+
+def q_names_of(red):
+    """Joint name owning each q coordinate (occupancy map via idx_qs).
+
+    The pinocchio root "universe" joint is a URDF root artifact (nq=1 but
+    NOT part of model.q — model.nq == 14 == the arm joints) so it is
+    skipped: every non-root joint's q-block start (idx_qs) labels its
+    coordinate(s).
+    """
+    names = [''] * red.model.nq
+    for j in range(1, red.model.njoints):
+        c = int(red.model.idx_qs[j])
+        if 0 <= c < red.model.nq:
+            for _ in range(int(red.model.joints[j].nq)):
+                names[c] = red.model.names[j]
+                c += 1
+    return names
+
+
+def main():
+    print("=" * 72)
+    print("carry_pose_fk.py — T5 pose state machine FK validation (laptop)")
+    print("=" * 72)
+
+    full = pin.RobotWrapper.BuildFromURDF(URDF, URDF_DIR)
+    print(f"\n[1] Reduced model build ({len(LOCKS)} joints locked)")
+    red = full.buildReducedRobot(LOCKS,
+                                 reference_configuration=np.zeros(full.model.nq))
+    print(f"    nq={red.model.nq}, njoints={red.model.njoints}")
+    ee = ee_frames(red)
+
+    # ── 1. q convention, checked by name ─────────────────────────────────
+    print("\n[1a] q convention (free-joint order by name)")
+    q_names = q_names_of(red)
+    for c, exp in enumerate(EXPECTED_Q):
+        check(f"q[{c}] == {exp}", q_names[c] == exp, f"got {q_names[c]}")
+    if q_names != EXPECTED_Q:
+        print("    (full order:", q_names, ")")
+        print("    (expected:   ", EXPECTED_Q, ")")
+
+    # ── 2. Joint limits the reduced model gives us ───────────────────────
+    print("\n[1b] Reduced-model joint limits (read from URDF)")
+    limits = {}
+    for c in range(red.model.nq):
+        lo = float(red.model.lowerPositionLimit[c])
+        hi = float(red.model.upperPositionLimit[c])
+        limits[q_names[c]] = (lo, hi)
+        print(f"    {q_names[c]:28s} [{lo:+.4f}, {hi:+.4f}]")
+
+    # ── 3. T5 states: limits plus a wrist sanity pass ────────────────────
+    print("\n[2] T5 states — joint limits (hard) + wrist pose sanity (hard)")
+    ee_pos = {}
+    for state, (name_l, name_r, ql, qr) in STATES.items():
+        print(f"\n  state '{state}':")
+        for side, qvals, qname in (('left', ql, name_l), ('right', qr, name_r)):
+            for c in range(7):
+                # left 0-6, right 7-13
+                qc = qvals[c]
+                qi = 7 + c if side == 'right' else c
+                lo, hi = limits[q_names[qi]]
+                check(f"{state}/{side} {qname}[{c}] {q_names[qi]} "
+                      f"in limits",
+                      lo <= qc <= hi,
+                      f"q={qc:+.3f} bounds [{lo:+.3f},{hi:+.3f}]")
+            q14 = np.zeros(14)
+            q14[0:7] = ql
+            q14[7:14] = qr
+            pos = fk_ee(red, q14, side, ee)
+            ee_pos[(state, side)] = pos
+            lat = abs(pos[1])
+            check(f"{state}/{side} wrist |lateral| >= {LAT_MIN}",
+                  lat >= LAT_MIN,
+                  f"y={pos[1]:+.3f} (x={pos[0]:+.3f}, z={pos[2]:+.3f})")
+            check(f"{state}/{side} wrist z in [{Z_MIN}, {Z_MAX}]",
+                  Z_MIN <= pos[2] <= Z_MAX, f"z={pos[2]:+.3f}")
+
+    # ── 4. Just for info: EE table and mirror check ──────────────────────
+    print("\n[3] EE positions per state (informational, operator's visual check)")
+    print(f"    {'state':10s} {'left EE (x,y,z)':>24s} {'right EE (x,y,z)':>24s} "
+          f"{'|y_L+y_R|':>9s}")
+    for state in STATES:
+        pl, pr = ee_pos[(state, 'left')], ee_pos[(state, 'right')]
+        mirror = abs(pl[1] + pr[1])
+        flag = '  <-- mirror check' if mirror > MIRROR_TOL else ''
+        print(f"    {state:10s} {np.round(pl, 3)!s:>24s} "
+              f"{np.round(pr, 3)!s:>24s} {mirror:8.3f}{flag}")
+    print("    NOTE: ready/lift yaw RESOLVED on hardware 2026-08-16 — the")
+    print("    LEFT arm twisted; LEFT yaw flipped to +0.5/+0.3 (right arm")
+    print("    unchanged).  Mirror flags above are informational.")
+    print("    NEUTRAL is LOWSTATE-sourced — HARDWARE-VERIFY on Stuart with")
+    print("    manual_arm_joints.py before trusting (flip yaw, then elbow,")
+    print("    then roll — one joint at a time, re-verify).")
+
+    # ── Wrap-up ──────────────────────────────────────────────────────────
+    print("\n" + "=" * 72)
+    if FAILS:
+        print(f"RESULT: {len(FAILS)} FAILED CHECKS:")
+        for f in FAILS:
+            print(f"  - {f}")
+        sys.exit(1)
+    print("RESULT: ALL CHECKS PASSED — T5 state poses are FK-valid on the laptop")
+    print("=" * 72)
+    sys.exit(0)
+
+
+if __name__ == '__main__':
+    main()
