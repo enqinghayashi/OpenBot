@@ -418,3 +418,49 @@ class PickNode(Node):
 
     # ── What ROS calls us with ──────────────────────────────────────────────────
 
+    def _on_detections(self, msg):
+        try:
+            detections = json.loads(msg.data)
+            _now = time.time()
+            self._latest_detections = {
+                d['label']: {**d, '_t': _now} for d in detections
+                if d.get('conf', 0) >= MIN_CONF
+            }
+
+            # ── refresh tracking off best detection ────────────────────────
+            if detections:
+                best = max(detections, key=lambda d: d.get('conf', 0))
+                conf = best.get('conf', 0)
+                if conf >= LOST_CONF_THRESHOLD:
+                    self._prev_tx = best.get('x')
+                    self._prev_ty = best.get('y')
+                    self._prev_tz = best.get('z')
+                    self._tracking_label = best.get('label')
+                    self._last_detection_time = time.time()
+
+                    # for "shifted"
+                    _det_data = {
+                        'label': self._tracking_label,
+                        'x': self._prev_tx,
+                        'y': self._prev_ty,
+                        'z': self._prev_tz,
+                        'conf': conf,
+                    }
+                    if 'orientation' in best:
+                        _det_data['orientation'] = best['orientation']
+                    if 'nx' in best:
+                        _det_data['nx'] = best['nx']
+                        _det_data['ny'] = best['ny']
+                        _det_data['nz'] = best['nz']
+                    if 'height_m' in best:
+                        _det_data['height_m'] = best['height_m']
+                    if 'x_off' in best:
+                        _det_data['x_off'] = best['x_off']
+                    try:
+                        with open(DETECTION_FILE, 'w') as f:
+                            json.dump(_det_data, f)
+                    except Exception:
+                        pass
+        except Exception as e:
+            self.get_logger().warn(f'Bad detection msg: {e}')
+
