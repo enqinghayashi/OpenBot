@@ -163,3 +163,5 @@ def is_reachable(x, y, z):
     if not (-0.35 <= z <= 0.45):
         return False
     return True
+
+
