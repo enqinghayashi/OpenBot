@@ -154,3 +154,12 @@ DIRECT_COMMANDS = {
 }
 
 
+def is_reachable(x, y, z):
+    """Return True if target (torso-frame coordinates) is within arm workspace."""
+    if not (0.15 <= y <= 0.65):
+        return False
+    if abs(x) >= 0.45:
+        return False
+    if not (-0.35 <= z <= 0.45):
+        return False
+    return True
