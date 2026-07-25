@@ -9085,3 +9085,5 @@ def _sc_ik_restore(arm_ik, snap):
     except Exception as _e:
         _safe_log(f'[pick_daemon] sc-precheck: solver state restore failed '
                   f'({_e!r})')
+
+
