@@ -9221,3 +9221,13 @@ def _self_collision_precheck(arm, arm_ik, verb, orientation, tx, ty, tz):
                   f'torso/left arm. {verb.capitalize()} REFUSED before any arm '
                   f'motion; {_fix}.')
     return rec
+
+
+# the single startup line, printed at import time: the engine imports this
+# module and calls main(), so a __main__-only line would never print.
+
+_sc_banner()
+
+
+if __name__ == '__main__':
+    main()
