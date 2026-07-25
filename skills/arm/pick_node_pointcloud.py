@@ -519,3 +519,24 @@ class PickNode(Node):
         with self._pick_state_lock:
             return (self._pick_state, self._pick_label, self._pick_held)
 
+    def _write_pick_state(self):
+        """Publish {state, label, held, daemon_alive} JSON at 5 Hz."""
+        while True:
+            try:
+                state, label, held = self._pick_state_snapshot()
+                daemon_alive = (
+                    self._daemon_proc is not None
+                    and self._daemon_proc.poll() is None)
+                payload = json.dumps({
+                    'state': state,
+                    'label': label,
+                    'held': held,
+                    'daemon_alive': daemon_alive,
+                })
+                msg = String()
+                msg.data = payload
+                self._pick_state_pub.publish(msg)
+            except Exception:
+                pass
+            time.sleep(0.2)
+
