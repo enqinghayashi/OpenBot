@@ -540,3 +540,28 @@ class PickNode(Node):
                 pass
             time.sleep(0.2)
 
+    def _on_arm_command(self, msg):
+        """Direct passthrough to daemon — no pick verification needed."""
+        cmd = msg.data.strip()
+        if not cmd:
+            return
+
+        # known or 'play '?
+        base_cmd = cmd.split()[0]
+        if base_cmd not in DIRECT_COMMANDS and not cmd.startswith('play '):
+            self.get_logger().warn(
+                f'Unknown arm_command: "{cmd}". '
+                f'Use /pick_target for pick operations.')
+            return
+
+        if self._busy:
+            self.get_logger().warn(
+                f'Busy with pick, ignoring arm_command: "{cmd}"')
+            return
+
+        self.get_logger().info(f'Arm command: {cmd}')
+        # thread it
+        threading.Thread(
+            target=self._run_arm_command, args=(cmd,),
+            daemon=True).start()
+
