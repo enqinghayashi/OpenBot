@@ -415,3 +415,34 @@ class RealGraspDetector:
 
         return max_p
 
+    def diagnose_palm_sensors(self):
+        """One-shot diagnostic: print all pressure sensor packages and their max values.
+
+        Call this once after daemon init to verify the DDS subscription is live
+        and the dex3_server is publishing hand state data.
+        """
+        import sys as _sys
+        hand_state = self._read_state()
+        if hand_state is None:
+            _sys.stderr.write(
+                f'[RealGraspDetector {self._side}] DIAGNOSE: '
+                f'NO hand state received — is dex3_server running? '
+                f'Topic: rt/dex3/{self._side}/state\n')
+            _sys.stderr.flush()
+            return False
+
+        n_pkgs = len(hand_state.press_sensor_state)
+        n_motors = len(hand_state.motor_state)
+        _sys.stderr.write(
+            f'[RealGraspDetector {self._side}] DIAGNOSE: '
+            f'{n_pkgs} pressure packages, {n_motors} motors\n')
+        for pkg_idx, pkg in enumerate(hand_state.press_sensor_state):
+            max_p = max(pkg.pressure) if pkg.pressure else 0.0
+            active_ch = sum(1 for p in pkg.pressure if p > self._pressure_threshold)
+            _sys.stderr.write(
+                f'[RealGraspDetector {self._side}]   pkg[{pkg_idx}]: '
+                f'max={max_p:.0f}, active_channels={active_ch}/12 '
+                f'(threshold={self._pressure_threshold:.0f})\n')
+        _sys.stderr.flush()
+        return True
+
