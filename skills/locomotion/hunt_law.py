@@ -252,3 +252,53 @@ class HuntBudget(object):
         """G6 (round) or D1-graft (stall budget) -> epoch-exhaust."""
         return self.round_complete or self._stalls >= self._stall_budget
 
+    @property
+    def reason(self):
+        """Exhaustion classifier for the NOT_FOUND detail."""
+        if self.round_complete:
+            return 'round_complete'
+        return 'stall_budget'
+
+    def proof(self):
+        """NOT_FOUND detail — the Phase-2 evidence-gate payload."""
+        return {
+            'reason': self.reason,
+            'rounds': self._turns // self._turns_per_round,
+            'turns': self._turns,
+            'windows': self._windows,
+            'stalls': self._stalls,
+            'stall_reasons': dict(self._stall_reasons),
+            'turns_per_round': self._turns_per_round,
+            'stall_budget': self._stall_budget,
+            'positions_attempted': 1,     # no measurement yet
+            'hop_implemented': False,     # hop on hold
+        }
+
+
+class CorridorHold(object):
+    """G17a corridor-hold clock (2026-09-21, operator decision).
+
+    Tracks ONE unbroken streak of collision freezes.  `frozen(now)` returns
+    ('hold', held_s) while the streak is inside the budget and
+    ('give_up', held_s) once it exceeds it; `clear()` breaks the streak.
+
+    Why a hold at all: a freeze used to spend the epoch's give-up budget
+    immediately, so a person stepping through the corridor abandoned the
+    object.  Holding keeps the target — the coordinator's re-arm re-triggers
+    /walk_go on the next confirming beats, and the approach resumes the moment
+    the corridor clears.
+
+    Why a budget: without one, freeze -> hold -> re-trigger is unbounded, and
+    a permanently blocked corridor (a wall, a chair wedged in front) would
+    spin forever instead of ending the epoch honestly.
+
+    Pure time-function (pass `now` in) so unit tests never sleep.
+    """
+
+    def __init__(self, hold_max_s=COLLISION_HOLD_MAX_S):
+        self._max = hold_max_s
+        self._since = 0.0
+
+    def clear(self):
+        self._since = 0.0
+
