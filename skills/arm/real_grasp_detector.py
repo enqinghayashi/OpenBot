@@ -495,3 +495,21 @@ class RealGraspDetector:
         """
         return self._sub.Read(timeout=0)
 
+    def _compute_torque_support(self, motor_states) -> tuple:
+        """Return (tau_sum, motor_high) from distal joint tau_est.
+
+        tau_sum = sum of abs(tau_est) for joints 2, 4, 6 (distal).
+        motor_high = True when tau_sum > torque_threshold.
+
+        Note: Full Pinocchio finger Jacobian projection from tau_est to
+        vertical fingertip force requires the hand model which is not
+        available in this standalone module.  We use the scaled sum of
+        distal joint torque magnitudes as a proxy for upward support.
+        """
+        tau_sum = 0.0
+        for joint_id in self.DISTAL_JOINT_IDS:
+            if joint_id < len(motor_states):
+                tau_sum += abs(motor_states[joint_id].tau_est)
+        motor_high = tau_sum > self._torque_threshold
+        return tau_sum, motor_high
+
