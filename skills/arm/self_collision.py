@@ -700,3 +700,7 @@ TORSO_GROSS_M = 0.020        # research bar for the dropped torso term (DIAGNOST
 CAPS_R = {'upper': 0.040, 'fore': 0.033, 'wrist': 0.031, 'palm': 0.044, 'finger': 0.013}
 PATH_SAMPLES = 9
 
+def _rpy(r, p, y):
+    cr, sr, cp, sp, cy, sy = np.cos(r), np.sin(r), np.cos(p), np.sin(p), np.cos(y), np.sin(y)
+    Rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]]); Ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]]); Rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
+    return Rz @ Ry @ Rx
