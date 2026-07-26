@@ -335,3 +335,29 @@ class RealGraspDetector:
 
         return False
 
+    def check_palm_and_middle(
+        self, palm_threshold: float = None, middle_threshold: float = None
+    ):
+        """Check palm contact and middle-finger contact in one call.
+
+        Palm contact is checked via :meth:`check_palm_contact` (scans ALL
+        pressure packages — during open-hand insertion only the palm can
+        register contact).  Middle-finger contact uses
+        :meth:`check_middle_finger_contact` (scans only packages 5 + 8).
+
+        Parameters
+        ----------
+        palm_threshold : float, optional
+            Threshold forwarded to ``check_palm_contact``.
+        middle_threshold : float, optional
+            Threshold forwarded to ``check_middle_finger_contact``.
+
+        Returns
+        -------
+        tuple[bool, bool]
+            ``(palm_contact, middle_contact)``.
+        """
+        palm = self.check_palm_contact(pressure_threshold=palm_threshold)
+        middle = self.check_middle_finger_contact(threshold=middle_threshold)
+        return (palm, middle)
+
