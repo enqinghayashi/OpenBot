@@ -849,3 +849,11 @@ class PickNode(Node):
         self._status_pub.publish(msg)
         self.get_logger().info(f'[STATUS] {text}')
 
+    def destroy_node(self):
+        if self._daemon_proc:
+            try:
+                self._send_cmd('home')
+            except Exception:
+                pass
+            self._daemon_proc.terminate()
+        super().destroy_node()
