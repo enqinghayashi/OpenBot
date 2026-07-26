@@ -111,3 +111,42 @@ class RealGraspDetector:
     # We only ever SUM this tuple, so it doesn't matter.
     DISTAL_JOINT_IDS = [2, 4, 6]
 
+    def __init__(
+        self,
+        side: str = "right",
+        object_mass: float = 0.30,
+        torque_threshold: float = 0.05,
+        pressure_threshold: float = 130000,
+        tactile_verify_threshold: float = 100000,
+        finger_pad_threshold: float = 100000,
+        fingertip_threshold: float = 100000,
+        stability_steps: int = 5,
+        dt: float = 0.02,
+    ):
+        self._side = side
+        self._object_mass = object_mass
+        self._object_weight = object_mass * 9.81  # newtons
+        self._torque_threshold = torque_threshold
+        self._pressure_threshold = pressure_threshold             # palm (pkgs 0-2)
+        self._tactile_verify_threshold = tactile_verify_threshold # grasp verify
+        self._finger_pad_threshold = finger_pad_threshold         # pads (pkgs 3-5)
+        self._fingertip_threshold = fingertip_threshold           # tips (pkgs 6-8)
+        self._stability_steps = stability_steps
+        self._dt = dt
+
+        # rt/dex3/{side}/state
+        self._sub = ChannelSubscriber(f"rt/dex3/{side}/state", HandState_)
+        self._sub.Init(handler=None, queueLen=10)
+
+        # good ticks
+        self._stable_counter: int = 0
+
+        # sliding tau window, ~0.2 s at dt=0.02
+        # -> 10 samples
+        self._tau_window: deque = deque(maxlen=max(10, int(0.2 / dt)))
+        self._prev_tau_sum: Optional[float] = None
+
+    # ------------------------------------------------------------------
+    # the public API (what the protocol loop calls)
+    # ------------------------------------------------------------------
+
