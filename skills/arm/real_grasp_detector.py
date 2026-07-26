@@ -488,3 +488,10 @@ class RealGraspDetector:
     # internal helpers - nobody outside should need these
     # ------------------------------------------------------------------
 
+    def _read_state(self) -> Optional[HandState_]:
+        """Non-blocking read of the latest HandState_ from DDS.
+
+        Returns None when no message has arrived yet (channel empty).
+        """
+        return self._sub.Read(timeout=0)
+
