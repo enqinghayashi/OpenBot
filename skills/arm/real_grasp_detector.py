@@ -216,3 +216,67 @@ class RealGraspDetector:
         self._tau_window.clear()
         self._prev_tau_sum = None
 
+    def check_palm_contact(self, pressure_threshold: float = None) -> bool:
+        """Check if the palm is contacting an object (hand open, wrist advancing).
+
+        During insertion the hand is open — fingers are extended and cannot
+        trigger fingertip pressure sensors.  Any pressure reading above
+        threshold therefore indicates PALM contact.
+
+        The Dex3-1 has 3 palm packages × 2×2 array = 12 palm sensors
+        (documented in the Dex3-1 user manual).  This method checks ALL
+        pressure packages — during open-hand insertion, only the palm
+        sensors can register contact.
+
+        Debug output on first call prints sensor layout; every ~50th call
+        prints max pressure so you can verify the DDS subscription is live.
+
+        Returns True if any pressure channel exceeds the threshold.
+        """
+        threshold = pressure_threshold if pressure_threshold is not None else self._pressure_threshold
+        hand_state = self._read_state()
+        if hand_state is None:
+            return False
+
+        max_pressure = 0.0
+        trigger_pkg = -1
+        trigger_ch = -1
+        n_pkgs = 0
+        for pkg in hand_state.press_sensor_state:
+            n_pkgs += 1
+            for ch, p in enumerate(pkg.pressure):
+                if p > max_pressure:
+                    max_pressure = p
+                if p > threshold:
+                    trigger_pkg = pkg_idx = n_pkgs - 1
+                    trigger_ch = ch
+                    # no break: max over all pkgs
+
+        # debug: layout, then max now and then
+        if not hasattr(self, '_palm_debug_count'):
+            self._palm_debug_count = 0
+            import sys as _sys
+            _sys.stderr.write(
+                f'[RealGraspDetector {self._side}] palm sensors: '
+                f'{n_pkgs} pressure packages detected, '
+                f'threshold={threshold:.0f}\n')
+            _sys.stderr.flush()
+        self._palm_debug_count += 1
+        if self._palm_debug_count % 50 == 0:
+            import sys as _sys
+            _sys.stderr.write(
+                f'[RealGraspDetector {self._side}] palm debug #{self._palm_debug_count}: '
+                f'max_pressure={max_pressure:.0f} (threshold={threshold:.0f}), '
+                f'{n_pkgs} pkgs\n')
+            _sys.stderr.flush()
+
+        if trigger_pkg >= 0:
+            import sys as _sys
+            _sys.stderr.write(
+                f'[RealGraspDetector {self._side}] PALM CONTACT DETECTED: '
+                f'pkg={trigger_pkg} ch={trigger_ch} '
+                f'pressure={max_pressure:.0f} > threshold={threshold:.0f}\n')
+            _sys.stderr.flush()
+            return True
+        return False
+
