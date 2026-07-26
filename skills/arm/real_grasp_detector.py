@@ -71,3 +71,9 @@ class GraspState:
     gating_quadrant: str = "grasped_nothing"
     motor_transient_detected: bool = False
     contacts_detail: List[Dict] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# RealGraspDetector - the detector itself
+# ---------------------------------------------------------------------------
+
