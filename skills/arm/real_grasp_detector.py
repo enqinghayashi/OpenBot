@@ -150,3 +150,63 @@ class RealGraspDetector:
     # the public API (what the protocol loop calls)
     # ------------------------------------------------------------------
 
+    def update(self) -> GraspState:
+        """Read latest DDS HandState_ and return grasp metrics.
+
+        Call at ~50 Hz from the main protocol loop.  Non-blocking:
+        returns immediately with the latest state, or a default
+        GraspState if no message is available yet.
+        """
+        hand_state = self._read_state()
+        if hand_state is None:
+            return GraspState()
+
+        motor_states = hand_state.motor_state
+        press_sensor_states = hand_state.press_sensor_state
+
+        # 7 motors or bail
+        if len(motor_states) < 7:
+            return GraspState()
+
+        # 1. motor current
+        tau_sum, motor_high = self._compute_torque_support(motor_states)
+
+        # 2. tactile
+        contact_count, tactile_contact_flag = self._compute_tactile_contact(
+            press_sensor_states)
+
+        # 3. slip spike?
+        transient = self._detect_transient(tau_sum)
+
+        # 4. rest
+        is_grasped = tactile_contact_flag or motor_high
+        support_ratio = (
+            tau_sum / self._object_weight if self._object_weight > 0 else 0.0
+        )
+
+        # 5. 2x2 gate
+        quadrant = self._combined_gating(motor_high, tactile_contact_flag)
+
+        # 6. good run
+        if quadrant in ("solid_grasp", "light_object"):
+            self._stable_counter += 1
+        else:
+            self._stable_counter = 0
+        is_stable = self._stable_counter >= self._stability_steps
+
+        # per-motor detail
+        details = self._build_details(motor_states, press_sensor_states)
+
+        return GraspState(
+            is_grasped=is_grasped,
+            contact_force_total=tau_sum,
+            contact_points=contact_count,
+            support_ratio=support_ratio,
+            is_stable=is_stable,
+            motor_current_high=motor_high,
+            tactile_contact=tactile_contact_flag,
+            gating_quadrant=quadrant,
+            motor_transient_detected=transient,
+            contacts_detail=details,
+        )
+
