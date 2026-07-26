@@ -513,3 +513,21 @@ class RealGraspDetector:
         motor_high = tau_sum > self._torque_threshold
         return tau_sum, motor_high
 
+    def _compute_tactile_contact(self, press_sensor_states) -> tuple:
+        """Return (contact_count, any_contact) from pressure arrays.
+
+        Scans all PressSensorState_ packages, counts channels whose
+        pressure exceeds the threshold.
+
+        Hardware convention (empirically): index 0=thumb pad,
+        1=index pad, 2=middle pad.  Each package has 12 channels.
+        """
+        contact_count = 0
+        any_contact = False
+        for pkg in press_sensor_states:
+            for p in pkg.pressure:
+                if p > self._tactile_verify_threshold:
+                    contact_count += 1
+                    any_contact = True
+        return contact_count, any_contact
+
