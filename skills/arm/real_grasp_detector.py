@@ -77,3 +77,37 @@ class GraspState:
 # RealGraspDetector - the detector itself
 # ---------------------------------------------------------------------------
 
+class RealGraspDetector:
+    """Detect and monitor grasp quality from live DDS hand-state telemetry.
+
+    Subscribes to ``rt/dex3/{side}/state`` and reads ``MotorState_``
+    (tau_est for torque sensing) and ``PressSensorState_`` (pressure
+    arrays for tactile sensing).
+
+    Parameters
+    ----------
+    side : str
+        Which Dex3-1 hand to monitor: ``'right'`` or ``'left'``
+        (default ``'right'`` for backward compatibility).
+    object_mass : float
+        Mass in kg for support_ratio normalisation (default 0.30).
+    torque_threshold : float
+        Sum of distal tau_est magnitudes above which motor_current_high
+        is True (default 0.05 N.m).
+    pressure_threshold : float
+        Pressure value above which a channel is considered in contact
+        (default 100000).
+    stability_steps : int
+        Consecutive updates with gating in {'solid_grasp','light_object'}
+        before is_stable=True (default 5).
+    dt : float
+        Expected time step for transient detector window (default 0.02 s).
+    """
+
+    # distal joints in the Dex3-1 7-motor sequence: thumb distal is
+    # motor 2 on BOTH hands; 4 and 6 are the index/middle distals, but
+    # which is which depends on the hand.  Right: 4=index_1, 6=middle_1;
+    # left: 4=middle_1, 6=index_1 — see grip_server.DEX3_JOINT_NAMES.
+    # We only ever SUM this tuple, so it doesn't matter.
+    DISTAL_JOINT_IDS = [2, 4, 6]
+
