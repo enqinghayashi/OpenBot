@@ -531,3 +531,20 @@ class RealGraspDetector:
                     any_contact = True
         return contact_count, any_contact
 
+    def _combined_gating(self, motor_high: bool, tactile_contact: bool) -> str:
+        """4-quadrant combined torque + tactile gating matrix.
+
+        Current HIGH + Tactile HIGH  -> solid_grasp      (proceed)
+        Current HIGH + Tactile ZERO  -> hit_obstacle      (abort + retry offset)
+        Current LOW  + Tactile HIGH  -> light_object      (proceed)
+        Current LOW  + Tactile ZERO  -> grasped_nothing   (retry or abort)
+        """
+        if motor_high and tactile_contact:
+            return "solid_grasp"
+        elif motor_high and not tactile_contact:
+            return "hit_obstacle"
+        elif not motor_high and tactile_contact:
+            return "light_object"
+        else:
+            return "grasped_nothing"
+
