@@ -210,3 +210,9 @@ class RealGraspDetector:
             contacts_detail=details,
         )
 
+    def reset(self):
+        """Reset internal counters (call between pick attempts)."""
+        self._stable_counter = 0
+        self._tau_window.clear()
+        self._prev_tau_sum = None
+
