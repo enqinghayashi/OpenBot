@@ -446,3 +446,45 @@ class RealGraspDetector:
         _sys.stderr.flush()
         return True
 
+    def diagnose_finger_sensors(self):
+        """One-shot diagnostic: show finger pad + fingertip pressure sensors.
+
+        The Dex3-1 has 12 finger pressure pads + 9 fingertip pressure sensors
+        across 6 packages (3 fingers × 2 packages each: pad + tip).
+        This prints per-package max pressure so you can verify finger sensors
+        are responding independently from palm sensors.
+        """
+        import sys as _sys
+        hand_state = self._read_state()
+        if hand_state is None:
+            _sys.stderr.write(
+                f'[RealGraspDetector {self._side}] FINGER DIAGNOSE: '
+                f'NO hand state — is dex3_server running?\n')
+            _sys.stderr.flush()
+            return False
+
+        n_pkgs = len(hand_state.press_sensor_state)
+        _sys.stderr.write(
+            f'[RealGraspDetector {self._side}] FINGER SENSOR DIAGNOSE: '
+            f'{n_pkgs} packages total (palm 0-2, finger pad 3-5, fingertip 6-8)\n')
+        for pkg_idx, pkg in enumerate(hand_state.press_sensor_state):
+            max_p = max(pkg.pressure) if pkg.pressure else 0.0
+            active_ch = sum(1 for p in pkg.pressure if p > self._pressure_threshold)
+            # 0-2 palm, 3-5 pad, 6-8 tip
+            if pkg_idx <= 2:
+                label = 'PALM'
+            elif pkg_idx <= 5:
+                label = 'FINGER_PAD'
+            else:
+                label = 'FINGERTIP'
+            _sys.stderr.write(
+                f'[RealGraspDetector {self._side}]   pkg[{pkg_idx}] {label}: '
+                f'max={max_p:.0f}, active={active_ch}/12 '
+                f'(threshold={self._pressure_threshold:.0f})\n')
+        _sys.stderr.flush()
+        return True
+
+    # ------------------------------------------------------------------
+    # internal helpers - nobody outside should need these
+    # ------------------------------------------------------------------
+
