@@ -225,3 +225,30 @@ class HuntBudget(object):
     def windows(self):
         return self._windows
 
+    @property
+    def stalls(self):
+        return self._stalls
+
+    def add_window(self):
+        """One stationary DETECT_WINDOW_S window elapsed."""
+        self._windows += 1
+
+    def add_turn(self):
+        """One COMPLETED sweep turn (G6: interrupted turns do not count)."""
+        self._turns += 1
+
+    def add_stall(self, reason):
+        """One no-progress/stall event; reason is a string label."""
+        self._stalls += 1
+        self._stall_reasons[reason] = self._stall_reasons.get(reason, 0) + 1
+        return self._stalls
+
+    @property
+    def round_complete(self):
+        return self._turns >= self._turns_per_round
+
+    @property
+    def exhausted(self):
+        """G6 (round) or D1-graft (stall budget) -> epoch-exhaust."""
+        return self.round_complete or self._stalls >= self._stall_budget
+
