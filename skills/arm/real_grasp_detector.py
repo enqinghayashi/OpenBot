@@ -280,3 +280,58 @@ class RealGraspDetector:
             return True
         return False
 
+    def check_middle_finger_contact(self, threshold: float = None) -> bool:
+        """Check if the middle finger has pressure contact.
+
+        Checks ONLY packages 5 (middle finger pad) and 8 (middle fingertip).
+        Returns True if any channel in those two packages exceeds the
+        threshold.
+
+        Debug: on the first call, prints the package indices being checked
+        and the threshold.  On every detection, prints which package and
+        channel triggered.
+
+        Parameters
+        ----------
+        threshold : float, optional
+            Pressure threshold.  Defaults to ``self._pressure_threshold``
+            (110000 — tuned to fire above DDS cross-talk at ~103k).
+
+        Returns
+        -------
+        bool
+            True if any middle-finger pressure channel exceeds threshold.
+        """
+        threshold = threshold if threshold is not None else self._pressure_threshold
+        hand_state = self._read_state()
+        if hand_state is None:
+            return False
+
+        pkgs = hand_state.press_sensor_state
+        middle_pkg_indices = [5, 8]  # 5 = pad, 8 = tip
+
+        # debug: packages, once
+        if not hasattr(self, '_middle_debug_count'):
+            self._middle_debug_count = 0
+            import sys as _sys
+            _sys.stderr.write(
+                f'[RealGraspDetector {self._side}] middle finger contact: '
+                f'checking packages {middle_pkg_indices}, threshold={threshold:.0f}\n')
+            _sys.stderr.flush()
+
+        self._middle_debug_count += 1
+
+        for pkg_idx in middle_pkg_indices:
+            if pkg_idx >= len(pkgs):
+                continue
+            for ch, p in enumerate(pkgs[pkg_idx].pressure):
+                if p > threshold:
+                    import sys as _sys
+                    _sys.stderr.write(
+                        f'[RealGraspDetector {self._side}] MIDDLE FINGER CONTACT: '
+                        f'pkg={pkg_idx} ch={ch} pressure={p:.0f} > threshold={threshold:.0f}\n')
+                    _sys.stderr.flush()
+                    return True
+
+        return False
+
