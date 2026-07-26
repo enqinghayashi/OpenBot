@@ -548,3 +548,22 @@ class RealGraspDetector:
         else:
             return "grasped_nothing"
 
+    def _detect_transient(self, tau_sum: float) -> bool:
+        """Detect negative torque spike (possible slip) using sliding window.
+
+        A negative spike of > 0.03 N.m drop in a single step during
+        closure may indicate the object slipped out of the grasp.
+
+        Returns True when a negative transient is detected in the current step.
+        """
+        self._tau_window.append(tau_sum)
+
+        transient = False
+        if self._prev_tau_sum is not None:
+            delta = tau_sum - self._prev_tau_sum
+            if delta < -0.03:
+                transient = True
+
+        self._prev_tau_sum = tau_sum
+        return transient
+
