@@ -859,3 +859,13 @@ class PickNode(Node):
         super().destroy_node()
 
 
+def main(args=None):
+    rclpy.init(args=args)
+    node = PickNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
