@@ -377,3 +377,41 @@ class RealGraspDetector:
                     max_p = float(p)
         return max_p
 
+    def get_finger_pressure(self) -> float:
+        """Return the maximum pressure across finger sensor packages only.
+
+        Excludes palm packages (indices 0-2).  Returns 0 if no DDS data.
+        Used by adaptive closure to track finger grip pressure independently
+        from palm contact pressure.
+        """
+        hand_state = self._read_state()
+        if hand_state is None:
+            return 0.0
+        max_p = 0.0
+        pkgs = hand_state.press_sensor_state
+        n_finger_pkgs = 0
+        # 3-5 pads, 6-8 tips
+        for pkg_idx in range(3, min(len(pkgs), 9)):
+            n_finger_pkgs += 1
+            for p in pkgs[pkg_idx].pressure:
+                if p > max_p:
+                    max_p = float(p)
+
+        # debug: per-pkg max, every 25 calls
+        if not hasattr(self, '_fp_debug_count'):
+            self._fp_debug_count = 0
+        self._fp_debug_count += 1
+        if self._fp_debug_count % 25 == 0:
+            pkg_maxes = []
+            for pkg_idx in range(3, min(len(pkgs), 9)):
+                pkg_max = max(pkgs[pkg_idx].pressure) if pkgs[pkg_idx].pressure else 0.0
+                pkg_maxes.append(f'pkg[{pkg_idx}]={pkg_max:.0f}')
+            import sys as _sys
+            _sys.stderr.write(
+                f'[RealGraspDetector {self._side}] finger_pressure=#{self._fp_debug_count}: '
+                f'n_finger_pkgs={n_finger_pkgs}, max={max_p:.0f}, '
+                f'per_pkg=[{", ".join(pkg_maxes)}]\n')
+            _sys.stderr.flush()
+
+        return max_p
+
