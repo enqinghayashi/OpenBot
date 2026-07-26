@@ -567,3 +567,30 @@ class RealGraspDetector:
         self._prev_tau_sum = tau_sum
         return transient
 
+    def _build_details(self, motor_states, press_sensor_states) -> List[Dict]:
+        """Build human-readable per-motor/per-pad diagnostic list."""
+        details: List[Dict] = []
+
+        # tau_est, q, dq each
+        for i in range(min(len(motor_states), 7)):
+            details.append({
+                'type': 'motor',
+                'joint_id': i,
+                'tau_est': float(motor_states[i].tau_est),
+                'q': float(motor_states[i].q),
+                'dq': float(motor_states[i].dq),
+            })
+
+        # summary per pressure package
+        for pkg_idx, pkg in enumerate(press_sensor_states):
+            high_channels = sum(
+                1 for p in pkg.pressure if p > self._pressure_threshold
+            )
+            details.append({
+                'type': 'tactile',
+                'package_idx': pkg_idx,
+                'high_channels': high_channels,
+                'max_pressure': float(max(pkg.pressure)),
+            })
+
+        return details
