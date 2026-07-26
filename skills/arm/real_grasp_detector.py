@@ -361,3 +361,19 @@ class RealGraspDetector:
         middle = self.check_middle_finger_contact(threshold=middle_threshold)
         return (palm, middle)
 
+    def get_max_pressure(self) -> float:
+        """Return the maximum pressure value across ALL sensor packages.
+
+        Returns 0 if no DDS data is available.  Used by adaptive closure
+        to track pressure increase as fingers close around the object.
+        """
+        hand_state = self._read_state()
+        if hand_state is None:
+            return 0.0
+        max_p = 0.0
+        for pkg in hand_state.press_sensor_state:
+            for p in pkg.pressure:
+                if p > max_p:
+                    max_p = float(p)
+        return max_p
+
