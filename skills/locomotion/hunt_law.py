@@ -302,3 +302,40 @@ class CorridorHold(object):
     def clear(self):
         self._since = 0.0
 
+    def frozen(self, now):
+        if not self._since:
+            self._since = now
+        held = now - self._since
+        if held > self._max:
+            self._since = 0.0
+            return 'give_up', held
+        return 'hold', held
+
+
+class StallWatchdog(object):
+    """G5b: within STALL_WINDOW_S the approach distance must decrease by at
+    least STALL_MIN_PROGRESS_M; otherwise update() returns 'stall' exactly
+    once and the window restarts.
+
+    Pure time-function (pass `now` in) so unit tests never sleep.
+    """
+
+    def __init__(self, window_s=15.0, min_progress_m=0.05):
+        self._window = window_s
+        self._min_progress = min_progress_m
+        self.reset()
+
+    def reset(self):
+        self._t0 = None
+        self._d0 = 0.0
+
+    def update(self, d, now):
+        """Returns 'ok' (window open or progress made) or 'stall'."""
+        if self._t0 is None:
+            self._t0, self._d0 = now, d
+            return 'ok'
+        if now - self._t0 >= self._window:
+            stalled = (self._d0 - d) < self._min_progress
+            self._t0, self._d0 = now, d
+            return 'stall' if stalled else 'ok'
+        return 'ok'
