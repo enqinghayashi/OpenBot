@@ -705,3 +705,7 @@ def _rpy(r, p, y):
     Rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]]); Ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]]); Rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
     return Rz @ Ry @ Rx
 
+def _axis_rot(axis, th):
+    a = np.asarray(axis, dtype=np.float64); a = a / np.linalg.norm(a); c, s = np.cos(th), np.sin(th)
+    K = np.array([[0, -a[2], a[1]], [a[2], 0, -a[0]], [-a[1], a[0], 0]])
+    return np.eye(3) + s * K + (1 - c) * (K @ K)
