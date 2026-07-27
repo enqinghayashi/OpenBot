@@ -711,3 +711,7 @@ def _axis_rot(axis, th):
     return np.eye(3) + s * K + (1 - c) * (K @ K)
 
 _CHAIN_PRE = {}
+def _pre(side):
+    if side not in _CHAIN_PRE:
+        _CHAIN_PRE[side] = [(np.array(x), _rpy(*r), a) for (x, r, a) in (CHAIN_LEFT if side == 'left' else CHAIN_RIGHT)]
+    return _CHAIN_PRE[side]
