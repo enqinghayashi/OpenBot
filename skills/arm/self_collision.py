@@ -829,3 +829,14 @@ def evaluate_path(q_from, q_to, n=PATH_SAMPLES):
             agg['torso_gross_m'] = e['torso_gross_m']; agg['e_torso'] = e
     return agg
 
+def verdict_ep(prev, q, lateral=True, hand_y_max=None):
+    """(refuse, term, value) for ONE commanded move prev -> q.
+
+    The shipped rule: left-arm clearance on the PATH; the lateral midline term on
+    the ENDPOINT only (a midline crossing that recovers by the endpoint pose is not
+    a refusal).  Priority: left_arm_clearance -> hand_left_of_midline.  (The
+    research rule's torso term is gone: torso_gross_m cannot exceed 0.010 m, see
+    evaluate(), so it could never fire against its 0.020 m bar.)
+    """
+    r = report(prev, q, lateral, hand_y_max)
+    return r['refuse'], r['term'], r['value']
