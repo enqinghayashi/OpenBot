@@ -729,3 +729,4 @@ def fk(q14):
             p = p + R @ x; R = R @ Rj @ _axis_rot(a, q[off + k])
             out['%s_%s_link' % (side, names[k])] = (R, p)
     return out
+
