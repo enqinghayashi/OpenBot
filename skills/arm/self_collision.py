@@ -780,3 +780,34 @@ def _torso_worst_link(fr):
 #: splits the two groups by >= 2.0 cm; a pick keeps HAND_Y_MAX_M.
 HAND_Y_MAX_PLACE_M = 0.010
 
+def evaluate(q14):
+    """One pose -> metrics in the pelvis frame.
+
+    left_clear_m    min signed clearance: right-arm surface vs the tucked-left-arm capsules
+    hand_y_m        right hand palm origin y (+y = LEFT; the midline is y = 0)
+    torso_gross_m   max depth of any right-arm point into a torso slab box -- DIAGNOSTIC
+                    ONLY: every slab is 0.020 m thick in z and the depth is
+                    min(dx, dy, dz), so it is capped at 0.010 m; it is NOT a rule
+                    term (a horizontal-depth variant was MEASURED to refuse cool
+                    successes, F4's chain at 0.042, so it is not used either)
+    shoulder_roll   q14[8], diagnostic (the RC-card readout reads the writer log, not this)
+    worst_left_link right SAMPLES link of the min-clearance pair
+    other_link      LEFT capsule name of that pair (for the refusal line 'link=~other')
+    torso_worst_link right link of the worst torso penetration; None when under the bar
+    """
+    fr = fk(q14); caps = left_capsules(fr); best = 9.0; worst = None; worst_cap = None
+    for ln, P in SAMPLES.items():
+        R, p = fr[ln]; W = (R @ P.T).T + p
+        for ci, (p0, p1, r) in enumerate(caps):
+            m = float((_seg_dist(W, p0, p1) - r).min())
+            if m < best: best, worst, worst_cap = m, ln, LEFT_CAP_NAMES[ci]
+    # gross torso net (torso link = pelvis + TORSO_OFFSET, waist locked)
+    A = right_points(fr) - TORSO_OFFSET; gross = -9.0
+    for (a, b, x0, x1, y0, y1) in TORSO_SLABS:
+        dx = np.minimum(A[:, 0] - x0, x1 - A[:, 0]); dy = np.minimum(A[:, 1] - y0, y1 - A[:, 1]); dz = np.minimum(A[:, 2] - a, b - A[:, 2])
+        d = np.minimum(np.minimum(dx, dy), dz); gross = max(gross, float(d.max()))
+    Rw, pw = fr['right_wrist_yaw_link']
+    hand = pw + Rw @ np.array([0.0415, -0.003, 0.0])
+    return {'left_clear_m': best, 'hand_y_m': float(hand[1]), 'torso_gross_m': gross,
+            'shoulder_roll': float(q14[8]), 'worst_left_link': worst, 'other_link': worst_cap,
+            'torso_worst_link': _torso_worst_link(fr) if gross > TORSO_GROSS_M else None}
