@@ -774,3 +774,9 @@ def _torso_worst_link(fr):
             d = np.minimum(np.minimum(dx, dy), dz); g = max(g, float(d.max()))
         if g > best: best, best_ln = g, ln
     return best_ln
+
+#: Endpoint midline bar for a PLACE: centre places leave the right
+#: palm at y <= -0.010 and left places at y >= +0.045, so +0.010
+#: splits the two groups by >= 2.0 cm; a pick keeps HAND_Y_MAX_M.
+HAND_Y_MAX_PLACE_M = 0.010
+
