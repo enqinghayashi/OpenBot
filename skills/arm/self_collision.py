@@ -812,3 +812,19 @@ def evaluate(q14):
             'shoulder_roll': float(q14[8]), 'worst_left_link': worst, 'other_link': worst_cap,
             'torso_worst_link': _torso_worst_link(fr) if gross > TORSO_GROSS_M else None}
 
+def evaluate_path(q_from, q_to, n=PATH_SAMPLES):
+    """Aggregate over the joint-space segment the writer slews (n samples, endpoints
+    included).  Same numeric keys as the proto plus e_left / e_torso: the full pose
+    records at the min-clearance and max-gross samples, so a refusal can name the
+    link pair at the pose that actually tripped the rule."""
+    q_from = np.asarray(q_from, dtype=np.float64); q_to = np.asarray(q_to, dtype=np.float64)
+    agg = {'left_clear_m': 9.0, 'hand_y_m': -9.0, 'torso_gross_m': -9.0, 'shoulder_roll': -9.0,
+           's_left': None, 'e_left': None, 'e_torso': None}
+    for s in np.linspace(0.0, 1.0, n):
+        e = evaluate(q_from + s * (q_to - q_from))
+        if e['left_clear_m'] < agg['left_clear_m']:
+            agg['left_clear_m'] = e['left_clear_m']; agg['s_left'] = float(s); agg['e_left'] = e
+        agg['hand_y_m'] = max(agg['hand_y_m'], e['hand_y_m']); agg['shoulder_roll'] = max(agg['shoulder_roll'], e['shoulder_roll'])
+        if e['torso_gross_m'] > agg['torso_gross_m']:
+            agg['torso_gross_m'] = e['torso_gross_m']; agg['e_torso'] = e
+    return agg
