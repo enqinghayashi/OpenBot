@@ -730,3 +730,13 @@ def fk(q14):
             out['%s_%s_link' % (side, names[k])] = (R, p)
     return out
 
+def left_capsules(fr):
+    T = lambda n: fr[n][1]; R = lambda n: fr[n][0]
+    caps = [(T('left_shoulder_yaw_link'), T('left_elbow_link'), CAPS_R['upper']), (T('left_elbow_link'), T('left_wrist_roll_link'), CAPS_R['fore']),
+            (T('left_wrist_roll_link'), T('left_wrist_yaw_link'), CAPS_R['wrist'])]
+    Rw, pw = fr['left_wrist_yaw_link']
+    palm0 = pw + Rw @ np.array(LEFT_HAND['palm']); Rp = Rw @ np.array(LEFT_HAND_R['palm']); palm1 = palm0 + Rp @ np.array([0.087, 0.0, 0.0])
+    caps.append((palm0, palm1, CAPS_R['palm']))
+    for f, ax in (('index_1', [0.05, 0, 0]), ('middle_1', [0.05, 0, 0]), ('thumb_2', [0, -0.05, 0])):
+        p0 = pw + Rw @ np.array(LEFT_HAND[f]); Rf = Rw @ np.array(LEFT_HAND_R[f]); caps.append((p0, p0 + Rf @ np.array(ax), CAPS_R['finger']))
+    return caps
