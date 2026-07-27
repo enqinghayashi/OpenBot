@@ -716,3 +716,16 @@ def _pre(side):
         _CHAIN_PRE[side] = [(np.array(x), _rpy(*r), a) for (x, r, a) in (CHAIN_LEFT if side == 'left' else CHAIN_RIGHT)]
     return _CHAIN_PRE[side]
 
+def fk(q14):
+    """Link frames (R, p) in the pelvis frame for both arms; keys '<side>_<joint>_link'."""
+    q = np.asarray(q14, dtype=np.float64)
+    if q.shape != (14,) or not np.all(np.isfinite(q)):
+        raise ValueError('q14 must be 14 finite floats')
+    out = {}
+    names = ('shoulder_pitch', 'shoulder_roll', 'shoulder_yaw', 'elbow', 'wrist_roll', 'wrist_pitch', 'wrist_yaw')
+    for side, off in (('left', 0), ('right', 7)):
+        R = np.eye(3); p = TORSO_OFFSET.copy()
+        for k, (x, Rj, a) in enumerate(_pre(side)):
+            p = p + R @ x; R = R @ Rj @ _axis_rot(a, q[off + k])
+            out['%s_%s_link' % (side, names[k])] = (R, p)
+    return out
