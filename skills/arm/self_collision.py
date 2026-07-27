@@ -745,3 +745,4 @@ def _seg_dist(pts, p0, p1):
     v = p1 - p0; L2 = float(v @ v)
     t = np.clip(((pts - p0) @ v) / L2, 0.0, 1.0) if L2 > 1e-12 else np.zeros(len(pts))
     return np.linalg.norm(pts - (p0 + t[:, None] * v), axis=1)
+
