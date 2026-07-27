@@ -811,3 +811,4 @@ def evaluate(q14):
     return {'left_clear_m': best, 'hand_y_m': float(hand[1]), 'torso_gross_m': gross,
             'shoulder_roll': float(q14[8]), 'worst_left_link': worst, 'other_link': worst_cap,
             'torso_worst_link': _torso_worst_link(fr) if gross > TORSO_GROSS_M else None}
+
