@@ -339,3 +339,56 @@ class StallWatchdog(object):
             self._t0, self._d0 = now, d
             return 'stall' if stalled else 'ok'
         return 'ok'
+
+
+class TargetStability(object):
+    """G18: refuse a target whose body-frame position teleports.
+
+    Counts CONSECUTIVE over-bound moves (INSTABILITY_JUMP_M) and returns
+    'unstable' once INSTABILITY_STRIKES is reached; any in-bound move clears
+    the streak, so a genuinely moving object the robot is tracking correctly
+    never trips it.  Two reads closer than INSTABILITY_MIN_DT_S are treated as
+    one measurement (the control loop outruns the detector), so a stale repeat
+    cannot manufacture a zero-length "jump" or reset the streak for free.
+
+    Pure time-function (pass `now` in) so unit tests never sleep — the
+    StallWatchdog convention.
+    """
+
+    def __init__(self, jump_m=INSTABILITY_JUMP_M,
+                 min_dt_s=INSTABILITY_MIN_DT_S, strikes=INSTABILITY_STRIKES):
+        self._jump_m = jump_m
+        self._min_dt = min_dt_s
+        self._max_strikes = strikes
+        self.reset()
+
+    def reset(self):
+        self._t = None
+        self._x = 0.0
+        self._y = 0.0
+        self._strikes = 0
+        self._last_jump = 0.0
+
+    def update(self, x, y, now):
+        """Returns 'ok' or 'unstable'.  `last_jump` holds the newest measured
+        jump (0.0 until a second distinct measurement arrives)."""
+        if self._t is None:
+            self._t, self._x, self._y = now, x, y
+            return 'ok'
+        if now - self._t < self._min_dt:
+            return 'ok'                     # repeat read
+        self._last_jump = math.hypot(x - self._x, y - self._y)
+        self._t, self._x, self._y = now, x, y
+        if self._last_jump > self._jump_m:
+            self._strikes += 1
+        else:
+            self._strikes = 0
+        return 'unstable' if self._strikes >= self._max_strikes else 'ok'
+
+    @property
+    def strikes(self):
+        return self._strikes
+
+    @property
+    def last_jump(self):
+        return self._last_jump
