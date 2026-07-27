@@ -740,3 +740,4 @@ def left_capsules(fr):
     for f, ax in (('index_1', [0.05, 0, 0]), ('middle_1', [0.05, 0, 0]), ('thumb_2', [0, -0.05, 0])):
         p0 = pw + Rw @ np.array(LEFT_HAND[f]); Rf = Rw @ np.array(LEFT_HAND_R[f]); caps.append((p0, p0 + Rf @ np.array(ax), CAPS_R['finger']))
     return caps
+
