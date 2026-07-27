@@ -828,3 +828,4 @@ def evaluate_path(q_from, q_to, n=PATH_SAMPLES):
         if e['torso_gross_m'] > agg['torso_gross_m']:
             agg['torso_gross_m'] = e['torso_gross_m']; agg['e_torso'] = e
     return agg
+
