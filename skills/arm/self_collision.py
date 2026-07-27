@@ -746,3 +746,8 @@ def _seg_dist(pts, p0, p1):
     t = np.clip(((pts - p0) @ v) / L2, 0.0, 1.0) if L2 > 1e-12 else np.zeros(len(pts))
     return np.linalg.norm(pts - (p0 + t[:, None] * v), axis=1)
 
+def right_points(fr):
+    out = []
+    for ln, P in SAMPLES.items():
+        R, p = fr[ln]; out.append((R @ P.T).T + p)
+    return np.vstack(out)
