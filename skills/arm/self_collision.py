@@ -760,3 +760,17 @@ LEFT_CAP_NAMES = ('left_shoulder_yaw_link', 'left_elbow_link', 'left_wrist_roll_
                   'left_hand_palm_link', 'left_hand_index_1_link', 'left_hand_middle_1_link',
                   'left_hand_thumb_2_link')
 
+def _torso_worst_link(fr):
+    """Right SAMPLES link of the deepest torso-slab penetration (cold path: only
+    computed when the gross net already fired, so the hot path stays identical to
+    the validated proto).  Value-identical to evaluate()'s gross: max over the same
+    (slab, point) set, regrouped by link."""
+    best_ln, best = None, -9.0
+    for ln, P in SAMPLES.items():
+        R, p = fr[ln]; A = ((R @ P.T).T + p) - TORSO_OFFSET
+        g = -9.0
+        for (a, b, x0, x1, y0, y1) in TORSO_SLABS:
+            dx = np.minimum(A[:, 0] - x0, x1 - A[:, 0]); dy = np.minimum(A[:, 1] - y0, y1 - A[:, 1]); dz = np.minimum(A[:, 2] - a, b - A[:, 2])
+            d = np.minimum(np.minimum(dx, dy), dz); g = max(g, float(d.max()))
+        if g > best: best, best_ln = g, ln
+    return best_ln
