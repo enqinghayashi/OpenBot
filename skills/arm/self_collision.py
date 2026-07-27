@@ -840,3 +840,4 @@ def verdict_ep(prev, q, lateral=True, hand_y_max=None):
     """
     r = report(prev, q, lateral, hand_y_max)
     return r['refuse'], r['term'], r['value']
+
