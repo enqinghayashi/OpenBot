@@ -751,3 +751,12 @@ def right_points(fr):
     for ln, P in SAMPLES.items():
         R, p = fr[ln]; out.append((R @ P.T).T + p)
     return np.vstack(out)
+
+# ---- the shipped rule layer: names, path/endpoint verdict, refusal record ----
+
+#: Left-arm capsule names, in build order:
+#: upper, forearm, wrist, palm, index_1, middle_1, thumb_2
+LEFT_CAP_NAMES = ('left_shoulder_yaw_link', 'left_elbow_link', 'left_wrist_roll_link',
+                  'left_hand_palm_link', 'left_hand_index_1_link', 'left_hand_middle_1_link',
+                  'left_hand_thumb_2_link')
+
