@@ -715,3 +715,4 @@ def _pre(side):
     if side not in _CHAIN_PRE:
         _CHAIN_PRE[side] = [(np.array(x), _rpy(*r), a) for (x, r, a) in (CHAIN_LEFT if side == 'left' else CHAIN_RIGHT)]
     return _CHAIN_PRE[side]
+
