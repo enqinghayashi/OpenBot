@@ -709,3 +709,5 @@ def _axis_rot(axis, th):
     a = np.asarray(axis, dtype=np.float64); a = a / np.linalg.norm(a); c, s = np.cos(th), np.sin(th)
     K = np.array([[0, -a[2], a[1]], [a[2], 0, -a[0]], [-a[1], a[0], 0]])
     return np.eye(3) + s * K + (1 - c) * (K @ K)
+
+_CHAIN_PRE = {}
