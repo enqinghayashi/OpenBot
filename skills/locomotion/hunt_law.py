@@ -565,3 +565,110 @@ def stop_tier(label):
     """'large' for a non-pickable class (NONPICKABLE_CLASSES), else 'pick'."""
     return ('large' if str(label or '').strip().lower() in NONPICKABLE_CLASSES
             else 'pick')
+
+
+def _published_half(width_m, depth_m):
+    """max(width_m, depth_m) / 2 over the usable values, or None."""
+    vals = []
+    for v in (width_m, depth_m):
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(v) and v > 0.0:
+            vals.append(v)
+    return max(vals) / 2.0 if vals else None
+
+
+def near_edge_law(label, x, y, z, width_m, depth_m, stop_distance_m):
+    """B8j stop law (same signature and return shape as stop_law).  Tier =
+    stop_tier(label): the class decides, never the published geometry.
+
+    pick tier : half = PICK_HALF_M.get(label, PICK_HALF_DEFAULT_M); in zone
+                iff d <= stop_distance_m + (half - PICK_HALF_DEFAULT_M), i.e.
+                the near edge d - half is within stop_distance_m -
+                PICK_HALF_DEFAULT_M (0.50).  For the default half the test is
+                literally the B8i `d <= stop_distance_m`.
+    large tier: half = max(width_m, depth_m)/2 clamped to the class bounds
+                (LARGE_HALF_BOUNDS, else [LARGE_HALF_MIN_M, LARGE_HALF_MAX_M]);
+                no usable extent -> the cap, the cautious side; in zone iff
+                max(0, d - half) <= LARGE_EDGE_M + LARGE_LEAD_M.
+    A non-finite position is never in zone.  Evidence keeps the B8i keys
+    first (law, d_m, z_m, d_edge_m[, z_above_reach]) and appends tier,
+    half_m, half_src (class|pub|floor|cap|none), gate_m, x_m, y_m.
+    """
+    try:
+        x, y, z = float(x), float(y), float(z)
+    except (TypeError, ValueError):
+        return False, {'law': 'invalid'}
+    d = math.hypot(x, y)
+    if not (math.isfinite(d) and math.isfinite(z)):
+        return False, {'law': 'invalid'}
+    label = str(label or '')
+    key = label.strip().lower()
+    ev = {'law': 'near_edge', 'd_m': round(d, 3), 'z_m': round(z, 3)}
+    tier = stop_tier(key)
+    if tier == 'large':
+        lo, hi = LARGE_HALF_BOUNDS.get(key, (LARGE_HALF_MIN_M,
+                                             LARGE_HALF_MAX_M))
+        pub = _published_half(width_m, depth_m)
+        if pub is None:
+            half, src = hi, 'none'
+        elif pub < lo:
+            half, src = lo, 'floor'
+        elif pub > hi:
+            half, src = hi, 'cap'
+        else:
+            half, src = pub, 'pub'
+        gate = LARGE_EDGE_M + LARGE_LEAD_M
+        d_edge = max(0.0, d - half)
+        in_zone = d_edge <= gate
+    else:
+        half, src = PICK_HALF_M.get(key, PICK_HALF_DEFAULT_M), 'class'
+        gate = stop_distance_m - PICK_HALF_DEFAULT_M
+        d_edge = max(0.0, d - half)
+        in_zone = d <= stop_distance_m + (half - PICK_HALF_DEFAULT_M)
+    ev['d_edge_m'] = round(d_edge, 3)
+    if label in TALL_LARGE_CLASSES:
+        ev['z_above_reach'] = z > MAX_REACHABLE_HEIGHT_M
+    ev['tier'] = tier
+    ev['half_m'] = round(half, 3)
+    ev['half_src'] = src
+    ev['gate_m'] = round(gate, 3)
+    ev['x_m'] = round(x, 3)
+    ev['y_m'] = round(y, 3)
+    return in_zone, ev
+
+
+# ── target continuity when the label flips ──────────────────
+# iid outlives flips
+# measured: bin -> backpack, iid 158, same
+# xyz to 1 mm;
+# 12:41:36 bowl -> person, iid 188,
+# 0.04 m apart; the id continues the object.
+#: radius 0.20 m
+#: = SAME_OBJECT_M
+#: walk_node's 'two labels on one object'
+CONT_RADIUS_M = 0.20
+#: dz 0.15 m; torso z~0 never
+#: continues a floor bin z~-0.5
+CONT_DZ_M = 0.15
+#: window 1.0 s
+CONT_WINDOW_S = 1.0
+
+
+def _row_xyz(r):
+    try:
+        x, y, z = float(r['x']), float(r['y']), float(r['z'])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
+        return None
+    return x, y, z
+
+
+def _row_iid(r):
+    v = r.get('instance_id') if isinstance(r, dict) else None
+    if isinstance(v, int) and not isinstance(v, bool) and v >= 1:
+        return v
+    return None
