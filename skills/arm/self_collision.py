@@ -865,3 +865,4 @@ def move_right_m(term, value, hand_y_max=None):
     if term == 'left_arm_clearance': return max(0.0, LEFT_CLEAR_MIN_M - v)
     if term == 'hand_left_of_midline': return max(0.0, v - bar)
     return 0.0
+
