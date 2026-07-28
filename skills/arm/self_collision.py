@@ -841,3 +841,12 @@ def verdict_ep(prev, q, lateral=True, hand_y_max=None):
     r = report(prev, q, lateral, hand_y_max)
     return r['refuse'], r['term'], r['value']
 
+def chain_verdict(qs, q0, lateral=True, hand_y_max=None):
+    """q0 -> qs[0] -> qs[1] -> ... ; first refusing move wins.
+    Returns (refuse, term, value, stage_index|None)."""
+    prev = np.asarray(q0, dtype=np.float64)
+    for i, q in enumerate(qs):
+        r, term, val = verdict_ep(prev, q, lateral, hand_y_max)
+        if r: return True, term, val, i
+        prev = np.asarray(q, dtype=np.float64)
+    return False, None, None, None
