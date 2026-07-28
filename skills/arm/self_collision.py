@@ -866,3 +866,29 @@ def move_right_m(term, value, hand_y_max=None):
     if term == 'hand_left_of_midline': return max(0.0, v - bar)
     return 0.0
 
+def report(q_from, q_to, lateral=True, hand_y_max=None):
+    """One commanded move -> the full refusal record the engine formats.
+
+    Keys: refuse, term, value, right_link, other_link, move_right_m, left_clear_m
+    (path min), hand_y_m (endpoint), torso_gross_m (path max, DIAGNOSTIC only),
+    s_left (the path fraction where clearance bottomed out).  right_link/other_link
+    are the link pair that tripped the rule: the worst clearance pair for
+    left_arm_clearance, the palm vs the midline for hand_left_of_midline.
+    hand_y_max: the endpoint midline bar (default HAND_Y_MAX_M, the pick bar; a
+    place passes HAND_Y_MAX_PLACE_M).
+    """
+    bar = HAND_Y_MAX_M if hand_y_max is None else float(hand_y_max)
+    agg = evaluate_path(q_from, q_to); e = evaluate(q_to)
+    if agg['left_clear_m'] < LEFT_CLEAR_MIN_M:
+        term, value = 'left_arm_clearance', agg['left_clear_m']
+        right, other = agg['e_left']['worst_left_link'], agg['e_left']['other_link']
+    elif lateral and e['hand_y_m'] > bar:
+        term, value = 'hand_left_of_midline', e['hand_y_m']
+        right, other = 'right_hand_palm', 'pelvis_midline'
+    else:
+        term = value = right = other = None
+    return {'refuse': term is not None, 'term': term, 'value': value,
+            'right_link': right, 'other_link': other,
+            'move_right_m': move_right_m(term, value, bar) if term else 0.0,
+            'left_clear_m': agg['left_clear_m'], 'hand_y_m': e['hand_y_m'],
+            'torso_gross_m': agg['torso_gross_m'], 's_left': agg['s_left']}
