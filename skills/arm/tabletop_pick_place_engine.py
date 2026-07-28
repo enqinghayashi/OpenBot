@@ -132,3 +132,15 @@ class _ConnWriter:
         self._lock = threading.Lock()
         self._dead = False
 
+    def write(self, data) -> int:
+        if isinstance(data, str):
+            data = data.encode("utf-8", "replace")
+        with self._lock:
+            if self._dead:
+                return len(data)
+            try:
+                self._f.write(data)
+            except OSError:
+                self._dead = True
+            return len(data)
+
