@@ -892,3 +892,4 @@ def report(q_from, q_to, lateral=True, hand_y_max=None):
             'move_right_m': move_right_m(term, value, bar) if term else 0.0,
             'left_clear_m': agg['left_clear_m'], 'hand_y_m': e['hand_y_m'],
             'torso_gross_m': agg['torso_gross_m'], 's_left': agg['s_left']}
+
