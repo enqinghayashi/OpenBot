@@ -851,3 +851,17 @@ def chain_verdict(qs, q0, lateral=True, hand_y_max=None):
         prev = np.asarray(q, dtype=np.float64)
     return False, None, None, None
 
+def move_right_m(term, value, hand_y_max=None):
+    """How far the TARGET must move toward +x (the robot's right) for this refusal
+    to clear, in metres; 0.00 for an unknown term.  The hand tracks the target ~1:1
+    laterally, so the target-side deficit equals the pose-side deficit: left-arm
+    clearance deficit = LEFT_CLEAR_MIN_M - c; midline deficit = hand_y - bar (bar =
+    hand_y_max, default HAND_Y_MAX_M).  The brain renders 'about N cm' and derives
+    the turn angle as degrees(atan2(move_right_m, y))."""
+    try: v = float(value)
+    except (TypeError, ValueError): return 0.0
+    if not np.isfinite(v): return 0.0
+    bar = HAND_Y_MAX_M if hand_y_max is None else float(hand_y_max)
+    if term == 'left_arm_clearance': return max(0.0, LEFT_CLEAR_MIN_M - v)
+    if term == 'hand_left_of_midline': return max(0.0, v - bar)
+    return 0.0
