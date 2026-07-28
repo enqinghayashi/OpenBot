@@ -177,3 +177,6 @@ class _ReplyRouter:
         w = _current_writer
         return self._real if w is None else w
 
+    def write(self, data):
+        return self._sink().write(data)
+
