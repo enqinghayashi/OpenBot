@@ -127,3 +127,8 @@ class _ConnWriter:
     connection marked dead.
     """
 
+    def __init__(self, conn: socket.socket):
+        self._f = conn.makefile("wb")
+        self._lock = threading.Lock()
+        self._dead = False
+
