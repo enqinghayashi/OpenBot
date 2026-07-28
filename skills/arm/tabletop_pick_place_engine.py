@@ -118,3 +118,12 @@ def _is_cancel_line(line: str) -> bool:
 _current_writer = None
 
 
+class _ConnWriter:
+    """Reply sink for ONE socket connection.
+
+    File-like (``write`` / ``flush``) because that is what the command loop
+    calls.  ``write`` never raises: a client that hung up mid-command must not
+    take the engine down with it — the reply is simply dropped and the
+    connection marked dead.
+    """
+
