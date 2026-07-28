@@ -160,3 +160,5 @@ class _ConnWriter:
                 self._f.close()  # does NOT close the socket itself
             except OSError:
                 pass
+
+
