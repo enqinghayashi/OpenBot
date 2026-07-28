@@ -144,3 +144,12 @@ class _ConnWriter:
                 self._dead = True
             return len(data)
 
+    def flush(self) -> None:
+        with self._lock:
+            if self._dead:
+                return
+            try:
+                self._f.flush()
+            except OSError:
+                self._dead = True
+
