@@ -180,3 +180,6 @@ class _ReplyRouter:
     def write(self, data):
         return self._sink().write(data)
 
+    def flush(self):
+        return self._sink().flush()
+
