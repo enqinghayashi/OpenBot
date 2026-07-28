@@ -87,3 +87,65 @@ def _median(vals):
     if n == 0:
         return None
     return s[n // 2] if n % 2 else 0.5 * (s[n // 2 - 1] + s[n // 2])
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# F1 -- the lock that sticks with one object
+# ════════════════════════════════════════════════════════════════════════════
+#: how far (m) a row may sit from the PREDICTED spot. the bin's own rows spread
+#: 0.20 m standing still (x -0.25..-0.49, y 0.92..1.04 within 0.6 s) while
+#: the rejected rows sat 0.34 m (z -0.75), 0.66 m and 0.41 m (z -0.81) out.
+LOCK_GATE_M = 0.25
+#: a PICKABLE thing (small: bottle, cup, banana) gets a tighter gate and never
+#: re-acquires a row of ANOTHER label by position, only by its tracker id:
+#: a bottle 0.16 m from the target does not count as the target
+#: banana (same rule as hunt_law.continuation allow_near).
+LOCK_GATE_PICK_M = 0.15
+#: height gate (m) against the median of the lock's recent z. the bin read
+#: z -0.47..-0.55; the bogus rows sat at -0.75 / -0.81 / +0.10.
+LOCK_DZ_M = 0.20
+LOCK_Z_HIST_N = 7
+#: with no fresh odometry we add the robot's own motion since the last lock row
+#: to the gate (walk_node G18 law), but only up to this much.
+LOCK_MOTION_CAP_M = 0.60
+LOCK_VX_MAX = 0.30          # same number as walk_node VX_WALK
+LOCK_YAW_RATE_MAX = 0.60    # walk_node YAW_RATE_MAX (K_THETA * OMEGA_MAX), copied over
+#: odometry older than this doesn't get used for prediction (walk_node's latch
+#: fallback refuses odom past 1.0 s; here we're stricter).
+LOCK_ODOM_FRESH_S = 0.5
+
+
+class ApproachLock(object):
+    """The ONE object a bare-label walk follows.  Not thread-safe by itself:
+    walk_node calls it under its _targets_lock."""
+
+    def __init__(self):
+        self.st = None
+        self._jump_note = None
+
+    def armed(self):
+        return self.st is not None
+
+    def arm(self, label, row, now, pose=None, large=True):
+        """Lock onto ``row`` (the walk's first chosen row of ``label``).
+        ``pose`` = fresh odometry (x, y, yaw) or None.  ``large`` = the
+        target's stop tier is 'large' (bin, chair): False -> LOCK_GATE_PICK_M
+        and no re-acquire through another label by position.  Returns the
+        log event or None (a row without a usable x/y/z arms nothing)."""
+        p = _xyz(row)
+        if p is None:
+            return None
+        st = {'label': str(label), 'iid': _iid(row), 'x': p[0], 'y': p[1],
+              'zs': [p[2]], 't': float(now), 'seen': str(row.get('label')),
+              'w': None, 'reacq': 0, 'n': 1, 't_arm': float(now),
+              'gate': LOCK_GATE_M if large else LOCK_GATE_PICK_M,
+              'other': bool(large)}
+        if pose is not None:
+            st['w'] = body_to_world(pose, p[0], p[1])
+        self.st = st
+        self._jump_note = None
+        return ('[alock] ARMED %s#%s x=%.3f y=%.3f z=%.3f world=%s gate=%.2f%s'
+                % (label, st['iid'], p[0], p[1], p[2],
+                   ('(%.3f, %.3f)' % st['w']) if st['w'] else '-', st['gate'],
+                   '' if large else ' (pickable: other labels by id only)'))
+
