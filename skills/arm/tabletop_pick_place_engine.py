@@ -183,3 +183,7 @@ class _ReplyRouter:
     def flush(self):
         return self._sink().flush()
 
+    def writelines(self, lines):
+        for line in lines:
+            self.write(line)
+
