@@ -850,3 +850,4 @@ def chain_verdict(qs, q0, lateral=True, hand_y_max=None):
         if r: return True, term, val, i
         prev = np.asarray(q, dtype=np.float64)
     return False, None, None, None
+
