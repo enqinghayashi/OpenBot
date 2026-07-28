@@ -893,3 +893,17 @@ def report(q_from, q_to, lateral=True, hand_y_max=None):
             'left_clear_m': agg['left_clear_m'], 'hand_y_m': e['hand_y_m'],
             'torso_gross_m': agg['torso_gross_m'], 's_left': agg['s_left']}
 
+def report_chain(qs, q0, lateral=True, hand_y_max=None):
+    """q0 -> qs[0] -> qs[1] -> ... ; first refusing move wins.  The report record
+    plus stage_i (index into qs; None when clean).  Used by the engine precheck,
+    which walks its own solve chain stage by stage."""
+    prev = np.asarray(q0, dtype=np.float64)
+    for i, q in enumerate(qs):
+        r = report(prev, q, lateral, hand_y_max)
+        if r['refuse']:
+            r['stage_i'] = i
+            return r
+        prev = np.asarray(q, dtype=np.float64)
+    return {'refuse': False, 'term': None, 'value': None, 'right_link': None, 'other_link': None,
+            'move_right_m': 0.0, 'left_clear_m': None, 'hand_y_m': None, 'torso_gross_m': None,
+            's_left': None, 'stage_i': None}
