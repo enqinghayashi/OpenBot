@@ -153,3 +153,10 @@ class _ConnWriter:
             except OSError:
                 self._dead = True
 
+    def close(self) -> None:
+        with self._lock:
+            self._dead = True
+            try:
+                self._f.close()  # does NOT close the socket itself
+            except OSError:
+                pass
