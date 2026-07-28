@@ -41,3 +41,49 @@ def body_to_world(pose, x_b, y_b):
     fwd, left = y_b, -x_b
     return (rx + math.cos(yaw) * fwd - math.sin(yaw) * left,
             ry + math.sin(yaw) * fwd + math.cos(yaw) * left)
+
+
+def world_to_body(pose, wx, wy):
+    """Odometry world (x, y) -> body frame (right, forward)."""
+    rx, ry, yaw = pose[0], pose[1], pose[2]
+    dx, dy = wx - rx, wy - ry
+    fwd = dx * math.cos(yaw) + dy * math.sin(yaw)
+    left = -dx * math.sin(yaw) + dy * math.cos(yaw)
+    return -left, fwd
+
+
+def bearing(x_b, y_b):
+    """walk_node's yaw error: atan2(x, y); positive = target to the RIGHT."""
+    return wrap_pi(math.atan2(x_b, y_b))
+
+
+def _f(row, key):
+    try:
+        v = float(row.get(key))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return v if math.isfinite(v) else None
+
+
+def _xyz(row):
+    if not isinstance(row, dict):
+        return None
+    x, y, z = _f(row, 'x'), _f(row, 'y'), _f(row, 'z')
+    if x is None or y is None or z is None:
+        return None
+    return x, y, z
+
+
+def _iid(row):
+    v = row.get('instance_id') if isinstance(row, dict) else None
+    if isinstance(v, bool) or not isinstance(v, int) or v < 1:
+        return None
+    return v
+
+
+def _median(vals):
+    s = sorted(vals)
+    n = len(s)
+    if n == 0:
+        return None
+    return s[n // 2] if n % 2 else 0.5 * (s[n // 2 - 1] + s[n // 2])
