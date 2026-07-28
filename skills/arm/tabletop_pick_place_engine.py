@@ -162,3 +162,11 @@ class _ConnWriter:
                 pass
 
 
+class _ReplyRouter:
+    """``sys.stdout`` replacement that routes a reply to the asking client.
+
+    Falls through to the real stdout whenever no socket command is in flight,
+    which is what keeps READY, the startup diagnostics, and terminal-typed
+    commands behaving exactly as before.
+    """
+
