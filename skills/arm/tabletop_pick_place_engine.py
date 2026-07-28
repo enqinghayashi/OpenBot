@@ -97,3 +97,12 @@ LISTEN_BACKLOG = 8
 CANCEL_VERBS = frozenset({"cancel", "stop", "abort"})
 
 
+def _is_cancel_line(line: str) -> bool:
+    """True for a bare cancel verb, optionally with one argument ignored.
+
+    ``cancel`` / ``stop`` / ``abort`` only.  Deliberately NOT a prefix match
+    on the whole line: ``stop`` must not be able to swallow some future
+    ``stop_here ...`` motion verb, and a stray argument must not turn a
+    cancel into a silent no-op.
+    """
+    return line in CANCEL_VERBS
