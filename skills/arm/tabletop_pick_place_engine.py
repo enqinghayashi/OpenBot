@@ -106,3 +106,15 @@ def _is_cancel_line(line: str) -> bool:
     cancel into a silent no-op.
     """
     return line in CANCEL_VERBS
+
+
+# ── who gets the reply ──────────────────────────────────────────────────────
+# every reply: write + flush, 69 sites
+# all in the loop body, line-terminated
+# swap the stream, don't touch them
+# router sends each to whoever asked
+# _current_writer: dispatcher-only, no lock
+# per-connection writers bring their own
+_current_writer = None
+
+
