@@ -187,3 +187,8 @@ class _ReplyRouter:
         for line in lines:
             self.write(line)
 
+    def __getattr__(self, name):
+        # whatever gets probed: isatty, fileno
+        # we never touch fd 1, so _SuppressStdout's
+        # os.dup2 redirect still works
+        return getattr(self._real, name)
