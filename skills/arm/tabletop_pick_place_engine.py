@@ -170,3 +170,6 @@ class _ReplyRouter:
     commands behaving exactly as before.
     """
 
+    def __init__(self, real):
+        self._real = real
+
