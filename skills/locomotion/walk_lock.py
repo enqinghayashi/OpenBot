@@ -149,3 +149,121 @@ class ApproachLock(object):
                    ('(%.3f, %.3f)' % st['w']) if st['w'] else '-', st['gate'],
                    '' if large else ' (pickable: other labels by id only)'))
 
+    def clear(self, why):
+        st, self.st = self.st, None
+        if st is None:
+            return None
+        return ('[alock] CLEARED %s#%s (%s; %d rows, %d re-acquired)'
+                % (st['label'], st['iid'], why, st['n'], st['reacq']))
+
+    def z_ref(self):
+        return _median(self.st['zs']) if self.st else None
+
+    def predict(self, now, pose=None):
+        """(x, y, gate_m, source) -- where the locked object should be NOW in
+        the body frame, and how far a row may sit from it."""
+        st = self.st
+        if st is None:
+            return None
+        gate = st.get('gate', LOCK_GATE_M)
+        if pose is not None and st['w'] is not None:
+            x, y = world_to_body(pose, st['w'][0], st['w'][1])
+            return x, y, gate, 'odom'
+        dt = max(0.0, float(now) - st['t'])
+        d = math.hypot(st['x'], st['y'])
+        extra = min(LOCK_MOTION_CAP_M,
+                    (LOCK_VX_MAX + LOCK_YAW_RATE_MAX * d) * dt)
+        return st['x'], st['y'], gate + extra, 'body'
+
+    def select(self, rows, now, pose=None, min_conf=0.0):
+        """(row|None, how, events) for one /object_detections_body packet.
+
+        how: 'iid' (same tracker id, consistent position), 'near' (a row of
+        the target label at the predicted position), 'near_other' (a row of
+        ANOTHER label there: the class flipped), or None.  A same-id row that
+        jumped is NOT followed (event JUMP).  The caller passes rows already
+        stripped of the robot's own body (walk_node SELF_ZONE_M)."""
+        st = self.st
+        events = []
+        if st is None:
+            return None, None, events
+        px, py, gate, _src = self.predict(now, pose)
+        zr = self.z_ref()
+        cands = []
+        for r in rows or ():
+            if not isinstance(r, dict):
+                continue
+            try:
+                if float(r.get('conf', 0) or 0) < min_conf:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            p = _xyz(r)
+            if p is None:
+                continue
+            cands.append((r, p, math.hypot(p[0] - px, p[1] - py),
+                          abs(p[2] - zr)))
+        pick, how = None, None
+        if st['iid'] is not None:
+            for r, p, dxy, dz in cands:
+                if _iid(r) != st['iid']:
+                    continue
+                if dxy <= gate and dz <= LOCK_DZ_M:
+                    pick, how = (r, p), 'iid'
+                else:
+                    note = (round(p[0], 1), round(p[1], 1))
+                    if note != self._jump_note:
+                        self._jump_note = note
+                        events.append(
+                            '[alock] JUMP %s#%s det=%s moved %.2f m dz=%.2f '
+                            '(gate %.2f/%.2f): not followed'
+                            % (st['label'], st['iid'], r.get('label'), dxy,
+                               dz, gate, LOCK_DZ_M))
+                break
+        if pick is None:
+            near = [(0 if str(r.get('label')) == st['label'] else 1, dxy, r, p)
+                    for r, p, dxy, dz in cands
+                    if dxy <= gate and dz <= LOCK_DZ_M
+                    and (st['iid'] is None or _iid(r) != st['iid'])
+                    and (st.get('other', True)
+                         or str(r.get('label')) == st['label'])]
+            if near:
+                near.sort(key=lambda t: (t[0], t[1]))
+                other, dxy, r, p = near[0]
+                pick, how = (r, p), ('near_other' if other else 'near')
+                rid = _iid(r)
+                if rid is not None and rid != st['iid']:
+                    events.append('[alock] REACQUIRED %s#%s (was #%s) det=%s '
+                                  'dist=%.3f' % (st['label'], rid, st['iid'],
+                                                 r.get('label'), dxy))
+                    st['iid'] = rid
+                    st['reacq'] += 1
+        if pick is None:
+            return None, None, events
+        r, p = pick
+        st['x'], st['y'] = p[0], p[1]
+        st['zs'] = (st['zs'] + [p[2]])[-LOCK_Z_HIST_N:]
+        st['t'] = float(now)
+        st['n'] += 1
+        if pose is not None:
+            st['w'] = body_to_world(pose, p[0], p[1])
+        seen = str(r.get('label'))
+        if seen != st['seen']:
+            events.append('[alock] FOLLOW %s#%s det %s->%s (%s)'
+                          % (st['label'], st['iid'], st['seen'], seen, how))
+            st['seen'] = seen
+        return r, how, events
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# F5 -- turn back to where we lost the target
+# ════════════════════════════════════════════════════════════════════════════
+REACQ_DWELL_S = 1.5         # stop and look first (a flicker usually comes back)
+#: 0.30 rad/s does not turn the robot in place; 0.50 rad/s is the sweep
+#: rate that does.
+REACQ_OMEGA = 0.50          # rad/s, how fast we swing back
+REACQ_TURN_MAX_S = 4.0      # caps the turn at ~69 deg
+REACQ_LOOK_S = 1.5          # keep looking once the turn is done
+REACQ_TOL_RAD = 0.09        # same as walk_node ALIGN_TOL_RAD
+
+
