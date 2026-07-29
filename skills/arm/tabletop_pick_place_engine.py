@@ -214,3 +214,13 @@ class _Request:
         self.done = threading.Event()
 
 
+class _CommandStream:
+    """``sys.stdin`` replacement; iterating it drives the command loop.
+
+    The loop is ``for line in sys.stdin:`` — so ``__iter__`` is the one hook
+    available, and it fires at exactly the moment the boot sequence has
+    finished and READY has been printed.  That makes it the correct place to
+    start accepting socket connections: a client can only complete the READY
+    handshake once the engine is genuinely ready to serve commands.
+    """
+
