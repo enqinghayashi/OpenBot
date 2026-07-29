@@ -450,3 +450,7 @@ def main() -> None:
         _shutdown(server, stop_event, requests)
         sys.stderr.write("[pick_daemon] engine stopped\n")
         sys.stderr.flush()
+
+
+if __name__ == "__main__":
+    main()
