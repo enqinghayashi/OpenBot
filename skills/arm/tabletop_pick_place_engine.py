@@ -357,3 +357,14 @@ def _stdin_reader(requests, stop_event: threading.Event, stream=None) -> None:
                 return
 
 
+def _accept_loop(server: socket.socket, requests, stop_event: threading.Event) -> None:
+    server.settimeout(0.5)
+    while not stop_event.is_set():
+        try:
+            conn, _ = server.accept()
+        except socket.timeout:
+            continue
+        except OSError:
+            return
+        threading.Thread(target=_serve_conn, args=(conn, requests, stop_event),
+                         daemon=True).start()
