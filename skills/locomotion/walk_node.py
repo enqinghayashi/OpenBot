@@ -222,3 +222,130 @@ WALK_REACQUIRE = os.environ.get('OPENBOT_WALK_REACQUIRE', '').strip() != '0'
 WALK_POSE = os.environ.get('OPENBOT_WALK_POSE', '').strip() != '0'
 
 
+def _turn_cap(raw):
+    """OPENBOT_WALK_TURN_CAP -> the cap in rad/s (None = no cap)."""
+    if raw is None or not str(raw).strip():
+        return 0.50
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return 0.50
+    if not math.isfinite(v) or v <= 0.0:
+        return None
+    return max(0.10, min(0.60, v))
+
+
+WALK_TURN_CAP = _turn_cap(os.environ.get('OPENBOT_WALK_TURN_CAP'))
+# OPENBOT_POSE_BACKOFF_M: distance to step back before turning home
+POSE_BACKOFF_ENV = os.environ.get('OPENBOT_POSE_BACKOFF_M')
+BLIND_MAX_S = 0.5         # no forward motion on a target row past this age
+                          # (receive time); a healthy approach sees much shorter gaps
+SETTLE_LOG_S = 1.0        # log where the robot actually settled, this long
+                          # after REACHED
+
+# -- corridor escape ---------------------------------------------------------
+# a corridor obstruction normally holds the approach; when
+# the hold persists, walk an offset bearing around it instead
+# a detour is a forward crawl, not a strafe: lateral velocity
+# is unused here and its sign is unverified, while yaw is known
+DETOUR_AFTER_HOLD_S = 6.0  # hold this long before detouring: a passer-by clears
+                           # on its own, so the passive hold stays the default
+                           # shorter than the 45 s corridor hold, so two detours
+                           # plus holds fit the 120 s approach deadline
+DETOUR_RAD        = 0.45   # aim offset from the target bearing (rad, about 26 deg)
+DETOUR_DURATION_S = 3.0    # length of one detour walk (s)
+DETOUR_VX         = VX_MIN * 1.1   # fixed crawl at 0.22 m/s, just above the gait floor;
+                                   # the approach speed fades to zero near the yaw
+                                   # deadband, which a detour deliberately crosses
+DETOUR_MAX        = 2      # detours per approach, alternating sides; then fall
+                           # back to the hold
+
+# -- arrival alignment -------------------------------------------------------
+# the stop law tests planar distance alone, so the robot
+# can stop off-axis; turn in place until the bearing is
+# centred before committing REACHED
+ALIGN_TOL_RAD   = 0.09     # about 5 deg: centred enough for the arm handoff
+ALIGN_TIMEOUT_S = 1.5      # bounded centring turn; at 0.40 rad/s it covers about 34 deg
+                           # stays below LOST_TIMEOUT_S (2.0 s): the turn moves the
+                           # object and can stale the label, and a longer wait would let
+                           # the stale rollback undo the arrival
+                           # alignment gates the stop-law branch only, so a close-range
+                           # dropout reaches REACHED through the arrival latch
+
+# -- stall watchdog -----------------------------------------------------------
+STALL_WINDOW_S     = 15.0    # rolling window (s): distance must drop
+STALL_MIN_PROGRESS = 0.05    # by this many metres, else stalled: stop and
+                             # re-sweep; two stalls per budget end in NOT_FOUND
+# -- target-stability gate ---------------------------------------------------
+# a target position that jumps between consecutive fresh
+# detections is not self-consistent; refuse it instead of
+# walking to it, and never let it reach the stop law or the
+# corridor gate
+# dt comes from capture stamps, not receipt times: under load
+# two samples can arrive close together after a longer capture
+# gap, which would make honest motion look impossible
+# the bound adds the noise floor to the physical ceiling; a
+# range factor would only loosen the guard further out
+YAW_RATE_MAX       = abs(K_THETA * OMEGA_MAX)   # actual yaw ceiling in rad/s: the error is
+                                                # clamped, then the gain scales it to 0.60
+TARGET_JUMP_MIN_M  = 0.30    # noise floor in m, between honest motion (<= 0.20) and
+                             # garbage (>= 0.45); a false refusal breaks a healthy
+                             # walk, so the margin is not spent on the garbage side
+TARGET_JUMP_DT_S   = 5.0    # compare only detections this close in time; a longer
+                            # gap can hide real motion, so it is not judged
+TARGET_UNSTABLE_N  = 3       # reject after three impossible samples in a row
+# -- corridor hold -----------------------------------------------------------
+# a corridor freeze keeps the target and re-enters the hold
+# instead of spending the give-up budget: a passer-by is
+# transient, and dropping the object over it is wrong
+# the hold budget and clock live in the hunt law, which is
+# unit-tested separately
+# the edge stop margin and max reachable height are calibrated
+# against a box of known size, like STOP_DISTANCE_M
+
+# -- ROS topics (default QoS depth 10) ----------------------------------------
+DETECTIONS_TOPIC      = '/detections'
+BODY_DETECTIONS_TOPIC = '/object_detections_body'
+ODOM_TOPIC            = '/unitree/slam_mapping/odom'
+WALK_TARGET_TOPIC     = '/walk_target'
+WALK_STATUS_TOPIC     = '/walk_status'
+WALK_GO_TOPIC         = '/walk_go'
+# '<label>#<iid>@<hue>' names one object;
+# a bare label clears the instance
+WALK_INSTANCE_TOPIC   = '/walk_instance'
+# a JSON object with x and y, optional yaw or face_x/face_y,
+# and an optional label, in the odometry frame; 'stop' ends
+# the walk
+WALK_POSE_TOPIC       = '/walk_pose'
+#: an instance past this age is dropped at run end,
+#: so a later walk does not inherit it
+INSTANCE_KEEP_S       = 10.0
+
+# -- the locomotion plumbing --------------------------------------------------
+NETWORK_IFACE  = 'eth0'
+FAKE_LOCO      = os.environ.get('FAKE_LOCO', '') == '1'
+FAKE_DAEMON    = os.environ.get('FAKE_DAEMON', '') == '1'
+LOCO_BACKEND   = os.environ.get('LOCO_BACKEND', 'daemon').strip().lower()
+                # 'mujoco' | 'g1_inproc' | 'daemon'
+                # (daemon is the default)
+
+
+def _wrap_pi(a):
+    """Wrap an angle to (-pi, pi]."""
+    return (a + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def _cap_turn(omega):
+    """B8l: clamp an approach / alignment yaw rate to WALK_TURN_CAP."""
+    if WALK_TURN_CAP is None:
+        return omega
+    return max(-WALK_TURN_CAP, min(WALK_TURN_CAP, omega))
+
+
+class _FakeLoco:
+    """FAKE_LOCO=1 dev stub: all verbs print `[FAKE_LOCO] ...` lines only.
+
+    get_state() returns a static dict so callers exercise the same code paths
+    as on the robot. Never touches the SDK or the network.
+    """
+
