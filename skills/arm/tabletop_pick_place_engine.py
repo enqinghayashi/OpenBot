@@ -370,3 +370,34 @@ def _accept_loop(server: socket.socket, requests, stop_event: threading.Event) -
                          daemon=True).start()
 
 
+def _bind_socket() -> socket.socket:
+    """Bind the listener, refusing to become a SECOND engine.
+
+    Replaces the gateway's pgrep double-spawn guard with a structural one: if
+    the socket path is already owned by a live engine, this process is a
+    duplicate and exits instead of racing it for the writer socket.
+    """
+    if os.path.exists(SOCK_PATH):
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            probe.settimeout(1.0)
+            probe.connect(SOCK_PATH)
+        except OSError:
+            os.unlink(SOCK_PATH)  # stale socket left by a crashed engine
+        else:
+            probe.close()
+            sys.stderr.write(
+                "[pick_daemon] FATAL: %s is already served by a live engine — "
+                "refusing to start a second one\n" % SOCK_PATH)
+            sys.stderr.flush()
+            raise SystemExit(1)
+        finally:
+            try:
+                probe.close()
+            except OSError:
+                pass
+
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(SOCK_PATH)
+    server.listen(LISTEN_BACKLOG)
+    return server
