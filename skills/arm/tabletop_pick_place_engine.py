@@ -231,3 +231,38 @@ class _CommandStream:
     def __iter__(self):
         return self._dispatch()
 
+    def _dispatch(self):
+        global _current_writer
+        self._start_serving()
+        prev = None
+        try:
+            while True:
+                _current_writer = None
+                if prev is not None:
+                    # consumer came back -> prev finished
+                    # signal it here, or its thread waits
+                    # for the next request
+                    prev.done.set()
+                    prev = None
+                # idle until mark_busy()
+                # the cancel flag hangs off this bit
+                # so a cancel with no task is REFUSED,
+                # not armed for the next one
+                # (engine_cancel's sticky-flag trap)
+                engine_cancel.mark_idle()
+                req = self._requests.get()
+                if req is None:  # the shutdown sentinel
+                    return
+                _current_writer = req.writer
+                prev = req
+                # arm BEFORE yielding
+                # cancel must land from the first motion step
+                engine_cancel.mark_busy()
+                yield req.line
+        finally:
+            # quit or shutdown: release the in-flight
+            # command either way
+            _current_writer = None
+            engine_cancel.mark_idle()
+            if prev is not None:
+                prev.done.set()
