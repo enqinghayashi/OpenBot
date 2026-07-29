@@ -271,3 +271,45 @@ class _CommandStream:
 # ── serving clients ─────────────────────────────────────────────────────────
 
 
+def _serve_conn(conn: socket.socket, requests, stop_event: threading.Event) -> None:
+    """Serve ONE client: READY banner, then one line in -> one line out.
+
+    Thread-per-connection, but the EXECUTION is not here — the line is queued
+    for the single-threaded command loop and this thread blocks until that
+    command completes.  So a second client can hold a connection open without
+    ever interleaving with a pick in progress.
+    """
+    writer = _ConnWriter(conn)
+    try:
+        conn.sendall(READY_BANNER)
+        reader = conn.makefile("rb")
+        while not stop_event.is_set():
+            raw = reader.readline()
+            if not raw:
+                break  # client hung up on us
+            line = raw.decode("utf-8", "replace").strip()
+            if not line:
+                continue
+            if _is_cancel_line(line):
+                # answered here, never queued
+                # lands while the loop is in a pick
+                accepted, msg = engine_cancel.request("socket")
+                writer.write("CANCEL:%s\n"
+                             % ("accepted" if accepted else "refused " + msg))
+                writer.flush()
+                continue
+            req = _Request(line, writer)
+            requests.put(req)
+            while not req.done.wait(0.5):
+                if stop_event.is_set():
+                    return
+            if line == "quit":
+                break
+    except OSError:
+        pass  # a dropped client only kills its own connection
+    finally:
+        writer.close()
+        try:
+            conn.close()
+        except OSError:
+            pass
