@@ -266,3 +266,8 @@ class _CommandStream:
             engine_cancel.mark_idle()
             if prev is not None:
                 prev.done.set()
+
+
+# ── serving clients ─────────────────────────────────────────────────────────
+
+
