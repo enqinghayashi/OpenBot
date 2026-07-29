@@ -403,3 +403,15 @@ def _bind_socket() -> socket.socket:
     return server
 
 
+def _shutdown(server, stop_event: threading.Event, requests) -> None:
+    stop_event.set()
+    requests.put(None)  # unblock the dispatcher if it's waiting
+    try:
+        server.close()
+    except OSError:
+        pass
+    if os.path.exists(SOCK_PATH):
+        try:
+            os.unlink(SOCK_PATH)
+        except OSError:
+            pass
