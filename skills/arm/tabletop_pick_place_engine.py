@@ -197,3 +197,14 @@ class _ReplyRouter:
 # ── the command stream ──────────────────────────────────────────────────────
 
 
+class _Request:
+    """One command line plus the writer its reply belongs on.
+
+    ``writer is None`` means "came from stdin" -> reply goes to real stdout.
+    ``done`` is set by the dispatcher once the command has fully finished
+    (i.e. when the loop asks for the next one), which is what lets the owning
+    thread release and report completion.
+    """
+
+    __slots__ = ("line", "writer", "done")
+
