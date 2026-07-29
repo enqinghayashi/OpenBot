@@ -355,3 +355,5 @@ def _stdin_reader(requests, stop_event: threading.Event, stream=None) -> None:
         while not req.done.wait(0.5):
             if stop_event.is_set():
                 return
+
+
