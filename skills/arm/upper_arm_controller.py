@@ -334,3 +334,16 @@ class G1_29_ArmControllerUpperOnly(G1_29_ArmController):
             time.sleep(sleep_time)
 
     # ── gate ramp ──
+    def release_arms(self):
+        """Ramp the arm_sdk gate from 1 -> 0 in 101 steps (~2 s).
+
+        The locomotion stack's arm fallback (arm_sdk disabled) takes the
+        arms while the robot walks; after this returns the daemon must not
+        stream arm targets until acquire_arms()."""
+        logger_mp.info("[G1_29_ArmControllerUpperOnly] release_arms: "
+                       "gate 1 -> 0")
+        for w in np.linspace(1, 0, num=GATE_RAMP_STEPS):
+            self.msg.motor_cmd[GATE_JOINT].q = float(w)
+            time.sleep(GATE_RAMP_DT)
+        logger_mp.info("[G1_29_ArmControllerUpperOnly] arms released")
+
