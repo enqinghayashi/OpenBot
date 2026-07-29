@@ -315,3 +315,43 @@ def _serve_conn(conn: socket.socket, requests, stop_event: threading.Event) -> N
             pass
 
 
+def _stdin_reader(requests, stop_event: threading.Event, stream=None) -> None:
+    """Feed terminal-delivered commands into the same queue.
+
+    EOF stops watching stdin but does NOT quit: a resident engine must survive
+    its stdin being closed (the old entrypoint exited on EOF, which is exactly
+    what we are removing).
+
+    ``stream`` defaults to the real stdin; tests inject a pipe so the EOF
+    contract can be exercised without touching the test runner's own stdin.
+    """
+    if stream is None:
+        stream = sys.__stdin__
+    if stream is None:
+        return
+    try:
+        fd = stream.fileno()
+    except (OSError, ValueError, AttributeError):
+        return
+    while not stop_event.is_set():
+        try:
+            ready, _, _ = select.select([fd], [], [], 0.5)
+        except (OSError, ValueError):
+            return  # stdin got closed or isn't selectable
+        if not ready:
+            continue
+        line = stream.readline()
+        if not line:
+            sys.stderr.write(
+                "[pick_daemon] stdin EOF — no longer reading stdin "
+                "(engine stays resident; use the 'quit' verb to stop)\n")
+            sys.stderr.flush()
+            return
+        line = line.strip()
+        if not line:
+            continue
+        req = _Request(line, None)  # None -> reply goes to real stdout
+        requests.put(req)
+        while not req.done.wait(0.5):
+            if stop_event.is_set():
+                return
