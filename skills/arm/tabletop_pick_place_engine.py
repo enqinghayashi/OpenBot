@@ -313,3 +313,5 @@ def _serve_conn(conn: socket.socket, requests, stop_event: threading.Event) -> N
             conn.close()
         except OSError:
             pass
+
+
