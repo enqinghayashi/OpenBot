@@ -458,3 +458,58 @@ class _DaemonLoco:
 
     # -- the stdin protocol ---
 
+    def _send_line(self, line):
+        """One command in, one response line out. ERROR:<msg> raises."""
+        with self._lock:
+            if self._proc is None or not self._ready:
+                raise RuntimeError('daemon not connected')
+            try:
+                self._proc.stdin.write(line + '\n')
+                self._proc.stdin.flush()
+                resp = self._proc.stdout.readline()
+            except (BrokenPipeError, OSError) as e:
+                raise RuntimeError(f'daemon pipe broken: {e}') from e
+        resp = (resp or '').strip()
+        if resp.startswith('ERROR:'):
+            raise RuntimeError(resp[len('ERROR:'):])
+        return resp
+
+    # -- the movement verbs ---
+
+    def set_velocity(self, vx, vy, omega, duration=1.0):
+        """`walk <vx> <vy> <omega> <duration>` -> DONE:<sport code> (0 = OK)."""
+        resp = self._send_line(f'walk {vx} {vy} {omega} {duration}')
+        if resp == 'DONE':
+            return None
+        if resp.startswith('DONE:'):
+            try:
+                return int(resp[len('DONE:'):])
+            except ValueError:
+                return resp[len('DONE:'):]
+        raise RuntimeError(f'unexpected daemon response: {resp!r}')
+
+    def stop(self):
+        self._send_line('stop')
+        return None
+
+    def get_fsm_mode(self):
+        """`mode` -> DONE:<fsm mode> (GET 7002). None on malformed reply.
+
+        Hardware-day finding (2026-08-16): fsm_mode=3 = gait-BLOCKED post-boot
+        state; fsm_mode=0 = walking-capable. Pre-flight must warn on != 0."""
+        resp = self._send_line('mode')
+        if resp.startswith('DONE:'):
+            try:
+                return int(resp[len('DONE:'):])
+            except ValueError:
+                return None
+        return None
+
+    def start(self):
+        # deliberate no-op: at R2+A the robot is already in sport
+        # FSM 801, and the vendor start() sends SetFsmId(200); kept
+        # so every backend shares one API
+        print('[DAEMON_LOCO] start() no-op — skipped on hardware '
+              '(R2+A = FSM 801; SDK Start() = SetFsmId(200)).')
+        return None
+
