@@ -113,3 +113,157 @@ class G1_29_ArmControllerUpperOnly(G1_29_ArmController):
     stationary (non-801).
     """
 
+    def __init__(self, motion_mode=False, simulation_mode=False):
+        logger_mp.info("Initialize G1_29_ArmControllerUpperOnly...")
+        self.q_target = np.zeros(14)
+        self.tauff_target = np.zeros(14)
+        self.motion_mode = motion_mode
+        self.simulation_mode = simulation_mode
+        self.kp_high = 300.0
+        self.kd_high = 3.0
+        self.kp_low = 80.0
+        self.kd_low = 3.0
+        self.kp_wrist = 40.0
+        self.kd_wrist = 1.5
+
+        self.all_motor_q = None
+        self.arm_velocity_limit = 20.0
+        self.control_dt = 1.0 / 250.0
+
+        # lock the waist too, or the gate (29) isn't honored; same for
+        # the legs (limp = ~2 Nm/rad vs 80).
+        self.WRITE_WAIST = True
+
+        self._speed_gradual_max = False
+        self._gradual_start_time = None
+        self._gradual_time = None
+        # True once the OWNER sets a limit (set_velocity_limit /
+        # speed_instant_max): the ramp below is then suppressed, so it
+        # can't stomp the owner's cap (1.5 rad/s moves) back to
+        # 20+10*min(1,t/5) every tick.  speed_gradual_max() takes it back.
+        self._velocity_override = False
+
+        # lowcmd pub, lowstate sub
+        if self.simulation_mode:
+            ChannelFactoryInitialize(1)
+        else:
+            ChannelFactoryInitialize(0)
+
+        if self.motion_mode:
+            self.lowcmd_publisher = ChannelPublisher(kTopicLowCommand_Motion,
+                                                     hg_LowCmd)
+        else:
+            # debug topic, unused (it would fight loco), kept anyway for
+            # symmetry with the stock controller.
+            self.lowcmd_publisher = ChannelPublisher("rt/lowcmd", hg_LowCmd)
+        self.lowcmd_publisher.Init()
+        self.lowstate_subscriber = ChannelSubscriber(kTopicLowState, hg_LowState)
+        self.lowstate_subscriber.Init()
+        self.lowstate_buffer = DataBuffer()
+
+        # subscribe thread
+        self.subscribe_thread = threading.Thread(target=self._subscribe_motor_state)
+        self.subscribe_thread.daemon = True
+        self.subscribe_thread.start()
+
+        while not self.lowstate_buffer.GetData():
+            time.sleep(0.1)
+            logger_mp.warning("[G1_29_ArmControllerUpperOnly] Waiting to subscribe dds...")
+        logger_mp.info("[G1_29_ArmControllerUpperOnly] Subscribe dds ok.")
+
+        # hg lowcmd msg
+        self.crc = CRC()
+        self.msg = unitree_hg_msg_dds__LowCmd_()
+        self.msg.mode_pr = 0
+        self.msg.mode_machine = self.get_mode_machine()
+
+        # snapshot the pristine lower-body fields (mode/q of 0-14) so the
+        # ctrl loop can spot ANY accidental write, whatever the DDS
+        # defaults are.
+        self._lower_body_init = {
+            id.value: (int(self.msg.motor_cmd[id].mode),
+                       float(self.msg.motor_cmd[id].q))
+            for id in G1_29_JointIndex if id.value < 15
+        }
+
+        self.all_motor_q = self.get_current_motor_q()
+        logger_mp.info(f"Current all body motor state q:\n{self.all_motor_q} \n")
+        logger_mp.info(f"Current two arms motor state q:\n{self.get_current_dual_arm_q()}\n")
+
+        # ── lock the arms (15-28) + gate (29) ──
+        # waist, legs and slots 30-34 below
+        logger_mp.info("Lock arms + arm_sdk gate (waist + legs locked below)...\n")
+        for id in G1_29_JointArmIndex:
+            self.msg.motor_cmd[id].mode = 1
+            if self._Is_wrist_motor(id):
+                self.msg.motor_cmd[id].kp = self.kp_wrist
+                self.msg.motor_cmd[id].kd = self.kd_wrist
+            else:
+                self.msg.motor_cmd[id].kp = self.kp_low
+                self.msg.motor_cmd[id].kd = self.kd_low
+            self.msg.motor_cmd[id].q = self.all_motor_q[id]
+        # gate 29: mode 1 (arm_sdk enable/weight);
+        # q = 1.0 in motion mode (the ctrl loop sets it)
+        self.msg.motor_cmd[GATE_JOINT].mode = 1
+        self.msg.motor_cmd[GATE_JOINT].kp = self.kp_high
+        self.msg.motor_cmd[GATE_JOINT].kd = self.kd_high
+        self.msg.motor_cmd[GATE_JOINT].q = 1.0 if self.motion_mode else 0.0
+        logger_mp.info("Arms locked OK!\n")
+
+        # ── waist 12-14 ──
+        # limp waist = gate (29) not honored ("arm barely moves").
+        # Lock at the captured pose, HOLD it, never drive it.
+        logger_mp.info("Lock waist (12-14) at captured pose...\n")
+        self._waist_q_captured = np.array(
+            [self.all_motor_q[id] for id in WAIST_JOINTS])
+        for idx, id in enumerate(WAIST_JOINTS):
+            self.msg.motor_cmd[id].mode = 1
+            self.msg.motor_cmd[id].kp = self.kp_high  # jitter fix: was kp_low=80
+            self.msg.motor_cmd[id].kd = self.kd_low
+            self.msg.motor_cmd[id].q = self._waist_q_captured[idx]
+        logger_mp.info("Waist locked OK!\n")
+
+        # ── legs 0-11 ──
+        # same as the waist: captured pose, HOLD, never drive.  Limp legs
+        # leave effective kp at ~2 Nm/rad vs the commanded 80.
+        logger_mp.info("Lock legs (0-11) at captured pose...\n")
+        self._leg_q_captured = np.array(
+            [self.all_motor_q[id] for id in LEG_JOINTS])
+        for idx, id in enumerate(LEG_JOINTS):
+            self.msg.motor_cmd[id].mode = 1
+            self.msg.motor_cmd[id].kp = self.kp_high
+            self.msg.motor_cmd[id].kd = self.kd_high
+            self.msg.motor_cmd[id].q = self._leg_q_captured[idx]
+        logger_mp.info("Legs locked OK!\n")
+
+        # ── slots 30-34 ──
+        # init value only: the ctrl loop never writes them.  At mode=0
+        # they may trip the firmware in Running Mode (801) -- see above.
+        logger_mp.info("Lock trailing unused joints (30-34) at captured pose...\n")
+        for id in NOT_USED_JOINTS:
+            self.msg.motor_cmd[id].mode = 1
+            self.msg.motor_cmd[id].kp = self.kp_high
+            self.msg.motor_cmd[id].kd = self.kd_high
+            self.msg.motor_cmd[id].q = self.all_motor_q[id]
+        logger_mp.info("Trailing unused joints locked OK!\n")
+
+        # startup debug: gate q + mode bits; check every group is locked
+        # before the thread runs.
+        gate_q = float(self.msg.motor_cmd[GATE_JOINT].q)
+        leg_modes = [self.msg.motor_cmd[id].mode for id in range(12)]
+        waist_modes = [self.msg.motor_cmd[id].mode for id in range(12, 15)]
+        arm_modes = [self.msg.motor_cmd[id].mode for id in range(15, 29)]
+        not_used_modes = [self.msg.motor_cmd[id].mode for id in range(29, 35)]
+        sys.stderr.write(
+            f"[upper] DEBUG gate_q={gate_q:.4f} "
+            f"leg_modes={leg_modes} waist_modes={waist_modes} "
+            f"arm_modes={arm_modes} not_used_modes={not_used_modes}\n")
+
+        # publish thread
+        self.publish_thread = threading.Thread(target=self._ctrl_motor_state)
+        self.ctrl_lock = threading.Lock()
+        self.publish_thread.daemon = True
+        self.publish_thread.start()
+
+        logger_mp.info("Initialize G1_29_ArmControllerUpperOnly OK!\n")
+
