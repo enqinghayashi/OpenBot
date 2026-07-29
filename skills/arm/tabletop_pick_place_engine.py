@@ -417,3 +417,36 @@ def _shutdown(server, stop_event: threading.Event, requests) -> None:
             pass
 
 
+def main() -> None:
+    import pick_engine_v3 as engine  # noqa: E402 — path already set above; heavy import
+
+    server = _bind_socket()
+    stop_event = threading.Event()
+    requests: "queue.Queue" = queue.Queue()
+
+    serving = threading.Event()
+
+    def start_serving():
+        if serving.is_set():
+            return
+        serving.set()
+        threading.Thread(target=_accept_loop,
+                         args=(server, requests, stop_event), daemon=True).start()
+        threading.Thread(target=_stdin_reader,
+                         args=(requests, stop_event), daemon=True).start()
+        sys.stderr.write("[pick_daemon] serving on %s\n" % SOCK_PATH)
+        sys.stderr.flush()
+
+    real_stdout = sys.stdout
+    sys.stdout = _ReplyRouter(real_stdout)
+    sys.stdin = _CommandStream(requests, start_serving)
+
+    try:
+        # boot (init move, diagnostics, READY) + loop
+        # returns when 'quit' breaks the loop
+        engine.main()
+    finally:
+        sys.stdout = real_stdout
+        _shutdown(server, stop_event, requests)
+        sys.stderr.write("[pick_daemon] engine stopped\n")
+        sys.stderr.flush()
