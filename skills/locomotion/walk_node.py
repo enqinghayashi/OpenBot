@@ -349,3 +349,34 @@ class _FakeLoco:
     as on the robot. Never touches the SDK or the network.
     """
 
+    def connect(self):
+        print('[FAKE_LOCO] connect()')
+        return self
+
+    def start(self):
+        print('[FAKE_LOCO] start() (skipped on hardware — robot SDK sends '
+              'SetFsmId(200); R2+A is already FSM 801)')
+        return None
+
+    def set_velocity(self, vx, vy, omega, duration=1.0):
+        print('[FAKE_LOCO] set_velocity '
+              f'vx={vx:+.2f} vy={vy:+.2f} omega={omega:+.2f} '
+              f'duration={duration:.2f}s')
+        return None
+
+    def stop(self):
+        print('[FAKE_LOCO] stop()')
+        return None
+
+    def disconnect(self):
+        print('[FAKE_LOCO] disconnect()')
+        return None
+
+    def get_state(self):
+        return {
+            'velocity': [0.0, 0.0, 0.0],
+            'yaw_speed': 0.0,
+            'position': [0.0, 0.0, 0.0],
+            'mode': 500,
+            'gait_type': 0,
+        }
