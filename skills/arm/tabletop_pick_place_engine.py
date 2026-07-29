@@ -415,3 +415,5 @@ def _shutdown(server, stop_event: threading.Event, requests) -> None:
             os.unlink(SOCK_PATH)
         except OSError:
             pass
+
+
