@@ -911,3 +911,89 @@ class WalkNode(Node):
 
     # -- approach-lock helpers ----------------------------------------------------
 
+    def _lock_label(self):
+        """The target label whose presence comes ONLY from the lock (armed
+        lock in a live bare-label run), else None."""
+        if not WALK_LOCK or not getattr(self, '_alock_live', False):
+            return None
+        lock = getattr(self, '_alock', None)
+        tlock = getattr(self, '_targets_lock', None)
+        if lock is None or tlock is None:
+            return None
+        with tlock:
+            st = lock.st
+            return st['label'] if st is not None else None
+
+    def _odom_pose(self):
+        """(x, y, yaw) of a FRESH odometry pose (<= walk_lock.LOCK_ODOM_FRESH_S
+        old), else None."""
+        olock = getattr(self, '_odom_lock', None)
+        if olock is None:
+            return None
+        with olock:
+            t = getattr(self, '_odom_t', 0.0)
+            if not t or time.time() - t > walk_lock.LOCK_ODOM_FRESH_S:
+                return None
+            return (self._robot_x, self._robot_y, self._robot_yaw)
+
+    def _lock_entry(self, label, row, how, now):
+        """B8l: a _targets entry for the lock's row, stored under the TARGET
+        label (the stop law keeps the target's tier); a row of another label
+        is marked cont='lock' + cont_label like a B8j continuation."""
+        entry = {
+            'label': str(label),
+            'x': float(row['x']),
+            'y': float(row['y']),
+            'z': float(row['z']),
+            'conf': row.get('conf', 0),
+            't': now,
+            'width_m': (float(row['width_m'])
+                        if row.get('width_m') is not None else None),
+            'depth_m': (float(row['depth_m'])
+                        if row.get('depth_m') is not None else None),
+            'stamp': self._det_stamp(row),
+            'lock': how,
+        }
+        if str(row.get('label')) != str(label):
+            entry['cont'] = 'lock'
+            entry['cont_label'] = str(row.get('label'))
+        return entry
+
+    def _lock_arm_from(self, pos):
+        """B8l F1: arm the approach lock on the row the approach starts on
+        (the coordinator confirmed it: /walk_go after its beats).  Not for an
+        explicit instance target (the B8 path) and not for 'person' (a person
+        moves: the B8k best-row walk follows them, review r1 L8)."""
+        if not WALK_LOCK or not getattr(self, '_alock_live', False):
+            return
+        lock = getattr(self, '_alock', None)
+        label = self._target_label
+        if lock is None or not label or str(label) == 'person':
+            return
+        with self._inst_lock:
+            if self._inst is not None:
+                return
+        row = {'label': pos.get('cont_label') or label, 'x': pos['x'],
+               'y': pos['y'], 'z': pos.get('z', 0.0),
+               'instance_id': (getattr(self, '_row_iids', None) or {}).get(label)}
+        pose = self._odom_pose()
+        large = hunt_law.stop_tier(label) == 'large'
+        with self._targets_lock:
+            ev = lock.arm(label, row, time.time(), pose, large=large)
+        if ev:
+            self.get_logger().info(ev)
+
+    def _lock_reset(self, why, live=None):
+        """Clear the approach lock (logged when one was armed); ``live`` sets
+        whether a new one may arm."""
+        lock = getattr(self, '_alock', None)
+        tlock = getattr(self, '_targets_lock', None)
+        if lock is None or tlock is None:
+            return
+        with tlock:
+            ev = lock.clear(why)
+            if live is not None:
+                self._alock_live = bool(live)
+        if ev:
+            self.get_logger().info(ev)
+
