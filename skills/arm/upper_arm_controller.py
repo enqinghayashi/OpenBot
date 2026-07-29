@@ -358,3 +358,15 @@ class G1_29_ArmControllerUpperOnly(G1_29_ArmController):
             time.sleep(GATE_RAMP_DT)
         logger_mp.info("[G1_29_ArmControllerUpperOnly] arms acquired")
 
+    def hold_only(self):
+        """Freeze arm targets at the current joint angles (gate stays on).
+
+        The ctrl loop keeps streaming, but the target never moves away
+        from the measured q, so the arms hold the current posture while
+        the robot continues walking."""
+        with self.ctrl_lock:
+            self.q_target = self.get_current_dual_arm_q()
+        logger_mp.info("[G1_29_ArmControllerUpperOnly] hold_only: targets "
+                       "frozen at current q")
+
+    # ── stock API ──
