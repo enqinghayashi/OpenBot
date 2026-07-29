@@ -102,3 +102,14 @@ NOT_USED_JOINTS = (G1_29_JointIndex.kNotUsedJoint1,
                    G1_29_JointIndex.kNotUsedJoint5)
 
 
+class G1_29_ArmControllerUpperOnly(G1_29_ArmController):
+    """Arms-driven variant: legs 0-11 + waist 12-14 + trailing 30-34 held.
+
+    The arms (15-28) and the arm_sdk gate joint (29) are driven; the
+    waist (12-14), legs (0-11), and trailing unused slots (30-34) are
+    locked (mode=1) at the captured pose and held, never driven.  Locking
+    mirrors the stock G1_29_ArmController (all 35 joints mode=1) so the
+    arm_sdk gate is honored and the arms don't run limp.  Pick runs
+    stationary (non-801).
+    """
+
