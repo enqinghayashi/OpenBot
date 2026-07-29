@@ -347,3 +347,14 @@ class G1_29_ArmControllerUpperOnly(G1_29_ArmController):
             time.sleep(GATE_RAMP_DT)
         logger_mp.info("[G1_29_ArmControllerUpperOnly] arms released")
 
+    def acquire_arms(self):
+        """Ramp the arm_sdk gate from 0 -> 1 in 101 steps (~2 s).
+
+        After this the daemon resumes full authority over the arms."""
+        logger_mp.info("[G1_29_ArmControllerUpperOnly] acquire_arms: "
+                       "gate 0 -> 1")
+        for w in np.linspace(0, 1, num=GATE_RAMP_STEPS):
+            self.msg.motor_cmd[GATE_JOINT].q = float(w)
+            time.sleep(GATE_RAMP_DT)
+        logger_mp.info("[G1_29_ArmControllerUpperOnly] arms acquired")
+
