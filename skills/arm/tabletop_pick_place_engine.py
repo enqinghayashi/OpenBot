@@ -192,3 +192,8 @@ class _ReplyRouter:
         # we never touch fd 1, so _SuppressStdout's
         # os.dup2 redirect still works
         return getattr(self._real, name)
+
+
+# ── the command stream ──────────────────────────────────────────────────────
+
+
