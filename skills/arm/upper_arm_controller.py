@@ -278,3 +278,59 @@ class G1_29_ArmControllerUpperOnly(G1_29_ArmController):
                 self.lowstate_buffer.SetData(lowstate)
             time.sleep(0.002)
 
+    def _ctrl_motor_state(self):
+        """250 Hz loop writing the arms (15-28) + gate (29) + the locked
+        waist (12-14) AND legs (0-11) held at the captured pose, CRC before
+        every Write."""
+        if self.motion_mode:
+            self.msg.motor_cmd[GATE_JOINT].q = 1.0
+
+        while True:
+            start_time = time.time()
+
+            with self.ctrl_lock:
+                arm_q_target = self.q_target
+                arm_tauff_target = self.tauff_target
+
+            if self.simulation_mode:
+                clipped_arm_q_target = arm_q_target
+            else:
+                clipped_arm_q_target = self.clip_arm_q_target(
+                    arm_q_target, velocity_limit=self.arm_velocity_limit)
+
+            for idx, id in enumerate(G1_29_JointArmIndex):
+                self.msg.motor_cmd[id].q = clipped_arm_q_target[idx]
+                self.msg.motor_cmd[id].dq = 0
+                self.msg.motor_cmd[id].tau = arm_tauff_target[idx]
+
+            if self.WRITE_WAIST:
+                # hold the waist each tick (mode=1 at init);
+                # do NOT drive it
+                for idx, id in enumerate(WAIST_JOINTS):
+                    self.msg.motor_cmd[id].q = self._waist_q_captured[idx]
+                    self.msg.motor_cmd[id].dq = 0
+                    self.msg.motor_cmd[id].tau = 0
+
+            # hold the legs each tick (mode=1 at init);
+            # do NOT drive them
+            for idx, id in enumerate(LEG_JOINTS):
+                self.msg.motor_cmd[id].q = self._leg_q_captured[idx]
+                self.msg.motor_cmd[id].dq = 0
+                self.msg.motor_cmd[id].tau = 0
+
+            self.msg.crc = self.crc.Crc(self.msg)
+            self.lowcmd_publisher.Write(self.msg)
+
+            # ramp only while the OWNER hasn't set a limit: else it
+            # overwrites the daemon's 1.5 rad/s every tick and silently
+            # lifts the cap to 30 rad/s within 5 s.
+            if self._speed_gradual_max is True and not self._velocity_override:
+                t_elapsed = start_time - self._gradual_start_time
+                self.arm_velocity_limit = 20.0 + (10.0 * min(1.0, t_elapsed / 5.0))
+
+            current_time = time.time()
+            all_t_elapsed = current_time - start_time
+            sleep_time = max(0, (self.control_dt - all_t_elapsed))
+            time.sleep(sleep_time)
+
+    # ── gate ramp ──
