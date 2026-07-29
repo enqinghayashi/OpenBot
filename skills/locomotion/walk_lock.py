@@ -385,3 +385,117 @@ def is_requester_ahead(row, pose, goal, radius=REQUESTER_AHEAD_M):
         return False
     wx, wy = body_to_world(pose, p[0], p[1])
     return math.hypot(wx - goal['face_x'], wy - goal['face_y']) <= radius
+
+
+def parse_pose_goal(text):
+    """'/walk_pose' payload -> ('go', goal) | ('stop', None) | (None, why).
+
+    goal JSON: {"x", "y"} (odometry metres, required), optional "yaw"
+    (rad), "face_x"/"face_y" (a point to face at the end: the requester),
+    "label" (status label, default 'home')."""
+    import json
+    s = '' if text is None else str(text).strip()
+    if s.lower() in ('stop', 'abort'):
+        return 'stop', None
+    try:
+        d = json.loads(s)
+    except ValueError:
+        return None, 'not JSON'
+    if not isinstance(d, dict):
+        return None, 'not a JSON object'
+    if str(d.get('op', 'go')).lower() in ('stop', 'abort'):
+        return 'stop', None
+    goal = {}
+    for k in ('x', 'y'):
+        v = _f(d, k)
+        if v is None:
+            return None, 'missing %s' % k
+        goal[k] = v
+    for k in ('yaw', 'face_x', 'face_y'):
+        v = _f(d, k)
+        if v is not None:
+            goal[k] = v
+    if ('face_x' in goal) != ('face_y' in goal):
+        goal.pop('face_x', None)
+        goal.pop('face_y', None)
+    lab = d.get('label')
+    goal['label'] = (lab.strip().lower() if isinstance(lab, str)
+                     and lab.strip() else 'home')[:32]
+    return 'go', goal
+
+
+def pose_command(pose, goal, stage):
+    """One control tick toward ``goal`` from odometry ``pose`` (x, y, yaw).
+
+    stage 'drive': walk to (x, y); becomes 'face' inside POSE_TOL_M.
+    stage 'face' : turn to face face_x/face_y (else goal yaw; else done).
+    Returns {'vx','omega','dist','err','stage'}; stage 'done' = arrived."""
+    gx, gy = goal['x'], goal['y']
+    x_b, y_b = world_to_body(pose, gx, gy)
+    dist = math.hypot(x_b, y_b)
+    if stage == 'drive':
+        if dist <= POSE_TOL_M:
+            stage = 'face'
+        else:
+            err = bearing(x_b, y_b)
+            omega = POSE_OMEGA_SIGN * POSE_K * max(-POSE_ERR_MAX,
+                                                  min(POSE_ERR_MAX, err))
+            omega = max(-POSE_OMEGA_CAP, min(POSE_OMEGA_CAP, omega))
+            vx = POSE_VX * max(0.0, 1.0 - abs(err) / POSE_DEADBAND)
+            if dist < POSE_SLOW_M and vx > 0.0:
+                vx = min(vx, POSE_VX_MIN)
+            if vx < POSE_VX_MIN:
+                vx = 0.0 if abs(err) > POSE_DEADBAND / 2.0 else POSE_VX_MIN
+            return {'vx': vx, 'omega': omega, 'dist': dist, 'err': err,
+                    'stage': 'drive'}
+    # the 'face' stage
+    if 'face_x' in goal:
+        fx, fy = world_to_body(pose, goal['face_x'], goal['face_y'])
+        if math.hypot(fx, fy) < 0.15:
+            err = None                  # we're on the point: nothing to face
+        else:
+            err = bearing(fx, fy)
+    elif 'yaw' in goal:
+        # odom yaw goes CCW but walk_node's error is + = RIGHT (clockwise)
+        err = wrap_pi(pose[2] - goal['yaw'])
+    else:
+        err = None
+    if err is None or abs(err) <= POSE_FACE_TOL_RAD:
+        return {'vx': 0.0, 'omega': 0.0, 'dist': dist,
+                'err': 0.0 if err is None else err, 'stage': 'done'}
+    omega = POSE_OMEGA_SIGN * POSE_K * max(-POSE_ERR_MAX, min(POSE_ERR_MAX, err))
+    omega = max(-POSE_OMEGA_CAP, min(POSE_OMEGA_CAP, omega))
+    return {'vx': 0.0, 'omega': omega, 'dist': dist, 'err': err,
+            'stage': 'face'}
+
+
+def pose_blocked(rows, dist_goal):
+    """The row that blocks the walk to a goal ``dist_goal`` m ahead-ish, or
+    None.  Body-frame rows (x right, y forward).  A plausible person within
+    OBST_PERSON_M, or any other row (conf >= OBST_MIN_CONF, z <= OBST_Z_MAX:
+    never the hands / the held object) within OBST_M, inside the forward
+    corridor |x| <= OBST_CORRIDOR_M and nearer than the goal."""
+    best = None
+    for r in rows or ():
+        p = _xyz(r)
+        if p is None:
+            continue
+        x, y, z = p
+        if y <= 0.0 or abs(x) > OBST_CORRIDOR_M:
+            continue
+        d = math.hypot(x, y)
+        if d >= dist_goal + 0.05:
+            continue
+        conf = _f(r, 'conf') or 0.0
+        if str(r.get('label')) == 'person':
+            h = _f(r, 'height_m')
+            if conf < OBST_PERSON_MIN_CONF or (h is not None and h < OBST_PERSON_MIN_H_M):
+                continue
+            lim = OBST_PERSON_M
+        else:
+            if conf < OBST_MIN_CONF or z > OBST_Z_MAX:
+                continue
+            lim = OBST_M
+        if d <= lim and (best is None or d < best[0]):
+            best = (d, r)
+    return None if best is None else best[1]
