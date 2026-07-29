@@ -208,3 +208,7 @@ class _Request:
 
     __slots__ = ("line", "writer", "done")
 
+    def __init__(self, line: str, writer):
+        self.line = line
+        self.writer = writer
+        self.done = threading.Event()
