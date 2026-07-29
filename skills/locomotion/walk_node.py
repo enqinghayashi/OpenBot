@@ -380,3 +380,81 @@ class _FakeLoco:
             'mode': 500,
             'gait_type': 0,
         }
+
+
+class _DaemonLoco:
+    """LOCO_BACKEND=daemon (T6): locomotion lives in a subprocess daemon.
+
+    Spawns walk_loco_daemon.py (or fake_loco_daemon.py under FAKE_DAEMON=1)
+    with a scrubbed env (PYTHONPATH cleared — the daemon inserts the
+    known-good SDK copy itself; backend switches never leak into the
+    daemon), waits for the READY line, then speaks the stdin protocol:
+    `walk <vx> <vy> <omega> [duration]` -> `DONE:<sport code>` (0 = OK);
+    `stop` -> `DONE`; `quit` -> `DONE` + os._exit(0). One response line per
+    command; `ERROR:<msg>` responses raise RuntimeError.
+
+    Interpreter: plain login-shell python3 (sys.executable, WALK_DAEMON_PYTHON
+    override) — the daemon must NOT run under the tv conda env (documented
+    cyclonedds lib clash); the sport RPC works under the system 3.8.
+    """
+
+    _READY_TIMEOUT_S = 15.0
+
+    def __init__(self, iface='eth0', daemon_script=None):
+        self._iface = iface
+        self._daemon_script = daemon_script or os.path.join(
+            _SCRIPT_DIR, 'walk_loco_daemon.py')
+        self._proc = None
+        self._ready = False
+        self._lock = threading.Lock()       # one command at a time
+
+    # -- set up and tear down ---
+
+    def connect(self):
+        """Spawn the daemon and wait for its READY line."""
+        env = dict(os.environ)
+        env['PYTHONPATH'] = ''              # cleared so the daemon uses its own SDK path
+        for key in ('LOCO_BACKEND', 'FAKE_LOCO', 'FAKE_DAEMON'):
+            env.pop(key, None)              # backend switches never reach the daemon
+        python = os.environ.get('WALK_DAEMON_PYTHON', sys.executable)
+        self._proc = subprocess.Popen(
+            [python, self._daemon_script, self._iface],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            env=env, universal_newlines=True, bufsize=1)
+        deadline = time.time() + self._READY_TIMEOUT_S
+        while time.time() < deadline:
+            if self._proc.poll() is not None:
+                raise RuntimeError(
+                    f'daemon exited before READY (rc={self._proc.returncode})')
+            ready, _, _ = select.select([self._proc.stdout], [], [], 0.2)
+            if ready:
+                line = self._proc.stdout.readline().strip()
+                if line == 'READY':
+                    self._ready = True
+                    return self
+                raise RuntimeError(
+                    f'unexpected daemon first line: {line!r}')
+        raise RuntimeError(
+            f'daemon not READY within {self._READY_TIMEOUT_S}s')
+
+    def disconnect(self):
+        """quit + terminate backstop: ask the daemon to exit, then reap it."""
+        proc, self._proc = self._proc, None
+        self._ready = False
+        if proc is None or proc.poll() is not None:
+            return
+        try:
+            proc.stdin.write('quit\n')
+            proc.stdin.flush()
+            proc.stdout.readline()          # daemon replies DONE, then exits
+        except (BrokenPipeError, OSError):
+            pass
+        proc.terminate()
+        try:
+            proc.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2.0)
+
+    # -- the stdin protocol ---
+
