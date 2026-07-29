@@ -224,3 +224,7 @@ class _CommandStream:
     handshake once the engine is genuinely ready to serve commands.
     """
 
+    def __init__(self, requests: "queue.Queue", start_serving):
+        self._requests = requests
+        self._start_serving = start_serving
+
