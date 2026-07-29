@@ -228,3 +228,6 @@ class _CommandStream:
         self._requests = requests
         self._start_serving = start_serving
 
+    def __iter__(self):
+        return self._dispatch()
+
