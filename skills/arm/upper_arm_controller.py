@@ -267,3 +267,14 @@ class G1_29_ArmControllerUpperOnly(G1_29_ArmController):
 
         logger_mp.info("Initialize G1_29_ArmControllerUpperOnly OK!\n")
 
+    def _subscribe_motor_state(self):
+        while True:
+            msg = self.lowstate_subscriber.Read()
+            if msg is not None:
+                lowstate = G1_29_LowState()
+                for id in range(G1_29_Num_Motors):
+                    lowstate.motor_state[id].q = msg.motor_state[id].q
+                    lowstate.motor_state[id].dq = msg.motor_state[id].dq
+                self.lowstate_buffer.SetData(lowstate)
+            time.sleep(0.002)
+
