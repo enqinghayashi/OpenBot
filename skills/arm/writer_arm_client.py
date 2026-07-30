@@ -62,3 +62,19 @@ class WriterArmClient:
         self._sock = s
         self._file = s.makefile("r", encoding="utf-8")
 
+    def close(self):
+        if self._file is not None:
+            try:
+                self._file.close()
+            except OSError:
+                pass
+            self._file = None
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            self._sock = None
+
+    # --- under the hood ---
+
