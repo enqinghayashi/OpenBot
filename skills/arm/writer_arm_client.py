@@ -163,3 +163,8 @@ class WriterArmClient:
         self.slew_start(target14, duration=duration, tau=tau)
         self.wait_slew(abort=abort)
 
+    def pose_start(self, name):
+        """Start a cosine slew to a named writer pose (ready/lift/tuck/...).
+        Returns immediately (DONE = slew STARTED)."""
+        self._cmd(name)
+
