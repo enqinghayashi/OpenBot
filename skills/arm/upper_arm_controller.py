@@ -426,3 +426,15 @@ class G1_29_ArmControllerUpperOnly(G1_29_ArmController):
         # no ramp for an owner set
         self._velocity_override = True
 
+    def set_velocity_limit(self, limit):
+        """T8: explicit OWNER-set velocity cap (e.g. the pick daemon's
+        1.5 rad/s slow moves / 2.0 rad/s go-home).
+
+        Takes precedence over the stock gradual ramp: _ctrl_motor_state
+        would otherwise overwrite this value with 20+10*min(1,t/5) on every
+        tick while speed_gradual_max is active, silently lifting the cap to
+        30 rad/s within 5 s (Task 8 diagnosis — the daemon's cap was dead).
+        """
+        self.arm_velocity_limit = float(limit)
+        self._velocity_override = True
+
