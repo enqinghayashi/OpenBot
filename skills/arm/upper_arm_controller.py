@@ -390,3 +390,8 @@ class G1_29_ArmControllerUpperOnly(G1_29_ArmController):
         return np.array([self.lowstate_buffer.GetData().motor_state[id].q
                          for id in G1_29_JointArmIndex])
 
+    def get_current_dual_arm_dq(self):
+        """Return current state dq of the left and right arm motors."""
+        return np.array([self.lowstate_buffer.GetData().motor_state[id].dq
+                         for id in G1_29_JointArmIndex])
+
