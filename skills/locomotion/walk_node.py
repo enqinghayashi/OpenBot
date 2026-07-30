@@ -1360,3 +1360,508 @@ class WalkNode(Node):
             time.sleep(DETECT_POLL_S)
         return 'done'
 
+    def _sweep_turn(self):
+        if SWEEP_STRATEGY == 'alternate':
+            self._sweep_dir = -self._sweep_dir
+        else:                                   # one-way: 360 deg total
+            self._sweep_dir = getattr(self, '_sweep_pref', None) or SWEEP_SIGN
+        omega = self._sweep_dir * YAW_RATE_RAD_S
+        self.get_logger().info(
+            f'Sweep turn: omega={omega:+.2f} rad/s for {TURN_DURATION_S:.2f}s')
+        self._loco.set_velocity(0.0, 0.0, omega, duration=TURN_DURATION_S)
+        deadline = time.time() + TURN_DURATION_S
+        while time.time() < deadline:
+            # stop on the first sighting; presence comes from the
+            # presence-only topic, since a far target appears well
+            # before its depth is usable and the hold copes with late
+            # depth
+            if self._label_visible(self._target_label):
+                self._stop_motion()
+                self.get_logger().info(
+                    'Sweep interrupted: label visible — sweep stopped.')
+                return 'interrupted'
+            time.sleep(DETECT_POLL_S)
+        time.sleep(TURN_SETTLE_S)
+        self._stop_motion()
+        return 'done'
+
+    def _phase_hold(self):
+        """Detected-hold (T10): stand still — no turn, no walk.
+
+        Runs inside SEARCHING (the DETECTED status is a /walk_status
+        vocabulary event, not an FSM state). Publishes DETECTED EXACTLY ONCE
+        at entry, then loops at DETECT_POLL_S until /walk_go (matching label,
+        GO_STALE_S-fresh), a stop, a retarget, or the detection is lost.
+        /walk_target is NEVER a trigger — /walk_go is the only trigger channel.
+        """
+        label = self._target_label
+        self._publish_status('DETECTED', label=label, detail={'once': True})
+        self.get_logger().info(
+            f'DETECTED "{label}" — holding (no turn, no walk); waiting for '
+            f'{WALK_GO_TOPIC} with a matching label.')
+        last_visible = time.time()
+        no_pos_since = None
+        while True:
+            cmd = self._poll_command()
+            if cmd == 'stop':
+                return 'IDLE'
+            if cmd == 'retarget':               # a target replays as a retarget,
+                self._publish_status(           # never as a trigger
+                    'SEARCHING', label=self._target_label,
+                    detail={'re_sweep': True, 'reason': 'retarget'})
+                return 'SEARCHING'
+            go = self._poll_go()
+            if go is not None:
+                go_label, ts = go
+                if time.time() - ts > GO_STALE_S:
+                    self.get_logger().warn(
+                        f'/walk_go "{go_label}" is {time.time() - ts:.1f}s old '
+                        f'(> {GO_STALE_S:.0f}s) — dropped (stay DETECTED).')
+                elif go_label != label:
+                    self.get_logger().warn(
+                        f'/walk_go label "{go_label}" != active "{label}" '
+                        '— dropped (stay DETECTED).')
+                else:
+                    pos = self._fresh_target(label)   # recheck at trigger time
+                    if pos is None:
+                        # no-progress recycle: the trigger arrived but there is no
+                        # fresh position, so count a stall; this must stay bounded
+                        # because the label is usually visible, so the window never
+                        # expires
+                        self._hunt.add_stall('trigger_stale')
+                        self.get_logger().warn(
+                            f'/walk_go "{label}" but no fresh position — back '
+                            'to SEARCHING (never walk on a stale trigger).')
+                        self._publish_status(
+                            'SEARCHING', label=label,
+                            detail={'re_sweep': True, 'reason': 'stale_trigger'})
+                        return 'SEARCHING'
+                    in_zone, ev = self._stop_law(
+                        pos['label'], pos['x'], pos['y'], pos.get('z', 0.0),
+                        pos.get('width_m'), pos.get('depth_m'), STOP_DISTANCE_M)
+                    if in_zone:
+                        self._reach_evidence = ev
+                        self._stop_motion()
+                        return 'REACHED'        # inside the gate
+                    self._latch_target(pos)
+                    self._lock_arm_from(pos)    # the row that got confirmed
+                    return 'APPROACHING'
+            pos = self._fresh_target(label)
+            if self._label_visible(label):
+                last_visible = time.time()
+                if pos is not None:
+                    no_pos_since = None
+                elif no_pos_since is None:
+                    no_pos_since = time.time()
+                elif time.time() - no_pos_since >= HOLD_MAX_S:
+                    # hold escape: presence without position; the recycle spends
+                    # the stall budget, so this stays bounded even though the
+                    # window never expires
+                    self._hunt.add_stall('hold_depth_stale')
+                    self.get_logger().warn(
+                        f'"{label}" visible but depth-invalid for '
+                        f'{HOLD_MAX_S:.0f}s — back to SEARCHING')
+                    self._publish_status(
+                        'SEARCHING', label=label,
+                        detail={'re_sweep': True, 'reason': 'depth_stale'})
+                    return 'SEARCHING'
+            elif time.time() - last_visible >= LOST_TIMEOUT_S:
+                self.get_logger().warn(
+                    f'"{label}" lost for {LOST_TIMEOUT_S:.0f}s during hold '
+                    '— back to SEARCHING')
+                self._lost_side(label)          # sweep that side
+                self._lock_reset('lost during hold')
+                self._publish_status(
+                    'SEARCHING', label=label,
+                    detail={'re_sweep': True, 'reason': 'lost'})
+                return 'SEARCHING'
+            time.sleep(DETECT_POLL_S)
+
+    def _phase_approach(self):
+        self._cont_armed = True     # continuity is armed here only;
+                                    # _run_fsm disarms it
+        last_anchor = time.time()
+        last_heartbeat = 0.0
+        # fresh stall watchdog per approach (15 s, >= 0.05 m)
+        stall_wd = hunt_law.StallWatchdog(STALL_WINDOW_S, STALL_MIN_PROGRESS)
+        # frame-to-frame displacement, reset per approach; no state
+        # is inherited
+        prev_meas = None
+        jumps = 0
+        # a tick whose fresh sample the gate judged impossible: that
+        # sample, and the latched copy the loop falls back to after
+        # it, must not reach the stop law, or it would commit the
+        # arrival the gate exists to prevent
+        last_fresh_rejected = False
+        # detour budget and alignment clock, reset per approach
+        detours = 0
+        detour_until = 0.0
+        detour_sign = 0.0
+        align_since = 0.0
+        blind_since = 0.0           # start of the blind hold
+        reacq_used = False          # one reacquire per approach
+        while True:
+            cmd = self._poll_command()
+            if cmd == 'stop':
+                self._stop_motion()
+                return 'IDLE'
+            if cmd == 'retarget':
+                self._stop_motion()
+                return 'SEARCHING'
+            fresh = self._fresh_target(self._target_label)
+            if fresh is not None:               # re-anchor on every fresh row
+                self._latch_target(fresh)
+                last_anchor = time.time()
+            else:
+                # arrival latch: the stop law below needs a fresh detection,
+                # but the projector drops the label at close range, so the
+                # robot can sit inside the gate with no fresh measurement and
+                # roll back
+                # once the retained measurement lands in the zone, commit
+                # REACHED for ARRIVAL_LATCH_S even as the label goes stale
+                # evaluated before the lost-track rollbacks, so the loss the
+                # projector causes cannot undo the arrival
+                anchor = self._retained_target(self._target_label)
+                if anchor is not None:
+                    latched, lev = hunt_law.arrival_latch(
+                        anchor, time.time(), STOP_DISTANCE_M, ARRIVAL_LATCH_S,
+                        law=self._stop_law)
+                    if latched:
+                        self._reach_evidence = lev
+                        self.get_logger().info(
+                            f'Arrival latch: last-known '
+                            f'"{self._target_label}" in stop zone '
+                            f'({lev.get("law")}, age '
+                            f'{lev.get("latch_age_s")}s) — REACHED')
+                        self._stop_motion()
+                        return 'REACHED'
+            if time.time() - last_anchor > LOST_TIMEOUT_S:
+                # target vanished: count one stall so a flickering visible
+                # label cannot recycle forever; the count happens once inside
+                # _after_stall, and a separate count here would burn the
+                # whole stall budget
+                self.get_logger().warn(
+                    f'No fresh "{self._target_label}" for {LOST_TIMEOUT_S:.0f}s '
+                    '— back to SEARCHING')
+                self._stop_motion()
+                r = self._approach_reacquire(reacq_used)
+                reacq_used = reacq_used or WALK_REACQUIRE
+                if r == 'stop':
+                    return 'IDLE'
+                if r == 'retarget':
+                    return 'SEARCHING'
+                if r == 'found':
+                    last_anchor = time.time()
+                    prev_meas, jumps, last_fresh_rejected = None, 0, False
+                    blind_since, align_since = 0.0, 0.0
+                    stall_wd = hunt_law.StallWatchdog(STALL_WINDOW_S,
+                                                      STALL_MIN_PROGRESS)
+                    continue
+                nxt = self._after_stall('approach_lost')
+                if nxt == 'SEARCHING' and WALK_REACQUIRE:   # announce the re-sweep
+                    self._publish_status('SEARCHING', label=self._target_label,
+                                         detail={'re_sweep': True,
+                                                 'reason': 'approach_lost'})
+                return nxt
+            cur = self._current_target()
+            if cur is None:
+                # main loss path in practice: the row goes stale
+                # (STALE_DETECTION_S) before LOST_TIMEOUT_S expires, so the
+                # branch above rarely runs
+                self._stop_motion()
+                r = self._approach_reacquire(reacq_used)
+                reacq_used = reacq_used or WALK_REACQUIRE
+                if r == 'stop':
+                    return 'IDLE'
+                if r == 'found':
+                    last_anchor = time.time()
+                    prev_meas, jumps, last_fresh_rejected = None, 0, False
+                    blind_since, align_since = 0.0, 0.0
+                    stall_wd = hunt_law.StallWatchdog(STALL_WINDOW_S,
+                                                      STALL_MIN_PROGRESS)
+                    continue
+                if r != 'retarget':
+                    self._lock_reset('lost during approach')
+                if r != 'retarget' and WALK_REACQUIRE:
+                    # announce the re-sweep so the caller can re-narrow the
+                    # target
+                    self._publish_status('SEARCHING', label=self._target_label,
+                                         detail={'re_sweep': True,
+                                                 'reason': 'target_stale'})
+                return 'SEARCHING'                  # no stall counted
+            x_b, y_b, _z, _lab = cur
+            d = math.hypot(x_b, y_b)
+            now = time.time()
+            # target-stability gate: runs before the stop law and the
+            # corridor gate because both consume the position
+            # only fresh detections are compared, and the reference sample
+            # is only replaced by a fresh one; the latched value is
+            # returned in between, so comparing every tick would reset the
+            # streak and the gate could never fire (fresh samples are about
+            # 0.1 s apart)
+            # consume_ok: the position may be acted on this tick
+            consume_ok = not last_fresh_rejected
+            if fresh is not None:
+                _st = self._det_stamp(fresh)
+                if prev_meas is not None:
+                    _px, _py, _pt_st, _pt_rx = prev_meas
+                    # dt is the window the object had to move in: the capture
+                    # gap, not the receipt gap; under load they differ by up to
+                    # ~0.27 s, the whole noise budget at 0.60 rad/s
+                    _dt = (_st - _pt_st
+                           if (_st is not None and _pt_st is not None)
+                           else now - _pt_rx)
+                    if 0.0 < _dt <= TARGET_JUMP_DT_S:
+                        _jump = math.hypot(x_b - _px, y_b - _py)
+                        # the most the robot's own motion could have moved a
+                        # stationary object in _dt: translation plus the arc swept at
+                        # the real yaw ceiling, added to the noise floor
+                        _ceil = (VX_WALK + YAW_RATE_MAX * d) * _dt
+                        _bound = TARGET_JUMP_MIN_M + _ceil
+                        if _jump > _bound:
+                            jumps += 1
+                            last_fresh_rejected = True
+                            consume_ok = False
+                            self.get_logger().warn(
+                                f'G18: "{self._target_label}" jumped '
+                                f'{_jump:.2f} m in {_dt:.2f}s (bound '
+                                f'{_bound:.2f} m at d={d:.2f}) — not physical '
+                                f'({jumps}/{TARGET_UNSTABLE_N})')
+                            if jumps >= TARGET_UNSTABLE_N:
+                                self.get_logger().warn(
+                                    f'G18: "{self._target_label}" position is '
+                                    'not self-consistent — refusing the '
+                                    'approach (walking to it would stop at the '
+                                    'wrong object).')
+                                self._stop_motion()
+                                self._publish_status(
+                                    'SEARCHING', label=self._target_label,
+                                    detail={'re_sweep': True,
+                                            'reason': 'target_unstable'})
+                                return self._after_stall('target_unstable')
+                        else:
+                            jumps = 0       # honest motion clears it
+                            last_fresh_rejected = False
+                    else:
+                        # gap longer than TARGET_JUMP_DT_S (a missed detection) or a
+                        # backwards stamp: no evidence either way, so neither count
+                        # nor clear; the sample still becomes the reference, but the
+                        # rejected flag describes the current position and must be
+                        # cleared
+                        last_fresh_rejected = False
+                prev_meas = (x_b, y_b, _st, now)
+            if not consume_ok:
+                # skip the consumption, not the loop period: a bare continue
+                # would spin this thread at full speed
+                time.sleep(CTRL_DT_S)
+                continue
+            # blind cap: no forward motion on a target row past this age;
+            # without it a stale row plus the approach speed can overrun
+            # the target
+            # past BLIND_MAX_S the robot holds with no vx and no omega
+            # until a fresh row appears; a stale row inside the stop zone
+            # still commits REACHED below
+            _blind = self._blind_age(fresh, now)
+            if _blind is not None:
+                _inz = detour_until <= now and self._stop_law(
+                    fresh['label'], fresh['x'], fresh['y'],
+                    fresh.get('z', 0.0), fresh.get('width_m'),
+                    fresh.get('depth_m'), STOP_DISTANCE_M)[0]
+                if not _inz:
+                    if not blind_since:
+                        blind_since = now
+                        self._stop_motion()
+                        self.get_logger().warn(
+                            f'[blind] "{self._target_label}" row is '
+                            f'{_blind:.2f}s old (> {BLIND_MAX_S:.2f}s) at '
+                            f'd={d:.3f} — holding, no forward motion until '
+                            'a fresh row.')
+                    time.sleep(CTRL_DT_S)
+                    continue
+            elif blind_since:
+                self.get_logger().info(
+                    f'[blind] "{self._target_label}" fresh row after '
+                    f'{now - blind_since:.2f}s of hold — resuming.')
+                blind_since = 0.0
+            # detour under way: walk the offset bearing and skip both
+            # laws below; the corridor gate would re-freeze on the
+            # obstacle being rounded and the stop law would fire on a
+            # target passed at an angle
+            # the detour ends on its clock, not when the corridor clears:
+            # the obstacle leaves the sector partway, so a mid-arc clear
+            # is expected; the corridor is retested from the new spot
+            # once the clock runs out
+            if detour_until > now:
+                aim = _wrap_pi(math.atan2(x_b, y_b) + detour_sign * DETOUR_RAD)
+                omega = OMEGA_SIGN * K_THETA * max(-OMEGA_MAX,
+                                                   min(OMEGA_MAX, aim))
+                vx = DETOUR_VX      # fixed speed: the approach vx would be zero here
+                self._loco.set_velocity(vx, 0.0, omega, duration=1.0)
+                # the side comes from the omega sign, not detour_sign:
+                # OMEGA_SIGN is -1.0, so a positive aim gives a negative
+                # omega and turns right
+                self.get_logger().info(
+                    f'G17a detour {detours}/{DETOUR_MAX} '
+                    f'({"left" if omega > 0 else "right"}): '
+                    f'aim={math.degrees(aim):+.1f} vx={vx:.2f} '
+                    f'omega={omega:+.2f} ({detour_until - now:.1f}s left)')
+                time.sleep(CTRL_DT_S)
+                continue
+            # corridor gate: a person or furniture between robot and
+            # target freezes the approach before the motion beat; the
+            # corridor is a bearing within OBSTRUCTION_SECTOR_RAD of the
+            # target bearing and closer than the target
+            # the freeze holds the target, bounded by
+            # COLLISION_HOLD_MAX_S
+            ob = self._obstruction_between(x_b, y_b)
+            if ob is not None:
+                verdict, held = self._corridor.frozen(now)
+                self._stop_motion()
+                self._publish_status(
+                    'SEARCHING', label=self._target_label,
+                    detail={'re_sweep': True, 'reason': 'collision_freeze',
+                            'obstacle': ob['label'],
+                            'obstacle_d_m': round(ob['od'], 3),
+                            'held_s': round(held, 1)})
+                self.get_logger().warn(
+                    f'G17a: "{ob["label"]}" at d={ob["od"]:.2f} m between '
+                    f'robot and target — approach frozen '
+                    f'({held:.0f}s of {hunt_law.COLLISION_HOLD_MAX_S:.0f}s '
+                    'held).')
+                # escape route: before spending the whole hold budget on a
+                # corridor that will not clear, walk around it, aiming to the
+                # side the obstacle is not on
+                # a failure degrades to the hold path below: the clock is
+                # cleared and the budget is spent normally
+                # missing x/y must degrade instead of raising; an exception
+                # in the FSM loop costs the whole approach
+                _ox, _oy = ob.get('x'), ob.get('y')
+                if (held >= DETOUR_AFTER_HOLD_S and detours < DETOUR_MAX
+                        and _ox is not None and _oy is not None):
+                    ob_bear = math.atan2(_ox, _oy)
+                    tgt_bear = math.atan2(x_b, y_b)
+                    delta = _wrap_pi(ob_bear - tgt_bear)
+                    if detours == 0:
+                        # first try: pass on the far side
+                        detour_sign = -1.0 if delta > 0.0 else 1.0
+                    else:
+                        # blocked again: try the other side
+                        detour_sign = -detour_sign
+                    detours += 1
+                    detour_until = now + DETOUR_DURATION_S
+                    self._corridor.clear()
+                    self.get_logger().warn(
+                        f'G17a: detouring around "{ob["label"]}" (obstacle '
+                        f'{math.degrees(delta):+.0f} deg off the target '
+                        f'bearing, so aiming '
+                        f'{math.degrees(detour_sign * DETOUR_RAD):+.0f} deg) '
+                        f'— attempt {detours}/{DETOUR_MAX}.')
+                    time.sleep(CTRL_DT_S)
+                    continue
+                if verdict == 'give_up':
+                    self.get_logger().warn(
+                        f'G17a: corridor blocked for {held:.0f}s — giving up '
+                        'on this approach (hold budget spent).')
+                    return self._after_stall('collision_freeze')
+                return 'SEARCHING'          # keep the target and rejoin the hold
+            self._corridor.clear()          # corridor clear, freeze streak broken
+            # stall watchdog: no progress in the window stops the
+            # robot and re-sweeps, or gives up once the budget is gone
+            if stall_wd.update(d, now) == 'stall':
+                self.get_logger().warn(
+                    f'G5b: no progress for {STALL_WINDOW_S:.0f}s '
+                    f'(< {STALL_MIN_PROGRESS:.2f} m) — approach stalls.')
+                self._stop_motion()
+                self._publish_status(
+                    'SEARCHING', label=self._target_label,
+                    detail={'re_sweep': True, 'reason': 'stall_watchdog'})
+                return self._after_stall('stall_watchdog')
+            # stop law: the centroid gate is the floor; wide-table and
+            # tall/large targets use the near-edge gate on the published
+            # extent, falling back to the centroid when the projector
+            # published no extent
+            if fresh is not None:
+                in_zone, ev = self._stop_law(
+                    fresh['label'], fresh['x'], fresh['y'],
+                    fresh.get('z', 0.0), fresh.get('width_m'),
+                    fresh.get('depth_m'), STOP_DISTANCE_M)
+                if fresh.get('cont'):           # the decision used a continuation
+                    ev['cont'] = fresh['cont']
+                    ev['cont_label'] = fresh.get('cont_label')
+            else:
+                in_zone, ev = self._stop_law(
+                    _lab, x_b, y_b, _z, None, None, STOP_DISTANCE_M)
+            if in_zone:
+                # line up on arrival: in_zone is a pure distance test, so
+                # committing here would stop the robot wherever hypot(x,y)
+                # crossed STOP_DISTANCE_M; turn in place until the bearing is
+                # inside ALIGN_TOL_RAD, capped by ALIGN_TIMEOUT_S
+                yaw_err = _wrap_pi(math.atan2(x_b, y_b))
+                if abs(yaw_err) > ALIGN_TOL_RAD:
+                    if align_since == 0.0:
+                        align_since = now
+                        self.get_logger().info(
+                            f'Arrival alignment: {math.degrees(yaw_err):+.1f} '
+                            f'deg off-axis at d={d:.3f} — centring before '
+                            'REACHED.')
+                    if now - align_since < ALIGN_TIMEOUT_S:
+                        omega = _cap_turn(OMEGA_SIGN * K_THETA * max(
+                            -OMEGA_MAX, min(OMEGA_MAX, yaw_err)))   # turn cap
+                        self._loco.set_velocity(0.0, 0.0, omega, duration=1.0)
+                        time.sleep(CTRL_DT_S)
+                        continue
+                    self.get_logger().warn(
+                        f'Arrival alignment: still '
+                        f'{math.degrees(yaw_err):+.1f} deg off-axis after '
+                        f'{ALIGN_TIMEOUT_S:.0f}s — committing REACHED '
+                        'unaligned.')
+                self._reach_evidence = ev
+                self.get_logger().info(
+                    f'Reached stop gate ({ev.get("law")}): ' + ', '.join(
+                        f'{k}={v}' for k, v in sorted(ev.items())))
+                self._stop_motion()
+                return 'REACHED'
+            # out of the zone: reset the alignment clock, so re-entering
+            # gets a fresh bounded turn
+            align_since = 0.0
+            yaw_err = _wrap_pi(math.atan2(x_b, y_b))     # body-frame bearing
+            omega = OMEGA_SIGN * K_THETA * max(-OMEGA_MAX, min(OMEGA_MAX, yaw_err))
+            omega = _cap_turn(omega)            # cap the turn rate
+            vx = VX_WALK * max(0.0, 1.0 - abs(yaw_err) / YAW_VX_DEADBAND)
+            if vx < VX_MIN:
+                vx = 0.0
+            self._loco.set_velocity(vx, 0.0, omega, duration=1.0)   # expires after 1 s
+            self.get_logger().info(
+                f'APPROACH d={d:.3f} yaw_err={math.degrees(yaw_err):+.1f} '
+                f'vx={vx:.2f} omega={omega:+.2f}')
+            if now - last_heartbeat >= APPROACH_HEARTBEAT_S:
+                self._publish_status('APPROACHING', label=self._target_label,
+                                     detail={'distance_m': round(d, 3)})
+                last_heartbeat = now
+            time.sleep(CTRL_DT_S)
+
+    def _after_stall(self, reason):
+        """Common stall-exit: count the stall; give up if the budget is spent."""
+        self._lock_reset(reason)                # clear the lock; it re-arms on sight
+        self._hunt.add_stall(reason)
+        if self._hunt.exhausted:
+            self.get_logger().warn(
+                f'Epoch exhaust (stalls={self._hunt.stalls}, '
+                f'turns={self._hunt.turns}) — NOT_FOUND.')
+            return 'NOT_FOUND'
+        return 'SEARCHING'
+
+    # -- finding a lost target again ----------------------------------------------
+
+    def _approach_reacquire(self, used):
+        """The approach lost its target: the FIRST loss of an approach runs
+        _reacquire ('found' | 'failed' | 'stop' | 'retarget'); a later one
+        only turns the sweep toward the side it was lost on (None).  None
+        too with OPENBOT_WALK_REACQUIRE=0 (B8k)."""
+        if not WALK_REACQUIRE:
+            return None
+        if used:
+            self._lost_side(self._target_label)
+            return None
+        return self._reacquire()
+
