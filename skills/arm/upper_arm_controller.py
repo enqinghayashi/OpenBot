@@ -376,3 +376,7 @@ class G1_29_ArmControllerUpperOnly(G1_29_ArmController):
             self.q_target = q_target
             self.tauff_target = tauff_target
 
+    def get_mode_machine(self):
+        """Return current dds mode machine."""
+        return self.lowstate_subscriber.Read().mode_machine
+
