@@ -182,3 +182,16 @@ class WriterArmClient:
 
     # --- asking the writer for state ---
 
+    def q(self):
+        """Current lowstate arm q slice (motors 15..28) as a 14-D np.float64."""
+        reply = self._cmd("q")
+        if not reply.startswith("Q:"):
+            raise WriterError(f"bad q reply: {reply!r}")
+        parts = reply[2:].split()
+        if len(parts) != 14:
+            raise WriterError(f"bad q reply (expected 14 floats): {reply!r}")
+        return np.array([float(p) for p in parts], dtype=np.float64)
+
+    # arm_sdk-shaped alias for the engine
+    get_current_dual_arm_q = q
+
