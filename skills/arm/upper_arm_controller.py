@@ -420,3 +420,9 @@ class G1_29_ArmControllerUpperOnly(G1_29_ArmController):
         # stock ramp takes the limit last; an owner set wins
         self._velocity_override = False
 
+    def speed_instant_max(self):
+        """set arms velocity to the maximum value immediately."""
+        self.arm_velocity_limit = 30.0
+        # no ramp for an owner set
+        self._velocity_override = True
+
