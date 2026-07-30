@@ -380,3 +380,8 @@ class G1_29_ArmControllerUpperOnly(G1_29_ArmController):
         """Return current dds mode machine."""
         return self.lowstate_subscriber.Read().mode_machine
 
+    def get_current_motor_q(self):
+        """Return current state q of all body motors (35)."""
+        return np.array([self.lowstate_buffer.GetData().motor_state[id].q
+                         for id in G1_29_JointIndex])
+
