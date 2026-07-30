@@ -78,3 +78,22 @@ class WriterArmClient:
 
     # --- under the hood ---
 
+    def _cmd(self, line, timeout=_REPLY_TIMEOUT):
+        """Send one request line; return the stripped reply line.
+
+        Raises WriterError on an ERROR: reply or a dropped connection.
+        """
+        if self._sock is None:
+            raise WriterError("not connected")
+        self._sock.settimeout(timeout)
+        self._sock.sendall(line.encode("utf-8") + b"\n")
+        reply = self._file.readline()
+        if not reply:
+            raise WriterError(f"writer closed the connection on: {line!r}")
+        reply = reply.strip()
+        if reply.startswith("ERROR:"):
+            raise WriterError(reply[len("ERROR:"):])
+        return reply
+
+    # --- raw slews, all 14 DOFs ---
+
