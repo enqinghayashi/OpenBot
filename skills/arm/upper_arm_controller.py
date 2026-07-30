@@ -411,3 +411,12 @@ class G1_29_ArmControllerUpperOnly(G1_29_ArmController):
             current_attempts += 1
             time.sleep(0.05)
 
+    def speed_gradual_max(self, t=5.0):
+        """Parameter t is the total time required for arms velocity to
+        gradually increase to its maximum value, in seconds. Default 5.0."""
+        self._gradual_start_time = time.time()
+        self._gradual_time = t
+        self._speed_gradual_max = True
+        # stock ramp takes the limit last; an owner set wins
+        self._velocity_override = False
+
