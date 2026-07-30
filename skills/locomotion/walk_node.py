@@ -1105,3 +1105,258 @@ class WalkNode(Node):
 
     # -- the one place commands get drained ---------------------------------------
 
+    def _poll_command(self):
+        """Single command choke point, called every loop iteration in both phases."""
+        with self._cmd_lock:
+            p, self._pending = self._pending, None
+        if p is None:
+            return 'none'
+        kind, val = p
+        if kind == 'target':                    # applied here, in one place
+            if val != self._target_label:       # a new label resets the sweep side
+                self._sweep_pref = None
+            self._target_label = val
+            self._sweep_dir = SWEEP_SIGN
+            self._hunt.reset()                  # reset hunt counters
+            self._lock_reset('retarget')        # new hunt, new lock
+            self.get_logger().info(f'Re-targeting: "{val}"')
+            return 'retarget'
+        if kind == 'pose':                      # a pose walk takes priority
+            self._deferred = ('pose', val)      # started after this run ends
+            self._fsm_exit_reason = 'preempted'
+            self.get_logger().info('Walk-to-pose requested — ending the '
+                                   f'"{self._target_label}" run first.')
+            return 'stop'
+        # record why the FSM is leaving at the one point that decides
+        # it; every stop the FSM acts on comes from here, so the
+        # closing IDLE frame cannot miss or invent one
+        self._fsm_exit_reason = 'stop'
+        return 'stop'
+
+    def _poll_go(self):
+        """Consume the /walk_go 1-slot queue; returns (label, ts) or None."""
+        with self._cmd_lock:
+            go, self._go_pending = self._go_pending, None
+        return go
+
+    # -- driving the FSM ----------------------------------------------------------
+
+    def _run_fsm(self, label):
+        self._target_label = label
+        self._sweep_dir = SWEEP_SIGN
+        self._sweep_pref = None                 # no side asked yet
+        self._lock_reset('new run', live=WALK_LOCK)   # arm a new lock
+        self._hunt.reset()                      # reset hunt counters
+        # fresh per run: an exit reason from a finished run must
+        # never leak in
+        self._fsm_exit_reason = None
+        try:
+            self._connect_loco()
+            # pre-flight: warn on stale odometry; the fresh path is
+            # body-frame, but stale odometry degrades the world-latch
+            # fallback
+            with self._odom_lock:
+                odom_age = time.time() - self._odom_t if self._odom_t else -1.0
+            if odom_age < 0 or odom_age > 3.0:
+                self.get_logger().warn(
+                    'No fresh /unitree/slam_mapping/odom '
+                    f'(age={odom_age:.1f}s) — running body-frame-only; the '
+                    'world-latch fallback is DEGRADED (verify motion visually).')
+            # pre-flight FSM gate: 0 = walking-capable, 3 = gait blocked
+            # after boot; code-0 RPCs would otherwise hide the block
+            fsm_mode = None
+            if hasattr(self._loco, 'get_fsm_mode'):
+                try:
+                    fsm_mode = self._loco.get_fsm_mode()
+                except Exception as e:
+                    self.get_logger().warn(f'fsm_mode read failed: {e!r}')
+            if fsm_mode not in (None, 0):
+                self.get_logger().warn(
+                    f'fsm_mode={fsm_mode} (expected 0) — gait may be BLOCKED. '
+                    'Redo the boot sequence (L1+B → L2+UP → R2+A) and retry.')
+            state = 'SEARCHING'
+            self._publish_status('SEARCHING', label=self._target_label,
+                                 detail={'strategy': SWEEP_STRATEGY})
+            while state != 'IDLE':
+                if state == 'SEARCHING':
+                    state = self._phase_search()
+                elif state == 'APPROACHING':
+                    state = self._phase_approach()
+                    self._cont_armed = False    # continuity ends here
+                    if state != 'REACHED':      # REACHED keeps the lock
+                        self._lock_reset('approach ended (%s)' % state)
+                elif state == 'NOT_FOUND':
+                    # hunt budget exhausted: stop, publish proof counters and
+                    # return IDLE; no success state is reported
+                    self._stop_motion()
+                    proof = self._hunt.proof()
+                    self._publish_status('NOT_FOUND', label=self._target_label,
+                                         detail=proof)
+                    self.get_logger().warn(
+                        f'NOT_FOUND "{self._target_label}" — hunt exhausted: '
+                        f'{proof}')
+                    self._fsm_exit_reason = 'not_found'
+                    self._publish_status('IDLE',
+                                         detail={'not_found': True})
+                    state = 'IDLE'
+                elif state == 'REACHED':
+                    # republish REACHED at 1 Hz for REACHED_HOLD_S so late
+                    # joiners catch it, while honouring stop and retarget;
+                    # stop-law evidence rides along
+                    detail = {'standby': True}
+                    if self._reach_evidence:
+                        detail['stop_law'] = self._reach_evidence
+                    self._publish_status('REACHED', label=self._target_label,
+                                         detail=detail)
+                    hold_until = time.time() + REACHED_HOLD_S
+                    settle_at = time.time() + SETTLE_LOG_S   # schedule the settle log
+                    next_state = 'IDLE'
+                    while time.time() < hold_until:
+                        cmd = self._poll_command()
+                        if cmd == 'stop':
+                            break
+                        if cmd == 'retarget':
+                            # the new label is applied
+                            next_state = 'SEARCHING'
+                            break
+                        self._publish_status('REACHED',
+                                             label=self._target_label,
+                                             detail={'standby': True})
+                        if settle_at and time.time() >= settle_at:
+                            settle_at = 0.0
+                            self._log_settled()
+                        time.sleep(1.0)
+                    state = next_state
+        except Exception as e:
+            self.get_logger().error(f'FSM crashed: {e!r}')
+            self._fsm_exit_reason = 'crash'
+            self._stop_motion()
+            self._publish_status('IDLE', detail={'error': str(e)})
+        finally:
+            self._cont_armed = False            # continuity off after a run
+            self._lock_reset('run ended', live=False)   # no lock outlives the run
+            self._stop_motion()
+            with self._cmd_lock:
+                self._busy = False
+            # drop the instance at run end unless a new navigate armed
+            # one (its /walk_target may still be in flight)
+            with self._inst_lock:
+                if self._inst is not None and \
+                        time.time() - self._inst['t'] > INSTANCE_KEEP_S:
+                    self._inst = None
+            # single exit for every path: publish one IDLE frame with the
+            # reason recorded at the decision point, so a dead FSM never
+            # leaves its last frame standing
+            # NOT_FOUND and crash publish their own IDLE first; this
+            # second frame is additive, and publishing it after _busy
+            # clears lets a consumer dispatch a new target at once
+            self._publish_status(
+                'IDLE', detail={'exit': self._fsm_exit_reason or 'finished'})
+            self._start_deferred()              # start the command handed over
+
+    def _phase_search(self):
+        look = True                              # look before turning
+        while True:
+            # hunt budget check when a window opens: 12 completed turns
+            # make a round, and the FSM gives up at round end rather
+            # than moving to another position; stalls count too
+            if self._hunt.exhausted:
+                if SWEEP_CONTINUOUS:
+                    self._stop_motion()          # stop the turn
+                return 'NOT_FOUND'
+            if SWEEP_CONTINUOUS:                 # take a look on entry
+                window_end = time.time() + (CONT_FIRST_LOOK_S if look else 0.0)
+            else:
+                window_end = time.time() + DETECT_WINDOW_S
+            while time.time() < window_end:
+                cmd = self._poll_command()
+                if cmd == 'stop':
+                    return 'IDLE'
+                if cmd == 'retarget':
+                    self._publish_status('SEARCHING', label=self._target_label,
+                                         detail={'retarget': True})
+                    return 'SEARCHING'           # restart with the new label
+                label = self._target_label
+                pos = self._fresh_target(label)
+                if pos is not None:
+                    in_zone, ev = self._stop_law(
+                        pos['label'], pos['x'], pos['y'], pos.get('z', 0.0),
+                        pos.get('width_m'), pos.get('depth_m'), STOP_DISTANCE_M)
+                    if in_zone:
+                        self._reach_evidence = ev
+                        self._stop_motion()
+                        return 'REACHED'         # inside the gate
+                if self._label_visible(label):
+                    outcome = self._phase_hold()   # the detected hold
+                    if outcome != 'SEARCHING':
+                        return outcome
+                    # the hold recycled; the budget may be spent, so give up
+                    # at once: a visible label never expires a window, and
+                    # another cycle would be unbounded
+                    if self._hunt.exhausted:
+                        return 'NOT_FOUND'
+                    window_end = time.time() + (CONT_FIRST_LOOK_S if SWEEP_CONTINUOUS
+                                                else DETECT_WINDOW_S)  # new window after the hold
+                time.sleep(DETECT_POLL_S)
+            # window expired: one 30 deg turn, then a fresh window
+            self._hunt.add_window()
+            look = False
+            result = (self._sweep_continuous() if SWEEP_CONTINUOUS
+                      else self._sweep_turn())
+            if result == 'stop':                 # continuous mode only
+                return 'IDLE'
+            if result == 'retarget':             # continuous mode only
+                self._publish_status('SEARCHING', label=self._target_label,
+                                     detail={'retarget': True})
+                return 'SEARCHING'
+            if result == 'interrupted':
+                look = True
+                # first detection mid-turn: stop the sweep and hold; an
+                # incomplete turn does not count toward the round
+                outcome = self._phase_hold()
+                if outcome != 'SEARCHING':
+                    return outcome
+                if self._hunt.exhausted:
+                    return 'NOT_FOUND'
+            else:
+                self._hunt.add_turn()            # completed 30 deg turn
+                self._publish_status('SEARCHING', label=self._target_label,
+                                     detail={'window_expired': True})
+                if self._hunt.round_complete:
+                    self.get_logger().info(
+                        f'Search round complete at this position '
+                        f'(turns={self._hunt.turns}); giving up (decision 1).')
+
+    def _sweep_continuous(self):
+        """hf15: one CONTINUOUS sweep segment (CONT_SEGMENT_S).  Returns
+        'interrupted' (first sighting: motion stopped), 'stop' / 'retarget'
+        (an operator command: motion stopped) or 'done' (segment completed,
+        motion NOT stopped: the next segment continues the same turn)."""
+        if SWEEP_STRATEGY == 'alternate':
+            self._sweep_dir = -self._sweep_dir
+        else:
+            self._sweep_dir = getattr(self, '_sweep_pref', None) or SWEEP_SIGN
+        omega = self._sweep_dir * YAW_RATE_RAD_S
+        self.get_logger().info(
+            f'Sweep segment (continuous): omega={omega:+.2f} rad/s for '
+            f'{CONT_SEGMENT_S:.2f}s')
+        end = time.time() + CONT_SEGMENT_S
+        next_cmd = 0.0
+        while time.time() < end:
+            cmd = self._poll_command()
+            if cmd in ('stop', 'retarget'):
+                self._stop_motion()
+                return cmd
+            now = time.time()
+            if now >= next_cmd:
+                self._loco.set_velocity(0.0, 0.0, omega,
+                                        duration=CONT_CMD_DURATION_S)
+                next_cmd = now + CONT_RENEW_S
+            if self._label_visible(self._target_label):
+                self._stop_motion()
+                self.get_logger().info(
+                    'Sweep interrupted: label visible — sweep stopped.')
+                return 'interrupted'
+            time.sleep(DETECT_POLL_S)
+        return 'done'
+
