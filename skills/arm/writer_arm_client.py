@@ -35,3 +35,5 @@ _DEFAULT_RETRY_DELAY = 0.5
 
 class WriterError(Exception):
     """A socket-level or writer-rejected (ERROR:) failure."""
+
+
