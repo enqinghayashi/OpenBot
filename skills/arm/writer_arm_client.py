@@ -152,3 +152,14 @@ class WriterArmClient:
                     f"(state={state}, active={active}, rem_T={rem_T:.2f})")
             time.sleep(_SLEW_POLL)
 
+    def slew(self, target14, duration=None, tau=None, abort=None):
+        """slew_start + wait_slew: blocking move to an arbitrary 14-DOF
+        target (the old move_arm_smooth)."""
+        if abort is not None:
+            # before the slew: if a cancel is already pending, don't start
+            # the motion (writer would slew at a pose nobody picked until
+            # the caller's unwind freezes it)
+            abort()
+        self.slew_start(target14, duration=duration, tau=tau)
+        self.wait_slew(abort=abort)
+
