@@ -209,3 +209,8 @@ class WriterArmClient:
 
     # --- flags we can flip on the writer ---
 
+    def hold_rc(self, on):
+        """RC-stick interlock: on == True clamps the writer's RC input to
+        zero (stationary guarantee during a pick); off restores it."""
+        self._cmd(f"hold_rc {'on' if on else 'off'}")
+
