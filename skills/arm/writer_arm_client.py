@@ -195,3 +195,17 @@ class WriterArmClient:
     # arm_sdk-shaped alias for the engine
     get_current_dual_arm_q = q
 
+    def armstate(self):
+        """(state_name, active, rem_T) — state_name is the ArmGuard state
+        (RAW / HOLD_RAW / a pose name), active == 1 while a slew is in
+        flight, rem_T is the remaining slew seconds."""
+        reply = self._cmd("armstate")
+        if not reply.startswith("STATE: "):
+            raise WriterError(f"bad armstate reply: {reply!r}")
+        parts = reply[len("STATE: "):].split()
+        if len(parts) != 3:
+            raise WriterError(f"bad armstate reply (expected 3 fields): {reply!r}")
+        return parts[0], int(parts[1]), float(parts[2])
+
+    # --- flags we can flip on the writer ---
+
