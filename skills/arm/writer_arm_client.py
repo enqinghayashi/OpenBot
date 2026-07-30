@@ -168,3 +168,10 @@ class WriterArmClient:
         Returns immediately (DONE = slew STARTED)."""
         self._cmd(name)
 
+    def pose(self, name, abort=None):
+        """Blocking pose move (pose_start + wait_slew)."""
+        if abort is not None:
+            abort()  # as slew(): don't start an already-cancelled move
+        self.pose_start(name)
+        self.wait_slew(abort=abort)
+
