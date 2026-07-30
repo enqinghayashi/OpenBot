@@ -38,3 +38,20 @@ class WriterError(Exception):
 
 
 class WriterArmClient:
+    def __init__(self, sock_path=SOCK_PATH, connect_retries=_DEFAULT_CONNECT_RETRIES,
+                 retry_delay=_DEFAULT_RETRY_DELAY):
+        self.sock_path = sock_path
+        self._sock = None
+        self._file = None
+        last = None
+        for attempt in range(connect_retries):
+            try:
+                self._connect()
+                return
+            except (OSError, EOFError) as e:
+                last = e
+                if attempt < connect_retries - 1:
+                    time.sleep(retry_delay)
+        raise WriterError(
+            f"connect to {sock_path} failed after {connect_retries} tries: {last}")
+
