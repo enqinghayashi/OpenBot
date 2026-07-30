@@ -395,3 +395,19 @@ class G1_29_ArmControllerUpperOnly(G1_29_ArmController):
         return np.array([self.lowstate_buffer.GetData().motor_state[id].dq
                          for id in G1_29_JointArmIndex])
 
+    def ctrl_dual_arm_go_home(self):
+        """Move both arms to home (q=0) — arms-only version."""
+        logger_mp.info("[G1_29_ArmControllerUpperOnly] ctrl_dual_arm_go_home start...")
+        max_attempts = 100
+        current_attempts = 0
+        with self.ctrl_lock:
+            self.q_target = np.zeros(14)
+        tolerance = 0.05
+        while current_attempts < max_attempts:
+            current_q = self.get_current_dual_arm_q()
+            if np.all(np.abs(current_q) < tolerance):
+                logger_mp.info("[G1_29_ArmControllerUpperOnly] both arms reached home.")
+                break
+            current_attempts += 1
+            time.sleep(0.05)
+
