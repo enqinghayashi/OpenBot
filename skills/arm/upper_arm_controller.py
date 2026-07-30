@@ -438,3 +438,10 @@ class G1_29_ArmControllerUpperOnly(G1_29_ArmController):
         self.arm_velocity_limit = float(limit)
         self._velocity_override = True
 
+    def clip_arm_q_target(self, target_q, velocity_limit):
+        current_q = self.get_current_dual_arm_q()
+        delta = target_q - current_q
+        motion_scale = np.max(np.abs(delta)) / (velocity_limit * self.control_dt)
+        clipped_arm_q_target = current_q + delta / max(motion_scale, 1.0)
+        return clipped_arm_q_target
+
