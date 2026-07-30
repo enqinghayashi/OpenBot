@@ -997,3 +997,111 @@ class WalkNode(Node):
         if ev:
             self.get_logger().info(ev)
 
+    @staticmethod
+    def _self_row(d):
+        """B8i: True for a row inside SELF_ZONE_M (planar body-frame range) --
+        the robot's own arm, hand or carried object.  A row without a usable
+        x/y is NOT filtered here (the code below treats it as before)."""
+        try:
+            return math.hypot(float(d['x']), float(d['y'])) < SELF_ZONE_M
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return False
+
+    @staticmethod
+    def _choose_row(rows, prev):
+        """B8h: the one row of a label that becomes its target.
+
+        Highest conf wins (first row on an exact tie).  With several rows
+        inside TIE_CONF_BAND of the best, and a FRESH previous target for the
+        label, the tie goes to the row nearest the previous target (body-frame
+        x/y), so two same-label objects stop trading the target as their
+        confidences cross (s1 2026-10-08 21:56:07: two boxes, yaw_err swung
+        -5.7 / +18.6 / -6.1 / +20.2 deg).  A clearly better row (more than
+        the band above the rest) still wins, and with no fresh previous
+        target the old highest-conf rule applies unchanged."""
+        top = rows[0]
+        for d in rows[1:]:
+            if d.get('conf', 0) > top.get('conf', 0):
+                top = d
+        if prev is None or len(rows) < 2:
+            return top
+        floor = top.get('conf', 0) - TIE_CONF_BAND
+        tied = [d for d in rows if d.get('conf', 0) >= floor]
+        if len(tied) < 2:
+            return top
+        best, best_d = top, None
+        for d in tied:
+            try:
+                dist = math.hypot(float(d['x']) - prev['x'],
+                                  float(d['y']) - prev['y'])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if best_d is None or dist < best_d:
+                best, best_d = d, dist
+        return best
+
+    def _select_instance_row(self, detections, now):
+        """B8: (label, row|None) for the active instance target, else (None, None).
+
+        Runs hunt_law.select_instance over this message's rows of the target
+        label (conf >= MIN_CONF), adopts the id after a colour/position
+        match, remembers the position, and refreshes the label's presence
+        ONLY when the instance itself was found.
+        """
+        with self._inst_lock:
+            inst = self._inst
+            if inst is None:
+                return None, None
+            rows = [d for d in detections
+                    if isinstance(d, dict) and str(d.get('label')) == inst['label']
+                    and d.get('conf', 0) >= MIN_CONF]
+            row, match = hunt_law.select_instance(
+                rows, inst['iid'], inst['hue'], inst['last_xy'])
+            inst['match'] = match
+            if row is not None:
+                rid = row.get('instance_id')
+                if match != 'iid' and isinstance(rid, int) \
+                        and not isinstance(rid, bool) and rid >= 1:
+                    inst['iid'] = rid
+                inst['last_xy'] = (float(row['x']), float(row['y']))
+            label = inst['label']
+        if row is not None:
+            with self._visible_lock:
+                self._visible[label] = now
+        return label, row
+
+    def _on_odom(self, msg):
+        p = msg.pose.pose.position
+        q = msg.pose.pose.orientation
+        # yaw from the quaternion (ZYX euler)
+        yaw = math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y),
+            1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        with self._odom_lock:
+            self._robot_x = p.x
+            self._robot_y = p.y
+            self._robot_yaw = yaw
+            self._odom_t = time.time()
+
+    # -- publishing status --------------------------------------------------------
+
+    def _publish_status(self, state, label=None, detail=None):
+        payload = {'state': state}
+        if label is not None:
+            payload['label'] = label
+        if detail is not None:
+            payload['detail'] = detail
+        # name the object when the target is an instance
+        with self._inst_lock:
+            inst = dict(self._inst) if self._inst else None
+        if inst is not None and label == inst['label']:
+            payload['detail'] = dict(payload.get('detail') or {})
+            payload['detail']['instance'] = {
+                'iid': inst['iid'], 'hue': inst['hue'], 'match': inst['match']}
+        msg = String()
+        msg.data = json.dumps(payload)
+        self._status_pub.publish(msg)
+        self.get_logger().info(f'[STATUS] {msg.data}')
+
+    # -- the one place commands get drained ---------------------------------------
+
