@@ -37,3 +37,4 @@ class WriterError(Exception):
     """A socket-level or writer-rejected (ERROR:) failure."""
 
 
+class WriterArmClient:
