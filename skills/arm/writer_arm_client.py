@@ -175,3 +175,10 @@ class WriterArmClient:
         self.pose_start(name)
         self.wait_slew(abort=abort)
 
+    def freeze(self):
+        """Contact-stop: halt the in-flight slew at its current interpolated
+        position and hold it (writer state HOLD_RAW)."""
+        self._cmd("freeze")
+
+    # --- asking the writer for state ---
+
