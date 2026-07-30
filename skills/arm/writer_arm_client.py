@@ -214,3 +214,6 @@ class WriterArmClient:
         zero (stationary guarantee during a pick); off restores it."""
         self._cmd(f"hold_rc {'on' if on else 'off'}")
 
+    def payload(self, on):
+        """Writer payload gravity-compensation flag for the arms."""
+        self._cmd(f"payload {'on' if on else 'off'}")
