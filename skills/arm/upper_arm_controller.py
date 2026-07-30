@@ -449,3 +449,13 @@ class G1_29_ArmControllerUpperOnly(G1_29_ArmController):
         # API symmetry only
         return motor_index.value in G1_29_JointArmIndex
 
+    def _Is_wrist_motor(self, motor_index):
+        wrist_motors = [
+            G1_29_JointIndex.kLeftWristRoll.value,
+            G1_29_JointIndex.kLeftWristPitch.value,
+            G1_29_JointIndex.kLeftWristyaw.value,
+            G1_29_JointIndex.kRightWristRoll.value,
+            G1_29_JointIndex.kRightWristPitch.value,
+            G1_29_JointIndex.kRightWristYaw.value,
+        ]
+        return motor_index.value in wrist_motors
