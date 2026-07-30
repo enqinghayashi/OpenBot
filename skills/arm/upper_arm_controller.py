@@ -370,3 +370,9 @@ class G1_29_ArmControllerUpperOnly(G1_29_ArmController):
                        "frozen at current q")
 
     # ── stock API ──
+    def ctrl_dual_arm(self, q_target, tauff_target):
+        """Set control target values q & tau of the left and right arm motors."""
+        with self.ctrl_lock:
+            self.q_target = q_target
+            self.tauff_target = tauff_target
+
