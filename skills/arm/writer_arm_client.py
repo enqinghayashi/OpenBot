@@ -55,3 +55,10 @@ class WriterArmClient:
         raise WriterError(
             f"connect to {sock_path} failed after {connect_retries} tries: {last}")
 
+    def _connect(self):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(_REPLY_TIMEOUT)
+        s.connect(self.sock_path)
+        self._sock = s
+        self._file = s.makefile("r", encoding="utf-8")
+
