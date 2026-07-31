@@ -2412,3 +2412,163 @@ class WalkNode(Node):
         law = hunt_law.stop_law if STOP_LAW_LEGACY else hunt_law.near_edge_law
         return law(label, x, y, z, width_m, depth_m, stop_distance_m)
 
+    @staticmethod
+    def _blind_age(fresh, now):
+        """B8j: the age (s) of the target row when the blind cap must hold
+        the robot, else None (cap off, no row, no receive time, or young)."""
+        if not WALK_BLIND_CAP or not isinstance(fresh, dict):
+            return None
+        t = fresh.get('t')
+        if not isinstance(t, (int, float)) or isinstance(t, bool):
+            return None
+        age = now - t
+        return age if age > BLIND_MAX_S else None
+
+    def _log_settled(self):
+        """B8j diagnostic (log only): where the robot ENDED, SETTLE_LOG_S
+        after REACHED, against the decision -- the coast that LARGE_LEAD_M
+        stands for.  Never raises; silent under OPENBOT_STOP_LAW=legacy."""
+        if STOP_LAW_LEGACY:
+            return
+        try:
+            ev = dict(self._reach_evidence or {})
+            label = self._target_label
+            dec = (f'decision d={ev.get("d_m")} d_edge={ev.get("d_edge_m")} '
+                   f'tier={ev.get("tier")} gate={ev.get("gate_m")}')
+            row = self._fresh_target(label)
+            if row is not None and time.time() - row['t'] > BLIND_MAX_S:
+                row = None              # a stale row has no useful data
+            if row is None:
+                seen = ''
+                xm, ym = ev.get('x_m'), ev.get('y_m')
+                if xm is not None and ym is not None:
+                    now = time.time()
+                    with self._targets_lock:
+                        near = [(math.hypot(v['x'] - xm, v['y'] - ym), k, v)
+                                for k, v in self._targets.items()
+                                if k != label
+                                and now - v['t'] <= STALE_DETECTION_S]
+                    near = [c for c in near if c[0] <= hunt_law.CONT_RADIUS_M]
+                    if near:
+                        _dd, k, v = min(near, key=lambda c: c[0])
+                        seen = (f'; seen as "{k}" d='
+                                f'{math.hypot(v["x"], v["y"]):.3f}')
+                self.get_logger().info(
+                    f'[near-edge] settled "{label}": no fresh row{seen} | {dec}')
+                return
+            _inz, sev = self._stop_law(
+                row['label'], row['x'], row['y'], row.get('z', 0.0),
+                row.get('width_m'), row.get('depth_m'), STOP_DISTANCE_M)
+            coast = None
+            if ev.get('d_edge_m') is not None and sev.get('d_edge_m') is not None:
+                coast = round(ev['d_edge_m'] - sev['d_edge_m'], 3)
+            self.get_logger().info(
+                f'[near-edge] settled "{label}": d={sev.get("d_m")} '
+                f'd_edge={sev.get("d_edge_m")} half={sev.get("half_m")}'
+                f'({sev.get("half_src")}) row_age='
+                f'{time.time() - row["t"]:.2f}s'
+                + (f' via "{row.get("cont_label")}"' if row.get('cont') else '')
+                + f' | {dec} | coast={coast}')
+        except Exception as e:          # diagnostics never cost the FSM
+            self.get_logger().warn(f'[near-edge] settle log failed: {e!r}')
+
+    def _latch_target(self, det):
+        """Freeze the target's world position (body→world via odom yaw).
+
+        B8k (2026-10-16): FRAME FIX.  Detections are body frame x = RIGHT,
+        y = FORWARD; the odometry (/unitree/slam_mapping/odom, skills/odom)
+        is REP-103: x = forward, y = left, yaw CCW (+omega = LEFT).  The old
+        code rotated (right, forward) as if it were (forward, left): harmless
+        while the odom never published (yaw 0, pose 0), but with live odom a
+        target 1 m ahead read 0.5 m to the LEFT after walking 0.5 m forward
+        (tests/unit/walk/test_walk_odom_latch_frame.py).  Convert first:
+        forward = y_b, left = -x_b."""
+        with self._odom_lock:
+            rx, ry, yaw = self._robot_x, self._robot_y, self._robot_yaw
+        fwd, left = det['y'], -det['x']
+        self._twx = rx + math.cos(yaw) * fwd - math.sin(yaw) * left
+        self._twy = ry + math.sin(yaw) * fwd + math.cos(yaw) * left
+        self._twz = det['z']
+        self._tw_label = det['label']
+        self.get_logger().info(
+            f'Latched "{self._tw_label}" world=({self._twx:.3f}, {self._twy:.3f})')
+
+    def _current_target(self):
+        """Target in body frame: fresh detection when available, else the
+        odometry-tracked latched world target. Returns (x_b, y_b, z, label) or
+        None if the target is lost entirely."""
+        fresh = self._fresh_target(self._target_label)
+        if fresh is not None:
+            return fresh['x'], fresh['y'], fresh['z'], fresh['label']
+        if self._twx is None or not WALK_ODOM_LATCH:
+            return None                 # odometry steering is opt-in
+        with self._odom_lock:
+            rx, ry, yaw = self._robot_x, self._robot_y, self._robot_yaw
+            odom_age = time.time() - self._odom_t if self._odom_t else -1.0
+        if odom_age < 0 or odom_age > 1.0:
+            # the latch fallback re-projects against the odometry pose;
+            # with no fresh odometry that pose is stale or zero, so
+            # refuse rather than steer on it
+            return None
+        dx = self._twx - rx
+        dy = self._twy - ry
+        # world to body, the inverse of _latch_target: odom
+        # (forward, left) first, then the detection frame
+        # (x = right = -left, y = forward)
+        fwd = dx * math.cos(yaw) + dy * math.sin(yaw)
+        left = -dx * math.sin(yaw) + dy * math.cos(yaw)
+        x_b, y_b = -left, fwd
+        return x_b, y_b, self._twz, self._tw_label
+
+    # -- locomotion plumbing ------------------------------------------------------
+
+    def _connect_loco(self):
+        """Connect the loco backend. Selection (T6):
+
+        - LOCO_BACKEND=mujoco → MujocoLoco (sim bridge, walk-node/sim/);
+        - FAKE_LOCO=1 → dev stub;
+        - LOCO_BACKEND=g1_inproc → in-process G1Loco (REFERENCE ONLY — the
+          rclpy + raw-DDS crash class it represents is why the daemon exists);
+        - default LOCO_BACKEND=daemon → spawn walk_loco_daemon.py (or
+          fake_loco_daemon.py when FAKE_DAEMON=1) and wait for READY.
+
+        start() is intentionally NOT called: from R2+A the robot is already
+        in sport-FSM 801, and Stuart's SDK copy maps Start() to SetFsmId(200)
+        (dev-box copy: 500) — see hardware-day/RECOMMENDATION.md §2(a). A
+        connect failure raises — caught by _run_fsm → error status, node
+        survives.
+        """
+        if self._loco is not None:
+            return
+        self.get_logger().info(
+            f'Connecting locomotion backend on "{NETWORK_IFACE}" '
+            f'(LOCO_BACKEND={LOCO_BACKEND}, FAKE_DAEMON={FAKE_DAEMON})...')
+        if LOCO_BACKEND == 'mujoco':
+            from mujoco_loco import MujocoLoco      # sim backend
+            self._loco = MujocoLoco(NETWORK_IFACE)
+            self._loco.connect()
+            self.get_logger().info(
+                'LOCO_BACKEND=mujoco — MuJoCo sim backend (no DDS).')
+        elif FAKE_LOCO:
+            self._loco = _FakeLoco()
+            self.get_logger().info('FAKE_LOCO=1 — using the dev stub.')
+        elif LOCO_BACKEND == 'g1_inproc':
+            from g1_loco import G1Loco      # lazy import: pulls the vendor SDK
+            self._loco = G1Loco(NETWORK_IFACE)
+            self._loco.connect()
+            self.get_logger().info(
+                'LOCO_BACKEND=g1_inproc — in-process G1Loco (reference only; '
+                'rclpy + raw-DDS in one process crashes on Stuart).')
+        else:                                   # daemon, the default
+            daemon_script = os.path.join(
+                _SCRIPT_DIR, 'fake_loco_daemon.py' if FAKE_DAEMON
+                else 'walk_loco_daemon.py')
+            self._loco = _DaemonLoco(NETWORK_IFACE, daemon_script=daemon_script)
+            self._loco.connect()
+            self.get_logger().info(
+                'daemon backend connected: '
+                f'{os.path.basename(daemon_script)} READY.')
+        # deliberately no start() on hardware: after R2+A the robot
+        # is already in sport FSM 801, and the vendor start() sends
+        # SetFsmId(200)
+
