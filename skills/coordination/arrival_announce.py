@@ -243,3 +243,17 @@ class PhaseAnnouncer:
 
 
 
+class ArrivalGate:
+    """At-most-once guard for arrival announcements, per label.
+
+    allow(label, now) returns True at most once per label within
+    cooldown_s of the LAST fire for THAT label:
+      * first-ever sighting of a label          -> True;
+      * a different label (never fired before)  -> True (no cross-label
+        suppression -- keys are per label);
+      * the same label again within cooldown_s  -> False (suppressed);
+      * the same label again after cooldown_s   -> True (allowed again).
+    The caller (the relay) calls mark_fired() when allow() returns True.
+    allow() itself only READS state -- it is a pure time decision.
+    """
+
