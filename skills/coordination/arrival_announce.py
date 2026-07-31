@@ -206,3 +206,7 @@ class PhaseAnnouncer:
     ``now``), no rclpy.
     """
 
+    def __init__(self, cooldown_s: float = 10.0) -> None:
+        self._gate = ArrivalGate(cooldown_s=cooldown_s)
+        self._fired = set()
+
