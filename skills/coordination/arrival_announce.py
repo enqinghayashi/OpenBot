@@ -148,3 +148,25 @@ _PHASE_RES = (
 )
 
 
+def parse_phase(status_text: Optional[str]) -> Optional[tuple]:
+    """(phase, label) for a walk-progress line, or None.
+
+    The label is trimmed and lowercased like ``parse_arrival``'s, and is None
+    for the phases whose line does not carry one (``approaching``, ``lost``,
+    ``stopped``).  Returns None for anything else -- PENDING acks, the
+    three-confirmation lines, the target-check table, ERROR/WARNING lines and
+    every non-navigate line.
+    """
+    if not status_text:
+        return None
+    for phase, rx in _PHASE_RES:
+        match = rx.match(status_text)
+        if match is None:
+            continue
+        label = None
+        if match.groups():
+            raw = match.group(1)
+            label = raw.strip().lower() if raw else None
+            label = label or None
+        return phase, label
+    return None
