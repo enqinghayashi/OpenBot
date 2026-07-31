@@ -2355,3 +2355,60 @@ class WalkNode(Node):
 
     # -- target helpers ----------------------------------------------------------
 
+    def _label_visible(self, label):
+        """True if /detections has seen the label within STALE_DETECTION_S."""
+        with self._visible_lock:
+            ts = self._visible.get(label)
+        if ts is None:
+            return False
+        return time.time() - ts <= STALE_DETECTION_S
+
+    def _fresh_target(self, label):
+        """Latest body-frame target for the label if fresh, else None."""
+        with self._targets_lock:
+            det = self._targets.get(label)
+        if det is None:
+            return None
+        if time.time() - det['t'] > STALE_DETECTION_S:
+            return None
+        return det
+
+    @staticmethod
+    def _det_stamp(det):
+        """The detection's own CAPTURE stamp, or None when the projector did
+        not publish one.
+
+        MEASURED on Stuart 2026-09-26 under loadavg 10.6: the detection
+        pipeline's latency runs 0.041-0.281 s (p50 0.061, p90 0.209) and its
+        publish interval reaches 0.331 s, so two samples can ARRIVE 0.06 s
+        apart having been CAPTURED 0.33 s apart.  Anything that reasons about
+        how far a stationary object could have moved must use the capture gap;
+        receive time understates it by the whole latency jitter.  None means
+        "cannot be judged", and callers fall back to receive time — which is
+        the old behaviour, so an unstamped projector is no worse off."""
+        s = det.get('stamp')
+        if s is None:
+            return None
+        try:
+            return float(s)
+        except (TypeError, ValueError):
+            return None
+
+    def _retained_target(self, label):
+        """Latest body-frame measurement retained for the label, no freshness
+        gate.  The dict entry survives staleness, so an in-zone geometry can
+        still be re-evaluated by the arrival latch (#214) after the projector
+        stops emitting the label at close range."""
+        with self._targets_lock:
+            return self._targets.get(label)
+
+    # -- stop-law and blind-cap helpers ------------------------------------------
+
+    @staticmethod
+    def _stop_law(label, x, y, z, width_m, depth_m, stop_distance_m):
+        """B8j: the active stop law -- hunt_law.near_edge_law, or the B8i
+        hunt_law.stop_law under OPENBOT_STOP_LAW=legacy.  Same signature and
+        (in_zone, evidence) return as both."""
+        law = hunt_law.stop_law if STOP_LAW_LEGACY else hunt_law.near_edge_law
+        return law(label, x, y, z, width_m, depth_m, stop_distance_m)
+
