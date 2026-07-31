@@ -60,3 +60,5 @@ def parse_arrival(status_text: Optional[str]) -> Optional[str]:
         return None
     label = match.group(1).strip().lower()
     return label if label else None
+
+
