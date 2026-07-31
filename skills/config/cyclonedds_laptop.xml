@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Laptop-side twin: unicast-peers Stuart (192.168.123.164) so this machine's
+     ROS2 (what_robot_sees viewer) can hear the pick-walk pipeline topics.
+     Use with the viewer:
+         export CYCLONEDDS_URI=file://.../config/cyclonedds_laptop.xml
+     (Humble default CycloneDDS already works via multicast, but this makes
+     discovery deterministic and independent of the LAN's multicast support.)
+
+     THIS IS THE ORIGINAL WIRED (LAN CABLE) VERSION — restored 2026-09-28 at
+     the operator's request so both connection modes are kept side by side.
+     It binds enp2s0, the laptop's ethernet port, and expects the robot at
+     192.168.123.164 over that cable.
+
+     Use this file when the laptop is CABLE-connected to Stuart.
+     Use config/cyclonedds_laptop_wifi.xml when the laptop is on the
+     'Humanoid_Travel' WiFi instead.  The two files are otherwise identical
+     except for <NetworkInterfaceAddress>: enp2s0 (here) vs wlo1 (WiFi).
+     Stuart's address in Peers is 192.168.123.164 in BOTH, because the
+     travel router hands out the same 192.168.123.x subnet as the cable.
+
+     Match this against the robot side:
+       cable : robot uses /home/unitree/cyclonedds_lan.xml       (peer .99)
+       wifi  : robot uses /home/unitree/cyclonedds_wifi.xml      (peer .137)
+     Do not mix a cable laptop file with the WiFi robot file. -->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain id="any">
+    <General>
+      <NetworkInterfaceAddress>enp2s0</NetworkInterfaceAddress>
+      <AllowMulticast>false</AllowMulticast>
+    </General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <!-- B8k (2026-10-16): Stuart now allows 31 DDS participants (index 0-30).  Without
+           this the laptop only probes Stuart's ports for index 0-9, so a node that got
+           index 10+ (seen: yolo_node) is invisible here: /detections had 0 publishers. -->
+      <MaxAutoParticipantIndex>30</MaxAutoParticipantIndex>
+      <Peers>
+        <Peer address="127.0.0.1"/>
+        <Peer address="192.168.123.164"/>
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>
