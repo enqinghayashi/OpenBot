@@ -1865,3 +1865,158 @@ class WalkNode(Node):
             return None
         return self._reacquire()
 
+    def _lost_bearing(self, label, odom_only=False):
+        """Bearing (walk yaw error, + = right) of where the lost ``label``
+        should be NOW: the lock's / the latch's odometry-world position when
+        odometry is fresh, else (unless ``odom_only``) the last body-frame
+        row.  None when nothing is known."""
+        pose = self._odom_pose()
+        if pose is not None:
+            w = None
+            lock = getattr(self, '_alock', None)
+            tlock = getattr(self, '_targets_lock', None)
+            if lock is not None and tlock is not None:
+                with tlock:
+                    st = lock.st
+                    if st is not None and st.get('w') is not None:
+                        w = st['w']
+            if w is None and getattr(self, '_twx', None) is not None:
+                w = (self._twx, self._twy)
+            if w is not None:
+                x, y = walk_lock.world_to_body(pose, w[0], w[1])
+                return walk_lock.bearing(x, y)
+        if odom_only:
+            return None
+        row = self._retained_target(label)
+        if row is None:
+            return None
+        try:
+            return walk_lock.bearing(float(row['x']), float(row['y']))
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def _lost_side(self, label, err=None):
+        """Turn the rest of this hunt's sweep TOWARD the side ``label`` was
+        lost on (B8k: always SWEEP_SIGN)."""
+        if not WALK_REACQUIRE:
+            return
+        if err is None:
+            err = self._lost_bearing(label)
+        if err is None:
+            return
+        side = walk_lock.sweep_side(err, default=SWEEP_SIGN,
+                                    omega_sign=OMEGA_SIGN)
+        self._sweep_pref = side
+        self.get_logger().info(
+            f'[reacq] "{label}" was last at {math.degrees(err):+.0f} deg — '
+            f'the sweep turns {"left" if side > 0 else "right"} first.')
+
+    def _reacq_wait(self, label, secs, since):
+        """Stand still up to ``secs``: 'found' (a row of the target newer
+        than ``since``), 'stop' / 'retarget', or None (nothing)."""
+        end = time.time() + secs
+        while time.time() < end:
+            cmd = self._poll_command()
+            if cmd in ('stop', 'retarget'):
+                return cmd
+            row = self._fresh_target(label)
+            if row is not None and row.get('t', 0.0) >= since:
+                return 'found'
+            time.sleep(DETECT_POLL_S)
+        return None
+
+    def _reacquire(self):
+        """B8l F5: the target was lost mid-approach.  Stand and look
+        (REACQ_DWELL_S), turn back toward where it was at REACQ_OMEGA
+        (closed loop on odometry when fresh, else open loop for the bearing),
+        look again (REACQ_LOOK_S).  'found' resumes the approach; 'failed'
+        hands over to the sweep, turning first toward the side it was lost
+        on.  Published as APPROACHING{reacquire} so the coordinator holds its
+        re-sweep and the gateway keeps the full vocabulary (B8l F2)."""
+        label = self._target_label
+        t0 = time.time()
+        err0 = self._lost_bearing(label)
+        self._publish_status('APPROACHING', label=label,
+                             detail={'reacquire': True,
+                                     'bearing_deg': (None if err0 is None else
+                                                     round(math.degrees(err0), 1))})
+        self.get_logger().info(
+            f'[reacq] "{label}" lost — looking {walk_lock.REACQ_DWELL_S:.1f}s, '
+            'then turning back toward '
+            + ('?' if err0 is None else f'{math.degrees(err0):+.0f} deg'))
+        r = self._reacq_wait(label, walk_lock.REACQ_DWELL_S, t0)
+        if r is None:
+            err = self._lost_bearing(label)
+            omega, dur = walk_lock.reacquire_turn(err, omega_sign=OMEGA_SIGN)
+            if dur > 0.0:
+                self.get_logger().info(
+                    f'[reacq] turning back {math.degrees(err):+.0f} deg at '
+                    f'omega={omega:+.2f} (<= {dur:.1f}s)')
+                end = time.time() + dur
+                next_cmd = 0.0
+                while time.time() < end:
+                    cmd = self._poll_command()
+                    if cmd in ('stop', 'retarget'):
+                        r = cmd
+                        break
+                    row = self._fresh_target(label)
+                    if row is not None and row.get('t', 0.0) >= t0:
+                        r = 'found'
+                        break
+                    e = self._lost_bearing(label, odom_only=True)
+                    if e is not None and (abs(e) <= walk_lock.REACQ_TOL_RAD
+                                          or (e > 0) != (err > 0)):
+                        break               # odometry says it is straight ahead
+                    now = time.time()
+                    if now >= next_cmd:
+                        self._loco.set_velocity(0.0, 0.0, omega,
+                                                duration=CONT_CMD_DURATION_S)
+                        next_cmd = now + CONT_RENEW_S
+                    time.sleep(DETECT_POLL_S)
+                self._stop_motion()
+            if r is None:
+                r = self._reacq_wait(label, walk_lock.REACQ_LOOK_S, t0)
+        if r == 'found':
+            self.get_logger().info(
+                f'[reacq] "{label}" found again after {time.time() - t0:.1f}s '
+                '— resuming the approach.')
+            self._publish_status('APPROACHING', label=label,
+                                 detail={'reacquired': True})
+            return 'found'
+        if r in ('stop', 'retarget'):
+            return r
+        self.get_logger().warn(
+            f'[reacq] "{label}" not found in {time.time() - t0:.1f}s — '
+            'back to the sweep.')
+        self._lost_side(label, err0)
+        return 'failed'
+
+    # -- walk to an odometry pose ------------------------------------------------
+
+    def _on_walk_pose(self, msg):
+        """/walk_pose: start (or queue) a walk to an odometry pose."""
+        kind, goal = walk_lock.parse_pose_goal(getattr(msg, 'data', ''))
+        if kind is None:
+            self.get_logger().warn(f'/walk_pose ignored: {goal}')
+            self._publish_status('HOME_FAILED', label='home',
+                                 detail={'reason': 'bad_goal: %s' % goal})
+            return
+        if kind == 'stop':
+            with self._cmd_lock:
+                if self._busy:
+                    self._pending = ('stop', None)
+            return
+        if not WALK_POSE:
+            self._publish_status('HOME_FAILED', label=goal['label'],
+                                 detail={'reason': 'disabled '
+                                         '(OPENBOT_WALK_POSE=0)'})
+            return
+        with self._cmd_lock:
+            if self._busy:
+                self._pending = ('pose', goal)
+                self.get_logger().info('/walk_pose queued (a walk is running).')
+                return
+            self._busy = True
+        threading.Thread(target=self._run_pose, args=(goal,),
+                         daemon=True).start()
+
