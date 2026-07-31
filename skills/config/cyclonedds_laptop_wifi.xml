@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Laptop-side twin for the 'Humanoid_Travel' WIFI link.  Created 2026-09-28.
+     Use with the viewer:
+         export CYCLONEDDS_URI=file://.../config/cyclonedds_laptop_wifi.xml
+
+     The laptop used to reach Stuart over a cable into its own 192.168.123.x
+     port, so the wired twin binds enp2s0 and Stuart saw the laptop at
+     192.168.123.99.  The operator moved to the travel router instead
+     ('i have connected it through Humanoid_Travel Wifi such that now i dont
+     need cable to ssh in'):
+         enp2s0  DOWN                       <- old cable, gone
+         wlo1    UP  192.168.123.137/24     <- Humanoid_Travel
+     The router hands out the SAME 192.168.123.x subnet as the old cable and
+     bridges its WiFi to its ethernet ports, which is why Stuart is still
+     reachable at 192.168.123.164 unchanged (verified 2026-09-28: ping over
+     wlo1, ARP 3c:6d:66:16:63:90 REACHABLE, 21 ROS2 topics discovered).
+     So only the INTERFACE and the LAPTOP'S OWN ADDRESS moved.
+
+     Paired robot-side file: /home/unitree/cyclonedds_wifi.xml
+     (robot stays on eth0 there; wlan0 is 192.168.0.165/24, a different
+     network entirely, the robot's internet, NOT the laptop's path).
+
+     192.168.123.137 is a DHCP lease from the travel router.  If the laptop
+     is ever handed a different address, the robot's Peer goes stale and the
+     viewer shows its four topics MISSING while everything else looks fine.
+     Reserve it in the router if possible.
+
+     NOTE (measured 2026-09-28): the laptop associates on 2.4 GHz channel 1
+     while 'Humanoid_Travel_5G' is available at 95% signal on 5 GHz ch165.
+     The 2.4 GHz band showed 6 ms - 2774 ms RTT to the router, which is enough
+     loss/latency that the 305 KB /camera/color/image_raw frame does not
+     survive the trip.  Prefer the 5 GHz SSID. -->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain id="any">
+    <General>
+      <NetworkInterfaceAddress>wlo1</NetworkInterfaceAddress>
+      <AllowMulticast>false</AllowMulticast>
+    </General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <!-- B8k (2026-10-16): Stuart now allows 31 DDS participants (index 0-30).  Without
+           this the laptop only probes Stuart's ports for index 0-9, so a node that got
+           index 10+ (seen: yolo_node) is invisible here: /detections had 0 publishers. -->
+      <MaxAutoParticipantIndex>30</MaxAutoParticipantIndex>
+      <Peers>
+        <Peer address="127.0.0.1"/>
+        <Peer address="192.168.123.164"/>
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>
