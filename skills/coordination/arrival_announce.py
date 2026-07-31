@@ -65,3 +65,86 @@ def parse_arrival(status_text: Optional[str]) -> Optional[str]:
 def speech_text(label: str) -> str:
     """The spoken phrase announcing arrival at `label`."""
     return "I have reached the " + label + "."
+
+
+# walk-phase narration: each parsed
+# phase maps to the phrase spoken for it.
+#
+# operator: "maybe have the
+# robot reporting like doing a
+# sweep search to find the object,
+# then ohh stop, i saw the object,
+# then walking towards it.
+# sound like human."
+#
+# measured: walk lane fine,
+# every phase on /navigate_status.
+# voice lane silent until
+# arrival. a 77 s search
+# felt like a hang.
+# same events, just spoken.
+#
+# the table is the only place
+# wording lives. a phase in the
+# parser but absent here is
+# deliberately UNSPOKEN.
+# parse_phase still reports it,
+# phase_speech returns None.
+# nothing becomes speech
+# by accident.
+
+#: phase -> phrase. "{label}" filled
+#: from the coordinator's own line; a
+#: template needing a label is skipped
+#: when there is none.
+#:
+#: ASCII only, on purpose. these go
+#: to piper with no sanitizer, so an
+#: em dash or curly quote has no rule.
+#: "Oh, I see it." keeps the beat, no
+#: mispronunciation on the first search.
+PHASE_PHRASES = {
+    "searching":   "Let me sweep around and look for the {label}.",
+    "detected":    "Oh, I see it.",
+    "approaching": "Walking over to it now.",
+    "reached":     "I have reached the {label}.",
+    "not_found":   "I could not find the {label}.",
+    "lost":        "I lost sight of it. Let me sweep again.",
+}
+
+#: phases whose template has a label.
+#: explicit so the label-less ones
+#: (approaching, lost) keep their phrase.
+_LABELLED_PHASES = frozenset({"searching", "reached", "not_found"})
+
+#: a phase line that ENDS a nav.
+#: clears the once-per-nav set, so the
+#: next nav speaks its own phases.
+_TERMINAL_PHASES = frozenset({"reached", "not_found", "cancelled", "stopped"})
+
+#: ordered: first match wins, so a
+#: line with two keywords reads as the
+#: specific one. every pattern is
+#: anchored and single-line (`.` can't
+#: span newlines). that keeps the
+#: multi-line target-check TABLE -
+#: anything after it can look like
+#: anything - from getting spoken.
+_PHASE_RES = (
+    ("detected",    re.compile(r"^\s*DETECTED\b(?:\s+(.+?))?\s+ONCE\b", re.I)),
+    ("not_found",   re.compile(r"^\s*NOT_FOUND\s+(.+?)\s*$", re.I)),
+    ("reached",     re.compile(r"^\s*REACHED\s+(.+?)\s*$", re.I)),
+    ("searching",   re.compile(r"^\s*SEARCHING\s+(.+?)\s*$", re.I)),
+    ("lost",        re.compile(r"^\s*DETECTION LOST\b", re.I)),
+    ("approaching", re.compile(r"^\s*APPROACHING\b", re.I)),
+    # CANCELLED has a label
+    # ("CANCELLED <label>").
+    # STOPPED doesn't.
+    # captured anyway, so a
+    # reader doesn't think
+    # CANCELLED is label-less.
+    ("cancelled",   re.compile(r"^\s*CANCELLED\s*(.*?)\s*$", re.I)),
+    ("stopped",     re.compile(r"^\s*STOPPED\b", re.I)),
+)
+
+
