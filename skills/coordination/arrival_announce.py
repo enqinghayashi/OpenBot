@@ -210,3 +210,33 @@ class PhaseAnnouncer:
         self._gate = ArrivalGate(cooldown_s=cooldown_s)
         self._fired = set()
 
+    def phrase(self, status_text: Optional[str], now: float) -> Optional[str]:
+        """The phrase to speak for this line, or None.  Records what it speaks.
+
+        The caller speaks the returned phrase and does nothing else -- the
+        at-most-once bookkeeping happens HERE, so a caller that speaks
+        asynchronously cannot drop a phrase without also leaving the gate
+        unmarked (which would repeat it).
+        """
+        got = parse_phase(status_text)
+        if got is None:
+            return None
+        phase, label = got
+        key = (phase, label)
+        if phase in _TERMINAL_PHASES:
+            # nav is over whether this
+            # phrase gets spoken - clear
+            # FIRST either way, so a
+            # suppressed terminal still
+            # lets the next nav speak
+            # its own phases.
+            self._fired.clear()
+        elif key in self._fired:
+            return None
+        gate_key = "%s:%s" % (phase, label or "*")
+        if not self._gate.allow(gate_key, now):
+            self._fired.add(key)
+            return None
+        self._gate.mark_fired(gate_key, now)
+        self._fired.add(key)
+        return phase_speech(phase, label)
