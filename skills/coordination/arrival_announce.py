@@ -44,3 +44,19 @@ SOCKET_PATH = "/tmp/arrival_announce.sock"
 REACHED_RE = re.compile(r"^\s*REACHED\s+(.+?)\s*$", re.IGNORECASE)
 
 
+def parse_arrival(status_text: Optional[str]) -> Optional[str]:
+    """Return the trimmed, lowercased label of a REACHED arrival line.
+
+    Returns None for empty/None input and for any line that is not a
+    REACHED arrival.  The label is lowercased to match the coordinator's
+    own lowercase labels (its REACHED lines already carry a lowercase
+    label), keeping ArrivalGate keys canonical regardless of the casing
+    a test or producer happens to use.
+    """
+    if not status_text:
+        return None
+    match = REACHED_RE.search(status_text)
+    if match is None:
+        return None
+    label = match.group(1).strip().lower()
+    return label if label else None
