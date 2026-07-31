@@ -257,3 +257,7 @@ class ArrivalGate:
     allow() itself only READS state -- it is a pure time decision.
     """
 
+    def __init__(self, cooldown_s: float = 10.0) -> None:
+        self.cooldown_s = float(cooldown_s)
+        self._last_fire = {}  # label -> last fire time
+
