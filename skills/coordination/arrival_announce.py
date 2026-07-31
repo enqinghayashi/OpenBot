@@ -172,3 +172,17 @@ def parse_phase(status_text: Optional[str]) -> Optional[tuple]:
     return None
 
 
+def phase_speech(phase: str, label: Optional[str] = None) -> Optional[str]:
+    """The spoken phrase for `phase`, or None when it is not spoken.
+
+    A labelled template with no label returns None rather than speaking a
+    sentence with a hole in it.
+    """
+    template = PHASE_PHRASES.get(phase)
+    if template is None:
+        return None
+    if phase in _LABELLED_PHASES:
+        if not label:
+            return None
+        return template.replace("{label}", label)
+    return template
