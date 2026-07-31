@@ -261,3 +261,11 @@ class ArrivalGate:
         self.cooldown_s = float(cooldown_s)
         self._last_fire = {}  # label -> last fire time
 
+    def allow(self, label: str, now: float) -> bool:
+        if label is None:
+            return False
+        last = self._last_fire.get(label)
+        if last is None:
+            return True
+        return (now - last) >= self.cooldown_s
+
