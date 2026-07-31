@@ -2020,3 +2020,338 @@ class WalkNode(Node):
         threading.Thread(target=self._run_pose, args=(goal,),
                          daemon=True).start()
 
+    def _start_deferred(self):
+        """Start the command a preempted run handed over (F7), if any."""
+        with self._cmd_lock:
+            d, self._deferred = getattr(self, '_deferred', None), None
+            if d is None:
+                return
+            kind, val = d
+            if self._busy:
+                self.get_logger().warn(
+                    f'deferred {kind} dropped: another walk already started.')
+                return
+            self._busy = True
+        target = self._run_pose if kind == 'pose' else self._run_fsm
+        threading.Thread(target=target, args=(val,), daemon=True).start()
+
+    def _run_pose(self, goal):
+        """B8l F7: walk to the odometry pose ``goal`` (walk_lock.pose_command),
+        then face goal face_x/face_y (the requester) or goal yaw.  Statuses:
+        RETURNING (1 Hz), then HOME_REACHED or HOME_FAILED{reason}, then IDLE.
+        Never walks on stale odometry; stops behind a person / obstacle
+        (walk_lock.pose_blocked) and gives up after POSE_BLOCK_HOLD_S."""
+        label = goal.get('label', 'home')
+        self._fsm_exit_reason = None
+        self._pose_running = True
+        reason, done = None, None
+        face_since = 0.0
+        requester_ahead = None
+        try:
+            self._connect_loco()
+            pose = self._odom_pose_age(walk_lock.POSE_ODOM_FRESH_S)
+            if pose is None:
+                reason = 'odom_stale'
+                return
+            x_b, y_b = walk_lock.world_to_body(pose, goal['x'], goal['y'])
+            dist0 = math.hypot(x_b, y_b)
+            if dist0 > walk_lock.POSE_MAX_M:
+                reason = 'too_far (%.1f m > %.1f m)' % (dist0, walk_lock.POSE_MAX_M)
+                return
+            self._publish_status('RETURNING', label=label, detail={
+                'distance_m': round(dist0, 3), 'goal': [round(goal['x'], 3),
+                                                        round(goal['y'], 3)]})
+            self.get_logger().info(
+                f'[pose] walking to "{label}" ({goal["x"]:.3f}, {goal["y"]:.3f}) '
+                f'from ({pose[0]:.3f}, {pose[1]:.3f}): {dist0:.2f} m')
+            r = self._pose_backoff(dist0)          # clear of the table
+            if r is not None:
+                reason = r
+                return
+            stage = 'drive'
+            deadline = time.time() + min(120.0, 20.0 + dist0 / 0.10)
+            stall = hunt_law.StallWatchdog(walk_lock.POSE_STALL_S,
+                                           walk_lock.POSE_STALL_M)
+            blocked_since, last_hb, stale_since = 0.0, 0.0, 0.0
+            silent_since, silent_walk_s, last_tick = 0.0, 0.0, 0.0
+            turn_since, turn_yaw0, turn_boost = 0.0, 0.0, False   # stuck mid-turn?
+            while True:
+                with self._cmd_lock:
+                    p, self._pending = self._pending, None
+                if p is not None:
+                    kind, val = p
+                    if kind == 'stop':
+                        reason = 'stop'
+                        return
+                    if kind == 'target':
+                        # a /walk_target during the return is the pick side
+                        # re-sending its navigate label, not a fresh request;
+                        # only a stop or a new pose ends the return trip
+                        self.get_logger().warn(
+                            f'[pose] /walk_target "{val}" ignored during the '
+                            'walk to the start point (stop / a new pose end it).')
+                        continue
+                    if kind == 'pose':
+                        goal, stage = val, 'drive'
+                        label = goal.get('label', 'home')
+                        stall = hunt_law.StallWatchdog(walk_lock.POSE_STALL_S,
+                                                       walk_lock.POSE_STALL_M)
+                        self.get_logger().info('[pose] new goal')
+                now = time.time()
+                pose = self._odom_pose_age(walk_lock.POSE_ODOM_FRESH_S)
+                if pose is None:
+                    self._stop_motion()
+                    if not stale_since:
+                        stale_since = now
+                    elif now - stale_since > 1.0:
+                        reason = 'odom_stale'
+                        return
+                    time.sleep(CTRL_DT_S)
+                    continue
+                stale_since = 0.0
+                cmd = walk_lock.pose_command(pose, goal, stage)
+                tick_prev, last_tick = last_tick, now
+                if cmd['stage'] != stage:
+                    self.get_logger().info(
+                        f'[pose] {stage} -> {cmd["stage"]} at '
+                        f'dist={cmd["dist"]:.3f} err={math.degrees(cmd["err"]):+.1f}')
+                    if cmd['stage'] == 'face':
+                        face_since = now
+                stage = cmd['stage']
+                if stage == 'done':
+                    done = {'err_m': round(cmd['dist'], 3), 'faced': True,
+                            'face_err_deg': round(math.degrees(cmd['err']), 1)}
+                    return
+                if stage == 'face' and face_since \
+                        and now - face_since > walk_lock.POSE_FACE_MAX_S:
+                    done = {'err_m': round(cmd['dist'], 3), 'faced': False,
+                            'face_err_deg': round(math.degrees(cmd['err']), 1)}
+                    return
+                if stage == 'drive':
+                    rows_t, rows = getattr(self, '_body_rows', (0.0, []))
+                    # the detector sends nothing for an empty view, so a long
+                    # silence may mean a dead detector; walk forward blind only
+                    # briefly
+                    if now - rows_t > walk_lock.POSE_SILENT_S:
+                        if not silent_since:
+                            silent_since = now
+                            self.get_logger().warn(
+                                f'[pose] no detection packet for '
+                                f'{now - rows_t:.1f}s (empty view, or the '
+                                'detector is down) — slowing to '
+                                f'{walk_lock.POSE_VX_MIN:.2f} m/s.')
+                        if cmd['vx'] > 0.0 and tick_prev:   # only while walking
+                            silent_walk_s += now - tick_prev
+                        if silent_walk_s > walk_lock.POSE_SILENT_FAIL_S:
+                            reason = 'perception_silent'
+                            return
+                        if cmd['vx'] > walk_lock.POSE_VX_MIN:
+                            cmd['vx'] = walk_lock.POSE_VX_MIN
+                    elif silent_since:
+                        self.get_logger().info(
+                            f'[pose] detections back after {silent_walk_s:.1f}s of '
+                            'blind walking — full speed.')
+                        silent_since, silent_walk_s = 0.0, 0.0
+                    blk = (walk_lock.pose_blocked(rows, cmd['dist'])
+                           if now - rows_t <= walk_lock.OBST_ROW_MAX_AGE_S
+                           else None)
+                    if blk is not None and walk_lock.is_requester_ahead(
+                            blk, pose, goal):
+                        # if the person in the way asked for the walk, this is
+                        # arrival, not a block
+                        self.get_logger().info(
+                            '[pose] the person who asked is ahead '
+                            f'({cmd["dist"]:.2f} m from the start point) — '
+                            'stopping here, facing them.')
+                        requester_ahead = round(cmd['dist'], 3)
+                        stage, face_since = 'face', now
+                        self._stop_motion()
+                        time.sleep(CTRL_DT_S)
+                        continue
+                    if blk is not None:
+                        if cmd['dist'] <= walk_lock.POSE_NEAR_DONE_M:
+                            self.get_logger().info(
+                                f'[pose] "{blk.get("label")}" ahead '
+                                f'{cmd["dist"]:.2f} m from the goal — close '
+                                'enough, facing now.')
+                            stage, face_since = 'face', now
+                            self._stop_motion()
+                            time.sleep(CTRL_DT_S)
+                            continue
+                        if not blocked_since:
+                            blocked_since = now
+                            self._stop_motion()
+                            self.get_logger().warn(
+                                f'[pose] "{blk.get("label")}" in the way at '
+                                f'd={math.hypot(float(blk["x"]), float(blk["y"])):.2f} m '
+                                '— holding.')
+                        if now - blocked_since > walk_lock.POSE_BLOCK_HOLD_S:
+                            reason = 'blocked (%s)' % blk.get('label')
+                            return
+                        time.sleep(CTRL_DT_S)
+                        continue
+                    if blocked_since:
+                        self.get_logger().info('[pose] way clear — resuming.')
+                        blocked_since = 0.0
+                        stall = hunt_law.StallWatchdog(walk_lock.POSE_STALL_S,
+                                                       walk_lock.POSE_STALL_M)
+                    if cmd['vx'] <= 0.0:
+                        # spinning in place (home behind the robot takes about 10 s
+                        # at 0.30 rad/s) is not a stall; the deadline bounds it
+                        stall = hunt_law.StallWatchdog(walk_lock.POSE_STALL_S,
+                                                       walk_lock.POSE_STALL_M)
+                    elif stall.update(cmd['dist'], now) == 'stall':
+                        reason = 'no_progress'
+                        return
+                if now > deadline:
+                    reason = 'timeout'
+                    return
+                # stuck-turn check: a turn command with no rotation
+                if cmd['vx'] == 0.0 and cmd['omega'] != 0.0:
+                    if not turn_since:
+                        turn_since, turn_yaw0 = now, pose[2]
+                    elif now - turn_since >= walk_lock.POSE_TURN_STUCK_S:
+                        turned = abs(math.degrees(walk_lock.wrap_pi(pose[2] - turn_yaw0)))
+                        if turned < walk_lock.POSE_TURN_MIN_DEG:
+                            if turn_boost:
+                                self.get_logger().warn(
+                                    f'[pose] turned only {turned:.0f} deg in '
+                                    f'{now - turn_since:.1f}s even at '
+                                    f'{walk_lock.POSE_TURN_BOOST:.2f} rad/s — cannot turn here.')
+                                reason = 'cannot_turn'
+                                return
+                            turn_boost = True
+                            self.get_logger().warn(
+                                f'[pose] turned only {turned:.0f} deg in '
+                                f'{now - turn_since:.1f}s — boosting the turn to '
+                                f'{walk_lock.POSE_TURN_BOOST:.2f} rad/s.')
+                        turn_since, turn_yaw0 = now, pose[2]
+                    if turn_boost:
+                        cmd['omega'] = math.copysign(walk_lock.POSE_TURN_BOOST, cmd['omega'])
+                else:
+                    turn_since = 0.0
+                self._loco.set_velocity(cmd['vx'], 0.0, cmd['omega'],
+                                        duration=1.0)
+                if now - last_hb >= 1.0:
+                    last_hb = now
+                    self._publish_status('RETURNING', label=label, detail={
+                        'distance_m': round(cmd['dist'], 3), 'stage': stage})
+                    self.get_logger().info(
+                        f'[pose] {stage} dist={cmd["dist"]:.3f} '
+                        f'err={math.degrees(cmd["err"]):+.1f} vx={cmd["vx"]:.2f} '
+                        f'omega={cmd["omega"]:+.2f}')
+                time.sleep(CTRL_DT_S)
+        except Exception as e:
+            self.get_logger().error(f'[pose] crashed: {e!r}')
+            reason = 'crash: %s' % e
+        finally:
+            self._stop_motion()
+            if done is not None:
+                if requester_ahead is not None:
+                    done['requester_ahead_m'] = requester_ahead
+                pose = self._odom_pose_age(1.0)
+                if pose is not None:
+                    done['pose'] = [round(pose[0], 3), round(pose[1], 3),
+                                    round(math.degrees(pose[2]), 1)]
+                self._publish_status('HOME_REACHED', label=label, detail=done)
+                self.get_logger().info(f'[pose] "{label}" reached: {done}')
+            else:
+                self._publish_status('HOME_FAILED', label=label,
+                                     detail={'reason': reason or 'unknown'})
+                self.get_logger().warn(f'[pose] "{label}" failed: {reason}')
+            self._fsm_exit_reason = ('finished' if done is not None
+                                     else ('stop' if reason == 'stop'
+                                           else (reason or 'unknown')))
+            self._pose_running = False
+            with self._cmd_lock:
+                self._busy = False
+            self._publish_status('IDLE', detail={'exit': self._fsm_exit_reason})
+            self._start_deferred()
+
+    def _pose_backoff(self, dist0):
+        """B8l-hf4: before the return turns, step BACK
+        walk_lock.backoff_distance(OPENBOT_POSE_BACKOFF_M) metres at the gait
+        floor (the robot just picked at a table: turning in place there gets it
+        stuck, operator 2026-10-17).  Odometry measures the distance; time
+        bounds it.  Returns 'stop' / 'odom_stale' to end the walk, else None.
+        A /walk_target is ignored here like in the walk itself."""
+        want = walk_lock.backoff_distance(POSE_BACKOFF_ENV)
+        if want <= 0.0 or dist0 <= walk_lock.POSE_BACKOFF_MIN_DIST_M:
+            return None
+        p0 = self._odom_pose_age(walk_lock.POSE_ODOM_FRESH_S)
+        if p0 is None:
+            return 'odom_stale'
+        self.get_logger().info(
+            f'[pose] stepping back {want:.2f} m at {walk_lock.POSE_BACKOFF_VX:.2f} '
+            'm/s before turning (away from the table edge).')
+        end = time.time() + want / walk_lock.POSE_BACKOFF_VX + 1.5
+        moved = 0.0
+        while time.time() < end:
+            with self._cmd_lock:
+                p = self._pending
+                if p is not None and p[0] == 'stop':
+                    self._pending = None
+            if p is not None and p[0] == 'stop':
+                self._stop_motion()
+                return 'stop'
+            pose = self._odom_pose_age(walk_lock.POSE_ODOM_FRESH_S)
+            if pose is None:
+                self._stop_motion()
+                return 'odom_stale'
+            moved = math.hypot(pose[0] - p0[0], pose[1] - p0[1])
+            if moved >= want:
+                break
+            self._loco.set_velocity(-walk_lock.POSE_BACKOFF_VX, 0.0, 0.0,
+                                    duration=1.0)
+            time.sleep(CTRL_DT_S)
+        self._stop_motion()
+        self.get_logger().info(f'[pose] stepped back {moved:.2f} m.')
+        time.sleep(walk_lock.POSE_BACKOFF_SETTLE_S)
+        return None
+
+    def _odom_pose_age(self, max_age_s):
+        """(x, y, yaw) when the odometry pose is at most ``max_age_s`` old."""
+        olock = getattr(self, '_odom_lock', None)
+        if olock is None:
+            return None
+        with olock:
+            t = getattr(self, '_odom_t', 0.0)
+            if not t or time.time() - t > max_age_s:
+                return None
+            return (self._robot_x, self._robot_y, self._robot_yaw)
+
+    def _obstruction_between(self, tx, ty):
+        """G17a: the fresh OTHER label standing between robot and target.
+
+        Uses body-frame detections (conf >= MIN_CONF, age <= STALE_DETECTION_S)
+        with a position — presence-only labels (no depth) cannot be tested for
+        the corridor and are ignored here. Returns {'label', 'od', 'x', 'y'} or
+        None.
+
+        `x`/`y` are the obstacle's body-frame position, carried so the caller
+        can tell WHICH SIDE of the target bearing it sits on and aim the detour
+        at the other one (2026-09-26).  Additive: the label/od consumers are
+        unchanged.
+        """
+        now = time.time()
+        best = None
+        with self._targets_lock:
+            for label, det in self._targets.items():
+                if label == self._target_label:
+                    continue
+                if now - det['t'] > STALE_DETECTION_S:
+                    continue
+                # another label sitting on the target's spot is the same
+                # object, not an obstacle
+                if math.hypot(det['x'] - tx, det['y'] - ty) <= SAME_OBJECT_M:
+                    continue
+                if not hunt_law.obstructs(tx, ty, det['x'], det['y']):
+                    continue
+                od = math.hypot(det['x'], det['y'])
+                if best is None or od < best['od']:
+                    best = {'label': str(label), 'od': od,
+                            'x': float(det['x']), 'y': float(det['y'])}
+        return best
+
+    # -- target helpers ----------------------------------------------------------
+
