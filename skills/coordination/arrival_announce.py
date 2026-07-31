@@ -188,3 +188,21 @@ def phase_speech(phase: str, label: Optional[str] = None) -> Optional[str]:
     return template
 
 
+class PhaseAnnouncer:
+    """One phrase per PHASE per navigation, over the /navigate_status stream.
+
+    TWO TIERS, mirroring the arrival lane's existing contract:
+
+    * tier 1 (this class) -- a phase fires at most once per NAVIGATION.  The
+      set is cleared on a terminal phase, so the next navigation speaks its own
+      search/detected/approach/reached in full.  Without it, the APPROACHING
+      distance heartbeat (deduped by the coordinator only to >= 0.02 m changes)
+      would talk over itself for the whole approach.
+    * tier 2 (``ArrivalGate``, cooldown_s) -- the same phase for the same
+      label inside the cooldown is suppressed across navigations too, so a
+      retarget back to a label just announced does not repeat the sentence.
+
+    PURE, like the rest of this module: no I/O, no clock (the caller passes
+    ``now``), no rclpy.
+    """
+
