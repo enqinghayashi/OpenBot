@@ -269,3 +269,7 @@ class ArrivalGate:
             return True
         return (now - last) >= self.cooldown_s
 
+    def mark_fired(self, label: str, now: float) -> None:
+        """Record that the arrival at `label` was announced at `now`."""
+        self._last_fire[label] = now
+
