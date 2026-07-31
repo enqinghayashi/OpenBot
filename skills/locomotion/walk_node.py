@@ -2572,3 +2572,44 @@ class WalkNode(Node):
         # is already in sport FSM 801, and the vendor start() sends
         # SetFsmId(200)
 
+    def _stop_motion(self):
+        """Halt locomotion if a loco is up (safe no-op otherwise)."""
+        if self._loco is not None:
+            try:
+                self._loco.stop()
+            except Exception:
+                pass
+
+    def destroy_node(self):
+        # Ctrl+C: stop, then release the DDS lease
+        if self._loco is not None:
+            try:
+                self._loco.stop()
+                self._loco.disconnect()
+            except Exception:
+                pass
+        super().destroy_node()
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = WalkNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    except ExternalShutdownException:
+        pass               # SIGINT: context is already down
+    except Exception:
+        if rclpy.ok():
+            raise          # a real error, surface it
+    finally:
+        node.destroy_node()
+        try:
+            rclpy.shutdown()
+        except Exception:
+            pass           # already shut down
+
+
+if __name__ == '__main__':
+    main()
