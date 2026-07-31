@@ -273,3 +273,6 @@ class ArrivalGate:
         """Record that the arrival at `label` was announced at `now`."""
         self._last_fire[label] = now
 
+    def last_fired(self, label: str) -> Optional[float]:
+        """Timestamp of the last fire for `label`, or None if never."""
+        return self._last_fire.get(label)
