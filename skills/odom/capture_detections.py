@@ -31,3 +31,73 @@ WIDTH_GAP_M = 0.15
 MAX_ROWS_DEFAULT = 20000
 
 
+def _num(v):
+    """float or None (bool / str / NaN / inf are not numbers here)."""
+    if isinstance(v, bool) or v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(f) or math.isinf(f):
+        return None
+    return f
+
+
+def yaw_err_deg(x, y):
+    """degrees(atan2(x, y)) wrapped to (-180, 180] -- the walk_node definition
+    `yaw_err = _wrap_pi(math.atan2(x_b, y_b))` (walk_node.py:1394 / :1423).
+    x = lateral (+right), y = forward."""
+    a = math.degrees(math.atan2(x, y))
+    a = (a + 180.0) % 360.0 - 180.0
+    if a == -180.0:
+        a = 180.0
+    return a
+
+
+def parse_message(json_text, recv_t):
+    """-> list of row dicts, one per detection.  Raises ValueError on a
+    malformed message (callers count and skip)."""
+    data = json.loads(json_text)
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list):
+        raise ValueError('not a detection list')
+    rows = []
+    for det in data:
+        if not isinstance(det, dict):
+            continue
+        x, y = _num(det.get('x')), _num(det.get('y'))
+        rows.append({
+            't_recv': recv_t,
+            'stamp': _num(det.get('stamp')),
+            'label': det.get('label'),
+            'w': _num(det.get('width_m')),
+            'h': _num(det.get('height_m')),
+            'x': x, 'y': y, 'z': _num(det.get('z')),
+            'yaw_err_deg': (yaw_err_deg(x, y)
+                            if x is not None and y is not None else None),
+            'conf': _num(det.get('conf')),
+        })
+    return rows
+
+
+def _cell(v):
+    if v is None:
+        return ''
+    if isinstance(v, float):
+        return repr(round(v, 6))
+    s = str(v)
+    return '"%s"' % s.replace('"', '""') if (',' in s or '"' in s) else s
+
+
+def classify_width(ws):
+    """Gap-based 1-D clustering verdict on the width samples."""
+    ws = sorted(w for w in ws if w is not None)
+    if not ws:
+        return 'DISCRIMINATOR: no width samples -> INCONCLUSIVE'
+    clusters = 1 + sum(1 for a, b in zip(ws, ws[1:]) if b - a > WIDTH_GAP_M)
+    if clusters >= 2:
+        return ('DISCRIMINATOR: w bimodal (>=2 clusters separated by >%.2f m) '
+                '-> MASK MERGING' % WIDTH_GAP_M)
+    return ('DISCRIMINATOR: w unimodal -> LABEL HOPPING / projector jitter')
