@@ -62,3 +62,6 @@ def parse_arrival(status_text: Optional[str]) -> Optional[str]:
     return label if label else None
 
 
+def speech_text(label: str) -> str:
+    """The spoken phrase announcing arrival at `label`."""
+    return "I have reached the " + label + "."
