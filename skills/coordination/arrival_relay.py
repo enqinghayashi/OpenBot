@@ -70,3 +70,19 @@ class ArrivalRelay(Node):
             % socket_path)
 
     # -- setting up the socket ------------------------------------------
+    def _create_server(self, path):
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            srv.bind(path)
+        except OSError:
+            # stale socket: unlink + retry, path is ours
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            srv.bind(path)
+        srv.listen(1)
+        srv.setblocking(False)       # never block the executor
+        self._srv = srv
+
+    # -- when a message shows up ----------------------------------------
