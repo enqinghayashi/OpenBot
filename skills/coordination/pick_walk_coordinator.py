@@ -254,3 +254,6 @@ class PickWalkCoordinator(Node):
         self._log('ready')
 
     # ── little logging helpers ────────────────────────────────────────────
+    def _log(self, msg):
+        self.get_logger().info(f'[coordinator] {msg}')
+
