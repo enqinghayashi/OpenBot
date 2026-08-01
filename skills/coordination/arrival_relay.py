@@ -124,3 +124,13 @@ class ArrivalRelay(Node):
             except OSError:
                 pass
 
+    def _drop_client(self):
+        client = self._client
+        self._client = None
+        if client is not None:
+            try:
+                client.close()
+            except OSError:
+                pass
+
+    # -- cleaning up -----------------------------------------------------
