@@ -187,3 +187,4 @@ DETECTION_LOST_GAP_S = 2.0   # 2 missed beats at 1 s
 REARM_GRACE_S = 8.0
 
 
+class PickWalkCoordinator(Node):
