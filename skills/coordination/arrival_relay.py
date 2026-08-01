@@ -140,3 +140,16 @@ class ArrivalRelay(Node):
         except OSError:
             pass
 
+    def _cleanup(self):
+        """Close sockets and unlink the UNIX socket path (idempotent)."""
+        if self._closed:
+            return
+        self._closed = True
+        self._drop_client()
+        if self._srv is not None:
+            try:
+                self._srv.close()
+            except OSError:
+                pass
+        self._unlink_socket()
+
