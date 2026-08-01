@@ -153,3 +153,9 @@ class ArrivalRelay(Node):
                 pass
         self._unlink_socket()
 
+    def __del__(self):
+        # destructor: never raise
+        try:
+            self._cleanup()
+        except Exception:
+            pass
