@@ -108,3 +108,19 @@ class ArrivalRelay(Node):
         except OSError:
             self._drop_client()      # peer gone: drop it
 
+    def _accept_pending(self):
+        try:
+            conn, _addr = self._srv.accept()
+        except (BlockingIOError, InterruptedError):
+            return                   # nothing pending
+        except OSError:
+            return
+        conn.setblocking(False)
+        old = self._client
+        self._client = conn
+        if old is not None:
+            try:
+                old.close()
+            except OSError:
+                pass
+
