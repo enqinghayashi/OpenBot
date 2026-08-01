@@ -264,3 +264,94 @@ class PickWalkCoordinator(Node):
         self._log(f'NAV_STATUS: {text}')
 
     # ── the subscriptions ─────────────────────────────────────────────────
+    def _on_nav_target(self, msg):
+        cmd = msg.data.strip().lower()
+        with self._nav_lock:
+            if cmd in ('stop', 'abort'):
+                self._nav_epoch += 1   # kills any in-flight watch
+                self._pending_label = None
+                self._navigating = False
+                self._active_label = None
+                # reset gate + flow
+                self._flow = 'idle'
+                self._confirm_count = 0
+                self._last_beat_ts = 0.0
+                self._last_approach_d = None
+                self._walk_pub.publish(String(data='stop'))
+                self._publish_nav('STOPPED')
+                return
+
+            if cmd == 'confirm':
+                if self._pending_label is None:
+                    self._publish_nav('ERROR: nothing pending — '
+                                      'send a label first')
+                    return
+                label = self._pending_label
+                if self._navigating:
+                    # replace in-flight
+                    self._publish_nav(f'ERROR: already navigating to '
+                                      f'"{self._active_label}" — send stop '
+                                      f'first or wait for REACHED')
+                    return
+                if not self._pick_gate_ok():
+                    return
+                self._pending_label = None
+                self._navigating = True
+                self._active_label = label
+                # epoch start
+                # state latches
+                # nothing clears it
+                # across navs
+                # so old REACHED survives
+                # stale 22 s
+                # 'REACHED bottle' 3 ms in
+                # label None -> feeder bails
+                # /walk_go never again
+                # 1434 detections ignored until STOP
+                # older = old epoch; stamp first
+                since_ts = time.time()
+                # sweep = /walk_target publish
+                # 7-status ack
+                self._walk_pub.publish(String(data=label))
+                with self._det_lock:
+                    det = self._latest_detections.get(label)
+                fresh = (det is not None
+                         and time.time() - det.get('_t', 0.0)
+                         <= DETECTION_FRESH_S)
+                if fresh:
+                    # first beat counts
+                    self._flow = 'detecting'
+                    self._confirm_count = 1
+                    self._last_beat_ts = time.time()
+                    self._publish_nav(f'DETECTED {label} ONCE, EXIT '
+                                      f'Sweep Motion Search')
+                    self._publish_nav('WAIT FOR THREE CONSECUTIVE '
+                                      'CONFIRMATION')
+                else:
+                    # absent -> sweep
+                    self._flow = 'sweeping'
+                    self._confirm_count = 0
+                    self._last_beat_ts = 0.0
+                    self._publish_nav(f'{label} requested not in vision, '
+                                      f'Proceed to Sweep Search')
+                threading.Thread(target=self._watch_walk,
+                                 args=(since_ts,),
+                                 daemon=True).start()
+                return
+
+            if cmd == 'cancel':
+                self._pending_label = None
+                self._publish_nav('CANCELLED')
+                return
+
+            # else: a label
+            # un-mint REFs at ingress
+            # keyed by label
+            # so a ref finds nothing
+            # even in plain view
+            cmd = ref_to_label(cmd)
+            if not cmd:
+                return
+            self._pending_label = cmd
+            self._publish_pending(cmd)
+
