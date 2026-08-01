@@ -121,3 +121,13 @@ _REF_TO_LABEL_MODULES = ("skills.perception.instance_labels",   # repo: skills/p
                          "instance_labels")                    # robot: openbot/instance_labels.py
 
 
+def _load_ref_to_label():
+    """`ref_to_label` from whichever layout is present; raises if neither is."""
+    last = None
+    for name in _REF_TO_LABEL_MODULES:
+        try:
+            return importlib.import_module(name).ref_to_label
+        except ImportError as exc:
+            last = exc
+    raise ImportError("instance_labels not importable (tried %s): %s"
+                      % (", ".join(_REF_TO_LABEL_MODULES), last))
