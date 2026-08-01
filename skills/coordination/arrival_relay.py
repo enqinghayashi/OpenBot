@@ -175,3 +175,7 @@ def main():
             node.destroy_node()
         rclpy.shutdown()
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
