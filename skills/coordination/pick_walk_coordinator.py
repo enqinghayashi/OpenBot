@@ -257,3 +257,10 @@ class PickWalkCoordinator(Node):
     def _log(self, msg):
         self.get_logger().info(f'[coordinator] {msg}')
 
+    def _publish_nav(self, text):
+        msg = String()
+        msg.data = text
+        self._nav_status_pub.publish(msg)
+        self._log(f'NAV_STATUS: {text}')
+
+    # ── the subscriptions ─────────────────────────────────────────────────
