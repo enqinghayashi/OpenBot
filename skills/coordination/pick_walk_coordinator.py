@@ -188,3 +188,69 @@ REARM_GRACE_S = 8.0
 
 
 class PickWalkCoordinator(Node):
+    def __init__(self):
+        super().__init__('pick_walk_coordinator')
+
+        self._nav_lock = threading.Lock()
+        self._pending_label = None
+        self._navigating = False       # sent, waiting for REACHED
+        self._active_label = None
+        self._nav_epoch = 0            # stop/abort bumps it; old watches exit
+
+        # post-confirm flow
+        #   idle: nothing
+        #   sweeping: searching
+        #   detecting: counting
+        #   confirmed: sent
+        self._flow = 'idle'
+        self._confirm_count = 0        # consecutive fresh beats
+        self._last_beat_ts = 0.0       # last beat (0 = none)
+        self._last_walk_state = None   # SEARCHING dedupe
+
+        # pick state (locked)
+        self._pick_lock = threading.Lock()
+        self._pick_state = None        # dict or None
+        self._pick_state_ts = 0.0
+        self._pick_status = None
+        self._pick_status_ts = 0.0
+
+        self._walk_state = None
+        self._walk_state_ts = 0.0
+
+        # NOT_FOUND latch
+        # NOT_FOUND then IDLE
+        # 1.25 ms apart
+        # 1790595280.168 -> .169
+        # 0.2 s poll misses it ~99%
+        # subscription sees every frame
+        self._walk_not_found_label = None
+        self._walk_not_found_ts = 0.0
+
+        # latest detections snapshot
+        # label -> {x, y, z, conf, _t}
+        # same as pick_node; locked
+        self._det_lock = threading.Lock()
+        self._latest_detections = {}
+
+        # last APPROACHING distance
+        self._last_approach_d = None
+
+        self.create_subscription(String, TOPIC_NAV_TARGET,
+                                 self._on_nav_target, 10)
+        self.create_subscription(String, TOPIC_PICK_STATE,
+                                 self._on_pick_state, 10)
+        self.create_subscription(String, TOPIC_PICK_STATUS,
+                                 self._on_pick_status, 10)
+        self.create_subscription(String, TOPIC_WALK_STATUS,
+                                 self._on_walk_status, 10)
+        self.create_subscription(String, TOPIC_OBJECT_DETECTIONS,
+                                 self._on_detections, 10)
+
+        self._walk_pub = self.create_publisher(String, TOPIC_WALK_TARGET, 10)
+        self._walk_go_pub = self.create_publisher(String, WALK_GO_TOPIC, 10)
+        self._nav_status_pub = self.create_publisher(
+            String, TOPIC_NAV_STATUS, 10)
+
+        self._log('ready')
+
+    # ── little logging helpers ────────────────────────────────────────────
