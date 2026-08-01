@@ -134,3 +134,9 @@ class ArrivalRelay(Node):
                 pass
 
     # -- cleaning up -----------------------------------------------------
+    def _unlink_socket(self):
+        try:
+            os.unlink(self._socket_path)
+        except OSError:
+            pass
+
