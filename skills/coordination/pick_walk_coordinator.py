@@ -131,3 +131,59 @@ def _load_ref_to_label():
             last = exc
     raise ImportError("instance_labels not importable (tried %s): %s"
                       % (", ".join(_REF_TO_LABEL_MODULES), last))
+
+
+ref_to_label = _load_ref_to_label()
+
+TOPIC_NAV_TARGET = '/navigate_target'
+TOPIC_NAV_STATUS = '/navigate_status'
+TOPIC_PICK_STATE = '/pick_state'
+TOPIC_PICK_STATUS = '/pick_status'
+TOPIC_WALK_TARGET = '/walk_target'
+TOPIC_WALK_STATUS = '/walk_status'
+TOPIC_OBJECT_DETECTIONS = '/object_detections_body'
+WALK_GO_TOPIC = '/walk_go'   # approach trigger (String label)
+
+PICK_STATE_STALE_S = 2.0
+WALK_REACHED_TIMEOUT_S = 120.0
+GATE_STATES = ('idle', 'holding')
+
+# PENDING / echo knobs
+# projector is EVENT-DRIVEN
+# only publishes with detections
+# stale entry = last ghost
+# never a made-up guess
+# 1.0 s guard
+DETECTION_FRESH_S = 1.0    # fresh this long
+DET_MIN_CONF = 0.20        # pick_node MIN_CONF
+APPROACH_DEDUPE_M = 0.02   # min delta
+
+# 3-beat gate
+# after each sweep
+# projector ~30 fps in view
+# beats land inside 1 s
+# gap > CONFIRM_BEAT_GAP_S
+# msg without label
+CONFIRM_BEAT_GAP_S = 1.0     # -> streak reset
+CONFIRM_REQUIRED = 3         # max beat gap
+# beats to finish
+# post-trigger quiet
+# LOST + resend
+DETECTION_LOST_GAP_S = 2.0   # 2 missed beats at 1 s
+# re-arm after a rollback
+# /walk_go is ONE-SHOT
+# counting stops
+# FSM bails -> SEARCHING
+# -> DETECTED hold
+# only exit: fresh /walk_go
+# nobody will send
+# needs SILENCE: live object
+# keeps beats coming
+# froze twice, 'person' held 36 s
+# until the 120 s timeout
+# STALL_BUDGET = 2
+# grace > GO_STALE_S 5.0 s
+# + time to collect CONFIRM_REQUIRED beats
+REARM_GRACE_S = 8.0
+
+
