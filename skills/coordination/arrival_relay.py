@@ -53,3 +53,20 @@ except ImportError:
 class ArrivalRelay(Node):
     """Subscribe /navigate_status -> parse -> gate -> UNIX socket phrase."""
 
+    def __init__(self, topic="/navigate_status",
+                 socket_path=arrival_announce.SOCKET_PATH):
+        super().__init__("arrival_relay")
+        self._socket_path = socket_path
+        #: walk phases: search -> saw-it -> walking
+        #: law owns wording + at-most-once
+        self._announcer = arrival_announce.PhaseAnnouncer(cooldown_s=10.0)
+        self._client = None          # the voice client
+        self._srv = None             # listening socket
+        self._closed = False
+        self._create_server(socket_path)
+        self.create_subscription(String, topic, self._on_status, 10)
+        self.get_logger().info(
+            "arrival_relay: listening on %s for /navigate_status"
+            % socket_path)
+
+    # -- setting up the socket ------------------------------------------
