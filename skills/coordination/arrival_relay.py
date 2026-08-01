@@ -86,3 +86,11 @@ class ArrivalRelay(Node):
         self._srv = srv
 
     # -- when a message shows up ----------------------------------------
+    def _on_status(self, msg):
+        # one law does wording + rate. its "reached"
+        # already says the arrival; no second path.
+        phrase = self._announcer.phrase(msg.data, time.time())
+        if phrase is None:
+            return
+        self._emit(phrase)
+
