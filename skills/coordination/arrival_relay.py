@@ -161,3 +161,17 @@ class ArrivalRelay(Node):
             pass
 
 
+def main():
+    rclpy.init()
+    node = None
+    try:
+        node = ArrivalRelay()
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if node is not None:
+            node._cleanup()
+            node.destroy_node()
+        rclpy.shutdown()
+    return 0
