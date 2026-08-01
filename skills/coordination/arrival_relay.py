@@ -50,3 +50,6 @@ except ImportError:
     import arrival_announce
 
 
+class ArrivalRelay(Node):
+    """Subscribe /navigate_status -> parse -> gate -> UNIX socket phrase."""
+
