@@ -94,3 +94,17 @@ class ArrivalRelay(Node):
             return
         self._emit(phrase)
 
+    def _emit(self, phrase):
+        # one client; pending accept wins
+        self._accept_pending()
+        client = self._client
+        if client is None:
+            # no client: drop it
+            return
+        try:
+            client.sendall((phrase + "\n").encode("utf-8"))
+        except (BlockingIOError, InterruptedError):
+            pass                     # would block; skip
+        except OSError:
+            self._drop_client()      # peer gone: drop it
+
