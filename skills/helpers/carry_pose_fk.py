@@ -108,3 +108,5 @@ def ee_frames(red):
         jid = red.model.getJointId(side + '_wrist_yaw_joint')
         out[side] = (jid, pin.SE3(np.eye(3), np.array([0.05, 0, 0])))
     return out
+
+
