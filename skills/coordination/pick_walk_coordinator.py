@@ -355,3 +355,73 @@ class PickWalkCoordinator(Node):
             self._pending_label = cmd
             self._publish_pending(cmd)
 
+    def _on_detections(self, msg):
+        """Task 9 snapshot + Task 10 3-consecutive-confirmation gate.
+
+        Mirrors pick_node._on_detections parsing (DET_MIN_CONF filter +
+        _t freshness stamp) so the PENDING lookup agrees with what pick_node
+        would see.
+
+        Task 10: while the flow is in the WAITING phase ('sweeping' /
+        'detecting'), each fresh beat of the ACTIVE label is counted.
+        Consecutive means a gap <= CONFIRM_BEAT_GAP_S to the previous beat
+        — a label beat after a longer gap, or a detection message that does
+        not contain the label at all (projector is event-driven, so a
+        published message lists exactly what is currently detected), breaks
+        the streak: counter -> 0 and the next label beat restarts the run
+        (statuses 3+4 re-fire).  The 3rd consecutive beat completes the
+        gate -> _confirm_flow() (status 5 + table + automatic trigger).
+        After the trigger ('confirmed') beats no longer count — they only
+        feed _last_beat_ts so _watch_walk can detect the projector going
+        silent (DETECTION LOST).
+        """
+        try:
+            detections = json.loads(msg.data)
+        except Exception:
+            self._log(f'bad /object_detections_body: {msg.data!r}')
+            return
+        now = time.time()
+        with self._det_lock:
+            self._latest_detections = {
+                d['label']: {**d, '_t': now} for d in detections
+                if d.get('conf', 0) >= DET_MIN_CONF
+            }
+        with self._nav_lock:
+            label = self._active_label
+            flow = self._flow
+        if label is None or flow == 'idle':
+            return
+        with self._det_lock:
+            det = self._latest_detections.get(label)
+        with self._nav_lock:
+            if self._flow != flow:       # stop/abort snuck in
+                return
+            if flow == 'confirmed':
+                # feeds the loss timer
+                if det is not None:
+                    self._last_beat_ts = now
+                return
+            if det is None:
+                # missing label = miss
+                # -> reset, next restarts
+                if self._confirm_count != 0 or self._last_beat_ts != 0.0:
+                    self._confirm_count = 0
+                    self._last_beat_ts = 0.0
+                return
+            last = self._last_beat_ts
+            if last == 0.0 or now - last > CONFIRM_BEAT_GAP_S:
+                self._confirm_count = 1      # fresh run
+                self._flow = 'detecting'
+                streak_started = True
+            else:
+                self._confirm_count += 1
+                streak_started = False
+            self._last_beat_ts = now
+            triggered = self._confirm_count >= CONFIRM_REQUIRED
+        if streak_started:
+            self._publish_nav(f'DETECTED {label} ONCE, EXIT '
+                              f'Sweep Motion Search')
+            self._publish_nav('WAIT FOR THREE CONSECUTIVE CONFIRMATION')
+        if triggered:
+            self._confirm_flow(det)
+
