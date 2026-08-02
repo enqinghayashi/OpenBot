@@ -676,3 +676,204 @@ class PickWalkCoordinator(Node):
         return False
 
     # ── the walk watchdog ─────────────────────────────────────────────────
+    def _watch_walk(self, since_ts=0.0):
+        """Wait for REACHED (publish once) or timeout; reset navigation.
+
+        `since_ts` is this navigation's epoch start (the confirm instant).
+        A REACHED whose /walk_status RECEIPT predates it belongs to the
+        previous navigation and must not complete this one — see the
+        on-robot 2026-09-26 race documented at the confirm site.  The
+        default 0.0 makes the guard inert for a direct call, which is what
+        the test harness relies on.
+
+        Task 10: while confirmed, if the projector goes silent (no fresh
+        beat for > DETECTION_LOST_GAP_S) publish DETECTION LOST and
+        re-send the label on /walk_target so the walk side re-enters the
+        sweep loop; the gate then re-runs from the next beats (statuses
+        3+4 re-fire on the new run's first beat).  One-shot per confirmed
+        phase: after the re-sweep the flow is 'sweeping', so the branch
+        cannot re-fire until a new confirmation.
+
+        #214 (nav-close): a silent beat is only re-sent while the walk FSM
+        has actually left the approach.  When /walk_status says the walk
+        side is APPROACHING (or REACHED), the silence is the close-range
+        depth drop and is HELD — re-sending /walk_target there would RETARGET
+        the walk FSM back to SEARCHING with a fresh stall budget just as it
+        arrives.  The walk-side arrival latch (walk_node #214) is the
+        resolver; the REACHED branch below then completes the watch.
+
+        Exits silently if stop/abort bumped _nav_epoch (superseded watch).
+        """
+        t0 = time.time()
+        reached_once = False
+        last_hold_phase = None
+        saw_approach = False        # saw APPROACHING since trigger
+        confirmed_since = 0.0       # first confirmed tick
+        with self._nav_lock:
+            epoch = self._nav_epoch
+        while time.time() - t0 < WALK_REACHED_TIMEOUT_S:
+            with self._nav_lock:
+                if self._nav_epoch != epoch:
+                    return  # stop/abort bumped the epoch
+                flow = self._flow
+                last_beat = self._last_beat_ts
+                label = self._active_label
+            if (flow == 'confirmed' and last_beat > 0.0
+                    and time.time() - last_beat > DETECTION_LOST_GAP_S):
+                # APPROACHING = closing
+                # close-range silence is
+                # NOT a lost target
+                # re-sending = RETARGET
+                # fresh stall budget, bad
+                # arrival latch resolves
+                # re-sweep after it exits
+                phase = self._walk_phase()
+                if phase in ('APPROACHING', 'REACHED'):
+                    if phase != last_hold_phase:
+                        self._log(f'walk phase={phase} during confirmed '
+                                  f'silence — holding re-sweep (walk-side '
+                                  f'arrival latch resolves)')
+                        last_hold_phase = phase
+                    continue
+                last_hold_phase = None
+                # stream died: re-sweep
+                self._publish_nav('DETECTION LOST — re-entering sweep')
+                with self._nav_lock:
+                    if self._nav_epoch != epoch:
+                        return
+                    self._flow = 'sweeping'
+                    self._confirm_count = 0
+                    self._last_beat_ts = 0.0
+                if label is not None:
+                    self._walk_pub.publish(String(data=label))
+                    self._log(f're-sent {label!r} on {TOPIC_WALK_TARGET} '
+                              f'(re-sweep)')
+                continue
+            # ── re-arm after a rollback ─────────────────────────────────
+            # LIVE beats only
+            # silent ticks eaten above
+            # re-arm the one-shot
+            # or DETECTED never lets go
+            if flow == 'confirmed':
+                now = time.time()
+                if not confirmed_since:
+                    confirmed_since = now
+                phase = self._walk_phase()
+                if phase == 'APPROACHING':
+                    saw_approach = True
+                # DETECTED here
+                # walk_node's detected-hold
+                # _phase_hold is that hold
+                # only /walk_go consumer
+                # the hold publishes on entry
+                # wait point + rollback site
+                # without it: one-shot dead
+                # hold has no timeout
+                # 120 s holds
+                # at 0.845 m and 2.23 m
+                # 9.5 Hz stream, no dupes
+                # safe: /walk_go ignored in
+                # SEARCHING/APPROACHING, hold only
+                # outside the hold, so it is dropped
+                elif phase in ('SEARCHING', 'IDLE', 'DETECTED', None):
+                    if saw_approach:
+                        why = 'the walk FSM left APPROACHING'
+                    elif now - confirmed_since > REARM_GRACE_S:
+                        why = (f'the walk FSM never entered APPROACHING '
+                               f'within {REARM_GRACE_S:.0f}s of the trigger')
+                    else:
+                        why = None
+                    if why is not None:
+                        saw_approach = False
+                        confirmed_since = 0.0
+                        self._publish_nav('APPROACH ROLLED BACK — re-arming '
+                                          'the confirmation gate')
+                        with self._nav_lock:
+                            if self._nav_epoch != epoch:
+                                return
+                            self._flow = 'sweeping'
+                            self._confirm_count = 0
+                            self._last_beat_ts = 0.0
+                        self._log(f'{why} — gate re-armed; the next '
+                                  f'{CONFIRM_REQUIRED} beats re-trigger '
+                                  f'{WALK_GO_TOPIC}')
+                        continue
+            with self._pick_lock:
+                state = self._walk_state
+                state_ts = self._walk_state_ts
+            # epoch guard
+            # old REACHED ends nav
+            # 3 ms in, label None for good
+            # genuine REACHED comes later
+            if (state is not None and state.get('state') == 'REACHED'
+                    and state_ts >= since_ts):
+                if not reached_once:
+                    reached_once = True
+                    self._publish_nav(
+                        f'REACHED {self._active_label}')
+                with self._nav_lock:
+                    self._navigating = False
+                    self._active_label = None
+                    self._flow = 'idle'
+                    self._confirm_count = 0
+                    self._last_beat_ts = 0.0
+                return
+            # ── the terminal NOT_FOUND ──────────────────────────────────
+            # hunt EXHAUSTED
+            # full round, nothing
+            # walk_node went IDLE
+            # real answer, TERMINAL
+            # burned 120 s
+            #
+            # measured: NOT_FOUND
+            # 1790595280.17, IDLE 1.25 ms on
+            # ERROR came 43 s late
+            # _navigating stayed True
+            # next cmd: 'already navigating'
+            #
+            # read the LATCH
+            # epoch-guarded like REACHED
+            with self._nav_lock:
+                nf_fired = self._walk_not_found_ts > 0.0 \
+                    and self._walk_not_found_ts >= since_ts
+                nf_label = self._walk_not_found_label
+                active = self._active_label
+                if nf_fired:
+                    self._walk_not_found_label = None
+                    self._walk_not_found_ts = 0.0
+            if nf_fired:
+                self._publish_nav(f'NOT_FOUND {nf_label or active or "target"}')
+                with self._nav_lock:
+                    if self._nav_epoch != epoch:
+                        return
+                    self._navigating = False
+                    self._active_label = None
+                    self._flow = 'idle'
+                    self._confirm_count = 0
+                    self._last_beat_ts = 0.0
+                # no stop, no ERROR
+                # FSM already IDLE
+                # the hunt stays live
+                return
+            time.sleep(0.2)
+        with self._nav_lock:
+            if self._nav_epoch != epoch:
+                return
+            self._navigating = False
+            self._active_label = None
+            self._flow = 'idle'
+            self._confirm_count = 0
+            self._last_beat_ts = 0.0
+        # a timeout must halt the walk FSM
+        # clearing our state isn't enough:
+        # walk_node keeps hunting, and
+        # label None -> feeder bails, so
+        # no /walk_go ever again
+        # -> frozen DETECTED hold
+        # a real stop ends it: next
+        # confirm = fresh epoch. HALT verb
+        # which is not an approach
+        # trigger, same as operator stop
+        self._walk_pub.publish(String(data='stop'))
+        self._publish_nav('ERROR: walk timeout — no REACHED within '
+                          f'{WALK_REACHED_TIMEOUT_S:.0f}s')
