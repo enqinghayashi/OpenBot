@@ -118,3 +118,19 @@ def fk_ee(red, q, side, ee):
     return np.asarray(M.translation, dtype=float).copy()
 
 
+def q_names_of(red):
+    """Joint name owning each q coordinate (occupancy map via idx_qs).
+
+    The pinocchio root "universe" joint is a URDF root artifact (nq=1 but
+    NOT part of model.q — model.nq == 14 == the arm joints) so it is
+    skipped: every non-root joint's q-block start (idx_qs) labels its
+    coordinate(s).
+    """
+    names = [''] * red.model.nq
+    for j in range(1, red.model.njoints):
+        c = int(red.model.idx_qs[j])
+        if 0 <= c < red.model.nq:
+            for _ in range(int(red.model.joints[j].nq)):
+                names[c] = red.model.names[j]
+                c += 1
+    return names
