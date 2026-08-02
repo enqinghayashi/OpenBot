@@ -621,3 +621,58 @@ class PickWalkCoordinator(Node):
             return None
         return st.get('state')
 
+    def _pick_gate_ok(self):
+        """True if we may forward the label; publishes ERROR otherwise."""
+        now = time.time()
+        with self._pick_lock:
+            st_ts = self._pick_state_ts
+            st = self._pick_state
+            st_txt_ts = self._pick_status_ts
+            st_txt = self._pick_status
+
+        # primary: /pick_state
+        # no daemon_alive check
+        # live arm_sdk writer -> 801
+        # dead daemon is REQUIRED
+        # 'idle'+dead = default
+        # 'holding'+dead passes
+        # refuse 'busy'/stale only
+        if st is not None:
+            if now - st_ts > PICK_STATE_STALE_S:
+                self._publish_nav(f'ERROR: /pick_state stale '
+                                  f'({now - st_ts:.1f}s > '
+                                  f'{PICK_STATE_STALE_S}s)')
+                return False
+            state = st.get('state')
+            if state not in GATE_STATES:
+                self._publish_nav(
+                    f'ERROR: pick state "{state}" not in '
+                    f'{GATE_STATES}')
+                return False
+            return True
+
+        # fallback: /pick_status
+        # no state -> UNKNOWN, WARN
+        if st_txt is not None:
+            if now - st_txt_ts > PICK_STATE_STALE_S:
+                self._publish_nav(f'ERROR: /pick_status stale '
+                                  f'({now - st_txt_ts:.1f}s)')
+                return False
+            if st_txt.startswith('ERROR'):
+                self._publish_nav(f'ERROR: pick_status says: {st_txt}')
+                return False
+            # recent 'hold OK' etc
+            # -> alive, not mid-error
+            # but say UNKNOWN out loud
+            self._publish_nav(
+                'WARNING: /pick_state never arrived — pick state UNKNOWN; '
+                'using /pick_status fallback')
+            self._log(f'using /pick_status fallback: {st_txt!r}')
+            return True
+
+        # neither topic ever arrived
+        self._publish_nav('ERROR: no /pick_state and no /pick_status '
+                          'yet — is pick_node up?')
+        return False
+
+    # ── the walk watchdog ─────────────────────────────────────────────────
