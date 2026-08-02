@@ -94,3 +94,8 @@ EXPECTED_Q = ["left_shoulder_pitch_joint", "left_shoulder_roll_joint",
 FAILS = []
 
 
+def check(name, cond, detail=""):
+    tag = "PASS" if cond else "FAIL"
+    print(f"  [{tag}] {name}" + (f"  ({detail})" if detail else ""))
+    if not cond:
+        FAILS.append(name)
