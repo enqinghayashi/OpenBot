@@ -541,3 +541,13 @@ class PickWalkCoordinator(Node):
         self._walk_go_pub.publish(String(data=label))
         self._log(f'approach trigger sent for {label!r} on {WALK_GO_TOPIC}')
 
+    def _on_pick_state(self, msg):
+        try:
+            data = json.loads(msg.data)
+        except Exception:
+            self._log(f'bad /pick_state: {msg.data!r}')
+            return
+        with self._pick_lock:
+            self._pick_state = data
+            self._pick_state_ts = time.time()
+
