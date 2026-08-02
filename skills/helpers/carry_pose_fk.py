@@ -110,3 +110,9 @@ def ee_frames(red):
     return out
 
 
+def fk_ee(red, q, side, ee):
+    """Position of the daemon EE frame (wrist_yaw_joint + 0.05 X)."""
+    jid, off = ee[side]
+    pin.forwardKinematics(red.model, red.data, q)
+    M = red.data.oMi[jid] * off
+    return np.asarray(M.translation, dtype=float).copy()
