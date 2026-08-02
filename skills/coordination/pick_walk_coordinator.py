@@ -551,3 +551,8 @@ class PickWalkCoordinator(Node):
             self._pick_state = data
             self._pick_state_ts = time.time()
 
+    def _on_pick_status(self, msg):
+        with self._pick_lock:
+            self._pick_status = msg.data
+            self._pick_status_ts = time.time()
+
