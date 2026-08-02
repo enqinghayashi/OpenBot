@@ -877,3 +877,5 @@ class PickWalkCoordinator(Node):
         self._walk_pub.publish(String(data='stop'))
         self._publish_nav('ERROR: walk timeout — no REACHED within '
                           f'{WALK_REACHED_TIMEOUT_S:.0f}s')
+
+
