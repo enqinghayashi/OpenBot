@@ -879,3 +879,13 @@ class PickWalkCoordinator(Node):
                           f'{WALK_REACHED_TIMEOUT_S:.0f}s')
 
 
+def main(args=None):
+    rclpy.init(args=args)
+    node = PickWalkCoordinator()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
