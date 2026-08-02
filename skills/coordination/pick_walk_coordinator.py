@@ -468,3 +468,58 @@ class PickWalkCoordinator(Node):
                       f'navigating without position info')
 
     # ── finishing the gate + approach trigger ───────────────────────────
+    def _confirm_flow(self, det):
+        """3rd consecutive beat: table first, THEN the automatic trigger.
+
+        Publishes the 7-status status 5 text and the CONFIRM-style
+        target-check table (label, torso x/y/z, planar d = hypot(x, y),
+        conf, trigger note) on /navigate_status + a box in the log, then
+        sends the approach trigger with NO operator step in between —
+        the user's directive: walking starts only after the table, and the
+        whole search-and-approach is autonomous after the single confirm.
+        """
+        with self._nav_lock:
+            if self._flow not in ('sweeping', 'detecting'):
+                return                      # stop/abort snuck in
+            self._flow = 'confirmed'
+            label = self._active_label
+            if label is None:
+                return
+        x = det.get('x', 0.0)
+        y = det.get('y', 0.0)
+        z = det.get('z', 0.0)
+        d = math.hypot(x, y)                # planar, not 3D
+        conf = det.get('conf', 0.0)
+        side = 'right' if x > 0 else 'left'
+        self._publish_nav('Three Confirmation Received, outputting the '
+                          'target check table')
+        table = (
+            f'  Target: "{label}"\n'
+            f'  Torso frame:\n'
+            f'    x (lateral): {x:+.3f} m ({side})\n'
+            f'    y (forward): {y:+.3f} m\n'
+            f'    z (height):  {z:+.3f} m '
+            f'{"(above)" if z > 0 else "(below)"} torso\n'
+            f'  Planar dist:  {d:.3f} m\n'
+            f'  Conf:         {conf:.2f}\n'
+            f'  Trigger: approach sent autonomously on {WALK_GO_TOPIC} — '
+            f'no confirm step')
+        self._publish_nav(table)
+        self.get_logger().info(
+            '\n'
+            f'  ╔══════════════════════════════════╗\n'
+            f'  ║    TARGET CHECK — 3 consecutive  ║\n'
+            f'  ║         confirmations            ║\n'
+            f'  ╠══════════════════════════════════╣\n'
+            f'  ║  Target: "{label}"\n'
+            f'  ║  Torso frame:\n'
+            f'  ║    x (lateral): {x:+.3f} m ({side})\n'
+            f'  ║    y (forward): {y:+.3f} m\n'
+            f'  ║    z (height):  {z:+.3f} m\n'
+            f'  ║  Planar dist:  {d:.3f} m\n'
+            f'  ║  Conf:         {conf:.2f}\n'
+            f'  ║  -> APPROACH TRIGGER SENT\n'
+            f'  ║     ({WALK_GO_TOPIC}), fully autonomous\n'
+            f'  ╚══════════════════════════════════╝')
+        self._send_approach_trigger(label)
+
