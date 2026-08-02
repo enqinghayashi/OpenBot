@@ -116,3 +116,5 @@ def fk_ee(red, q, side, ee):
     pin.forwardKinematics(red.model, red.data, q)
     M = red.data.oMi[jid] * off
     return np.asarray(M.translation, dtype=float).copy()
+
+
