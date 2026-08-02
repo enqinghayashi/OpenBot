@@ -523,3 +523,21 @@ class PickWalkCoordinator(Node):
             f'  ╚══════════════════════════════════╝')
         self._send_approach_trigger(label)
 
+    def _send_approach_trigger(self, label):
+        """Approach trigger: /walk_go ONLY (reviewer F1, 2026-08-18).
+
+        The walknode session's walk_node subscribes /walk_go (String label,
+        GO_STALE_S=5.0 freshness) and consumes it on the next hold tick
+        (~1 s after this publish — well inside the freshness bound).  The
+        /walk_target leg of the original dual-topic design is DELIBERATELY
+        dropped: walk_node treats ANY /walk_target replay as a RETARGET —
+        the retarget check precedes /walk_go consumption in the same hold
+        tick — so a paired replay would force a perpetual re-sweep and the
+        /walk_go would never be consumed.  /walk_target is only ever used
+        for the sweep start (confirm) and the re-sweep (DETECTION LOST
+        re-send), NEVER as the approach trigger.  Only called from
+        _confirm_flow(), i.e. ONLY after the table has been published.
+        """
+        self._walk_go_pub.publish(String(data=label))
+        self._log(f'approach trigger sent for {label!r} on {WALK_GO_TOPIC}')
+
