@@ -425,3 +425,46 @@ class PickWalkCoordinator(Node):
         if triggered:
             self._confirm_flow(det)
 
+    def _publish_pending(self, label):
+        """Task 9: PENDING status with detection details when fresh.
+
+        Looks the label up in the latest /object_detections_body snapshot.
+        Fresh (<= DETECTION_FRESH_S) -> "PENDING <label> at x=+.. y=+..
+        z=.. (d=.. m)" on /navigate_status (d = PLANAR hypot(x, y), per
+        researcher §9) plus a CONFIRM?-style box in the log.  Absent or
+        stale (event-driven projector ghost) -> plain "PENDING <label>"
+        with a "(no fresh detection)" note — never a fabricated position.
+        """
+        with self._det_lock:
+            det = self._latest_detections.get(label)
+        if det is not None and time.time() - det.get('_t', 0.0) <= DETECTION_FRESH_S:
+            x, y, z = det.get('x', 0.0), det.get('y', 0.0), det.get('z', 0.0)
+            d = math.hypot(x, y)   # planar, not 3D
+            self._publish_nav(
+                f'PENDING {label} at x={x:+.3f} y={y:+.3f} z={z:+.3f} '
+                f'(d={d:.2f} m)')
+            self.get_logger().info(
+                '\n'
+                f'  ╔══════════════════════════════════╗\n'
+                f'  ║       PENDING TARGET CHECK        ║\n'
+                f'  ╠══════════════════════════════════╣\n'
+                f'  ║  Target: "{label}"\n'
+                f'  ║  Torso frame:\n'
+                f'  ║    x (lateral): {x:+.3f} m '
+                f'({"right" if x > 0 else "left"})\n'
+                f'  ║    y (forward): {y:+.3f} m\n'
+                f'  ║    z (height):  {z:+.3f} m '
+                f'{"(above)" if z > 0 else "(below)"} torso\n'
+                f'  ║  Planar dist:  {d:.3f} m\n'
+                f'  ║  Conf:         {det.get("conf", 0.0):.2f}\n'
+                f'  ╠══════════════════════════════════╣\n'
+                f'  ║  Send "confirm" to /navigate_target\n'
+                f'  ╚══════════════════════════════════╝')
+        else:
+            self._publish_nav(f'PENDING {label} (no fresh detection)')
+            self._log(f'{label}: no fresh detection on '
+                      f'/object_detections_body (absent or stale > '
+                      f'{DETECTION_FRESH_S:.0f}s — event-driven projector) — '
+                      f'navigating without position info')
+
+    # ── finishing the gate + approach trigger ───────────────────────────
