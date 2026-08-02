@@ -612,3 +612,12 @@ class PickWalkCoordinator(Node):
             self._publish_nav(f'APPROACHING d={d:.2f} m')
 
     # ── the pick gate ─────────────────────────────────────────────────────
+    def _walk_phase(self):
+        """Latest /walk_status phase ('SEARCHING'/'APPROACHING'/'REACHED'/
+        'IDLE'/...) or None before the first status arrives."""
+        with self._pick_lock:
+            st = self._walk_state
+        if not st:
+            return None
+        return st.get('state')
+
