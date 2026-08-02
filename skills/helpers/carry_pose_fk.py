@@ -99,3 +99,5 @@ def check(name, cond, detail=""):
     print(f"  [{tag}] {name}" + (f"  ({detail})" if detail else ""))
     if not cond:
         FAILS.append(name)
+
+
