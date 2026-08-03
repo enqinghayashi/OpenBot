@@ -126,3 +126,19 @@ def move_arm_smooth(arm, target_q):
           f'(ts={target_q.tolist()[:7]!r}…)')
 
 
+def main():
+    target_q = load_handoff()
+    check_fsm()  # before ANY arm_sdk writer exists
+
+    from unitree_sdk2py.core.channel import ChannelFactoryInitialize
+    ChannelFactoryInitialize(0, IFACE)
+    from upper_arm_controller import G1_29_ArmControllerUpperOnly
+    arm = G1_29_ArmControllerUpperOnly(motion_mode=True,
+                                       simulation_mode=False)
+    try:
+        move_arm_smooth(arm, target_q)
+    except Exception as e:
+        print(f'restore_arm_pose: ERROR during move: {e}')
+        sys.exit(1)
+    print('restore_arm_pose: DONE')
+    return 0
