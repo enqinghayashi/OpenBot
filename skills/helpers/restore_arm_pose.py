@@ -82,3 +82,5 @@ def check_fsm():
                f'(fsm_mode=0) BEFORE R2+A')
     print(f'restore_arm_pose: fsm_id={fsm_id} (not 801) + fsm_mode=0 OK '
           f'(NON-801, safe to write)')
+
+
