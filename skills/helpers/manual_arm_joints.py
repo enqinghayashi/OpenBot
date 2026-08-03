@@ -147,3 +147,5 @@ def _proc_comm(pid):
             return f.read().strip()
     except Exception:
         return ''
+
+
