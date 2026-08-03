@@ -93,3 +93,21 @@ POSES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           'manual_poses.json')
 
 
+def move_arm_smooth(arm, target_q):
+    """Cosine-interpolated 14-DoF move (same math as the pick daemon)."""
+    for i, v in enumerate(target_q):
+        if abs(v) > MAX_WARN_RAD:
+            print(f'WARNING: q[{i}]={v:+.3f} exceeds +/-{MAX_WARN_RAD} rad — '
+                  'executing anyway')
+    start_q = arm.get_current_dual_arm_q().copy()
+    max_delta = float(np.max(np.abs(target_q - start_q)))
+    duration = max(1.5, max_delta / MOVE_SPEED)
+    steps = max(1, int(duration * MOVE_HZ))
+    dt = duration / steps
+    print(f'moving: max_delta={max_delta:.3f} rad, '
+          f'duration={duration:.1f}s, steps={steps}')
+    for i in range(1, steps + 1):
+        r = 0.5 - 0.5 * np.cos(np.pi * i / steps)
+        arm.ctrl_dual_arm(start_q + r * (target_q - start_q), np.zeros(14))
+        time.sleep(dt)
+    arm.ctrl_dual_arm(target_q, np.zeros(14))
