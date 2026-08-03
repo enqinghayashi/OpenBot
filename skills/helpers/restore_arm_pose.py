@@ -84,3 +84,22 @@ def check_fsm():
           f'(NON-801, safe to write)')
 
 
+def load_handoff():
+    """Load the recorded dual-arm q; refuse if missing or malformed."""
+    try:
+        with open(HANDOFF_JSON, 'r') as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        refuse(f'{HANDOFF_JSON} missing — no recorded posture (daemon quit '
+               f'never ran, or pick_node stale-clear wiped it). Manual '
+               f'posture setup instead.')
+    except Exception as e:
+        refuse(f'{HANDOFF_JSON} unreadable ({e})')
+    left = data.get('left')
+    right = data.get('right')
+    if (not isinstance(left, list) or not isinstance(right, list)
+            or len(left) != 7 or len(right) != 7):
+        refuse(f'{HANDOFF_JSON} malformed (expected left[7] + right[7], '
+               f'got left={type(left).__name__} right={type(right).__name__})')
+    return np.concatenate([np.array(left, dtype=np.float64),
+                           np.array(right, dtype=np.float64)])
