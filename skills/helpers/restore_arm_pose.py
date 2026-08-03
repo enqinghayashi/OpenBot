@@ -105,3 +105,22 @@ def load_handoff():
                            np.array(right, dtype=np.float64)])
 
 
+def move_arm_smooth(arm, target_q):
+    """Cosine positional ramp — verbatim replication of the daemon's
+    move_arm_smooth (MOVE_SPEED=0.3, MOVE_HZ=50, r = 0.5-0.5*cos(pi*i/steps),
+    final ctrl_dual_arm re-assert)."""
+    start_q = arm.get_current_dual_arm_q().copy()
+    max_delta = float(np.max(np.abs(target_q - start_q)))
+    duration = max(1.5, max_delta / MOVE_SPEED)
+    steps = max(1, int(duration * MOVE_HZ))
+    dt = duration / steps
+
+    print(f'restore_arm_pose: max_delta={max_delta:.3f} rad, '
+          f'duration={duration:.1f}s, steps={steps}')
+    for i in range(1, steps + 1):
+        r = 0.5 - 0.5 * np.cos(np.pi * i / steps)
+        arm.ctrl_dual_arm(start_q + r * (target_q - start_q), np.zeros(14))
+        time.sleep(dt)
+    arm.ctrl_dual_arm(target_q, np.zeros(14))
+    print(f'restore_arm_pose: restored to recorded posture '
+          f'(ts={target_q.tolist()[:7]!r}…)')
