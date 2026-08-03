@@ -124,3 +124,5 @@ def move_arm_smooth(arm, target_q):
     arm.ctrl_dual_arm(target_q, np.zeros(14))
     print(f'restore_arm_pose: restored to recorded posture '
           f'(ts={target_q.tolist()[:7]!r}…)')
+
+
