@@ -344,3 +344,7 @@ def main():
                       'carry_tuck_left, neutral, pose, home, quit')
     except KeyboardInterrupt:
         print('\nexiting (arms left where they are)')
+
+
+if __name__ == '__main__':
+    main()
