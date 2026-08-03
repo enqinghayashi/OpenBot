@@ -181,3 +181,15 @@ def check_pick_stack_alive():
     return False, None
 
 
+def load_pose(name):
+    if not os.path.exists(POSES_FILE):
+        print(f'ERROR: {POSES_FILE} not found')
+        return None
+    with open(POSES_FILE, 'r') as f:
+        poses = json.load(f)
+    pose = poses.get(name)
+    if pose is None:
+        print(f'ERROR: pose "{name}" not in {POSES_FILE}. '
+              f'Available: {sorted(poses.keys())}')
+        return None
+    return pose
