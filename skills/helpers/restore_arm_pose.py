@@ -44,3 +44,6 @@ sys.path.insert(0, '/home/unitree/leon')
 sys.path.insert(0, '/home/unitree/leon/openbot')
 
 
+def refuse(msg):
+    print(f'restore_arm_pose: REFUSED: {msg}')
+    sys.exit(2)
