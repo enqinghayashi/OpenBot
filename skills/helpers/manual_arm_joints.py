@@ -140,3 +140,10 @@ def do_home(arm):
     arm.arm_velocity_limit = 1.5
 
 
+def _proc_comm(pid):
+    """Process name from /proc — empty string if the pid is gone."""
+    try:
+        with open('/proc/%s/comm' % pid, 'r') as f:
+            return f.read().strip()
+    except Exception:
+        return ''
