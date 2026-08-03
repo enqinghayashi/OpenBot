@@ -123,3 +123,10 @@ def print_state(arm, label='CURRENT'):
     return q
 
 
+def target_from_parts(arm, left_vals=None, right_vals=None):
+    q = arm.get_current_dual_arm_q().copy()
+    if left_vals is not None:
+        q[0:7] = np.array(left_vals, dtype=np.float64)
+    if right_vals is not None:
+        q[7:14] = np.array(right_vals, dtype=np.float64)
+    return q
