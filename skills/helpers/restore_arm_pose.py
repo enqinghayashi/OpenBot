@@ -49,3 +49,36 @@ def refuse(msg):
     sys.exit(2)
 
 
+def check_fsm():
+    """Guard: restore runs ONLY when fsm_id != 801 AND fsm_mode == 0,
+    else refuse (and refuse on any read failure — cannot verify).
+
+    HARDWARE-CORRECTED 2026-08-17: the fsm_mode==0-only guard was
+    INSUFFICIENT — the robot can be IN 801 (walking-capable FSM state)
+    with mode 0, and an arm_sdk writer in 801 tripped the RC sticks
+    (restore ran with fsm_id=801/mode=0 → sticks died, recovery ladder
+    needed).  fsm_id is the actual NON-801 gate: check GET 7001 AND 7002.
+    """
+    from g1_loco import G1Loco
+    try:
+        loco = G1Loco()
+        loco.connect()
+        code_id, fsm_id = loco.get_fsm_id()
+        code_mode, fsm_mode = loco.get_fsm_mode()
+    except Exception as e:
+        refuse(f'fsm unreadable ({e}) — cannot verify NON-801')
+    if code_id != 0:
+        refuse(f'fsm_id read error (code={code_id}) — cannot verify NON-801')
+    if code_mode != 0:
+        refuse(f'fsm_mode read error (code={code_mode}) — cannot verify '
+               f'NON-801')
+    if fsm_id == 801:
+        refuse(f'fsm_id=801 — restore must run OUTSIDE the loco FSM 801 '
+               f'(mode={fsm_mode} is irrelevant; writer+801 is the trip '
+               f'condition). Verify NON-801 (e.g. fsm_check.py exit 0 '
+               f'AND fsm_id != 801) before re-running')
+    if fsm_mode != 0:
+        refuse(f'fsm_mode={fsm_mode} — restore must run in NON-801 '
+               f'(fsm_mode=0) BEFORE R2+A')
+    print(f'restore_arm_pose: fsm_id={fsm_id} (not 801) + fsm_mode=0 OK '
+          f'(NON-801, safe to write)')
