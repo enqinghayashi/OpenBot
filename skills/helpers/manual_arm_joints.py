@@ -195,3 +195,152 @@ def load_pose(name):
     return pose
 
 
+def main():
+    argv = sys.argv[1:]
+    upper_only = '--upper-only' in argv
+    argv = [a for a in argv if a != '--upper-only']
+
+    iface = 'eth0'
+    mode = None
+    args = []
+    if argv:
+        if argv[0] in ('--right', '--left', '--both', '--pose', '--state'):
+            mode, args = argv[0], argv[1:]
+        else:
+            iface = argv[0]
+            if len(argv) > 1 and argv[1] in (
+                    '--right', '--left', '--both', '--pose', '--state'):
+                mode, args = argv[1], argv[2:]
+
+# ── one arm_sdk writer, never a SECOND ────────────────────────────────────
+    # runs BEFORE ChannelFactoryInitialize: no DDS channel
+    # required, --upper-only too: two arm writers
+    # would flip fsm_mode 0 -> 3
+    alive, who = check_pick_stack_alive()
+    if alive:
+        print(f'ERROR: pick stack is ALIVE (matched "{who}").  Starting this')
+        print('tool would create a SECOND arm_sdk writer — the exact condition')
+        print('that caused the 2026-08-16 fsm_mode 0->3 incident (gait blocked).')
+        print('Stop the pick stack first, then re-run:')
+        print('  kill the launch_pick_walk.sh terminal (Ctrl+C)  OR:')
+        print('  pkill -f pick_node.py; pkill -f pick_daemon')
+        print('  verify: pgrep -f "pick_node|pick_daemon"  ->  no output')
+        print('  then run this tool again.  Do NOT use --upper-only as a bypass.')
+        return
+
+    # ── controller init (same as the pick daemon) ─────────────────────────
+    ChannelFactoryInitialize(0, iface)
+    if upper_only:
+        from upper_arm_controller import G1_29_ArmControllerUpperOnly
+        arm = G1_29_ArmControllerUpperOnly(motion_mode=True,
+                                           simulation_mode=False)
+        print(f'controller: G1_29_ArmControllerUpperOnly (legs untouched), '
+              f'iface={iface}')
+    else:
+        arm = G1_29_ArmController(motion_mode=True, simulation_mode=False)
+        print(f'controller: G1_29_ArmController (35-joint, as pick daemon), '
+              f'iface={iface}')
+    arm.speed_gradual_max(t=1.0)
+    time.sleep(1.2)
+    arm.arm_velocity_limit = 1.5
+
+    # ── one-shot modes ────────────────────────────────────────────────────
+    try:
+        if mode == '--state':
+            print_state(arm)
+            return
+
+        if mode in ('--right', '--left', '--both'):
+            vals = [float(a) for a in args]
+            n = 14 if mode == '--both' else 7
+            if len(vals) != n:
+                print(f'ERROR: {mode} needs {n} numbers, got {len(vals)}')
+                return
+            if mode == '--right':
+                target = target_from_parts(arm, right_vals=vals)
+            elif mode == '--left':
+                target = target_from_parts(arm, left_vals=vals)
+            else:
+                target = target_from_parts(arm, vals[:7], vals[7:])
+            print_state(arm, label='BEFORE')
+            move_arm_smooth(arm, target)
+            print_state(arm, label='AFTER ')
+            return
+
+        if mode == '--pose':
+            if len(args) != 1:
+                print('ERROR: --pose <name>')
+                return
+            pose = load_pose(args[0])
+            if pose is None:
+                return
+            left = pose.get('left')
+            right = pose.get('right')
+            if left is None and right is None:
+                print(f'ERROR: pose "{args[0]}" has no left/right values')
+                return
+            target = target_from_parts(arm, left, right)
+            print_state(arm, label='BEFORE')
+            move_arm_smooth(arm, target)
+            print_state(arm, label='AFTER ')
+            return
+
+        # ── the interactive REPL ───────────────────────────────────────────
+        print('Interactive mode. Commands:')
+        print('  right <7 vals> | left <7 vals> | both <14 vals> | state')
+        print('  ready | lift | carry_tuck | carry_tuck_right | carry_tuck_left')
+        print('  neutral | both | home | quit')
+        while True:
+            try:
+                line = input('arm> ').strip()
+            except (EOFError, KeyboardInterrupt):
+                print('\nexiting (arms left where they are)')
+                return
+            if not line:
+                continue
+            parts = line.split()
+            cmd = parts[0].lower()
+            if cmd == 'quit':
+                return
+            elif cmd == 'state':
+                print_state(arm)
+            elif cmd == 'home':
+                do_home(arm)
+            elif cmd in PRESETS and not (cmd == 'both' and len(parts) > 1):
+                # 'both' = both arms to carry_tuck; 'both <14>' = raw values
+                pl, pr = PRESETS[cmd]
+                target = target_from_parts(arm, pl, pr)
+                move_arm_smooth(arm, target)
+                print_state(arm, label='AFTER ')
+            elif cmd in ('right', 'left', 'both'):
+                vals = [float(a) for a in parts[1:]]
+                n = 14 if cmd == 'both' else 7
+                if len(vals) != n:
+                    print(f'ERROR: {cmd} needs {n} numbers, got {len(vals)}')
+                    continue
+                if cmd == 'right':
+                    target = target_from_parts(arm, right_vals=vals)
+                elif cmd == 'left':
+                    target = target_from_parts(arm, left_vals=vals)
+                else:
+                    target = target_from_parts(arm, vals[:7], vals[7:])
+                print_state(arm, label='BEFORE')
+                move_arm_smooth(arm, target)
+                print_state(arm, label='AFTER ')
+            elif cmd == 'pose':
+                if len(parts) != 2:
+                    print('usage: pose <name>')
+                    continue
+                pose = load_pose(parts[1])
+                if pose is None:
+                    continue
+                target = target_from_parts(arm, pose.get('left'),
+                                           pose.get('right'))
+                move_arm_smooth(arm, target)
+                print_state(arm, label='AFTER ')
+            else:
+                print(f'unknown command "{cmd}" — try: right, left, both, '
+                      'state, ready, lift, carry_tuck, carry_tuck_right, '
+                      'carry_tuck_left, neutral, pose, home, quit')
+    except KeyboardInterrupt:
+        print('\nexiting (arms left where they are)')
