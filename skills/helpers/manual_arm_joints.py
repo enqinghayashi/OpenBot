@@ -138,3 +138,5 @@ def do_home(arm):
     arm.ctrl_dual_arm_go_home()
     time.sleep(2.0)
     arm.arm_velocity_limit = 1.5
+
+
