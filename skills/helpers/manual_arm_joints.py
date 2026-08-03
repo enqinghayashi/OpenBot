@@ -113,3 +113,11 @@ def move_arm_smooth(arm, target_q):
     arm.ctrl_dual_arm(target_q, np.zeros(14))
 
 
+def print_state(arm, label='CURRENT'):
+    q = arm.get_current_dual_arm_q()
+    print(f'{label} 14-DoF q:')
+    for side, sl in (('LEFT ', slice(0, 7)), ('RIGHT', slice(7, 14))):
+        parts = ', '.join(f'{n}={q[sl][i]:+.4f}'
+                          for i, n in enumerate(JOINT_NAMES))
+        print(f'  {side}: {parts}')
+    return q
