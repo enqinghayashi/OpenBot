@@ -149,3 +149,33 @@ def _proc_comm(pid):
         return ''
 
 
+def check_pick_stack_alive():
+    """Task 7: is the pick daemon stack running?  (pre-controller guard)
+
+    2026-08-16 incident: this tool + the upper-only pick daemon = TWO
+    arm_sdk writers; the STOCK 35-joint controller also wrote legs/waist
+    kp=300, the arms jittered, and the balance FSM dropped fsm_mode to 3
+    (gait blocked).  Refusal is ABSOLUTE (with --upper-only too): the
+    upper-only controller still writes the same arm channels the daemon
+    owns.
+
+    pgrep -f 'pick_node' / 'pick_daemon' covers every deployed name
+    (pick_node.py, pick_daemon.py, pick_daemon_v2.py, ...); matches are
+    only trusted when /proc/<pid>/comm is a python interpreter, so a
+    wrapper shell whose cmdline merely CONTAINS the pattern string cannot
+    false-trigger the refusal.
+
+    Returns (alive: bool, matched: str or None).
+    """
+    import subprocess
+    for pat in ('pick_node', 'pick_daemon'):
+        try:
+            out = subprocess.run(['pgrep', '-f', pat], capture_output=True,
+                                 text=True, timeout=5)
+            pids = [p for p in out.stdout.split() if p]
+        except Exception:
+            pids = []
+        pids = [p for p in pids if _proc_comm(p).startswith('python')]
+        if pids:
+            return True, pat
+    return False, None
