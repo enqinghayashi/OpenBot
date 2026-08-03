@@ -142,3 +142,7 @@ def main():
         sys.exit(1)
     print('restore_arm_pose: DONE')
     return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
