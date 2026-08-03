@@ -111,3 +111,5 @@ def move_arm_smooth(arm, target_q):
         arm.ctrl_dual_arm(start_q + r * (target_q - start_q), np.zeros(14))
         time.sleep(dt)
     arm.ctrl_dual_arm(target_q, np.zeros(14))
+
+
