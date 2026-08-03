@@ -132,3 +132,9 @@ def target_from_parts(arm, left_vals=None, right_vals=None):
     return q
 
 
+def do_home(arm):
+    print('moving arms home (ctrl_dual_arm_go_home)...')
+    arm.arm_velocity_limit = 2.0
+    arm.ctrl_dual_arm_go_home()
+    time.sleep(2.0)
+    arm.arm_velocity_limit = 1.5
