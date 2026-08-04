@@ -98,3 +98,22 @@ INSTABILITY_STRIKES  = 3      # 3 strikes = refuse
 def _wrap_pi(a):
     """Wrap an angle to (-pi, pi]."""
     return (a + math.pi) % (2.0 * math.pi) - math.pi
+
+
+# ── walking to ONE named object ──────────────────────────────
+# label[#iid][@hue]
+# iid 1+, hue 0..359
+# top conf per label
+# left one of two cups unaimable; ids
+# 139->168->182; hue
+# re-finds it.  We adopt the new id.
+
+#: hue tol, deg
+#: same colour
+INSTANCE_HUE_TOL_DEG = 25.0
+#: no hue
+#: nearest 0.30 m
+#: from last row
+INSTANCE_NEAR_M = 0.30
+
+
