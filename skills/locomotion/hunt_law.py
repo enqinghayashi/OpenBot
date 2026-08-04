@@ -150,3 +150,48 @@ def hue_gap(a, b):
     return min(d, 360.0 - d)
 
 
+def select_instance(rows, iid, hue, last_xy):
+    """(row|None, 'iid'|'hue'|'near'|'lost') among same-label rows of ONE message.
+
+      1. the row whose instance_id == iid                              'iid'
+      2. hue known: rows within INSTANCE_HUE_TOL_DEG of it - nearest to
+         last_xy if known, else the highest conf                        'hue'
+      3. hue UNKNOWN and last_xy known: nearest row within INSTANCE_NEAR_M  'near'
+      4. otherwise (None, 'lost') - NEVER another object of the class.
+    The caller adopts the chosen row's instance_id after a 'hue'/'near' match.
+    """
+    def _xy(r):
+        try:
+            x, y = float(r['x']), float(r['y'])
+        except (KeyError, TypeError, ValueError):
+            return None
+        return (x, y) if math.isfinite(x) and math.isfinite(y) else None
+
+    def _dist(r):
+        p = _xy(r)
+        if p is None or last_xy is None:
+            return float('inf')
+        return math.hypot(p[0] - last_xy[0], p[1] - last_xy[1])
+
+    rows = [r for r in (rows or []) if isinstance(r, dict) and _xy(r) is not None]
+    if iid is not None:
+        for r in rows:
+            v = r.get('instance_id')
+            if isinstance(v, int) and not isinstance(v, bool) and v == iid:
+                return r, 'iid'
+    if hue is not None:
+        same = []
+        for r in rows:
+            g = hue_gap(hue, r.get('hue'))
+            if g is not None and g <= INSTANCE_HUE_TOL_DEG:
+                same.append(r)
+        if same:
+            if last_xy is not None:
+                return min(same, key=_dist), 'hue'
+            return max(same, key=lambda r: r.get('conf', 0) or 0), 'hue'
+        return None, 'lost'
+    if last_xy is not None and rows:
+        best = min(rows, key=_dist)
+        if _dist(best) <= INSTANCE_NEAR_M:
+            return best, 'near'
+    return None, 'lost'
