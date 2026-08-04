@@ -138,3 +138,13 @@ def parse_target(s):
     return (label, int(iid_s) if sep2 else None, int(hue_s) if sep else None)
 
 
+def hue_gap(a, b):
+    """Circular distance in degrees between two hues; None if either is unusable."""
+    try:
+        a, b = float(a), float(b)
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(a) and math.isfinite(b)):
+        return None
+    d = abs(a % 360.0 - b % 360.0)
+    return min(d, 360.0 - d)
