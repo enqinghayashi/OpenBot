@@ -195,3 +195,5 @@ def select_instance(rows, iid, hue, last_xy):
         if _dist(best) <= INSTANCE_NEAR_M:
             return best, 'near'
     return None, 'lost'
+
+
