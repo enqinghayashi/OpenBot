@@ -243,3 +243,7 @@ class HuntBudget(object):
         self._stall_reasons[reason] = self._stall_reasons.get(reason, 0) + 1
         return self._stalls
 
+    @property
+    def round_complete(self):
+        return self._turns >= self._turns_per_round
+
