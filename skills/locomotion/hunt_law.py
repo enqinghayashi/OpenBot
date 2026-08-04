@@ -237,3 +237,9 @@ class HuntBudget(object):
         """One COMPLETED sweep turn (G6: interrupted turns do not count)."""
         self._turns += 1
 
+    def add_stall(self, reason):
+        """One no-progress/stall event; reason is a string label."""
+        self._stalls += 1
+        self._stall_reasons[reason] = self._stall_reasons.get(reason, 0) + 1
+        return self._stalls
+
