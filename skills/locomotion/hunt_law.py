@@ -273,3 +273,5 @@ class HuntBudget(object):
             'positions_attempted': 1,     # no measurement yet
             'hop_implemented': False,     # hop on hold
         }
+
+
