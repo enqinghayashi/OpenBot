@@ -225,3 +225,7 @@ class HuntBudget(object):
     def windows(self):
         return self._windows
 
+    @property
+    def stalls(self):
+        return self._stalls
+
