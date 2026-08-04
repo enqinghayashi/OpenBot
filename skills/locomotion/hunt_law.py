@@ -117,3 +117,22 @@ INSTANCE_HUE_TOL_DEG = 25.0
 INSTANCE_NEAR_M = 0.30
 
 
+def parse_target(s):
+    """'<label>[#<iid>][@<hue>]' -> (label, iid|None, hue|None).  Never raises.
+
+    Anything that does not fit the grammar exactly (empty label, iid < 1,
+    hue > 359, a second '#'/'@', signs, spaces inside a number) returns the
+    WHOLE stripped string as a bare label, which then behaves as before B8.
+    """
+    s = '' if s is None else str(s).strip()
+    head, sep, hue_s = s.partition('@')
+    label, sep2, iid_s = head.partition('#')
+    label = label.strip()
+    ok = bool(label) and (sep or sep2)
+    if sep and not (hue_s.isdigit() and hue_s.isascii() and int(hue_s) <= 359):
+        ok = False
+    if sep2 and not (iid_s.isdigit() and iid_s.isascii() and int(iid_s) >= 1):
+        ok = False
+    if not ok:
+        return (s, None, None)
+    return (label, int(iid_s) if sep2 else None, int(hue_s) if sep else None)
