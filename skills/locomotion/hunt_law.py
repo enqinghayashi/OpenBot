@@ -211,3 +211,9 @@ class HuntBudget(object):
         self._stall_budget = stall_budget
         self.reset()
 
+    def reset(self):
+        self._turns = 0
+        self._windows = 0
+        self._stalls = 0
+        self._stall_reasons = {}
+
