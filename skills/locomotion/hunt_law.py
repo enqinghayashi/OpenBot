@@ -259,3 +259,17 @@ class HuntBudget(object):
             return 'round_complete'
         return 'stall_budget'
 
+    def proof(self):
+        """NOT_FOUND detail — the Phase-2 evidence-gate payload."""
+        return {
+            'reason': self.reason,
+            'rounds': self._turns // self._turns_per_round,
+            'turns': self._turns,
+            'windows': self._windows,
+            'stalls': self._stalls,
+            'stall_reasons': dict(self._stall_reasons),
+            'turns_per_round': self._turns_per_round,
+            'stall_budget': self._stall_budget,
+            'positions_attempted': 1,     # no measurement yet
+            'hop_implemented': False,     # hop on hold
+        }
