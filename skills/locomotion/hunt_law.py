@@ -275,3 +275,23 @@ class HuntBudget(object):
         }
 
 
+class CorridorHold(object):
+    """G17a corridor-hold clock (2026-09-21, operator decision).
+
+    Tracks ONE unbroken streak of collision freezes.  `frozen(now)` returns
+    ('hold', held_s) while the streak is inside the budget and
+    ('give_up', held_s) once it exceeds it; `clear()` breaks the streak.
+
+    Why a hold at all: a freeze used to spend the epoch's give-up budget
+    immediately, so a person stepping through the corridor abandoned the
+    object.  Holding keeps the target — the coordinator's re-arm re-triggers
+    /walk_go on the next confirming beats, and the approach resumes the moment
+    the corridor clears.
+
+    Why a budget: without one, freeze -> hold -> re-trigger is unbounded, and
+    a permanently blocked corridor (a wall, a chair wedged in front) would
+    spin forever instead of ending the epoch honestly.
+
+    Pure time-function (pass `now` in) so unit tests never sleep.
+    """
+
