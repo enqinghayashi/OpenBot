@@ -233,3 +233,7 @@ class HuntBudget(object):
         """One stationary DETECT_WINDOW_S window elapsed."""
         self._windows += 1
 
+    def add_turn(self):
+        """One COMPLETED sweep turn (G6: interrupted turns do not count)."""
+        self._turns += 1
+
