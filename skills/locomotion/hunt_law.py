@@ -148,3 +148,5 @@ def hue_gap(a, b):
         return None
     d = abs(a % 360.0 - b % 360.0)
     return min(d, 360.0 - d)
+
+
