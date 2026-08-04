@@ -221,3 +221,7 @@ class HuntBudget(object):
     def turns(self):
         return self._turns
 
+    @property
+    def windows(self):
+        return self._windows
+
