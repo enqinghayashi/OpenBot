@@ -217,3 +217,7 @@ class HuntBudget(object):
         self._stalls = 0
         self._stall_reasons = {}
 
+    @property
+    def turns(self):
+        return self._turns
+
