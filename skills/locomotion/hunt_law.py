@@ -252,3 +252,10 @@ class HuntBudget(object):
         """G6 (round) or D1-graft (stall budget) -> epoch-exhaust."""
         return self.round_complete or self._stalls >= self._stall_budget
 
+    @property
+    def reason(self):
+        """Exhaustion classifier for the NOT_FOUND detail."""
+        if self.round_complete:
+            return 'round_complete'
+        return 'stall_budget'
+
