@@ -95,3 +95,6 @@ INSTABILITY_MIN_DT_S = 0.15   # skip repeat reads
 INSTABILITY_STRIKES  = 3      # 3 strikes = refuse
 
 
+def _wrap_pi(a):
+    """Wrap an angle to (-pi, pi]."""
+    return (a + math.pi) % (2.0 * math.pi) - math.pi
