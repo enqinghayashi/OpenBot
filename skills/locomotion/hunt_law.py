@@ -205,3 +205,9 @@ class HuntBudget(object):
     what the Phase-2 verifier evidence gate checks against the constants.
     """
 
+    def __init__(self, turns_per_round=SWEEP_TURNS_PER_ROUND,
+                 stall_budget=STALL_BUDGET_PER_ROUND):
+        self._turns_per_round = turns_per_round
+        self._stall_budget = stall_budget
+        self.reset()
+
