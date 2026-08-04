@@ -229,3 +229,7 @@ class HuntBudget(object):
     def stalls(self):
         return self._stalls
 
+    def add_window(self):
+        """One stationary DETECT_WINDOW_S window elapsed."""
+        self._windows += 1
+
