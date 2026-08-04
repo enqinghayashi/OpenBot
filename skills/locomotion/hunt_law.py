@@ -197,3 +197,11 @@ def select_instance(rows, iid, hue, last_xy):
     return None, 'lost'
 
 
+class HuntBudget(object):
+    """G6/G15 proof counters for one hunt epoch (per position; Phase 1 = 1).
+
+    exhausted() == (round complete) or (stall budget spent). The proof dict
+    is exactly what the FSM publishes in the NOT_FOUND status detail and
+    what the Phase-2 verifier evidence gate checks against the constants.
+    """
+
