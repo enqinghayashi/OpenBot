@@ -247,3 +247,8 @@ class HuntBudget(object):
     def round_complete(self):
         return self._turns >= self._turns_per_round
 
+    @property
+    def exhausted(self):
+        """G6 (round) or D1-graft (stall budget) -> epoch-exhaust."""
+        return self.round_complete or self._stalls >= self._stall_budget
+
