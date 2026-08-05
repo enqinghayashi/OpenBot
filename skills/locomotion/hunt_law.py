@@ -362,3 +362,10 @@ class TargetStability(object):
         self._max_strikes = strikes
         self.reset()
 
+    def reset(self):
+        self._t = None
+        self._x = 0.0
+        self._y = 0.0
+        self._strikes = 0
+        self._last_jump = 0.0
+
