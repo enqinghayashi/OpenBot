@@ -369,3 +369,19 @@ class TargetStability(object):
         self._strikes = 0
         self._last_jump = 0.0
 
+    def update(self, x, y, now):
+        """Returns 'ok' or 'unstable'.  `last_jump` holds the newest measured
+        jump (0.0 until a second distinct measurement arrives)."""
+        if self._t is None:
+            self._t, self._x, self._y = now, x, y
+            return 'ok'
+        if now - self._t < self._min_dt:
+            return 'ok'                     # repeat read
+        self._last_jump = math.hypot(x - self._x, y - self._y)
+        self._t, self._x, self._y = now, x, y
+        if self._last_jump > self._jump_m:
+            self._strikes += 1
+        else:
+            self._strikes = 0
+        return 'unstable' if self._strikes >= self._max_strikes else 'ok'
+
