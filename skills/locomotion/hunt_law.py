@@ -355,3 +355,10 @@ class TargetStability(object):
     StallWatchdog convention.
     """
 
+    def __init__(self, jump_m=INSTABILITY_JUMP_M,
+                 min_dt_s=INSTABILITY_MIN_DT_S, strikes=INSTABILITY_STRIKES):
+        self._jump_m = jump_m
+        self._min_dt = min_dt_s
+        self._max_strikes = strikes
+        self.reset()
+
