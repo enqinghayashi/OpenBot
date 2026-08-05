@@ -419,3 +419,34 @@ def stop_law(label, x, y, z, width_m, depth_m, stop_distance_m):
     return d <= stop_distance_m, ev
 
 
+def arrival_latch(entry, now, stop_distance_m, latch_window_s=5.0, law=None):
+    """#214 (nav-close): arrival latch on the RETAINED measurement.
+
+    The approach loop only commits REACHED while a FRESH detection (or a
+    fresh-odom latch) is present, but the depth projector drops the label at
+    close range — the robot can be physically inside the stop gate with no
+    fresh sub-gate measurement ever arriving again, so the FSM rolled back to
+    SEARCHING exactly as it arrived. This law re-evaluates the last
+    measurement retained for the label (which survives staleness in
+    walk_node's ``self._targets``): if it is still inside the stop zone and
+    not older than ``latch_window_s``, the approach is told REACHED.
+
+    Returns (in_zone, evidence). evidence carries the stop-law numbers plus
+    the measurement age ('latch_age_s').  Honest negative control: an entry
+    beyond the window — or one that was never in-zone — NEVER latches
+    (returns False); the FSM keeps its normal lost-track rollback for those.
+
+    B8j: ``law`` is the stop law to re-evaluate with (walk_node passes
+    near_edge_law unless OPENBOT_STOP_LAW=legacy); None = the B8i stop_law.
+    """
+    if entry is None:
+        return False, {}
+    age = now - entry['t']
+    if age > latch_window_s:
+        return False, {'law': 'expired', 'latch_age_s': round(age, 1)}
+    in_zone, ev = (law or stop_law)(
+        entry.get('label'), entry.get('x', 0.0), entry.get('y', 0.0),
+        entry.get('z', 0.0), entry.get('width_m'), entry.get('depth_m'),
+        stop_distance_m)
+    ev['latch_age_s'] = round(age, 1)
+    return in_zone, ev
