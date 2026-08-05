@@ -299,3 +299,6 @@ class CorridorHold(object):
         self._max = hold_max_s
         self._since = 0.0
 
+    def clear(self):
+        self._since = 0.0
+
