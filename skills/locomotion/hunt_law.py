@@ -329,3 +329,13 @@ class StallWatchdog(object):
         self._t0 = None
         self._d0 = 0.0
 
+    def update(self, d, now):
+        """Returns 'ok' (window open or progress made) or 'stall'."""
+        if self._t0 is None:
+            self._t0, self._d0 = now, d
+            return 'ok'
+        if now - self._t0 >= self._window:
+            stalled = (self._d0 - d) < self._min_progress
+            self._t0, self._d0 = now, d
+            return 'stall' if stalled else 'ok'
+        return 'ok'
