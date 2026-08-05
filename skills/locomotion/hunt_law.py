@@ -325,3 +325,7 @@ class StallWatchdog(object):
         self._min_progress = min_progress_m
         self.reset()
 
+    def reset(self):
+        self._t0 = None
+        self._d0 = 0.0
+
