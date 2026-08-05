@@ -302,3 +302,11 @@ class CorridorHold(object):
     def clear(self):
         self._since = 0.0
 
+    def frozen(self, now):
+        if not self._since:
+            self._since = now
+        held = now - self._since
+        if held > self._max:
+            self._since = 0.0
+            return 'give_up', held
+        return 'hold', held
