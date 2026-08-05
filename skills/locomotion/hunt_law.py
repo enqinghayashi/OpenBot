@@ -312,3 +312,11 @@ class CorridorHold(object):
         return 'hold', held
 
 
+class StallWatchdog(object):
+    """G5b: within STALL_WINDOW_S the approach distance must decrease by at
+    least STALL_MIN_PROGRESS_M; otherwise update() returns 'stall' exactly
+    once and the window restarts.
+
+    Pure time-function (pass `now` in) so unit tests never sleep.
+    """
+
