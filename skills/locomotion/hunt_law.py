@@ -320,3 +320,8 @@ class StallWatchdog(object):
     Pure time-function (pass `now` in) so unit tests never sleep.
     """
 
+    def __init__(self, window_s=15.0, min_progress_m=0.05):
+        self._window = window_s
+        self._min_progress = min_progress_m
+        self.reset()
+
