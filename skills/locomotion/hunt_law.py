@@ -339,3 +339,5 @@ class StallWatchdog(object):
             self._t0, self._d0 = now, d
             return 'stall' if stalled else 'ok'
         return 'ok'
+
+
