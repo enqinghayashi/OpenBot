@@ -392,3 +392,5 @@ class TargetStability(object):
     @property
     def last_jump(self):
         return self._last_jump
+
+
