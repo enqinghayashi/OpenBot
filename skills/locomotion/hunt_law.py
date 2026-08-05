@@ -450,3 +450,5 @@ def arrival_latch(entry, now, stop_distance_m, latch_window_s=5.0, law=None):
         stop_distance_m)
     ev['latch_age_s'] = round(age, 1)
     return in_zone, ev
+
+
