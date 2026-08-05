@@ -295,3 +295,7 @@ class CorridorHold(object):
     Pure time-function (pass `now` in) so unit tests never sleep.
     """
 
+    def __init__(self, hold_max_s=COLLISION_HOLD_MAX_S):
+        self._max = hold_max_s
+        self._since = 0.0
+
