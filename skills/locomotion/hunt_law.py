@@ -394,3 +394,26 @@ class TargetStability(object):
         return self._last_jump
 
 
+def stop_law(label, x, y, z, width_m, depth_m, stop_distance_m):
+    """G5 + G17b per-type stop zone. Returns (in_zone, evidence).
+
+    evidence carries the law + numbers for the REACHED detail so the honest
+    stop reason survives to downstream consumers (e.g. z_above_reach).
+    floor or unknown classes -> centroid law (design: 'in front of' = d).
+    """
+    d = math.hypot(x, y)
+    label = str(label or '')
+    ev = {'law': 'centroid', 'd_m': round(d, 3), 'z_m': round(z, 3)}
+    if label in WIDE_TABLE_CLASSES or label in TALL_LARGE_CLASSES:
+        if width_m is None or depth_m is None or max(width_m, depth_m) <= 0.0:
+            # no extent
+            ev['law'] = 'centroid_no_extent'
+            return d <= stop_distance_m, ev
+        half = max(width_m, depth_m) / 2.0
+        d_edge = max(0.0, d - half)
+        ev['law'] = 'near_edge'
+        ev['d_edge_m'] = round(d_edge, 3)
+        if label in TALL_LARGE_CLASSES:
+            ev['z_above_reach'] = z > MAX_REACHABLE_HEIGHT_M
+        return d_edge <= EDGE_STOP_MARGIN_M, ev
+    return d <= stop_distance_m, ev
