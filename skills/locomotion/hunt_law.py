@@ -452,3 +452,23 @@ def arrival_latch(entry, now, stop_distance_m, latch_window_s=5.0, law=None):
     return in_zone, ev
 
 
+def obstructs(tx, ty, ox, oy, sector_rad=OBSTRUCTION_SECTOR_RAD,
+              margin_m=OBSTRUCTION_MARGIN_M):
+    """G17a: is (ox, oy) BETWEEN the robot and the target at (tx, ty)?
+
+    Both in the body frame (x lateral, y forward). Requires: bearing within
+    ±sector_rad of the target bearing, AND nearer than the target by more
+    than margin_m.
+
+    The margin is the 2026-09-21 fix for a zero-margin law that froze an
+    approach over an 11 mm ranking flip between two noisy depths (see
+    OBSTRUCTION_MARGIN_M).  A target inside the margin is never obstructed —
+    the robot is already inside the stop gate there, so the stop law owns it.
+    """
+    t_d = math.hypot(tx, ty)
+    o_d = math.hypot(ox, oy)
+    if o_d >= t_d - margin_m:
+        return False
+    t_bearing = math.atan2(tx, ty)
+    o_bearing = math.atan2(ox, oy)
+    return abs(_wrap_pi(o_bearing - t_bearing)) <= sector_rad
