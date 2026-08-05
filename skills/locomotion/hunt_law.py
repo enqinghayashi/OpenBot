@@ -341,3 +341,17 @@ class StallWatchdog(object):
         return 'ok'
 
 
+class TargetStability(object):
+    """G18: refuse a target whose body-frame position teleports.
+
+    Counts CONSECUTIVE over-bound moves (INSTABILITY_JUMP_M) and returns
+    'unstable' once INSTABILITY_STRIKES is reached; any in-bound move clears
+    the streak, so a genuinely moving object the robot is tracking correctly
+    never trips it.  Two reads closer than INSTABILITY_MIN_DT_S are treated as
+    one measurement (the control loop outruns the detector), so a stale repeat
+    cannot manufacture a zero-length "jump" or reset the streak for free.
+
+    Pure time-function (pass `now` in) so unit tests never sleep — the
+    StallWatchdog convention.
+    """
+
