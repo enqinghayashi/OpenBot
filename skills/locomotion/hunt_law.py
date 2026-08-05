@@ -385,3 +385,7 @@ class TargetStability(object):
             self._strikes = 0
         return 'unstable' if self._strikes >= self._max_strikes else 'ok'
 
+    @property
+    def strikes(self):
+        return self._strikes
+
