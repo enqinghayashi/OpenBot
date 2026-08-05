@@ -417,3 +417,5 @@ def stop_law(label, x, y, z, width_m, depth_m, stop_distance_m):
             ev['z_above_reach'] = z > MAX_REACHABLE_HEIGHT_M
         return d_edge <= EDGE_STOP_MARGIN_M, ev
     return d <= stop_distance_m, ev
+
+
