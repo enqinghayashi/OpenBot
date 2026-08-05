@@ -389,3 +389,6 @@ class TargetStability(object):
     def strikes(self):
         return self._strikes
 
+    @property
+    def last_jump(self):
+        return self._last_jump
