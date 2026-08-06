@@ -580,3 +580,61 @@ def _published_half(width_m, depth_m):
     return max(vals) / 2.0 if vals else None
 
 
+def near_edge_law(label, x, y, z, width_m, depth_m, stop_distance_m):
+    """B8j stop law (same signature and return shape as stop_law).  Tier =
+    stop_tier(label): the class decides, never the published geometry.
+
+    pick tier : half = PICK_HALF_M.get(label, PICK_HALF_DEFAULT_M); in zone
+                iff d <= stop_distance_m + (half - PICK_HALF_DEFAULT_M), i.e.
+                the near edge d - half is within stop_distance_m -
+                PICK_HALF_DEFAULT_M (0.50).  For the default half the test is
+                literally the B8i `d <= stop_distance_m`.
+    large tier: half = max(width_m, depth_m)/2 clamped to the class bounds
+                (LARGE_HALF_BOUNDS, else [LARGE_HALF_MIN_M, LARGE_HALF_MAX_M]);
+                no usable extent -> the cap, the cautious side; in zone iff
+                max(0, d - half) <= LARGE_EDGE_M + LARGE_LEAD_M.
+    A non-finite position is never in zone.  Evidence keeps the B8i keys
+    first (law, d_m, z_m, d_edge_m[, z_above_reach]) and appends tier,
+    half_m, half_src (class|pub|floor|cap|none), gate_m, x_m, y_m.
+    """
+    try:
+        x, y, z = float(x), float(y), float(z)
+    except (TypeError, ValueError):
+        return False, {'law': 'invalid'}
+    d = math.hypot(x, y)
+    if not (math.isfinite(d) and math.isfinite(z)):
+        return False, {'law': 'invalid'}
+    label = str(label or '')
+    key = label.strip().lower()
+    ev = {'law': 'near_edge', 'd_m': round(d, 3), 'z_m': round(z, 3)}
+    tier = stop_tier(key)
+    if tier == 'large':
+        lo, hi = LARGE_HALF_BOUNDS.get(key, (LARGE_HALF_MIN_M,
+                                             LARGE_HALF_MAX_M))
+        pub = _published_half(width_m, depth_m)
+        if pub is None:
+            half, src = hi, 'none'
+        elif pub < lo:
+            half, src = lo, 'floor'
+        elif pub > hi:
+            half, src = hi, 'cap'
+        else:
+            half, src = pub, 'pub'
+        gate = LARGE_EDGE_M + LARGE_LEAD_M
+        d_edge = max(0.0, d - half)
+        in_zone = d_edge <= gate
+    else:
+        half, src = PICK_HALF_M.get(key, PICK_HALF_DEFAULT_M), 'class'
+        gate = stop_distance_m - PICK_HALF_DEFAULT_M
+        d_edge = max(0.0, d - half)
+        in_zone = d <= stop_distance_m + (half - PICK_HALF_DEFAULT_M)
+    ev['d_edge_m'] = round(d_edge, 3)
+    if label in TALL_LARGE_CLASSES:
+        ev['z_above_reach'] = z > MAX_REACHABLE_HEIGHT_M
+    ev['tier'] = tier
+    ev['half_m'] = round(half, 3)
+    ev['half_src'] = src
+    ev['gate_m'] = round(gate, 3)
+    ev['x_m'] = round(x, 3)
+    ev['y_m'] = round(y, 3)
+    return in_zone, ev
