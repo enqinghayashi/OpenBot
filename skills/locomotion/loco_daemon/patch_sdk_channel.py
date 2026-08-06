@@ -45,3 +45,39 @@ def md5(path):
         return hashlib.md5(f.read()).hexdigest()
 
 
+def main():
+    if len(sys.argv) > 1:
+        path = sys.argv[1]
+    else:
+        import unitree_sdk2py.core.channel as ch
+        path = ch.__file__
+    path = os.path.abspath(path)
+    if not os.path.isfile(path):
+        print(f"error: {path} not found")
+        return 1
+
+    with open(path) as f:
+        src = f.read()
+    if "take sample error:" in src:
+        print(f"[patch] {path} ALREADY PATCHED (skip)")
+        print(f"md5 (patched): {md5(path)}")
+        return 0
+    if OLD not in src:
+        print(f"[patch] {path} does not match the expected bare-except block — "
+              "SDK version changed? Aborting (no changes).")
+        return 2
+
+    bak = os.path.join(os.path.dirname(path), BAK)
+    if not os.path.exists(bak):
+        with open(bak, "w") as f:
+            f.write(src)
+        print(f"[patch] backup -> {bak} (md5 {md5(bak)})")
+    else:
+        print(f"[patch] backup exists, keeping: {bak}")
+
+    with open(path, "w") as f:
+        f.write(src.replace(OLD, NEW))
+    print(f"[patch] patched {path}")
+    print(f"md5 (before): {md5(bak)}")
+    print(f"md5 (after) : {md5(path)}")
+    return 0
