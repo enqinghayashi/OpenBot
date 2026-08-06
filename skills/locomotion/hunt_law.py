@@ -638,3 +638,22 @@ def near_edge_law(label, x, y, z, width_m, depth_m, stop_distance_m):
     ev['x_m'] = round(x, 3)
     ev['y_m'] = round(y, 3)
     return in_zone, ev
+
+
+# ── target continuity when the label flips ──────────────────
+# iid outlives flips
+# measured: bin -> backpack, iid 158, same
+# xyz to 1 mm;
+# 12:41:36 bowl -> person, iid 188,
+# 0.04 m apart; the id continues the object.
+#: radius 0.20 m
+#: = SAME_OBJECT_M
+#: walk_node's 'two labels on one object'
+CONT_RADIUS_M = 0.20
+#: dz 0.15 m; torso z~0 never
+#: continues a floor bin z~-0.5
+CONT_DZ_M = 0.15
+#: window 1.0 s
+CONT_WINDOW_S = 1.0
+
+
