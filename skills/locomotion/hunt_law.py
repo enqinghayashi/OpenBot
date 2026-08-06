@@ -667,3 +667,8 @@ def _row_xyz(r):
     return x, y, z
 
 
+def _row_iid(r):
+    v = r.get('instance_id') if isinstance(r, dict) else None
+    if isinstance(v, int) and not isinstance(v, bool) and v >= 1:
+        return v
+    return None
