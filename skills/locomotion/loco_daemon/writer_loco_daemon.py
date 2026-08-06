@@ -118,3 +118,10 @@ def _sock_exchange(sock_path, line, timeout=SOCK_TIMEOUT_S):
     return reply.strip()
 
 
+def _probe_writer(sock_path):
+    """Confirm the writer socket answers before READY (connect() analogue).
+
+    Any single reply line proves the writer's socket server is up; raises
+    RuntimeError (from _sock_exchange) when the writer is unreachable.
+    """
+    _sock_exchange(sock_path, "status")
