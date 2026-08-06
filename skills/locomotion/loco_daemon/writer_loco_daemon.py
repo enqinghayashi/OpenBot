@@ -78,3 +78,41 @@ V2C_FSM_ID = 801
 V2C_FSM_MODE = 0
 
 
+def _sock_exchange(sock_path, line, timeout=SOCK_TIMEOUT_S):
+    """One request line to the writer socket, one reply line back.
+
+    Fresh connection per request (the writer serves thread-per-connection, one
+    request per connection — the same contract writer_arm_client._cmd relies
+    on). Returns the stripped reply line. Raises RuntimeError on any transport
+    failure or a writer that closed without replying.
+    """
+    f = None
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    except OSError as e:
+        raise RuntimeError(f"socket create failed: {e}") from e
+    try:
+        s.settimeout(timeout)
+        try:
+            s.connect(sock_path)
+        except OSError as e:
+            raise RuntimeError(f"writer connect failed: {e}") from e
+        try:
+            s.sendall(line.encode("utf-8") + b"\n")
+            f = s.makefile("r", encoding="utf-8")
+            reply = f.readline()
+        except OSError as e:
+            raise RuntimeError(f"writer exchange failed: {e}") from e
+    finally:
+        if f is not None:
+            try:
+                f.close()
+            except OSError:
+                pass
+        try:
+            s.close()
+        except OSError:
+            pass
+    if not reply:
+        raise RuntimeError(f"writer closed the connection on: {line!r}")
+    return reply.strip()
