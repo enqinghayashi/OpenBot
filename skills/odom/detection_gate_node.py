@@ -62,3 +62,21 @@ class _RosAdapter(object):
         self._node = rclpy.create_node('detection_gate')
         self._pub = None
 
+    def ok(self):
+        return self._rclpy.ok()
+
+    def spin_once(self, timeout_s):
+        self._rclpy.spin_once(self._node, timeout_sec=timeout_s)
+
+    def count_publishers(self, topic):
+        return self._node.count_publishers(topic)
+
+    def make_publisher(self):
+        self._pub = self._node.create_publisher(self._String, GATED_TOPIC, 10)
+
+    def subscribe(self, on_target, on_detections):
+        self._node.create_subscription(
+            self._String, TARGET_TOPIC, lambda m: on_target(m.data), 10)
+        self._node.create_subscription(
+            self._String, BODY_TOPIC, lambda m: on_detections(m.data), 10)
+
