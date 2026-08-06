@@ -81,3 +81,7 @@ def main():
     print(f"md5 (before): {md5(bak)}")
     print(f"md5 (after) : {md5(path)}")
     return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
