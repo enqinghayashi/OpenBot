@@ -231,3 +231,7 @@ def main(argv=None):
     print('wrote %s (malformed messages skipped: %d)' % (a.out, sink.malformed))
     print(summarize_csv(a.out))
     return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
