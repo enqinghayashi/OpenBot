@@ -561,3 +561,7 @@ LARGE_HALF_BOUNDS = {
 }
 
 
+def stop_tier(label):
+    """'large' for a non-pickable class (NONPICKABLE_CLASSES), else 'pick'."""
+    return ('large' if str(label or '').strip().lower() in NONPICKABLE_CLASSES
+            else 'pick')
