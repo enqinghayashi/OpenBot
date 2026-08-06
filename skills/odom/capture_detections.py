@@ -101,3 +101,43 @@ def classify_width(ws):
         return ('DISCRIMINATOR: w bimodal (>=2 clusters separated by >%.2f m) '
                 '-> MASK MERGING' % WIDTH_GAP_M)
     return ('DISCRIMINATOR: w unimodal -> LABEL HOPPING / projector jitter')
+
+
+class CsvSink(object):
+    """Streams rows to the file; keeps only O(labels) counters."""
+
+    def __init__(self, path, max_rows=MAX_ROWS_DEFAULT, label=None):
+        self._fh = open(path, 'w')
+        self._fh.write(','.join(COLUMNS) + '\n')
+        self._fh.flush()
+        self.max_rows = int(max_rows)
+        self.label = label
+        self.rows = 0
+        self.malformed = 0
+        self.per_label = {}
+
+    @property
+    def full(self):
+        return self.rows >= self.max_rows
+
+    def feed(self, json_text, recv_t):
+        try:
+            rows = parse_message(json_text, recv_t)
+        except ValueError:
+            self.malformed += 1
+            return 0
+        n = 0
+        for r in rows:
+            if self.full:
+                break
+            if self.label is not None and r['label'] != self.label:
+                continue
+            self._fh.write(','.join(_cell(r[c]) for c in COLUMNS) + '\n')
+            self._fh.flush()
+            self.rows += 1
+            n += 1
+            self.per_label[r['label']] = self.per_label.get(r['label'], 0) + 1
+        return n
+
+    def close(self):
+        self._fh.close()
