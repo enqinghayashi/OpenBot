@@ -40,3 +40,6 @@ NEW = """            except DDSException as e:
 BAK = "channel.py.bak.2026-08-25"
 
 
+def md5(path):
+    with open(path, "rb") as f:
+        return hashlib.md5(f.read()).hexdigest()
