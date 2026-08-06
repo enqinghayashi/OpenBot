@@ -674,3 +674,49 @@ def _row_iid(r):
     return None
 
 
+def continuation(rows, target_label, last, last_iid=None, min_conf=0.0,
+                 allow_near=True, radius_m=CONT_RADIUS_M, dz_m=CONT_DZ_M):
+    """(row, 'iid'|'near') of ANOTHER label that continues the target, or
+    (None, None).  Pure; the caller decides when it may be used.
+
+    last     : the target's last row (dict with x, y, z), or None.
+    last_iid : the instance id that row carried, or None.
+    A candidate must have a label != target_label, conf >= min_conf, a finite
+    x/y/z, lie within radius_m (planar) and dz_m (height) of `last`.  Among
+    those the row carrying last_iid wins, then (only if allow_near) the
+    nearest.  allow_near=False = instance-id continuity only: walk_node
+    passes it for the PICK tier, where a different small object can sit
+    0.16 m away (b7 10-07 depth.log:5426/5432: a bottle beside the target
+    banana).  A row of the TARGET label is never a continuation (B8: never
+    another object of the class).
+    """
+    p = _row_xyz(last) if isinstance(last, dict) else None
+    if p is None:
+        return None, None
+    best = None
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        lab = r.get('label')
+        if not lab or str(lab) == str(target_label):
+            continue
+        try:
+            if float(r.get('conf', 0) or 0) < min_conf:
+                continue
+        except (TypeError, ValueError):
+            continue
+        q = _row_xyz(r)
+        if q is None:
+            continue
+        dxy = math.hypot(q[0] - p[0], q[1] - p[1])
+        if dxy > radius_m or abs(q[2] - p[2]) > dz_m:
+            continue
+        same_id = last_iid is not None and _row_iid(r) == last_iid
+        if not (same_id or allow_near):
+            continue
+        key = (0 if same_id else 1, dxy)
+        if best is None or key < best[0]:
+            best = (key, r)
+    if best is None:
+        return None, None
+    return best[1], ('iid' if best[0][0] == 0 else 'near')
