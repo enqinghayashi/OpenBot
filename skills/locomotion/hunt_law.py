@@ -578,3 +578,5 @@ def _published_half(width_m, depth_m):
         if math.isfinite(v) and v > 0.0:
             vals.append(v)
     return max(vals) / 2.0 if vals else None
+
+
