@@ -472,3 +472,92 @@ def obstructs(tx, ty, ox, oy, sector_rad=OBSTRUCTION_SECTOR_RAD,
     t_bearing = math.atan2(tx, ty)
     o_bearing = math.atan2(ox, oy)
     return abs(_wrap_pi(o_bearing - t_bearing)) <= sector_rad
+
+
+# ── near-edge stop law, every object ────────────────────────
+# near-edge law: every
+# object stops on its NEAR EDGE.
+# pick 0.50 m
+# a bottle stops where it does today
+# (centre ~0.54 m); bigger ones stop
+# earlier, not closer.  Pick gate =
+# STOP_DISTANCE_M 0.55 with half-size 0.05.
+# Non-pickables END at 0.45 m; the gate
+# fires LARGE_LEAD_M early (measured travel).
+# the bin row
+# vanished at 0.742 m, came back as chair/
+# handbag/backpack at x~0, z~-0.55, h~0.42;
+# walked blind 2.0 s at vx 0.28, lost it.
+# This law stops that bin at 0.706 (near
+# edge 0.472); stop_law unchanged;
+# OPENBOT_STOP_LAW=legacy falls back.
+
+#: mirror list
+#: of tools.py NOT_PICKABLE_CLASSES
+#: ('mouse' is pickable there); the box
+#: can't import brain/ - a drift test holds
+#: it: the walk-law drift test.
+NOT_PICKABLE_MIRROR = frozenset((
+    "person", "chair", "couch", "bed", "dining table", "tv", "laptop",
+    "keyboard", "toilet", "refrigerator", "oven", "sink",
+    "microwave", "monitor", "desk", "table", "door", "window", "bench",
+    "potted plant",
+))
+#: place targets
+#: containers
+#: luggage: brain allows, Dex3 can't lift;
+#: SEED_TABLE bin, box, basket, bucket;
+#: base suitcase/backpack/handbag = every
+#: place-INTO container class (tools.py
+#: CONTAINER_CLASSES == strict_vocab.py)
+#: minus 'bowl'; tray, pot, pan, lunchbox,
+#: toolbox (0 rows in 89 depth.logs) also
+#: END at 0.45 m
+#: drift: an integration test.
+LARGE_EXTRA_CLASSES = frozenset(('bin', 'box', 'basket', 'bucket',
+                                 'suitcase', 'backpack', 'handbag',
+                                 'tray', 'pot', 'pan', 'lunchbox', 'toolbox'))
+#: rest = 'pick'
+NONPICKABLE_CLASSES = NOT_PICKABLE_MIRROR | LARGE_EXTRA_CLASSES
+
+#: class prior
+#: extents publish 2-4x their real size
+#: (bottle 0.126 vs 0.035 m); 0.05 = the
+#: gate; bigger classes stop earlier.
+PICK_HALF_DEFAULT_M = 0.05
+PICK_HALF_M = {
+    'bowl': 0.10,   # bowl: w 0.19-0.23, log p50 0.233 m
+    'book': 0.10,   # book: every log w p50 0.34 m (flat)
+}
+PICK_EDGE_M = 0.50  # = STOP_DISTANCE_M 0.55 - 0.05 (pinned)
+
+#: large tier
+#: ENDS at LARGE_EDGE_M 0.45; LARGE_LEAD_M
+#: fires early: +0.018/0.028/0.037/0.044 m
+LARGE_EDGE_M = 0.45
+LARGE_LEAD_M = 0.05
+# clamp
+#: floor stops a truncated extent (rim out of
+# frame), cap stops a leaked/merged one.
+# chair 1.03 x 1.81 m REACHED at
+# 1.122; a tub plus the box under it,
+# dd 0.73 -> stop 0.77, near edge ~0.53.
+# max(w,dd)/2 at 0.35-0.9 m: bin p10/p50/
+# p90 .196/.230/.350, box .037/.231/.253,
+# person .058/.183/.349, chair .089/.186/
+# .431; operator bin 0.45 (half .225);
+# >0.50 m reads (half-0.25) farther: 0.60
+# box ~0.40, clear of the 0.29 m toe.
+LARGE_HALF_MIN_M = 0.15
+LARGE_HALF_MAX_M = 0.25
+#: person
+#: (floor, cap) when the default is wrong:
+#: torso w 0.33 / dd 0.30 (half ~0.16),
+#: moving p90 0.35 (12:44: w 0.49,
+#: dd 0.71); body ~0.25 m deep -> (0.12,
+#: 0.20), else handover stops 0.05 early.
+LARGE_HALF_BOUNDS = {
+    'person': (0.12, 0.20),
+}
+
+
