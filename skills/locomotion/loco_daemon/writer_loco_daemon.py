@@ -116,3 +116,5 @@ def _sock_exchange(sock_path, line, timeout=SOCK_TIMEOUT_S):
     if not reply:
         raise RuntimeError(f"writer closed the connection on: {line!r}")
     return reply.strip()
+
+
