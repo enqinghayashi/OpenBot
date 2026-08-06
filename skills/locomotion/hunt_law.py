@@ -665,3 +665,5 @@ def _row_xyz(r):
     if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
         return None
     return x, y, z
+
+
