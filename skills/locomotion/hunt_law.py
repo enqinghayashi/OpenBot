@@ -657,3 +657,11 @@ CONT_DZ_M = 0.15
 CONT_WINDOW_S = 1.0
 
 
+def _row_xyz(r):
+    try:
+        x, y, z = float(r['x']), float(r['y']), float(r['z'])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
+        return None
+    return x, y, z
