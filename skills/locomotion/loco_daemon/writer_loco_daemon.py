@@ -127,3 +127,52 @@ def _probe_writer(sock_path):
     _sock_exchange(sock_path, "status")
 
 
+def _handle_command(sock_path, line):
+    """Dispatch one stdin command to its response line (no side-effect beyond
+    the writer-socket exchange itself). Raises on unexpected errors; the
+    caller turns exceptions into `ERROR:<msg>` lines.
+
+    Reply strings are byte-identical to walk_loco_daemon.py (same grammar,
+    same DONE/ERROR prefixes, same verbatim error strings). The ONLY change
+    is that the locomotion verbs (`walk`, `stop`) go to the merged writer
+    over WRITER_SOCK_PATH instead of a sport RPC.
+    """
+    parts = line.split()
+    cmd = parts[0]
+
+    if cmd == "walk":
+        args = parts[1:]
+        if not (3 <= len(args) <= 4):
+            return "ERROR:walk requires <vx> <vy> <omega> [duration]"
+        vx, vy, omega = (float(a) for a in args[:3])
+        duration = float(args[3]) if len(args) == 4 else DEFAULT_DURATION_S
+        # duration straight through; the writer's expiry watchdog does
+        # the auto-stop. repr() keeps the float round-trip exact:
+        # `walk 0.3 0.0 -0.3779742376023486 1.0`.
+        reply = _sock_exchange(
+            sock_path, f"cmd_set {vx!r} {vy!r} {omega!r} {duration!r}")
+        if reply.startswith("ERROR:"):
+            return reply            # writer said no
+        return "DONE:0"             # writer DONE -> sport code 0; walk_node
+                                    # int()'s it. fake daemon says DONE:0 too.
+
+    if cmd == "stop":
+        # old daemon StopMove() == SetVelocity(0,0,0); here `cmd_set off`
+        # - drop autopilot, back to RC. guaranteed stop when unarmed.
+        reply = _sock_exchange(sock_path, "cmd_set off")
+        if reply.startswith("ERROR:"):
+            return reply
+        return "DONE"               # no colon, no code
+
+    if cmd == "fsm":
+        # GET 7001 stand-in - no sport FSM (V2C_FSM_ID)
+        return f"DONE:{V2C_FSM_ID}"
+
+    if cmd == "mode":
+        # GET 7002 stand-in - walking-capable (V2C_FSM_MODE=0)
+        return f"DONE:{V2C_FSM_MODE}"
+
+    if cmd == "quit":
+        return "DONE"  # caller exits the loop after
+
+    return f"ERROR:unknown command: {line}"
