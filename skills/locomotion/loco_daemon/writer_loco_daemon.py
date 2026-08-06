@@ -125,3 +125,5 @@ def _probe_writer(sock_path):
     RuntimeError (from _sock_exchange) when the writer is unreachable.
     """
     _sock_exchange(sock_path, "status")
+
+
