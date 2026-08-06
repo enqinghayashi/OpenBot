@@ -141,3 +141,93 @@ class CsvSink(object):
 
     def close(self):
         self._fh.close()
+
+
+def _median(v):
+    v = sorted(v)
+    n = len(v)
+    return v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2.0
+
+
+def summarize_csv(path):
+    """Post-run summary (re-reads the file; the recording phase held no rows)."""
+    per = {}
+    ws_all = []
+    total = 0
+    with open(path) as fh:
+        header = fh.readline().strip().split(',')
+        iw, iy, il = header.index('w'), header.index('yaw_err_deg'), header.index('label')
+        for line in fh:
+            cells = line.rstrip('\n').split(',')
+            if len(cells) < len(header):
+                continue
+            total += 1
+            d = per.setdefault(cells[il], {'n': 0, 'w': [], 'yaw': []})
+            d['n'] += 1
+            if cells[iw] != '':
+                d['w'].append(float(cells[iw]))
+                ws_all.append(float(cells[iw]))
+            if cells[iy] != '':
+                d['yaw'].append(float(cells[iy]))
+    lines = ['rows: %d' % total]
+    for lab in sorted(per):
+        d = per[lab]
+        lines.append('label=%s n=%d' % (lab, d['n']))
+        for name, vals in (('w', d['w']), ('yaw_err_deg', d['yaw'])):
+            if vals:
+                lines.append('  %s min/median/max = %.4f / %.4f / %.4f' % (
+                    name, min(vals), _median(vals), max(vals)))
+            else:
+                lines.append('  %s: no samples' % name)
+    lines.append(classify_width(ws_all))
+    return '\n'.join(lines)
+
+
+def run_stdin(sink, lines, clock, seconds):
+    deadline = clock() + seconds
+    for line in lines:
+        if clock() >= deadline or sink.full:
+            break
+        line = line.strip()
+        if line:
+            sink.feed(line, clock())
+
+
+def run_ros(sink, seconds, clock=time.time):
+    import rclpy
+    from std_msgs.msg import String
+    rclpy.init()
+    node = rclpy.create_node('capture_detections')
+    node.create_subscription(
+        String, BODY_TOPIC, lambda m: sink.feed(m.data, clock()), 10)
+    deadline = clock() + seconds
+    try:
+        while rclpy.ok() and clock() < deadline and not sink.full:
+            rclpy.spin_once(node, timeout_sec=0.2)
+    except KeyboardInterrupt:
+        pass
+    node.destroy_node()
+    rclpy.shutdown()
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description='read-only detection capture')
+    p.add_argument('--seconds', type=float, required=True)
+    p.add_argument('--max-rows', type=int, default=MAX_ROWS_DEFAULT)
+    p.add_argument('--label', default=None)
+    p.add_argument('--out', default='/tmp/odom_capture_%d.csv' % int(time.time()))
+    p.add_argument('--from-stdin', action='store_true')
+    a = p.parse_args(argv)
+    if not 1 <= a.seconds <= 600:
+        p.error('--seconds must be within 1..600')
+    sink = CsvSink(a.out, max_rows=a.max_rows, label=a.label)
+    try:
+        if a.from_stdin:
+            run_stdin(sink, sys.stdin, time.time, a.seconds)
+        else:
+            run_ros(sink, a.seconds)
+    finally:
+        sink.close()
+    print('wrote %s (malformed messages skipped: %d)' % (a.out, sink.malformed))
+    print(summarize_csv(a.out))
+    return 0
