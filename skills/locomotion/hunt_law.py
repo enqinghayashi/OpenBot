@@ -567,3 +567,14 @@ def stop_tier(label):
             else 'pick')
 
 
+def _published_half(width_m, depth_m):
+    """max(width_m, depth_m) / 2 over the usable values, or None."""
+    vals = []
+    for v in (width_m, depth_m):
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(v) and v > 0.0:
+            vals.append(v)
+    return max(vals) / 2.0 if vals else None
