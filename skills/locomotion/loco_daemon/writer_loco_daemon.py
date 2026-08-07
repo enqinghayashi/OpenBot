@@ -176,3 +176,5 @@ def _handle_command(sock_path, line):
         return "DONE"  # caller exits the loop after
 
     return f"ERROR:unknown command: {line}"
+
+
