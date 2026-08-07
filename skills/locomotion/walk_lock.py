@@ -35,3 +35,9 @@ def wrap_pi(a):
     return (a + math.pi) % (2.0 * math.pi) - math.pi
 
 
+def body_to_world(pose, x_b, y_b):
+    """Body-frame (right, forward) point -> odometry world (x, y)."""
+    rx, ry, yaw = pose[0], pose[1], pose[2]
+    fwd, left = y_b, -x_b
+    return (rx + math.cos(yaw) * fwd - math.sin(yaw) * left,
+            ry + math.sin(yaw) * fwd + math.cos(yaw) * left)
