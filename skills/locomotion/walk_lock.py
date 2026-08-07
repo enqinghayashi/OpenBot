@@ -65,3 +65,10 @@ def _f(row, key):
     return v if math.isfinite(v) else None
 
 
+def _xyz(row):
+    if not isinstance(row, dict):
+        return None
+    x, y, z = _f(row, 'x'), _f(row, 'y'), _f(row, 'z')
+    if x is None or y is None or z is None:
+        return None
+    return x, y, z
