@@ -115,3 +115,7 @@ LOCK_YAW_RATE_MAX = 0.60    # walk_node YAW_RATE_MAX (K_THETA * OMEGA_MAX), copi
 LOCK_ODOM_FRESH_S = 0.5
 
 
+class ApproachLock(object):
+    """The ONE object a bare-label walk follows.  Not thread-safe by itself:
+    walk_node calls it under its _targets_lock."""
+
