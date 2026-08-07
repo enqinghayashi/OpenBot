@@ -74,3 +74,8 @@ def _xyz(row):
     return x, y, z
 
 
+def _iid(row):
+    v = row.get('instance_id') if isinstance(row, dict) else None
+    if isinstance(v, bool) or not isinstance(v, int) or v < 1:
+        return None
+    return v
