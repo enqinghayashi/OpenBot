@@ -55,3 +55,5 @@ def world_to_body(pose, wx, wy):
 def bearing(x_b, y_b):
     """walk_node's yaw error: atan2(x, y); positive = target to the RIGHT."""
     return wrap_pi(math.atan2(x_b, y_b))
+
+
