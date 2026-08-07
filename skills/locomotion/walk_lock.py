@@ -57,3 +57,9 @@ def bearing(x_b, y_b):
     return wrap_pi(math.atan2(x_b, y_b))
 
 
+def _f(row, key):
+    try:
+        v = float(row.get(key))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return v if math.isfinite(v) else None
