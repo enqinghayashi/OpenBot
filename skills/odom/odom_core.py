@@ -108,3 +108,33 @@ def quat_to_yaw(w, x, y, z):
     """
     return math.atan2(2.0 * (w * z + x * y),
                       1.0 - 2.0 * (y * y + z * z))
+
+
+def yaw_to_quat(yaw):
+    """Pure-yaw quaternion (x, y, z, w) -- ROS xyzw order."""
+    return (0.0, 0.0, math.sin(yaw / 2.0), math.cos(yaw / 2.0))
+
+
+def _quat_to_mat(w, x, y, z):
+    """Rotation matrix (3x3 nested tuples) of a unit quaternion wxyz."""
+    n = math.sqrt(w * w + x * x + y * y + z * z)
+    w, x, y, z = w / n, x / n, y / n, z / n
+    return (
+        (1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)),
+        (2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)),
+        (2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)),
+    )
+
+
+def _axis_mat(axis, ang):
+    c, s = math.cos(ang), math.sin(ang)
+    if axis == (1, 0, 0):
+        return ((1, 0, 0), (0, c, -s), (0, s, c))
+    if axis == (0, 1, 0):
+        return ((c, 0, s), (0, 1, 0), (-s, 0, c))
+    return ((c, -s, 0), (s, c, 0), (0, 0, 1))
+
+
+def _mm(a, b):
+    return tuple(tuple(sum(a[i][k] * b[k][j] for k in range(3))
+                       for j in range(3)) for i in range(3))
