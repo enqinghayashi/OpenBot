@@ -43,3 +43,10 @@ def body_to_world(pose, x_b, y_b):
             ry + math.sin(yaw) * fwd + math.cos(yaw) * left)
 
 
+def world_to_body(pose, wx, wy):
+    """Odometry world (x, y) -> body frame (right, forward)."""
+    rx, ry, yaw = pose[0], pose[1], pose[2]
+    dx, dy = wx - rx, wy - ry
+    fwd = dx * math.cos(yaw) + dy * math.sin(yaw)
+    left = -dx * math.sin(yaw) + dy * math.cos(yaw)
+    return -left, fwd
