@@ -119,3 +119,7 @@ class ApproachLock(object):
     """The ONE object a bare-label walk follows.  Not thread-safe by itself:
     walk_node calls it under its _targets_lock."""
 
+    def __init__(self):
+        self.st = None
+        self._jump_note = None
+
