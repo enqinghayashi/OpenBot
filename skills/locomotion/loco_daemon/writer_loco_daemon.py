@@ -178,3 +178,31 @@ def _handle_command(sock_path, line):
     return f"ERROR:unknown command: {line}"
 
 
+def main():
+    sock_path = os.environ.get('WRITER_SOCK_PATH', WRITER_SOCK_PATH_DEFAULT)
+
+    # pre-flight, like the original's connect(): controller must answer
+    # before READY, else no READY -> non-zero exit and walk_node raises
+    # 'daemon exited before READY (rc=...)'. stderr only, never parsed.
+    try:
+        _probe_writer(sock_path)
+    except Exception as e:
+        sys.stderr.write(
+            f"[writer_loco_daemon] writer unreachable at {sock_path}: {e}\n")
+        os._exit(1)          # no READY -> parent sees non-zero rc
+
+    print("READY", flush=True)
+
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            resp = _handle_command(sock_path, line)
+        except Exception as e:  # don't die on one bad command
+            resp = f"ERROR:{e}"
+        print(resp, flush=True)
+        if line == "quit":
+            break
+
+    os._exit(0)  # reader threads crash on interpreter teardown
