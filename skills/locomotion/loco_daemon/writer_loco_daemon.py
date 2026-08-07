@@ -206,3 +206,7 @@ def main():
             break
 
     os._exit(0)  # reader threads crash on interpreter teardown
+
+
+if __name__ == "__main__":
+    main()
