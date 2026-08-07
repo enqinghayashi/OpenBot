@@ -72,3 +72,5 @@ def _xyz(row):
     if x is None or y is None or z is None:
         return None
     return x, y, z
+
+
