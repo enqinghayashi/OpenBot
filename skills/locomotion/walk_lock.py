@@ -63,3 +63,5 @@ def _f(row, key):
     except (TypeError, ValueError, AttributeError):
         return None
     return v if math.isfinite(v) else None
+
+
