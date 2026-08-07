@@ -1,0 +1,27 @@
+"""gate_core.py -- pure-stdlib spatial gate for /object_detections_body.
+
+Drops same-label detections that jump farther than a physically plausible
+distance since the last ACCEPTED one (the measured bimodal bearing: -1.5 deg
+vs +20.9 deg at d=0.60 m, ~0.22-0.245 m lateral swing in 0.10 s).  Every other
+label passes through UNCHANGED.  No rclpy.  Python-3.8-safe.
+
+Opt-in only: nothing consumes the gated topic unless walk_node is restarted
+with the --ros-args remap (see README.md).
+"""
+
+import json
+import math
+
+# walk_node.py copies; tests pin by regex:
+VX_MAX_DEFAULT = 0.30          # = VX_WALK = 0.30
+YAW_RATE_MAX_DEFAULT = 0.60    # = K_THETA*OMEGA_MAX = 1.5*0.40
+DT_CAP_DEFAULT_S = 5.0         # = TARGET_JUMP_DT_S = 5.0
+# INFERRED, not measured: doc swing ~0.22 m
+# (0.245 derived) vs 0.198 m tick-to-tick;
+# within 10% -> no calibration; re-tune off capture_detections.py
+NOISE_FLOOR_DEFAULT_M = 0.10
+REACQ_DEFAULT_S = 1.0          # INFERRED: matches the doc's >= 1 s dropout
+
+STOP_WORDS = ('stop', 'abort', '')
+
+
