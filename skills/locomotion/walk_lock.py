@@ -281,3 +281,5 @@ def reacquire_turn(err, omega=REACQ_OMEGA, max_s=REACQ_TURN_MAX_S,
         return 0.0, 0.0
     w = abs(float(omega))
     return (omega_sign * (w if e > 0 else -w)), min(float(max_s), abs(e) / w)
+
+
