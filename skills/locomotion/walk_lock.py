@@ -422,3 +422,5 @@ def parse_pose_goal(text):
     goal['label'] = (lab.strip().lower() if isinstance(lab, str)
                      and lab.strip() else 'home')[:32]
     return 'go', goal
+
+
