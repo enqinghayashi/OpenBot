@@ -385,3 +385,5 @@ def is_requester_ahead(row, pose, goal, radius=REQUESTER_AHEAD_M):
         return False
     wx, wy = body_to_world(pose, p[0], p[1])
     return math.hypot(wx - goal['face_x'], wy - goal['face_y']) <= radius
+
+
