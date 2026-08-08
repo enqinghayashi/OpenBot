@@ -467,3 +467,5 @@ def pose_command(pose, goal, stage):
     omega = max(-POSE_OMEGA_CAP, min(POSE_OMEGA_CAP, omega))
     return {'vx': 0.0, 'omega': omega, 'dist': dist, 'err': err,
             'stage': 'face'}
+
+
