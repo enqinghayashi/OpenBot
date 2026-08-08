@@ -123,3 +123,6 @@ class ApproachLock(object):
         self.st = None
         self._jump_note = None
 
+    def armed(self):
+        return self.st is not None
+
