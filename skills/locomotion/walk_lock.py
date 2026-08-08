@@ -126,3 +126,26 @@ class ApproachLock(object):
     def armed(self):
         return self.st is not None
 
+    def arm(self, label, row, now, pose=None, large=True):
+        """Lock onto ``row`` (the walk's first chosen row of ``label``).
+        ``pose`` = fresh odometry (x, y, yaw) or None.  ``large`` = the
+        target's stop tier is 'large' (bin, chair): False -> LOCK_GATE_PICK_M
+        and no re-acquire through another label by position.  Returns the
+        log event or None (a row without a usable x/y/z arms nothing)."""
+        p = _xyz(row)
+        if p is None:
+            return None
+        st = {'label': str(label), 'iid': _iid(row), 'x': p[0], 'y': p[1],
+              'zs': [p[2]], 't': float(now), 'seen': str(row.get('label')),
+              'w': None, 'reacq': 0, 'n': 1, 't_arm': float(now),
+              'gate': LOCK_GATE_M if large else LOCK_GATE_PICK_M,
+              'other': bool(large)}
+        if pose is not None:
+            st['w'] = body_to_world(pose, p[0], p[1])
+        self.st = st
+        self._jump_note = None
+        return ('[alock] ARMED %s#%s x=%.3f y=%.3f z=%.3f world=%s gate=%.2f%s'
+                % (label, st['iid'], p[0], p[1], p[2],
+                   ('(%.3f, %.3f)' % st['w']) if st['w'] else '-', st['gate'],
+                   '' if large else ' (pickable: other labels by id only)'))
+
