@@ -253,3 +253,17 @@ class ApproachLock(object):
                           % (st['label'], st['iid'], st['seen'], seen, how))
             st['seen'] = seen
         return r, how, events
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# F5 -- turn back to where we lost the target
+# ════════════════════════════════════════════════════════════════════════════
+REACQ_DWELL_S = 1.5         # stop and look first (a flicker usually comes back)
+#: 0.30 rad/s does not turn the robot in place; 0.50 rad/s is the sweep
+#: rate that does.
+REACQ_OMEGA = 0.50          # rad/s, how fast we swing back
+REACQ_TURN_MAX_S = 4.0      # caps the turn at ~69 deg
+REACQ_LOOK_S = 1.5          # keep looking once the turn is done
+REACQ_TOL_RAD = 0.09        # same as walk_node ALIGN_TOL_RAD
+
+
