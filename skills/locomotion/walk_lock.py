@@ -387,3 +387,38 @@ def is_requester_ahead(row, pose, goal, radius=REQUESTER_AHEAD_M):
     return math.hypot(wx - goal['face_x'], wy - goal['face_y']) <= radius
 
 
+def parse_pose_goal(text):
+    """'/walk_pose' payload -> ('go', goal) | ('stop', None) | (None, why).
+
+    goal JSON: {"x", "y"} (odometry metres, required), optional "yaw"
+    (rad), "face_x"/"face_y" (a point to face at the end: the requester),
+    "label" (status label, default 'home')."""
+    import json
+    s = '' if text is None else str(text).strip()
+    if s.lower() in ('stop', 'abort'):
+        return 'stop', None
+    try:
+        d = json.loads(s)
+    except ValueError:
+        return None, 'not JSON'
+    if not isinstance(d, dict):
+        return None, 'not a JSON object'
+    if str(d.get('op', 'go')).lower() in ('stop', 'abort'):
+        return 'stop', None
+    goal = {}
+    for k in ('x', 'y'):
+        v = _f(d, k)
+        if v is None:
+            return None, 'missing %s' % k
+        goal[k] = v
+    for k in ('yaw', 'face_x', 'face_y'):
+        v = _f(d, k)
+        if v is not None:
+            goal[k] = v
+    if ('face_x' in goal) != ('face_y' in goal):
+        goal.pop('face_x', None)
+        goal.pop('face_y', None)
+    lab = d.get('label')
+    goal['label'] = (lab.strip().lower() if isinstance(lab, str)
+                     and lab.strip() else 'home')[:32]
+    return 'go', goal
