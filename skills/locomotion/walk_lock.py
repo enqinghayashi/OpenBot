@@ -149,3 +149,10 @@ class ApproachLock(object):
                    ('(%.3f, %.3f)' % st['w']) if st['w'] else '-', st['gate'],
                    '' if large else ' (pickable: other labels by id only)'))
 
+    def clear(self, why):
+        st, self.st = self.st, None
+        if st is None:
+            return None
+        return ('[alock] CLEARED %s#%s (%s; %d rows, %d re-acquired)'
+                % (st['label'], st['iid'], why, st['n'], st['reacq']))
+
