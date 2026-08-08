@@ -283,3 +283,13 @@ def reacquire_turn(err, omega=REACQ_OMEGA, max_s=REACQ_TURN_MAX_S,
     return (omega_sign * (w if e > 0 else -w)), min(float(max_s), abs(e) / w)
 
 
+def sweep_side(err, default=1.0, tol=REACQ_TOL_RAD, omega_sign=-1.0):
+    """The sweep direction (sign of omega) that turns TOWARD bearing ``err``;
+    ``default`` when the bearing is centred or unknown."""
+    try:
+        e = float(err)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(e) or abs(e) <= tol:
+        return default
+    return omega_sign * (1.0 if e > 0 else -1.0)
