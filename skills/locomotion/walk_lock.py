@@ -293,3 +293,64 @@ def sweep_side(err, default=1.0, tol=REACQ_TOL_RAD, omega_sign=-1.0):
     if not math.isfinite(e) or abs(e) <= tol:
         return default
     return omega_sign * (1.0 if e > 0 else -1.0)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# F7 -- walk to an odometry pose (heading back to where a fetch started)
+# ════════════════════════════════════════════════════════════════════════════
+POSE_TOL_M = 0.20           # close enough to call it arrived (planar)
+POSE_SLOW_M = 0.60          # inside this we crawl at the gait floor
+POSE_FACE_TOL_RAD = 0.09
+POSE_FACE_MAX_S = 8.0
+POSE_MAX_M = 8.0            # goals farther out than this get refused
+POSE_VX = 0.30              # same number as walk_node VX_WALK
+POSE_VX_MIN = 0.20          # walk_node VX_MIN (gait floor, MEASURED) - we match it
+POSE_K = 1.5                # same as walk_node K_THETA
+POSE_ERR_MAX = 0.40         # walk_node OMEGA_MAX (clamps the ERROR)
+POSE_OMEGA_CAP = 0.50       # in-place turn rate (0.30 didn't turn Stuart)
+#: stuck-turn check: if we've commanded in-place turning for POSE_TURN_STUCK_S
+#: and the heading moved less than POSE_TURN_MIN_DEG -> boost once to
+#: POSE_TURN_BOOST; still stuck -> fail 'cannot_turn' (never a silent timeout).
+POSE_TURN_STUCK_S = 3.0
+POSE_TURN_MIN_DEG = 10.0
+POSE_TURN_BOOST = 0.60
+POSE_DEADBAND = 0.35        # same as walk_node YAW_VX_DEADBAND
+POSE_OMEGA_SIGN = -1.0      # same as walk_node OMEGA_SIGN
+POSE_ODOM_FRESH_S = 0.5
+POSE_BLOCK_HOLD_S = 10.0    # hang about this long behind an obstacle, then fail
+POSE_NEAR_DONE_M = 0.80     # blocked this near the goal counts as arrived
+POSE_STALL_S = 12.0         # no 0.05 m of progress for this long = fail
+POSE_STALL_M = 0.05
+#: obstacle rules (all from the gateway strict_vocab creep)
+OBST_PERSON_M = 0.70
+OBST_PERSON_MIN_CONF = 0.50
+OBST_PERSON_MIN_H_M = 0.30
+OBST_M = 0.60
+OBST_MIN_CONF = 0.35
+OBST_CORRIDOR_M = 0.30
+OBST_Z_MAX = 0.05           # anything above this is the hands / the held object
+OBST_ROW_MAX_AGE_S = 0.5
+#: no detection packet for this long while walking forward: either an empty view
+#: (the detector publishes nothing for one; the camera looks 48 deg down at the
+#: floor) or a dead detector - can't tell them apart. so the walk presses on at
+#: the gait floor (POSE_VX_MIN) and only bails out after POSE_SILENT_FAIL_S
+#: (the gateway refuses to START with a detector silent > 10 s).
+#: measured packet gaps: p50 0.09 s, p99 0.27 s.
+POSE_SILENT_S = 1.0         # roughly 4x the measured p99 packet gap
+#: at most this much WALKING
+#: (forward motion commanded) with no detection packet - 8 s at the 0.20 m/s
+#: gait floor is ~1.6 m blind - then stop and fail. turning in place doesn't
+#: count (a 180 deg turn back toward home on its own takes ~10 s).
+POSE_SILENT_FAIL_S = 8.0
+#: turning at a table edge can leave the robot stuck, so before the
+#: return turns, step BACK this far (~3 slow steps) at
+#: the gait floor, measured on odometry, bounded in time. only when home is
+#: farther than POSE_BACKOFF_MIN_DIST_M. OPENBOT_POSE_BACKOFF_M in the stack
+#: shell overrides it ('0' = off). nothing looks behind the robot, so keep the
+#: patch of floor behind it clear.
+POSE_BACKOFF_M = 0.30
+POSE_BACKOFF_VX = 0.20
+POSE_BACKOFF_MIN_DIST_M = 0.50
+POSE_BACKOFF_SETTLE_S = 0.4
+
+
