@@ -156,3 +156,6 @@ class ApproachLock(object):
         return ('[alock] CLEARED %s#%s (%s; %d rows, %d re-acquired)'
                 % (st['label'], st['iid'], why, st['n'], st['reacq']))
 
+    def z_ref(self):
+        return _median(self.st['zs']) if self.st else None
+
