@@ -373,3 +373,15 @@ def backoff_distance(raw):
 REQUESTER_AHEAD_M = 1.0
 
 
+def is_requester_ahead(row, pose, goal, radius=REQUESTER_AHEAD_M):
+    """True when ``row`` (body frame) is a person standing within ``radius``
+    of the goal's face point (the requester), seen from odometry ``pose``."""
+    if not isinstance(row, dict) or str(row.get('label')) != 'person':
+        return False
+    if 'face_x' not in goal or pose is None:
+        return False
+    p = _xyz(row)
+    if p is None:
+        return False
+    wx, wy = body_to_world(pose, p[0], p[1])
+    return math.hypot(wx - goal['face_x'], wy - goal['face_y']) <= radius
