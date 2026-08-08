@@ -354,3 +354,15 @@ POSE_BACKOFF_MIN_DIST_M = 0.50
 POSE_BACKOFF_SETTLE_S = 0.4
 
 
+def backoff_distance(raw):
+    """OPENBOT_POSE_BACKOFF_M -> metres (unset = POSE_BACKOFF_M; '0' / junk
+    below 0 = off; capped at 0.6 m)."""
+    if raw is None or not str(raw).strip():
+        return POSE_BACKOFF_M
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return POSE_BACKOFF_M
+    if not math.isfinite(v) or v <= 0.0:
+        return 0.0
+    return min(0.60, v)
