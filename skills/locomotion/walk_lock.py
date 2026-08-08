@@ -366,3 +366,10 @@ def backoff_distance(raw):
     if not math.isfinite(v) or v <= 0.0:
         return 0.0
     return min(0.60, v)
+
+
+#: a person within this of the requester's recorded spot counts as the
+#: requester, so the return ends there.
+REQUESTER_AHEAD_M = 1.0
+
+
