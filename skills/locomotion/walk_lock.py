@@ -267,3 +267,17 @@ REACQ_LOOK_S = 1.5          # keep looking once the turn is done
 REACQ_TOL_RAD = 0.09        # same as walk_node ALIGN_TOL_RAD
 
 
+def reacquire_turn(err, omega=REACQ_OMEGA, max_s=REACQ_TURN_MAX_S,
+                   tol=REACQ_TOL_RAD, omega_sign=-1.0):
+    """(omega_cmd, duration_s) of the open-loop turn that brings a target at
+    bearing ``err`` (walk_node yaw error, + = right) to the centre;
+    (0.0, 0.0) when it is already within ``tol`` or ``err`` is unusable.
+    omega_cmd follows walk_node's OMEGA_SIGN (+omega turns LEFT)."""
+    try:
+        e = float(err)
+    except (TypeError, ValueError):
+        return 0.0, 0.0
+    if not math.isfinite(e) or abs(e) <= tol:
+        return 0.0, 0.0
+    w = abs(float(omega))
+    return (omega_sign * (w if e > 0 else -w)), min(float(max_s), abs(e) / w)
