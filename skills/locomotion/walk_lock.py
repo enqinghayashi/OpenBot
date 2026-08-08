@@ -159,3 +159,19 @@ class ApproachLock(object):
     def z_ref(self):
         return _median(self.st['zs']) if self.st else None
 
+    def predict(self, now, pose=None):
+        """(x, y, gate_m, source) -- where the locked object should be NOW in
+        the body frame, and how far a row may sit from it."""
+        st = self.st
+        if st is None:
+            return None
+        gate = st.get('gate', LOCK_GATE_M)
+        if pose is not None and st['w'] is not None:
+            x, y = world_to_body(pose, st['w'][0], st['w'][1])
+            return x, y, gate, 'odom'
+        dt = max(0.0, float(now) - st['t'])
+        d = math.hypot(st['x'], st['y'])
+        extra = min(LOCK_MOTION_CAP_M,
+                    (LOCK_VX_MAX + LOCK_YAW_RATE_MAX * d) * dt)
+        return st['x'], st['y'], gate + extra, 'body'
+
