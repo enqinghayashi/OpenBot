@@ -342,3 +342,10 @@ def _cap_turn(omega):
     return max(-WALK_TURN_CAP, min(WALK_TURN_CAP, omega))
 
 
+class _FakeLoco:
+    """FAKE_LOCO=1 dev stub: all verbs print `[FAKE_LOCO] ...` lines only.
+
+    get_state() returns a static dict so callers exercise the same code paths
+    as on the robot. Never touches the SDK or the network.
+    """
+
