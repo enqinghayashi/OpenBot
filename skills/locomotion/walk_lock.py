@@ -469,3 +469,33 @@ def pose_command(pose, goal, stage):
             'stage': 'face'}
 
 
+def pose_blocked(rows, dist_goal):
+    """The row that blocks the walk to a goal ``dist_goal`` m ahead-ish, or
+    None.  Body-frame rows (x right, y forward).  A plausible person within
+    OBST_PERSON_M, or any other row (conf >= OBST_MIN_CONF, z <= OBST_Z_MAX:
+    never the hands / the held object) within OBST_M, inside the forward
+    corridor |x| <= OBST_CORRIDOR_M and nearer than the goal."""
+    best = None
+    for r in rows or ():
+        p = _xyz(r)
+        if p is None:
+            continue
+        x, y, z = p
+        if y <= 0.0 or abs(x) > OBST_CORRIDOR_M:
+            continue
+        d = math.hypot(x, y)
+        if d >= dist_goal + 0.05:
+            continue
+        conf = _f(r, 'conf') or 0.0
+        if str(r.get('label')) == 'person':
+            h = _f(r, 'height_m')
+            if conf < OBST_PERSON_MIN_CONF or (h is not None and h < OBST_PERSON_MIN_H_M):
+                continue
+            lim = OBST_PERSON_M
+        else:
+            if conf < OBST_MIN_CONF or z > OBST_Z_MAX:
+                continue
+            lim = OBST_M
+        if d <= lim and (best is None or d < best[0]):
+            best = (d, r)
+    return None if best is None else best[1]
