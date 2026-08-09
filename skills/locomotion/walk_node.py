@@ -349,3 +349,7 @@ class _FakeLoco:
     as on the robot. Never touches the SDK or the network.
     """
 
+    def connect(self):
+        print('[FAKE_LOCO] connect()')
+        return self
+
