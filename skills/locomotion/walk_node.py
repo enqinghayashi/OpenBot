@@ -353,3 +353,8 @@ class _FakeLoco:
         print('[FAKE_LOCO] connect()')
         return self
 
+    def start(self):
+        print('[FAKE_LOCO] start() (skipped on hardware — robot SDK sends '
+              'SetFsmId(200); R2+A is already FSM 801)')
+        return None
+
