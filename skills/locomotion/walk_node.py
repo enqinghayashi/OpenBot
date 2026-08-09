@@ -340,3 +340,5 @@ def _cap_turn(omega):
     if WALK_TURN_CAP is None:
         return omega
     return max(-WALK_TURN_CAP, min(WALK_TURN_CAP, omega))
+
+
