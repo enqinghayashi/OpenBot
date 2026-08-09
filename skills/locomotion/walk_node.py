@@ -400,3 +400,13 @@ class _DaemonLoco:
 
     _READY_TIMEOUT_S = 15.0
 
+    def __init__(self, iface='eth0', daemon_script=None):
+        self._iface = iface
+        self._daemon_script = daemon_script or os.path.join(
+            _SCRIPT_DIR, 'walk_loco_daemon.py')
+        self._proc = None
+        self._ready = False
+        self._lock = threading.Lock()       # one command at a time
+
+    # -- set up and tear down ---
+
