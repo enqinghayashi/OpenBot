@@ -410,3 +410,30 @@ class _DaemonLoco:
 
     # -- set up and tear down ---
 
+    def connect(self):
+        """Spawn the daemon and wait for its READY line."""
+        env = dict(os.environ)
+        env['PYTHONPATH'] = ''              # cleared so the daemon uses its own SDK path
+        for key in ('LOCO_BACKEND', 'FAKE_LOCO', 'FAKE_DAEMON'):
+            env.pop(key, None)              # backend switches never reach the daemon
+        python = os.environ.get('WALK_DAEMON_PYTHON', sys.executable)
+        self._proc = subprocess.Popen(
+            [python, self._daemon_script, self._iface],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            env=env, universal_newlines=True, bufsize=1)
+        deadline = time.time() + self._READY_TIMEOUT_S
+        while time.time() < deadline:
+            if self._proc.poll() is not None:
+                raise RuntimeError(
+                    f'daemon exited before READY (rc={self._proc.returncode})')
+            ready, _, _ = select.select([self._proc.stdout], [], [], 0.2)
+            if ready:
+                line = self._proc.stdout.readline().strip()
+                if line == 'READY':
+                    self._ready = True
+                    return self
+                raise RuntimeError(
+                    f'unexpected daemon first line: {line!r}')
+        raise RuntimeError(
+            f'daemon not READY within {self._READY_TIMEOUT_S}s')
+
