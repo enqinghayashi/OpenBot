@@ -380,3 +380,5 @@ class _FakeLoco:
             'mode': 500,
             'gait_type': 0,
         }
+
+
