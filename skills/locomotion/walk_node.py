@@ -335,3 +335,8 @@ def _wrap_pi(a):
     return (a + math.pi) % (2.0 * math.pi) - math.pi
 
 
+def _cap_turn(omega):
+    """B8l: clamp an approach / alignment yaw rate to WALK_TURN_CAP."""
+    if WALK_TURN_CAP is None:
+        return omega
+    return max(-WALK_TURN_CAP, min(WALK_TURN_CAP, omega))
