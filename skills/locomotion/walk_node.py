@@ -222,3 +222,14 @@ WALK_REACQUIRE = os.environ.get('OPENBOT_WALK_REACQUIRE', '').strip() != '0'
 WALK_POSE = os.environ.get('OPENBOT_WALK_POSE', '').strip() != '0'
 
 
+def _turn_cap(raw):
+    """OPENBOT_WALK_TURN_CAP -> the cap in rad/s (None = no cap)."""
+    if raw is None or not str(raw).strip():
+        return 0.50
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return 0.50
+    if not math.isfinite(v) or v <= 0.0:
+        return None
+    return max(0.10, min(0.60, v))
