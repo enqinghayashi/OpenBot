@@ -458,3 +458,21 @@ class _DaemonLoco:
 
     # -- the stdin protocol ---
 
+    def _send_line(self, line):
+        """One command in, one response line out. ERROR:<msg> raises."""
+        with self._lock:
+            if self._proc is None or not self._ready:
+                raise RuntimeError('daemon not connected')
+            try:
+                self._proc.stdin.write(line + '\n')
+                self._proc.stdin.flush()
+                resp = self._proc.stdout.readline()
+            except (BrokenPipeError, OSError) as e:
+                raise RuntimeError(f'daemon pipe broken: {e}') from e
+        resp = (resp or '').strip()
+        if resp.startswith('ERROR:'):
+            raise RuntimeError(resp[len('ERROR:'):])
+        return resp
+
+    # -- the movement verbs ---
+
