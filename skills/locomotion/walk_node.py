@@ -372,3 +372,11 @@ class _FakeLoco:
         print('[FAKE_LOCO] disconnect()')
         return None
 
+    def get_state(self):
+        return {
+            'velocity': [0.0, 0.0, 0.0],
+            'yaw_speed': 0.0,
+            'position': [0.0, 0.0, 0.0],
+            'mode': 500,
+            'gait_type': 0,
+        }
