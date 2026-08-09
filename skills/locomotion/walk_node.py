@@ -364,3 +364,7 @@ class _FakeLoco:
               f'duration={duration:.2f}s')
         return None
 
+    def stop(self):
+        print('[FAKE_LOCO] stop()')
+        return None
+
