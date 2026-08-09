@@ -382,3 +382,21 @@ class _FakeLoco:
         }
 
 
+class _DaemonLoco:
+    """LOCO_BACKEND=daemon (T6): locomotion lives in a subprocess daemon.
+
+    Spawns walk_loco_daemon.py (or fake_loco_daemon.py under FAKE_DAEMON=1)
+    with a scrubbed env (PYTHONPATH cleared — the daemon inserts the
+    known-good SDK copy itself; backend switches never leak into the
+    daemon), waits for the READY line, then speaks the stdin protocol:
+    `walk <vx> <vy> <omega> [duration]` -> `DONE:<sport code>` (0 = OK);
+    `stop` -> `DONE`; `quit` -> `DONE` + os._exit(0). One response line per
+    command; `ERROR:<msg>` responses raise RuntimeError.
+
+    Interpreter: plain login-shell python3 (sys.executable, WALK_DAEMON_PYTHON
+    override) — the daemon must NOT run under the tv conda env (documented
+    cyclonedds lib clash); the sport RPC works under the system 3.8.
+    """
+
+    _READY_TIMEOUT_S = 15.0
+
