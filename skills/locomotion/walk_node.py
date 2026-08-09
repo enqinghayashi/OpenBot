@@ -368,3 +368,7 @@ class _FakeLoco:
         print('[FAKE_LOCO] stop()')
         return None
 
+    def disconnect(self):
+        print('[FAKE_LOCO] disconnect()')
+        return None
+
