@@ -437,3 +437,24 @@ class _DaemonLoco:
         raise RuntimeError(
             f'daemon not READY within {self._READY_TIMEOUT_S}s')
 
+    def disconnect(self):
+        """quit + terminate backstop: ask the daemon to exit, then reap it."""
+        proc, self._proc = self._proc, None
+        self._ready = False
+        if proc is None or proc.poll() is not None:
+            return
+        try:
+            proc.stdin.write('quit\n')
+            proc.stdin.flush()
+            proc.stdout.readline()          # daemon replies DONE, then exits
+        except (BrokenPipeError, OSError):
+            pass
+        proc.terminate()
+        try:
+            proc.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2.0)
+
+    # -- the stdin protocol ---
+
