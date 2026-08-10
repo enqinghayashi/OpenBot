@@ -722,3 +722,31 @@ class WalkNode(Node):
                               't': time.time()}
         return label
 
+    def _on_detections(self, msg):
+        """Presence-only sightings: refresh the label's last-seen timestamp.
+
+        Empty scenes publish nothing, so the search window timer itself
+        detects absence. Body-frame x/y/z comes from /object_detections_body.
+        """
+        try:
+            detections = json.loads(msg.data)
+            now = time.time()
+            with self._inst_lock:
+                inst_label = self._inst['label'] if self._inst else None
+            lock_label = self._lock_label()      # a locked label's presence comes from the lock
+            with self._visible_lock:
+                for d in detections:
+                    label = d.get('label')
+                    # for an instance target, seeing "a cup" is not seeing the
+                    # chosen cup; presence comes from the body topic, which
+                    # picks the row
+                    if label and str(label) == inst_label:
+                        continue
+                    if label and lock_label is not None \
+                            and str(label) == lock_label:
+                        continue
+                    if label:
+                        self._visible[str(label)] = now
+        except Exception as e:
+            self.get_logger().warn(f'Bad detection msg: {e}')
+
