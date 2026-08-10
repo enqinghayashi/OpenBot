@@ -476,3 +476,15 @@ class _DaemonLoco:
 
     # -- the movement verbs ---
 
+    def set_velocity(self, vx, vy, omega, duration=1.0):
+        """`walk <vx> <vy> <omega> <duration>` -> DONE:<sport code> (0 = OK)."""
+        resp = self._send_line(f'walk {vx} {vy} {omega} {duration}')
+        if resp == 'DONE':
+            return None
+        if resp.startswith('DONE:'):
+            try:
+                return int(resp[len('DONE:'):])
+            except ValueError:
+                return resp[len('DONE:'):]
+        raise RuntimeError(f'unexpected daemon response: {resp!r}')
+
