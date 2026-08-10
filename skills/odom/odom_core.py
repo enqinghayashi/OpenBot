@@ -166,3 +166,43 @@ def leg_fk(q12, side):
 def ankle_in_pelvis(q12, side):
     """ankle_roll_link origin in the pelvis frame (x, y, z)."""
     return leg_fk(q12, side)[0]
+
+
+def foot_in_pelvis(q12, side):
+    """Sole point in the pelvis frame (x, y, z): the ankle_roll origin plus the
+    flat-foot sole point rotated by the ankle_roll orientation (INFERRED)."""
+    p, r = leg_fk(q12, side)
+    o = _mv(r, SOLE_PT_IN_ANKLE_ROLL)
+    return (p[0] + o[0], p[1] + o[1], p[2] + o[2])
+
+
+default_fk = foot_in_pelvis
+
+
+# --------------------------------------------------------------------------
+# freshness, startup, runtime
+# --------------------------------------------------------------------------
+def is_fresh(now, t_sample, max_age_s=MAX_SAMPLE_AGE_S):
+    """True only for a finite sample time that is neither future-dated beyond
+    FUTURE_TOL_S nor older than max_age_s.  None is never fresh."""
+    if t_sample is None:
+        return False
+    try:
+        age = float(now) - float(t_sample)
+    except (TypeError, ValueError):
+        return False
+    if math.isnan(age) or math.isinf(age):
+        return False
+    if age < -FUTURE_TOL_S:
+        return False
+    return age <= max_age_s
+
+
+def decide_startup(foreign_publisher_count):
+    """'PROCEED' only when nobody else publishes the odom topic."""
+    return 'PROCEED' if foreign_publisher_count == 0 else 'REFUSE'
+
+
+def decide_runtime(total_publisher_count, ours=1):
+    """'OK' while the only publisher is ours, 'YIELD' once another appears."""
+    return 'OK' if total_publisher_count <= ours else 'YIELD'
