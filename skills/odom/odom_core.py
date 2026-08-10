@@ -206,3 +206,54 @@ def decide_startup(foreign_publisher_count):
 def decide_runtime(total_publisher_count, ours=1):
     """'OK' while the only publisher is ours, 'YIELD' once another appears."""
     return 'OK' if total_publisher_count <= ours else 'YIELD'
+
+
+def odometry_fields(state):
+    """Plain-dict form of the nav_msgs/Odometry the node publishes.  No twist,
+    no covariance claims."""
+    qx, qy, qz, qw = yaw_to_quat(state['yaw'])
+    return {
+        'frame_id': FRAME_ID,
+        'child_frame_id': CHILD_FRAME_ID,
+        'x': float(state['x']),
+        'y': float(state['y']),
+        'z': 0.0,
+        'qx': qx, 'qy': qy, 'qz': qz, 'qw': qw,
+    }
+
+
+# --------------------------------------------------------------------------
+# the integrator
+# --------------------------------------------------------------------------
+def _finite(v):
+    return not (math.isnan(v) or math.isinf(v))
+
+
+class OdomIntegrator(object):
+    """IMU-yaw + stance-foot-FK planar odometry.
+
+    update(t, quat_wxyz, q12) -> {'x','y','yaw','t'} or None (rejected).
+    Yaw is ABSOLUTE from the IMU quaternion each sample.  Position integrates
+    -(R_k f_k - R_{k-1} f_{k-1}) for the stance foot chosen at k-1 on BOTH
+    samples; increments across a gap > max_dt_s are skipped.  No gyro fallback.
+    """
+
+    def __init__(self, foot_fk=default_fk, max_dt_s=MAX_DT_S,
+                 stance_hysteresis_m=STANCE_HYSTERESIS_M):
+        self._fk = foot_fk
+        self.max_dt_s = float(max_dt_s)
+        self.hyst = float(stance_hysteresis_m)
+        self.rejected = 0
+        self.accepted = 0
+        self.x = 0.0
+        self.y = 0.0
+        self.yaw = 0.0
+        self._t_prev = None
+        self._yaw_origin = None
+        self._fw_prev = None      # (left, right) world coords, last sample
+        self._stance = None       # 0 means left, 1 means right
+
+    def _reject(self):
+        self.rejected += 1
+        return None
+
