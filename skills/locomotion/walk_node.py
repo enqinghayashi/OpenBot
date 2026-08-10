@@ -505,3 +505,11 @@ class _DaemonLoco:
                 return None
         return None
 
+    def start(self):
+        # deliberate no-op: at R2+A the robot is already in sport
+        # FSM 801, and the vendor start() sends SetFsmId(200); kept
+        # so every backend shares one API
+        print('[DAEMON_LOCO] start() no-op — skipped on hardware '
+              '(R2+A = FSM 801; SDK Start() = SetFsmId(200)).')
+        return None
+
