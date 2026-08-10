@@ -911,3 +911,16 @@ class WalkNode(Node):
 
     # -- approach-lock helpers ----------------------------------------------------
 
+    def _lock_label(self):
+        """The target label whose presence comes ONLY from the lock (armed
+        lock in a live bare-label run), else None."""
+        if not WALK_LOCK or not getattr(self, '_alock_live', False):
+            return None
+        lock = getattr(self, '_alock', None)
+        tlock = getattr(self, '_targets_lock', None)
+        if lock is None or tlock is None:
+            return None
+        with tlock:
+            st = lock.st
+            return st['label'] if st is not None else None
+
