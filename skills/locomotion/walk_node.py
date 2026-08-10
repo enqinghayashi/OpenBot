@@ -488,3 +488,7 @@ class _DaemonLoco:
                 return resp[len('DONE:'):]
         raise RuntimeError(f'unexpected daemon response: {resp!r}')
 
+    def stop(self):
+        self._send_line('stop')
+        return None
+
