@@ -858,3 +858,56 @@ class WalkNode(Node):
         except Exception as e:
             self.get_logger().warn(f'Bad body-detection msg: {e}')
 
+    def _continue_target(self, detections, label, now):
+        """B8j: (entry, iid) continuing `label` from a row of ANOTHER label at
+        the target's last position (hunt_law.continuation), else (None, None).
+
+        Only within hunt_law.CONT_WINDOW_S of the target's last row, only a
+        row within CONT_RADIUS_M (planar) and CONT_DZ_M (height) of it, the
+        row carrying the target's instance id first; a row WITHOUT that id
+        only for a large-tier target (a pickable can have a different small
+        object 0.16 m away; a bin cannot).  The entry is stored
+        under the TARGET label (the stop law keeps the target's tier) and is
+        marked cont='iid'|'near' + cont_label.  An object elsewhere never
+        becomes the target.
+        """
+        with self._targets_lock:
+            last = self._targets.get(label)
+            last_iid = (getattr(self, '_row_iids', None) or {}).get(label)
+        if last is None or now - last['t'] > hunt_law.CONT_WINDOW_S:
+            return None, None
+        row, how = hunt_law.continuation(
+            detections, label, last, last_iid, MIN_CONF,
+            allow_near=hunt_law.stop_tier(label) == 'large')
+        if row is None:
+            return None, None
+        entry = {
+            'label': str(label),
+            'x': float(row['x']),
+            'y': float(row['y']),
+            'z': float(row['z']),
+            'conf': row.get('conf', 0),
+            't': now,
+            'width_m': (float(row['width_m'])
+                        if row.get('width_m') is not None else None),
+            'depth_m': (float(row['depth_m'])
+                        if row.get('depth_m') is not None else None),
+            'stamp': self._det_stamp(row),
+            'cont': how,
+            'cont_label': str(row.get('label')),
+        }
+        iid = last_iid if last_iid is not None else hunt_law._row_iid(row)
+        note = (entry['cont_label'], how)
+        if note != getattr(self, '_cont_note', None):
+            self._cont_note = note
+            self.get_logger().info(
+                f'[cont] "{label}" continued by "{entry["cont_label"]}" '
+                f'({how}{"" if iid is None else " iid=%d" % iid}, '
+                f'dxy={math.hypot(entry["x"] - last["x"], entry["y"] - last["y"]):.3f} m, '
+                f'dz={abs(entry["z"] - last["z"]):.3f} m, '
+                f'{now - last["t"]:.2f}s after the last "{label}" row) '
+                f'at d={math.hypot(entry["x"], entry["y"]):.3f}')
+        return entry, iid
+
+    # -- approach-lock helpers ----------------------------------------------------
+
