@@ -513,3 +513,5 @@ class _DaemonLoco:
               '(R2+A = FSM 801; SDK Start() = SetFsmId(200)).')
         return None
 
+    def get_state(self):
+        return None     # unused, kept for the backend API
