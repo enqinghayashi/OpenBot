@@ -750,3 +750,111 @@ class WalkNode(Node):
         except Exception as e:
             self.get_logger().warn(f'Bad detection msg: {e}')
 
+    def _on_body_detections(self, msg):
+        """Per-label best target from /object_detections_body (body frame).
+
+        Within one message keep ONE entry per label: the highest-conf row,
+        except that rows within TIE_CONF_BAND of the best go to the one
+        nearest the label's fresh previous target (B8h, _choose_row).
+        """
+        try:
+            detections = json.loads(msg.data)
+            if isinstance(detections, list):    # drop the robot's own body rows
+                detections = [d for d in detections if not self._self_row(d)]
+            now = time.time()
+            if isinstance(detections, list):    # obstacles for a pose walk
+                self._body_rows = (now, detections)
+            best = {}
+            # for an instance target only that label's selected row
+            # can be the target (none while lost)
+            inst_label, inst_row = self._select_instance_row(detections, now)
+            # follows the one locked object
+            tgt = getattr(self, '_target_label', None)
+            lock_on = bool(WALK_LOCK and inst_label is None and tgt
+                           and getattr(self, '_alock_live', False)
+                           and getattr(self, '_alock', None) is not None)
+            lock_armed, lock_row, lock_how = False, None, None
+            if lock_on:
+                pose = self._odom_pose()
+                with self._targets_lock:
+                    lock_armed = self._alock.armed()
+                    if lock_armed:
+                        lock_row, lock_how, lev = self._alock.select(
+                            detections, now, pose, MIN_CONF)
+                    else:
+                        lev = []
+                for ev in lev:
+                    self.get_logger().info(ev)
+            rows_by_label = {}
+            for d in detections:
+                if d.get('conf', 0) < MIN_CONF:
+                    continue
+                label = d.get('label')
+                if not label:
+                    continue
+                if inst_label is not None and str(label) == inst_label \
+                        and d is not inst_row:
+                    continue
+                if lock_armed and str(label) == tgt:
+                    continue                    # the lock supplies this label
+                rows_by_label.setdefault(label, []).append(d)
+            # last target per label (fresh only), for the tie-break
+            # below
+            with self._targets_lock:
+                prev = dict((k, v) for k, v in self._targets.items()
+                            if now - v['t'] <= STALE_DETECTION_S)
+            iids = {}                           # instance id of the chosen row
+            for label, rows in rows_by_label.items():
+                d = self._choose_row(rows, prev.get(label))
+                iids[label] = hunt_law._row_iid(d)
+                conf = d.get('conf', 0)
+                best[label] = {
+                    'label': str(label),
+                    'x': float(d['x']),
+                    'y': float(d['y']),
+                    'z': float(d['z']),
+                    'conf': conf,
+                    't': now,
+                    # published cloud extent (p95-p5); None when it could not be
+                    # computed, and the centroid law takes over
+                    'width_m': (float(d['width_m'])
+                                if d.get('width_m') is not None else None),
+                    'depth_m': (float(d['depth_m'])
+                                if d.get('depth_m') is not None else None),
+                    # capture stamp forwarded by the projector, so the stability
+                    # gate measures the frame gap rather than the receipt gap;
+                    # None when the projector sends none, and receipt time is used
+                    'stamp': self._det_stamp(d),
+                }
+            # the lock's row is the target, whatever label it carries;
+            # armed by the FSM at approach start, never from one lone
+            # sweep packet
+            if lock_armed:
+                if lock_row is not None:
+                    best[tgt] = self._lock_entry(tgt, lock_row, lock_how, now)
+                    iids[tgt] = hunt_law._row_iid(lock_row)
+                    with self._visible_lock:
+                        self._visible[tgt] = now
+            # continuity: mid-approach, a missing label is continued by
+            # a co-located row of another label (the class flipped, the
+            # object did not move)
+            # not while the lock is armed, since the lock follows the
+            # object across labels
+            if (WALK_CONTINUITY and getattr(self, '_cont_armed', False)
+                    and tgt and not lock_armed):
+                if tgt not in best:
+                    entry, iid = self._continue_target(detections, tgt, now)
+                    if entry is not None:
+                        best[tgt] = entry
+                        iids[tgt] = iid
+                elif getattr(self, '_cont_note', None) is not None:
+                    self._cont_note = None      # the target's own label is back
+            with self._targets_lock:
+                for label, entry in best.items():
+                    self._targets[label] = entry
+                if getattr(self, '_row_iids', None) is None:
+                    self._row_iids = {}
+                self._row_iids.update(iids)
+        except Exception as e:
+            self.get_logger().warn(f'Bad body-detection msg: {e}')
+
