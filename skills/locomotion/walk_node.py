@@ -492,3 +492,16 @@ class _DaemonLoco:
         self._send_line('stop')
         return None
 
+    def get_fsm_mode(self):
+        """`mode` -> DONE:<fsm mode> (GET 7002). None on malformed reply.
+
+        Hardware-day finding (2026-08-16): fsm_mode=3 = gait-BLOCKED post-boot
+        state; fsm_mode=0 = walking-capable. Pre-flight must warn on != 0."""
+        resp = self._send_line('mode')
+        if resp.startswith('DONE:'):
+            try:
+                return int(resp[len('DONE:'):])
+            except ValueError:
+                return None
+        return None
+
