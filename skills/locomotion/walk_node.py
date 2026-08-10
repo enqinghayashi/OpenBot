@@ -692,3 +692,7 @@ class WalkNode(Node):
             self._go_pending = (label, time.time())
         self.get_logger().info(f'/walk_go queued: "{label}"')
 
+    def _on_walk_instance(self, msg):
+        """B8: '<label>#<iid>@<hue>' selects ONE object; a bare label clears it."""
+        self._set_instance(msg.data.strip().lower(), clear_on_bare=True)
+
