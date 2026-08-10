@@ -672,3 +672,23 @@ class WalkNode(Node):
                 threading.Thread(
                     target=self._run_fsm, args=(cmd,), daemon=True).start()
 
+    def _on_walk_go(self, msg):
+        """Queue an approach trigger (label, ts) into the 1-slot go queue.
+
+        Consumed ONLY by the detected-hold via _poll_go(). Freshness is
+        judged at consumption time against GO_STALE_S — the pick coordinator
+        may edge the trigger a few hundred ms ahead of our own detect.
+        Never re-fired; ignored in SEARCHING/APPROACHING by construction
+        (only the hold polls it).
+        """
+        label = msg.data.strip().lower()
+        if not label:
+            self.get_logger().warn('Empty /walk_go label — ignored.')
+            return
+        # the trigger carries the same target string; the queue and
+        # every comparison keep the bare label
+        label = self._set_instance(label)
+        with self._cmd_lock:
+            self._go_pending = (label, time.time())
+        self.get_logger().info(f'/walk_go queued: "{label}"')
+
