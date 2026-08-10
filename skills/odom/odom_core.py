@@ -138,3 +138,31 @@ def _axis_mat(axis, ang):
 def _mm(a, b):
     return tuple(tuple(sum(a[i][k] * b[k][j] for k in range(3))
                        for j in range(3)) for i in range(3))
+
+
+def _mv(a, v):
+    return tuple(sum(a[i][k] * v[k] for k in range(3)) for i in range(3))
+
+
+_I3 = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+
+
+def leg_fk(q12, side):
+    """Return (p, R): the ankle_roll_link origin in the pelvis frame and its
+    orientation matrix, for the lowstate 12-vector q12 and side 'left'/'right'."""
+    chain = LEFT_CHAIN if side == LEFT else RIGHT_CHAIN
+    idx = LEFT_IDX if side == LEFT else RIGHT_IDX
+    p = (0.0, 0.0, 0.0)
+    r = _I3
+    for (pos, fq, axis), i in zip(chain, idx):
+        off = _mv(r, pos)
+        p = (p[0] + off[0], p[1] + off[1], p[2] + off[2])
+        if fq is not None:
+            r = _mm(r, _quat_to_mat(*fq))
+        r = _mm(r, _axis_mat(axis, float(q12[i])))
+    return p, r
+
+
+def ankle_in_pelvis(q12, side):
+    """ankle_roll_link origin in the pelvis frame (x, y, z)."""
+    return leg_fk(q12, side)[0]
