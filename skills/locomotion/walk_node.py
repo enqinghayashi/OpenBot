@@ -524,3 +524,116 @@ class WalkNode(Node):
     everything with time.time() deadlines + time.sleep() loops (no ROS timers).
     """
 
+    def __init__(self):
+        super().__init__('walk_node')
+
+        self._loco = None                # backend, connected lazily
+        self._busy = False               # FSM thread running?
+        # why the FSM left: 'stop', 'not_found', 'crash' or None,
+        # recorded where the exit is decided and published on the
+        # closing IDLE frame; None means the loop fell through ->
+        # 'finished'
+        self._fsm_exit_reason = None
+
+        # one pending command, ('stop', None) or ('target', label),
+        # consumed only by _poll_command
+        self._cmd_lock = threading.Lock()
+        self._pending = None
+
+        # one /walk_go slot, (label, ts), under _cmd_lock; only the
+        # detected hold consumes it, and it is never re-fired
+        self._go_pending = None
+        self._target_label = None
+        # the one object named by '<label>#<iid>@<hue>', else None;
+        # the FSM only sees the bare label
+        # {'label','iid0','iid','hue','last_xy','match','t'}, under
+        # _inst_lock; /walk_instance sets it, and the pick side
+        # relays the bare label
+        self._inst = None
+        self._inst_lock = threading.Lock()
+        self._sweep_dir = SWEEP_SIGN
+
+        # hunt budget: proof counters for rounds, turns, windows and
+        # stalls, reset per hunt; one position only
+        self._hunt = hunt_law.HuntBudget()
+        # corridor clock: one unbroken run of freezes, cleared by any
+        # approach tick that gets through
+        self._corridor = hunt_law.CorridorHold()
+        # stop-law evidence from the last REACHED decision (near-edge
+        # numbers, the height flag); rides the REACHED detail
+        self._reach_evidence = {}
+        # continuity, armed only inside the approach: the instance id
+        # of each chosen row, and the last '[cont]' line, one per
+        # episode
+        self._cont_armed = False
+        self._row_iids = {}
+        self._cont_note = None
+        # approach lock (under _targets_lock, alive only during a
+        # label run); the sweep side a lost target asks for; a command
+        # handed over by a preempted run; latest body rows for pose
+        # obstacles
+        self._alock = walk_lock.ApproachLock()
+        self._alock_live = False
+        self._sweep_pref = None
+        self._deferred = None
+        self._body_rows = (0.0, [])
+
+        # sightings: label -> last-seen ts
+        self._visible_lock = threading.Lock()
+        self._visible = {}
+
+        # best body row per label
+        self._targets_lock = threading.Lock()
+        self._targets = {}
+
+        # latched world target
+        self._twx = self._twy = None
+        self._twz = 0.0
+        self._tw_label = 'object'
+
+        # odom pose: x, y, yaw
+        self._odom_lock = threading.Lock()
+        self._robot_x = 0.0
+        self._robot_y = 0.0
+        self._robot_yaw = 0.0
+        self._odom_t = 0.0        # receive time of the last odom message (0 = never)
+
+        self.create_subscription(
+            String, WALK_TARGET_TOPIC, self._on_walk_target, 10)
+        self.create_subscription(
+            String, WALK_GO_TOPIC, self._on_walk_go, 10)
+        self.create_subscription(
+            String, WALK_INSTANCE_TOPIC, self._on_walk_instance, 10)
+        self.create_subscription(
+            String, WALK_POSE_TOPIC, self._on_walk_pose, 10)     # walk to a pose
+        self.create_subscription(
+            String, DETECTIONS_TOPIC, self._on_detections, 10)
+        self.create_subscription(
+            String, BODY_DETECTIONS_TOPIC, self._on_body_detections, 10)
+        self.create_subscription(
+            Odometry, ODOM_TOPIC, self._on_odom, 10)
+
+        self._status_pub = self.create_publisher(String, WALK_STATUS_TOPIC, 10)
+
+        self._publish_status('IDLE', detail={'strategy': SWEEP_STRATEGY})
+        self.get_logger().info(
+            f'WalkNode ready. Publish a label to {WALK_TARGET_TOPIC} to walk, '
+            f'"stop"/"abort" to halt. Stop gate = {STOP_DISTANCE_M:.2f} m '
+            f'(body frame; CALIBRATE on hardware).')
+        self.get_logger().info(
+            '[b8j] stop law=%s (pick edge %.2f m, large edge %.2f m + lead '
+            '%.2f m); blind cap=%s; continuity=%s' % (
+                'legacy' if STOP_LAW_LEGACY else 'near_edge',
+                STOP_DISTANCE_M - hunt_law.PICK_HALF_DEFAULT_M,
+                hunt_law.LARGE_EDGE_M, hunt_law.LARGE_LEAD_M,
+                ('%.2fs' % BLIND_MAX_S) if WALK_BLIND_CAP else 'off',
+                'on' if WALK_CONTINUITY else 'off'))
+        self.get_logger().info(
+            '[b8l] approach lock=%s; reacquire=%s; turn cap=%s; walk to pose=%s'
+            % ('on' if WALK_LOCK else 'off',
+               'on' if WALK_REACQUIRE else 'off',
+               ('%.2f rad/s' % WALK_TURN_CAP) if WALK_TURN_CAP else 'off',
+               'on' if WALK_POSE else 'off'))
+
+    # -- ROS callbacks (guarded state only) --------------------------------------
+
