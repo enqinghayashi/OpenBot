@@ -637,3 +637,38 @@ class WalkNode(Node):
 
     # -- ROS callbacks (guarded state only) --------------------------------------
 
+    def _on_walk_target(self, msg):
+        """Queue a command; spawn the FSM thread only when not already busy."""
+        cmd = msg.data.strip().lower()
+        if cmd in ('stop', 'abort'):
+            with self._cmd_lock:
+                if self._busy:
+                    self._pending = ('stop', None)
+                    self.get_logger().info('Stop requested — halting.')
+                elif getattr(self, '_deferred', None) is not None:
+                    self._deferred = None       # cancel a handed-over walk
+                    self.get_logger().info('Stop requested — the deferred walk is dropped.')
+                else:
+                    self.get_logger().info('Walk not running — ignoring "stop".')
+            return
+        # resolve the scene-graph ref to its published label, then
+        # split '<label>#<iid>@<hue>' before anything reads the
+        # label; a bare label is unchanged and clears any instance,
+        # and the resolver only rewrites a trailing '_<digits>'
+        cmd = self._set_instance(cmd)
+        cmd = ref_to_label(cmd)
+        if not cmd:
+            return
+        with self._cmd_lock:
+            if (getattr(self, '_pose_running', False) and self._pending is not None
+                    and self._pending[0] == 'stop'):
+                # a stop queued during the return walk is never overwritten
+                # by a /walk_target in the same tick
+                self.get_logger().warn(f'/walk_target "{cmd}" dropped: a stop is pending.')
+                return
+            self._pending = ('target', cmd)
+            if not self._busy:
+                self._busy = True
+                threading.Thread(
+                    target=self._run_fsm, args=(cmd,), daemon=True).start()
+
