@@ -696,3 +696,29 @@ class WalkNode(Node):
         """B8: '<label>#<iid>@<hue>' selects ONE object; a bare label clears it."""
         self._set_instance(msg.data.strip().lower(), clear_on_bare=True)
 
+    def _set_instance(self, text, clear_on_bare=False):
+        """B8: remember the instance a target string names; return its bare label.
+
+        A string with '#'/'@' sets the instance.  A BARE label on
+        /walk_target or /walk_go is what the coordinator relays for every
+        navigate, so there it only clears an instance of a DIFFERENT label;
+        on /walk_instance (clear_on_bare) it always clears.  Re-sending the
+        SAME instance keeps the tracking state (adopted id, last position).
+        """
+        label, iid, hue = hunt_law.parse_target(text)
+        with self._inst_lock:
+            cur = self._inst
+            if iid is None and hue is None:
+                if cur is not None and (
+                        clear_on_bare or cur['label'] != ref_to_label(text)):
+                    self._inst = None
+                return text
+            if cur is not None and cur['label'] == label \
+                    and cur['iid0'] == iid and cur['hue'] == hue:
+                cur['t'] = time.time()
+            else:
+                self._inst = {'label': label, 'iid0': iid, 'iid': iid,
+                              'hue': hue, 'last_xy': None, 'match': 'lost',
+                              't': time.time()}
+        return label
+
