@@ -517,3 +517,10 @@ class _DaemonLoco:
         return None     # unused, kept for the backend API
 
 
+class WalkNode(Node):
+    """ROS2 node driving the walk FSM (see module docstring).
+
+    rclpy callbacks only mutate guarded state; one daemon FSM thread drives
+    everything with time.time() deadlines + time.sleep() loops (no ROS timers).
+    """
+
