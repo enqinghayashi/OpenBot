@@ -1853,3 +1853,15 @@ class WalkNode(Node):
 
     # -- finding a lost target again ----------------------------------------------
 
+    def _approach_reacquire(self, used):
+        """The approach lost its target: the FIRST loss of an approach runs
+        _reacquire ('found' | 'failed' | 'stop' | 'retarget'); a later one
+        only turns the sweep toward the side it was lost on (None).  None
+        too with OPENBOT_WALK_REACQUIRE=0 (B8k)."""
+        if not WALK_REACQUIRE:
+            return None
+        if used:
+            self._lost_side(self._target_label)
+            return None
+        return self._reacquire()
+
