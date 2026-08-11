@@ -1895,3 +1895,19 @@ class WalkNode(Node):
         except (KeyError, TypeError, ValueError):
             return None
 
+    def _lost_side(self, label, err=None):
+        """Turn the rest of this hunt's sweep TOWARD the side ``label`` was
+        lost on (B8k: always SWEEP_SIGN)."""
+        if not WALK_REACQUIRE:
+            return
+        if err is None:
+            err = self._lost_bearing(label)
+        if err is None:
+            return
+        side = walk_lock.sweep_side(err, default=SWEEP_SIGN,
+                                    omega_sign=OMEGA_SIGN)
+        self._sweep_pref = side
+        self.get_logger().info(
+            f'[reacq] "{label}" was last at {math.degrees(err):+.0f} deg — '
+            f'the sweep turns {"left" if side > 0 else "right"} first.')
+
