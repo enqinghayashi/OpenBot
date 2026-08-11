@@ -2268,3 +2268,44 @@ class WalkNode(Node):
             self._publish_status('IDLE', detail={'exit': self._fsm_exit_reason})
             self._start_deferred()
 
+    def _pose_backoff(self, dist0):
+        """B8l-hf4: before the return turns, step BACK
+        walk_lock.backoff_distance(OPENBOT_POSE_BACKOFF_M) metres at the gait
+        floor (the robot just picked at a table: turning in place there gets it
+        stuck, operator 2026-10-17).  Odometry measures the distance; time
+        bounds it.  Returns 'stop' / 'odom_stale' to end the walk, else None.
+        A /walk_target is ignored here like in the walk itself."""
+        want = walk_lock.backoff_distance(POSE_BACKOFF_ENV)
+        if want <= 0.0 or dist0 <= walk_lock.POSE_BACKOFF_MIN_DIST_M:
+            return None
+        p0 = self._odom_pose_age(walk_lock.POSE_ODOM_FRESH_S)
+        if p0 is None:
+            return 'odom_stale'
+        self.get_logger().info(
+            f'[pose] stepping back {want:.2f} m at {walk_lock.POSE_BACKOFF_VX:.2f} '
+            'm/s before turning (away from the table edge).')
+        end = time.time() + want / walk_lock.POSE_BACKOFF_VX + 1.5
+        moved = 0.0
+        while time.time() < end:
+            with self._cmd_lock:
+                p = self._pending
+                if p is not None and p[0] == 'stop':
+                    self._pending = None
+            if p is not None and p[0] == 'stop':
+                self._stop_motion()
+                return 'stop'
+            pose = self._odom_pose_age(walk_lock.POSE_ODOM_FRESH_S)
+            if pose is None:
+                self._stop_motion()
+                return 'odom_stale'
+            moved = math.hypot(pose[0] - p0[0], pose[1] - p0[1])
+            if moved >= want:
+                break
+            self._loco.set_velocity(-walk_lock.POSE_BACKOFF_VX, 0.0, 0.0,
+                                    duration=1.0)
+            time.sleep(CTRL_DT_S)
+        self._stop_motion()
+        self.get_logger().info(f'[pose] stepped back {moved:.2f} m.')
+        time.sleep(walk_lock.POSE_BACKOFF_SETTLE_S)
+        return None
+
