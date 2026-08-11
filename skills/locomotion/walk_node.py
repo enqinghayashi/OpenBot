@@ -983,3 +983,17 @@ class WalkNode(Node):
         if ev:
             self.get_logger().info(ev)
 
+    def _lock_reset(self, why, live=None):
+        """Clear the approach lock (logged when one was armed); ``live`` sets
+        whether a new one may arm."""
+        lock = getattr(self, '_alock', None)
+        tlock = getattr(self, '_targets_lock', None)
+        if lock is None or tlock is None:
+            return
+        with tlock:
+            ev = lock.clear(why)
+            if live is not None:
+                self._alock_live = bool(live)
+        if ev:
+            self.get_logger().info(ev)
+
