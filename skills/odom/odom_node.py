@@ -48,3 +48,41 @@ LEG_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           'odom_sdk_leg.py')
 
 
+class LegDied(Exception):
+    pass
+
+
+def log(msg):
+    sys.stderr.write(msg + '\n')
+    sys.stderr.flush()
+
+
+def build_leg_env(environ):
+    """Scrubbed env for the SDK leg (mirrors walk_node.py:473): the leg inserts
+    its own SDK path, so PYTHONPATH must be empty."""
+    env = dict(environ)
+    env['PYTHONPATH'] = ''
+    return env
+
+
+def acquire_lock(path):
+    """flock the single-instance lock; returns the open file or None if held."""
+    fh = open(path, 'a+')
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (IOError, OSError):
+        fh.close()
+        return None
+    return fh
+
+
+class SdkLeg(object):
+    """Spawns odom_sdk_leg.py and yields parsed sample dicts."""
+
+    def __init__(self, iface='eth0', script=LEG_SCRIPT):
+        self._iface = iface
+        self._script = script
+        self._proc = None
+        self._buf = ''
+        self._lines = collections.deque(maxlen=500)
+
