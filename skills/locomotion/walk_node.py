@@ -1360,3 +1360,28 @@ class WalkNode(Node):
             time.sleep(DETECT_POLL_S)
         return 'done'
 
+    def _sweep_turn(self):
+        if SWEEP_STRATEGY == 'alternate':
+            self._sweep_dir = -self._sweep_dir
+        else:                                   # one-way: 360 deg total
+            self._sweep_dir = getattr(self, '_sweep_pref', None) or SWEEP_SIGN
+        omega = self._sweep_dir * YAW_RATE_RAD_S
+        self.get_logger().info(
+            f'Sweep turn: omega={omega:+.2f} rad/s for {TURN_DURATION_S:.2f}s')
+        self._loco.set_velocity(0.0, 0.0, omega, duration=TURN_DURATION_S)
+        deadline = time.time() + TURN_DURATION_S
+        while time.time() < deadline:
+            # stop on the first sighting; presence comes from the
+            # presence-only topic, since a far target appears well
+            # before its depth is usable and the hold copes with late
+            # depth
+            if self._label_visible(self._target_label):
+                self._stop_motion()
+                self.get_logger().info(
+                    'Sweep interrupted: label visible — sweep stopped.')
+                return 'interrupted'
+            time.sleep(DETECT_POLL_S)
+        time.sleep(TURN_SETTLE_S)
+        self._stop_motion()
+        return 'done'
+
