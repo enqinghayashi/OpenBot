@@ -936,3 +936,26 @@ class WalkNode(Node):
                 return None
             return (self._robot_x, self._robot_y, self._robot_yaw)
 
+    def _lock_entry(self, label, row, how, now):
+        """B8l: a _targets entry for the lock's row, stored under the TARGET
+        label (the stop law keeps the target's tier); a row of another label
+        is marked cont='lock' + cont_label like a B8j continuation."""
+        entry = {
+            'label': str(label),
+            'x': float(row['x']),
+            'y': float(row['y']),
+            'z': float(row['z']),
+            'conf': row.get('conf', 0),
+            't': now,
+            'width_m': (float(row['width_m'])
+                        if row.get('width_m') is not None else None),
+            'depth_m': (float(row['depth_m'])
+                        if row.get('depth_m') is not None else None),
+            'stamp': self._det_stamp(row),
+            'lock': how,
+        }
+        if str(row.get('label')) != str(label):
+            entry['cont'] = 'lock'
+            entry['cont_label'] = str(row.get('label'))
+        return entry
+
