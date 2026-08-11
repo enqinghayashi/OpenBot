@@ -1070,3 +1070,18 @@ class WalkNode(Node):
                 self._visible[label] = now
         return label, row
 
+    def _on_odom(self, msg):
+        p = msg.pose.pose.position
+        q = msg.pose.pose.orientation
+        # yaw from the quaternion (ZYX euler)
+        yaw = math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y),
+            1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        with self._odom_lock:
+            self._robot_x = p.x
+            self._robot_y = p.y
+            self._robot_yaw = yaw
+            self._odom_t = time.time()
+
+    # -- publishing status --------------------------------------------------------
+
