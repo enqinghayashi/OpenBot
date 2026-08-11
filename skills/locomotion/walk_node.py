@@ -1254,3 +1254,76 @@ class WalkNode(Node):
                 'IDLE', detail={'exit': self._fsm_exit_reason or 'finished'})
             self._start_deferred()              # start the command handed over
 
+    def _phase_search(self):
+        look = True                              # look before turning
+        while True:
+            # hunt budget check when a window opens: 12 completed turns
+            # make a round, and the FSM gives up at round end rather
+            # than moving to another position; stalls count too
+            if self._hunt.exhausted:
+                if SWEEP_CONTINUOUS:
+                    self._stop_motion()          # stop the turn
+                return 'NOT_FOUND'
+            if SWEEP_CONTINUOUS:                 # take a look on entry
+                window_end = time.time() + (CONT_FIRST_LOOK_S if look else 0.0)
+            else:
+                window_end = time.time() + DETECT_WINDOW_S
+            while time.time() < window_end:
+                cmd = self._poll_command()
+                if cmd == 'stop':
+                    return 'IDLE'
+                if cmd == 'retarget':
+                    self._publish_status('SEARCHING', label=self._target_label,
+                                         detail={'retarget': True})
+                    return 'SEARCHING'           # restart with the new label
+                label = self._target_label
+                pos = self._fresh_target(label)
+                if pos is not None:
+                    in_zone, ev = self._stop_law(
+                        pos['label'], pos['x'], pos['y'], pos.get('z', 0.0),
+                        pos.get('width_m'), pos.get('depth_m'), STOP_DISTANCE_M)
+                    if in_zone:
+                        self._reach_evidence = ev
+                        self._stop_motion()
+                        return 'REACHED'         # inside the gate
+                if self._label_visible(label):
+                    outcome = self._phase_hold()   # the detected hold
+                    if outcome != 'SEARCHING':
+                        return outcome
+                    # the hold recycled; the budget may be spent, so give up
+                    # at once: a visible label never expires a window, and
+                    # another cycle would be unbounded
+                    if self._hunt.exhausted:
+                        return 'NOT_FOUND'
+                    window_end = time.time() + (CONT_FIRST_LOOK_S if SWEEP_CONTINUOUS
+                                                else DETECT_WINDOW_S)  # new window after the hold
+                time.sleep(DETECT_POLL_S)
+            # window expired: one 30 deg turn, then a fresh window
+            self._hunt.add_window()
+            look = False
+            result = (self._sweep_continuous() if SWEEP_CONTINUOUS
+                      else self._sweep_turn())
+            if result == 'stop':                 # continuous mode only
+                return 'IDLE'
+            if result == 'retarget':             # continuous mode only
+                self._publish_status('SEARCHING', label=self._target_label,
+                                     detail={'retarget': True})
+                return 'SEARCHING'
+            if result == 'interrupted':
+                look = True
+                # first detection mid-turn: stop the sweep and hold; an
+                # incomplete turn does not count toward the round
+                outcome = self._phase_hold()
+                if outcome != 'SEARCHING':
+                    return outcome
+                if self._hunt.exhausted:
+                    return 'NOT_FOUND'
+            else:
+                self._hunt.add_turn()            # completed 30 deg turn
+                self._publish_status('SEARCHING', label=self._target_label,
+                                     detail={'window_expired': True})
+                if self._hunt.round_complete:
+                    self.get_logger().info(
+                        f'Search round complete at this position '
+                        f'(turns={self._hunt.turns}); giving up (decision 1).')
+
