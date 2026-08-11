@@ -1007,3 +1007,36 @@ class WalkNode(Node):
         except (KeyError, TypeError, ValueError, AttributeError):
             return False
 
+    @staticmethod
+    def _choose_row(rows, prev):
+        """B8h: the one row of a label that becomes its target.
+
+        Highest conf wins (first row on an exact tie).  With several rows
+        inside TIE_CONF_BAND of the best, and a FRESH previous target for the
+        label, the tie goes to the row nearest the previous target (body-frame
+        x/y), so two same-label objects stop trading the target as their
+        confidences cross (s1 2026-10-08 21:56:07: two boxes, yaw_err swung
+        -5.7 / +18.6 / -6.1 / +20.2 deg).  A clearly better row (more than
+        the band above the rest) still wins, and with no fresh previous
+        target the old highest-conf rule applies unchanged."""
+        top = rows[0]
+        for d in rows[1:]:
+            if d.get('conf', 0) > top.get('conf', 0):
+                top = d
+        if prev is None or len(rows) < 2:
+            return top
+        floor = top.get('conf', 0) - TIE_CONF_BAND
+        tied = [d for d in rows if d.get('conf', 0) >= floor]
+        if len(tied) < 2:
+            return top
+        best, best_d = top, None
+        for d in tied:
+            try:
+                dist = math.hypot(float(d['x']) - prev['x'],
+                                  float(d['y']) - prev['y'])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if best_d is None or dist < best_d:
+                best, best_d = d, dist
+        return best
+
