@@ -257,3 +257,122 @@ class OdomIntegrator(object):
         self.rejected += 1
         return None
 
+    def update(self, t, quat_wxyz, q12):
+        try:
+            t = float(t)
+            w, x, y, z = (float(v) for v in quat_wxyz)
+            q = [float(v) for v in q12]
+        except (TypeError, ValueError):
+            return self._reject()
+        if len(q) != 12 or not _finite(t):
+            return self._reject()
+        if not all(_finite(v) for v in (w, x, y, z)):
+            return self._reject()
+        if not all(_finite(v) for v in q):
+            return self._reject()
+        norm = math.sqrt(w * w + x * x + y * y + z * z)
+        if abs(norm - 1.0) > QUAT_NORM_TOL:
+            return self._reject()
+        if self._t_prev is not None and t <= self._t_prev:
+            return self._reject()
+
+        imu_yaw = quat_to_yaw(w, x, y, z)
+        first = self._yaw_origin is None
+        if first:
+            self._yaw_origin = imu_yaw
+        r = _quat_to_mat(w, x, y, z)
+        fw = (_mv(r, self._fk(q, LEFT)), _mv(r, self._fk(q, RIGHT)))
+
+        if first:
+            self._stance = 0 if fw[0][2] <= fw[1][2] else 1
+        else:
+            if t - self._t_prev <= self.max_dt_s:
+                s = self._stance
+                dx = -(fw[s][0] - self._fw_prev[s][0])
+                dy = -(fw[s][1] - self._fw_prev[s][1])
+                # IMU world -> odom, yaw origin = first sample
+                c = math.cos(-self._yaw_origin)
+                sn = math.sin(-self._yaw_origin)
+                self.x += c * dx - sn * dy
+                self.y += sn * dx + c * dy
+                other = 1 - s
+                if fw[other][2] < fw[s][2] - self.hyst:
+                    self._stance = other
+            else:
+                # gap: hold position, re-set baseline + stance
+                self._stance = 0 if fw[0][2] <= fw[1][2] else 1
+        self._fw_prev = fw
+        self._t_prev = t
+        self.yaw = wrap_pi(imu_yaw - self._yaw_origin)
+        self.accepted += 1
+        return {'x': self.x, 'y': self.y, 'yaw': self.yaw, 't': t}
+
+
+# --------------------------------------------------------------------------
+# a measured body pose for the point-cloud lane
+#
+# gateway/pointcloud_client.py (pc_client.py on the robot)
+# refuses point-cloud verdicts with UNKNOWN(pose_unmeasured)
+# unless it can compare TWO measured poses (POSE_KEYS:
+# torso_z / pitch / roll / waist_pitch, src "measured";
+# equal = |dz| <= 1 cm, |d angle| <= 1 deg)
+# with no writer `pose` verb available, this
+# process reads
+# rt/lowstate, so it hands the pose over read-only,
+# no 250 Hz writer involved
+#
+#   torso_z      torso_link origin above the LOWER sole,
+#                along gravity.  Waist origin offset
+#                (pelvis -> waist_roll_link (-0.0039635, 0, 0.044),
+#                XML) rotated by waist yaw
+#   pitch, roll  IMU frame, ZYX Euler from the quaternion
+#   waist_pitch  motor 14 (waist locked, constant still a key)
+# for pose EQUALITY between two moments, not calibration
+# --------------------------------------------------------------------------
+WAIST_ROLL_IN_PELVIS = (-0.0039635, 0.0, 0.044)   # waist_roll_link pos, from the XML
+WAIST_YAW_IDX, WAIST_ROLL_IDX, WAIST_PITCH_IDX = 12, 13, 14
+BODY_POSE_WINDOW_S = 0.5      # rolling median window, sway/noise
+BODY_POSE_MIN_SAMPLES = 5
+BODY_POSE_HZ = 10.0
+BODY_POSE_TOPIC = '/openbot/body_pose'   # std_msgs/String JSON, BodyPoseFilter.pose
+
+
+def quat_to_pitch_roll(w, x, y, z):
+    """(pitch, roll) in radians, ZYX Euler, of a unit quaternion wxyz."""
+    sinp = 2.0 * (w * y - z * x)
+    sinp = max(-1.0, min(1.0, sinp))
+    pitch = math.asin(sinp)
+    roll = math.atan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y))
+    return pitch, roll
+
+
+def body_pose_sample(t, quat_wxyz, q12, waist3):
+    """One instantaneous pose dict, or None for unusable input."""
+    try:
+        w, x, y, z = (float(v) for v in quat_wxyz)
+        q = [float(v) for v in q12]
+        wy, wr, wp = (float(v) for v in waist3)
+        t = float(t)
+    except (TypeError, ValueError):
+        return None
+    vals = [w, x, y, z, wy, wr, wp, t] + q
+    if len(q) != 12 or not all(_finite(v) for v in vals):
+        return None
+    if abs(math.sqrt(w * w + x * x + y * y + z * z) - 1.0) > QUAT_NORM_TOL:
+        return None
+    r = _quat_to_mat(w, x, y, z)
+    c, sn = math.cos(wy), math.sin(wy)
+    ox, oy, oz = WAIST_ROLL_IN_PELVIS
+    torso = (c * ox - sn * oy, sn * ox + c * oy, oz)
+    soles = (_mv(r, foot_in_pelvis(q, LEFT)), _mv(r, foot_in_pelvis(q, RIGHT)))
+    lower = soles[0] if soles[0][2] <= soles[1][2] else soles[1]
+    tz = _mv(r, torso)[2] - lower[2]
+    pitch, roll = quat_to_pitch_roll(w, x, y, z)
+    return {"t": t, "torso_z": tz, "pitch": pitch, "roll": roll,
+            "waist_pitch": wp}
+
+
+def _median(vals):
+    v = sorted(vals)
+    n = len(v)
+    return v[n // 2] if n % 2 else 0.5 * (v[n // 2 - 1] + v[n // 2])
