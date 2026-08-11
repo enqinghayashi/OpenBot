@@ -1133,3 +1133,11 @@ class WalkNode(Node):
         self._fsm_exit_reason = 'stop'
         return 'stop'
 
+    def _poll_go(self):
+        """Consume the /walk_go 1-slot queue; returns (label, ts) or None."""
+        with self._cmd_lock:
+            go, self._go_pending = self._go_pending, None
+        return go
+
+    # -- driving the FSM ----------------------------------------------------------
+
