@@ -1327,3 +1327,36 @@ class WalkNode(Node):
                         f'Search round complete at this position '
                         f'(turns={self._hunt.turns}); giving up (decision 1).')
 
+    def _sweep_continuous(self):
+        """hf15: one CONTINUOUS sweep segment (CONT_SEGMENT_S).  Returns
+        'interrupted' (first sighting: motion stopped), 'stop' / 'retarget'
+        (an operator command: motion stopped) or 'done' (segment completed,
+        motion NOT stopped: the next segment continues the same turn)."""
+        if SWEEP_STRATEGY == 'alternate':
+            self._sweep_dir = -self._sweep_dir
+        else:
+            self._sweep_dir = getattr(self, '_sweep_pref', None) or SWEEP_SIGN
+        omega = self._sweep_dir * YAW_RATE_RAD_S
+        self.get_logger().info(
+            f'Sweep segment (continuous): omega={omega:+.2f} rad/s for '
+            f'{CONT_SEGMENT_S:.2f}s')
+        end = time.time() + CONT_SEGMENT_S
+        next_cmd = 0.0
+        while time.time() < end:
+            cmd = self._poll_command()
+            if cmd in ('stop', 'retarget'):
+                self._stop_motion()
+                return cmd
+            now = time.time()
+            if now >= next_cmd:
+                self._loco.set_velocity(0.0, 0.0, omega,
+                                        duration=CONT_CMD_DURATION_S)
+                next_cmd = now + CONT_RENEW_S
+            if self._label_visible(self._target_label):
+                self._stop_motion()
+                self.get_logger().info(
+                    'Sweep interrupted: label visible — sweep stopped.')
+                return 'interrupted'
+            time.sleep(DETECT_POLL_S)
+        return 'done'
+
