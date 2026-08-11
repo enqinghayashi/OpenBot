@@ -376,3 +376,37 @@ def _median(vals):
     v = sorted(vals)
     n = len(v)
     return v[n // 2] if n % 2 else 0.5 * (v[n // 2 - 1] + v[n // 2])
+
+
+class BodyPoseFilter(object):
+    """Rolling median of body_pose_sample() over BODY_POSE_WINDOW_S.
+
+    pose(now) -> {"src": "measured", "torso_z", "pitch", "roll",
+    "waist_pitch", "t", "n", "via": "odom"} or None when fewer than
+    BODY_POSE_MIN_SAMPLES fresh samples sit in the window (never a stale or
+    fabricated pose)."""
+
+    def __init__(self, window_s=BODY_POSE_WINDOW_S,
+                 min_samples=BODY_POSE_MIN_SAMPLES):
+        self.window_s = float(window_s)
+        self.min_samples = int(min_samples)
+        self._buf = []
+
+    def add(self, sample):
+        if sample is None:
+            return
+        self._buf.append(sample)
+        cut = sample["t"] - self.window_s
+        while self._buf and self._buf[0]["t"] < cut:
+            self._buf.pop(0)
+
+    def pose(self, now):
+        fresh = [s for s in self._buf
+                 if is_fresh(now, s["t"], max_age_s=self.window_s + MAX_SAMPLE_AGE_S)]
+        if len(fresh) < self.min_samples:
+            return None
+        out = {"src": "measured", "via": "odom", "n": len(fresh),
+               "t": fresh[-1]["t"]}
+        for k in ("torso_z", "pitch", "roll", "waist_pitch"):
+            out[k] = _median([s[k] for s in fresh])
+        return out
