@@ -1040,3 +1040,33 @@ class WalkNode(Node):
                 best, best_d = d, dist
         return best
 
+    def _select_instance_row(self, detections, now):
+        """B8: (label, row|None) for the active instance target, else (None, None).
+
+        Runs hunt_law.select_instance over this message's rows of the target
+        label (conf >= MIN_CONF), adopts the id after a colour/position
+        match, remembers the position, and refreshes the label's presence
+        ONLY when the instance itself was found.
+        """
+        with self._inst_lock:
+            inst = self._inst
+            if inst is None:
+                return None, None
+            rows = [d for d in detections
+                    if isinstance(d, dict) and str(d.get('label')) == inst['label']
+                    and d.get('conf', 0) >= MIN_CONF]
+            row, match = hunt_law.select_instance(
+                rows, inst['iid'], inst['hue'], inst['last_xy'])
+            inst['match'] = match
+            if row is not None:
+                rid = row.get('instance_id')
+                if match != 'iid' and isinstance(rid, int) \
+                        and not isinstance(rid, bool) and rid >= 1:
+                    inst['iid'] = rid
+                inst['last_xy'] = (float(row['x']), float(row['y']))
+            label = inst['label']
+        if row is not None:
+            with self._visible_lock:
+                self._visible[label] = now
+        return label, row
+
