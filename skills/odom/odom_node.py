@@ -146,3 +146,26 @@ class SdkLeg(object):
                 self._proc.wait(2.0)
             except Exception:
                 self._proc.kill()
+
+
+class _RosAdapter(object):
+    """rclpy wrapper.  rclpy / nav_msgs are imported HERE, lazily."""
+
+    def __init__(self):
+        import rclpy
+        from nav_msgs.msg import Odometry
+        self._rclpy = rclpy
+        self._Odometry = Odometry
+        rclpy.init()
+        self._node = rclpy.create_node('odom_node')
+        self._pub = None
+
+    def ok(self):
+        return self._rclpy.ok()
+
+    def spin_once(self, timeout_s):
+        self._rclpy.spin_once(self._node, timeout_sec=timeout_s)
+
+    def count_publishers(self, topic):
+        return self._node.count_publishers(topic)
+
