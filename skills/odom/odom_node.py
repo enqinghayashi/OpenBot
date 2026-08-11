@@ -169,3 +169,44 @@ class _RosAdapter(object):
     def count_publishers(self, topic):
         return self._node.count_publishers(topic)
 
+    def make_publisher(self):
+        self._pub = self._node.create_publisher(self._Odometry, oc.ODOM_TOPIC, 10)
+        # measured body pose for the cloud lane
+        # (JSON String). optional: no std_msgs,
+        # still publish odometry.
+        self._body_pub = None
+        try:
+            from std_msgs.msg import String
+        except ImportError as e:
+            log('BODY_POSE: std_msgs not importable (%s) -- body pose OFF' % e)
+            return
+        self._String = String
+        self._body_pub = self._node.create_publisher(String, oc.BODY_POSE_TOPIC, 10)
+
+    def publish_body(self, pose):
+        if self._body_pub is None:
+            return
+        msg = self._String()
+        msg.data = json.dumps(pose, sort_keys=True)
+        self._body_pub.publish(msg)
+
+    def publish(self, f):
+        msg = self._Odometry()
+        msg.header.stamp = self._node.get_clock().now().to_msg()
+        msg.header.frame_id = f['frame_id']
+        msg.child_frame_id = f['child_frame_id']
+        msg.pose.pose.position.x = f['x']
+        msg.pose.pose.position.y = f['y']
+        msg.pose.pose.position.z = f['z']
+        msg.pose.pose.orientation.x = f['qx']
+        msg.pose.pose.orientation.y = f['qy']
+        msg.pose.pose.orientation.z = f['qz']
+        msg.pose.pose.orientation.w = f['qw']
+        self._pub.publish(msg)
+
+    def shutdown(self):
+        try:
+            self._node.destroy_node()
+            self._rclpy.shutdown()
+        except Exception:
+            pass
