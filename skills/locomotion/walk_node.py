@@ -1911,3 +1911,17 @@ class WalkNode(Node):
             f'[reacq] "{label}" was last at {math.degrees(err):+.0f} deg — '
             f'the sweep turns {"left" if side > 0 else "right"} first.')
 
+    def _reacq_wait(self, label, secs, since):
+        """Stand still up to ``secs``: 'found' (a row of the target newer
+        than ``since``), 'stop' / 'retarget', or None (nothing)."""
+        end = time.time() + secs
+        while time.time() < end:
+            cmd = self._poll_command()
+            if cmd in ('stop', 'retarget'):
+                return cmd
+            row = self._fresh_target(label)
+            if row is not None and row.get('t', 0.0) >= since:
+                return 'found'
+            time.sleep(DETECT_POLL_S)
+        return None
+
