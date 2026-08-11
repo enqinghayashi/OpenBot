@@ -1840,3 +1840,16 @@ class WalkNode(Node):
                 last_heartbeat = now
             time.sleep(CTRL_DT_S)
 
+    def _after_stall(self, reason):
+        """Common stall-exit: count the stall; give up if the budget is spent."""
+        self._lock_reset(reason)                # clear the lock; it re-arms on sight
+        self._hunt.add_stall(reason)
+        if self._hunt.exhausted:
+            self.get_logger().warn(
+                f'Epoch exhaust (stalls={self._hunt.stalls}, '
+                f'turns={self._hunt.turns}) — NOT_FOUND.')
+            return 'NOT_FOUND'
+        return 'SEARCHING'
+
+    # -- finding a lost target again ----------------------------------------------
+
