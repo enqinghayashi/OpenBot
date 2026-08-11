@@ -1085,3 +1085,23 @@ class WalkNode(Node):
 
     # -- publishing status --------------------------------------------------------
 
+    def _publish_status(self, state, label=None, detail=None):
+        payload = {'state': state}
+        if label is not None:
+            payload['label'] = label
+        if detail is not None:
+            payload['detail'] = detail
+        # name the object when the target is an instance
+        with self._inst_lock:
+            inst = dict(self._inst) if self._inst else None
+        if inst is not None and label == inst['label']:
+            payload['detail'] = dict(payload.get('detail') or {})
+            payload['detail']['instance'] = {
+                'iid': inst['iid'], 'hue': inst['hue'], 'match': inst['match']}
+        msg = String()
+        msg.data = json.dumps(payload)
+        self._status_pub.publish(msg)
+        self.get_logger().info(f'[STATUS] {msg.data}')
+
+    # -- the one place commands get drained ---------------------------------------
+
