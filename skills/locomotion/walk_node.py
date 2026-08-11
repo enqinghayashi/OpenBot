@@ -1993,3 +1993,30 @@ class WalkNode(Node):
 
     # -- walk to an odometry pose ------------------------------------------------
 
+    def _on_walk_pose(self, msg):
+        """/walk_pose: start (or queue) a walk to an odometry pose."""
+        kind, goal = walk_lock.parse_pose_goal(getattr(msg, 'data', ''))
+        if kind is None:
+            self.get_logger().warn(f'/walk_pose ignored: {goal}')
+            self._publish_status('HOME_FAILED', label='home',
+                                 detail={'reason': 'bad_goal: %s' % goal})
+            return
+        if kind == 'stop':
+            with self._cmd_lock:
+                if self._busy:
+                    self._pending = ('stop', None)
+            return
+        if not WALK_POSE:
+            self._publish_status('HOME_FAILED', label=goal['label'],
+                                 detail={'reason': 'disabled '
+                                         '(OPENBOT_WALK_POSE=0)'})
+            return
+        with self._cmd_lock:
+            if self._busy:
+                self._pending = ('pose', goal)
+                self.get_logger().info('/walk_pose queued (a walk is running).')
+                return
+            self._busy = True
+        threading.Thread(target=self._run_pose, args=(goal,),
+                         daemon=True).start()
+
