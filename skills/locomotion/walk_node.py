@@ -924,3 +924,15 @@ class WalkNode(Node):
             st = lock.st
             return st['label'] if st is not None else None
 
+    def _odom_pose(self):
+        """(x, y, yaw) of a FRESH odometry pose (<= walk_lock.LOCK_ODOM_FRESH_S
+        old), else None."""
+        olock = getattr(self, '_odom_lock', None)
+        if olock is None:
+            return None
+        with olock:
+            t = getattr(self, '_odom_t', 0.0)
+            if not t or time.time() - t > walk_lock.LOCK_ODOM_FRESH_S:
+                return None
+            return (self._robot_x, self._robot_y, self._robot_yaw)
+
