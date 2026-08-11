@@ -1385,3 +1385,95 @@ class WalkNode(Node):
         self._stop_motion()
         return 'done'
 
+    def _phase_hold(self):
+        """Detected-hold (T10): stand still — no turn, no walk.
+
+        Runs inside SEARCHING (the DETECTED status is a /walk_status
+        vocabulary event, not an FSM state). Publishes DETECTED EXACTLY ONCE
+        at entry, then loops at DETECT_POLL_S until /walk_go (matching label,
+        GO_STALE_S-fresh), a stop, a retarget, or the detection is lost.
+        /walk_target is NEVER a trigger — /walk_go is the only trigger channel.
+        """
+        label = self._target_label
+        self._publish_status('DETECTED', label=label, detail={'once': True})
+        self.get_logger().info(
+            f'DETECTED "{label}" — holding (no turn, no walk); waiting for '
+            f'{WALK_GO_TOPIC} with a matching label.')
+        last_visible = time.time()
+        no_pos_since = None
+        while True:
+            cmd = self._poll_command()
+            if cmd == 'stop':
+                return 'IDLE'
+            if cmd == 'retarget':               # a target replays as a retarget,
+                self._publish_status(           # never as a trigger
+                    'SEARCHING', label=self._target_label,
+                    detail={'re_sweep': True, 'reason': 'retarget'})
+                return 'SEARCHING'
+            go = self._poll_go()
+            if go is not None:
+                go_label, ts = go
+                if time.time() - ts > GO_STALE_S:
+                    self.get_logger().warn(
+                        f'/walk_go "{go_label}" is {time.time() - ts:.1f}s old '
+                        f'(> {GO_STALE_S:.0f}s) — dropped (stay DETECTED).')
+                elif go_label != label:
+                    self.get_logger().warn(
+                        f'/walk_go label "{go_label}" != active "{label}" '
+                        '— dropped (stay DETECTED).')
+                else:
+                    pos = self._fresh_target(label)   # recheck at trigger time
+                    if pos is None:
+                        # no-progress recycle: the trigger arrived but there is no
+                        # fresh position, so count a stall; this must stay bounded
+                        # because the label is usually visible, so the window never
+                        # expires
+                        self._hunt.add_stall('trigger_stale')
+                        self.get_logger().warn(
+                            f'/walk_go "{label}" but no fresh position — back '
+                            'to SEARCHING (never walk on a stale trigger).')
+                        self._publish_status(
+                            'SEARCHING', label=label,
+                            detail={'re_sweep': True, 'reason': 'stale_trigger'})
+                        return 'SEARCHING'
+                    in_zone, ev = self._stop_law(
+                        pos['label'], pos['x'], pos['y'], pos.get('z', 0.0),
+                        pos.get('width_m'), pos.get('depth_m'), STOP_DISTANCE_M)
+                    if in_zone:
+                        self._reach_evidence = ev
+                        self._stop_motion()
+                        return 'REACHED'        # inside the gate
+                    self._latch_target(pos)
+                    self._lock_arm_from(pos)    # the row that got confirmed
+                    return 'APPROACHING'
+            pos = self._fresh_target(label)
+            if self._label_visible(label):
+                last_visible = time.time()
+                if pos is not None:
+                    no_pos_since = None
+                elif no_pos_since is None:
+                    no_pos_since = time.time()
+                elif time.time() - no_pos_since >= HOLD_MAX_S:
+                    # hold escape: presence without position; the recycle spends
+                    # the stall budget, so this stays bounded even though the
+                    # window never expires
+                    self._hunt.add_stall('hold_depth_stale')
+                    self.get_logger().warn(
+                        f'"{label}" visible but depth-invalid for '
+                        f'{HOLD_MAX_S:.0f}s — back to SEARCHING')
+                    self._publish_status(
+                        'SEARCHING', label=label,
+                        detail={'re_sweep': True, 'reason': 'depth_stale'})
+                    return 'SEARCHING'
+            elif time.time() - last_visible >= LOST_TIMEOUT_S:
+                self.get_logger().warn(
+                    f'"{label}" lost for {LOST_TIMEOUT_S:.0f}s during hold '
+                    '— back to SEARCHING')
+                self._lost_side(label)          # sweep that side
+                self._lock_reset('lost during hold')
+                self._publish_status(
+                    'SEARCHING', label=label,
+                    detail={'re_sweep': True, 'reason': 'lost'})
+                return 'SEARCHING'
+            time.sleep(DETECT_POLL_S)
+
