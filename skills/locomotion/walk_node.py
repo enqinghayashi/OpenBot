@@ -2020,3 +2020,18 @@ class WalkNode(Node):
         threading.Thread(target=self._run_pose, args=(goal,),
                          daemon=True).start()
 
+    def _start_deferred(self):
+        """Start the command a preempted run handed over (F7), if any."""
+        with self._cmd_lock:
+            d, self._deferred = getattr(self, '_deferred', None), None
+            if d is None:
+                return
+            kind, val = d
+            if self._busy:
+                self.get_logger().warn(
+                    f'deferred {kind} dropped: another walk already started.')
+                return
+            self._busy = True
+        target = self._run_pose if kind == 'pose' else self._run_fsm
+        threading.Thread(target=target, args=(val,), daemon=True).start()
+
