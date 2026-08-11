@@ -959,3 +959,27 @@ class WalkNode(Node):
             entry['cont_label'] = str(row.get('label'))
         return entry
 
+    def _lock_arm_from(self, pos):
+        """B8l F1: arm the approach lock on the row the approach starts on
+        (the coordinator confirmed it: /walk_go after its beats).  Not for an
+        explicit instance target (the B8 path) and not for 'person' (a person
+        moves: the B8k best-row walk follows them, review r1 L8)."""
+        if not WALK_LOCK or not getattr(self, '_alock_live', False):
+            return
+        lock = getattr(self, '_alock', None)
+        label = self._target_label
+        if lock is None or not label or str(label) == 'person':
+            return
+        with self._inst_lock:
+            if self._inst is not None:
+                return
+        row = {'label': pos.get('cont_label') or label, 'x': pos['x'],
+               'y': pos['y'], 'z': pos.get('z', 0.0),
+               'instance_id': (getattr(self, '_row_iids', None) or {}).get(label)}
+        pose = self._odom_pose()
+        large = hunt_law.stop_tier(label) == 'large'
+        with self._targets_lock:
+            ev = lock.arm(label, row, time.time(), pose, large=large)
+        if ev:
+            self.get_logger().info(ev)
+
