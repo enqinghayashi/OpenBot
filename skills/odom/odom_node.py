@@ -86,3 +86,63 @@ class SdkLeg(object):
         self._buf = ''
         self._lines = collections.deque(maxlen=500)
 
+    def start(self, timeout_s=LEG_READY_TIMEOUT_S):
+        python = os.environ.get('ODOM_SDK_PYTHON', sys.executable)
+        try:
+            self._proc = subprocess.Popen(
+                [python, self._script, self._iface],
+                stdout=subprocess.PIPE, env=build_leg_env(os.environ),
+                universal_newlines=True)
+        except OSError as exc:
+            raise LegDied('cannot spawn SDK leg (%s): %s' % (python, exc))
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            line = self._next_line(0.2)
+            if line is None:
+                continue
+            if line.strip() == LEG_READY_LINE:
+                return True
+        raise LegDied('SDK leg not READY within %.0fs' % timeout_s)
+
+    def _fill(self, timeout_s):
+        """Raw os.read on the pipe fd (never the TextIOWrapper, so select()
+        and the buffer cannot disagree)."""
+        if self._proc.poll() is not None and not self._buf:
+            raise LegDied('SDK leg exited rc=%s' % self._proc.returncode)
+        fd = self._proc.stdout.fileno()
+        ready, _, _ = select.select([fd], [], [], timeout_s)
+        if not ready:
+            return
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            raise LegDied('SDK leg closed stdout')
+        self._buf += chunk.decode('utf-8', 'replace')
+        while '\n' in self._buf:
+            line, self._buf = self._buf.split('\n', 1)
+            self._lines.append(line)
+
+    def _next_line(self, timeout_s):
+        if not self._lines:
+            self._fill(timeout_s)
+        return self._lines.popleft() if self._lines else None
+
+    def read(self, timeout_s):
+        """One parsed sample dict, or None on timeout.  Raises LegDied."""
+        line = self._next_line(timeout_s)
+        if line is None:
+            return None
+        try:
+            d = json.loads(line)
+            if isinstance(d, dict) and 'quat' in d and 'q' in d and 't' in d:
+                return d
+        except ValueError:
+            pass
+        return self.read(0.0) if self._lines else None   # skip junk line
+
+    def close(self):
+        if self._proc is not None and self._proc.poll() is None:
+            self._proc.terminate()
+            try:
+                self._proc.wait(2.0)
+            except Exception:
+                self._proc.kill()
