@@ -997,3 +997,13 @@ class WalkNode(Node):
         if ev:
             self.get_logger().info(ev)
 
+    @staticmethod
+    def _self_row(d):
+        """B8i: True for a row inside SELF_ZONE_M (planar body-frame range) --
+        the robot's own arm, hand or carried object.  A row without a usable
+        x/y is NOT filtered here (the code below treats it as before)."""
+        try:
+            return math.hypot(float(d['x']), float(d['y'])) < SELF_ZONE_M
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return False
+
