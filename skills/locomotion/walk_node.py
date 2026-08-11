@@ -1105,3 +1105,31 @@ class WalkNode(Node):
 
     # -- the one place commands get drained ---------------------------------------
 
+    def _poll_command(self):
+        """Single command choke point, called every loop iteration in both phases."""
+        with self._cmd_lock:
+            p, self._pending = self._pending, None
+        if p is None:
+            return 'none'
+        kind, val = p
+        if kind == 'target':                    # applied here, in one place
+            if val != self._target_label:       # a new label resets the sweep side
+                self._sweep_pref = None
+            self._target_label = val
+            self._sweep_dir = SWEEP_SIGN
+            self._hunt.reset()                  # reset hunt counters
+            self._lock_reset('retarget')        # new hunt, new lock
+            self.get_logger().info(f'Re-targeting: "{val}"')
+            return 'retarget'
+        if kind == 'pose':                      # a pose walk takes priority
+            self._deferred = ('pose', val)      # started after this run ends
+            self._fsm_exit_reason = 'preempted'
+            self.get_logger().info('Walk-to-pose requested — ending the '
+                                   f'"{self._target_label}" run first.')
+            return 'stop'
+        # record why the FSM is leaving at the one point that decides
+        # it; every stop the FSM acts on comes from here, so the
+        # closing IDLE frame cannot miss or invent one
+        self._fsm_exit_reason = 'stop'
+        return 'stop'
+
