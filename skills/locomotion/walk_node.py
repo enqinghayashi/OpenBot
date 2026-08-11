@@ -1865,3 +1865,33 @@ class WalkNode(Node):
             return None
         return self._reacquire()
 
+    def _lost_bearing(self, label, odom_only=False):
+        """Bearing (walk yaw error, + = right) of where the lost ``label``
+        should be NOW: the lock's / the latch's odometry-world position when
+        odometry is fresh, else (unless ``odom_only``) the last body-frame
+        row.  None when nothing is known."""
+        pose = self._odom_pose()
+        if pose is not None:
+            w = None
+            lock = getattr(self, '_alock', None)
+            tlock = getattr(self, '_targets_lock', None)
+            if lock is not None and tlock is not None:
+                with tlock:
+                    st = lock.st
+                    if st is not None and st.get('w') is not None:
+                        w = st['w']
+            if w is None and getattr(self, '_twx', None) is not None:
+                w = (self._twx, self._twy)
+            if w is not None:
+                x, y = walk_lock.world_to_body(pose, w[0], w[1])
+                return walk_lock.bearing(x, y)
+        if odom_only:
+            return None
+        row = self._retained_target(label)
+        if row is None:
+            return None
+        try:
+            return walk_lock.bearing(float(row['x']), float(row['y']))
+        except (KeyError, TypeError, ValueError):
+            return None
+
