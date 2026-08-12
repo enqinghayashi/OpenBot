@@ -2580,3 +2580,12 @@ class WalkNode(Node):
             except Exception:
                 pass
 
+    def destroy_node(self):
+        # Ctrl+C: stop, then release the DDS lease
+        if self._loco is not None:
+            try:
+                self._loco.stop()
+                self._loco.disconnect()
+            except Exception:
+                pass
+        super().destroy_node()
