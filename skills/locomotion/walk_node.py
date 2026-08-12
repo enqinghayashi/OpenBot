@@ -2591,3 +2591,21 @@ class WalkNode(Node):
         super().destroy_node()
 
 
+def main(args=None):
+    rclpy.init(args=args)
+    node = WalkNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    except ExternalShutdownException:
+        pass               # SIGINT: context is already down
+    except Exception:
+        if rclpy.ok():
+            raise          # a real error, surface it
+    finally:
+        node.destroy_node()
+        try:
+            rclpy.shutdown()
+        except Exception:
+            pass           # already shut down
