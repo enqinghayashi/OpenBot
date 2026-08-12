@@ -2373,3 +2373,24 @@ class WalkNode(Node):
             return None
         return det
 
+    @staticmethod
+    def _det_stamp(det):
+        """The detection's own CAPTURE stamp, or None when the projector did
+        not publish one.
+
+        MEASURED on Stuart 2026-09-26 under loadavg 10.6: the detection
+        pipeline's latency runs 0.041-0.281 s (p50 0.061, p90 0.209) and its
+        publish interval reaches 0.331 s, so two samples can ARRIVE 0.06 s
+        apart having been CAPTURED 0.33 s apart.  Anything that reasons about
+        how far a stationary object could have moved must use the capture gap;
+        receive time understates it by the whole latency jitter.  None means
+        "cannot be judged", and callers fall back to receive time — which is
+        the old behaviour, so an unstamped projector is no worse off."""
+        s = det.get('stamp')
+        if s is None:
+            return None
+        try:
+            return float(s)
+        except (TypeError, ValueError):
+            return None
+
