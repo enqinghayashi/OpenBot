@@ -2394,3 +2394,13 @@ class WalkNode(Node):
         except (TypeError, ValueError):
             return None
 
+    def _retained_target(self, label):
+        """Latest body-frame measurement retained for the label, no freshness
+        gate.  The dict entry survives staleness, so an in-zone geometry can
+        still be re-evaluated by the arrival latch (#214) after the projector
+        stops emitting the label at close range."""
+        with self._targets_lock:
+            return self._targets.get(label)
+
+    # -- stop-law and blind-cap helpers ------------------------------------------
+
