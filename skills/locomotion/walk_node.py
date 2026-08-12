@@ -2572,3 +2572,11 @@ class WalkNode(Node):
         # is already in sport FSM 801, and the vendor start() sends
         # SetFsmId(200)
 
+    def _stop_motion(self):
+        """Halt locomotion if a loco is up (safe no-op otherwise)."""
+        if self._loco is not None:
+            try:
+                self._loco.stop()
+            except Exception:
+                pass
+
