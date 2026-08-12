@@ -31,3 +31,14 @@ WIDTH_GAP_M = 0.15
 MAX_ROWS_DEFAULT = 20000
 
 
+def _num(v):
+    """float or None (bool / str / NaN / inf are not numbers here)."""
+    if isinstance(v, bool) or v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(f) or math.isinf(f):
+        return None
+    return f
