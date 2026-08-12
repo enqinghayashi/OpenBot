@@ -2320,3 +2320,38 @@ class WalkNode(Node):
                 return None
             return (self._robot_x, self._robot_y, self._robot_yaw)
 
+    def _obstruction_between(self, tx, ty):
+        """G17a: the fresh OTHER label standing between robot and target.
+
+        Uses body-frame detections (conf >= MIN_CONF, age <= STALE_DETECTION_S)
+        with a position — presence-only labels (no depth) cannot be tested for
+        the corridor and are ignored here. Returns {'label', 'od', 'x', 'y'} or
+        None.
+
+        `x`/`y` are the obstacle's body-frame position, carried so the caller
+        can tell WHICH SIDE of the target bearing it sits on and aim the detour
+        at the other one (2026-09-26).  Additive: the label/od consumers are
+        unchanged.
+        """
+        now = time.time()
+        best = None
+        with self._targets_lock:
+            for label, det in self._targets.items():
+                if label == self._target_label:
+                    continue
+                if now - det['t'] > STALE_DETECTION_S:
+                    continue
+                # another label sitting on the target's spot is the same
+                # object, not an obstacle
+                if math.hypot(det['x'] - tx, det['y'] - ty) <= SAME_OBJECT_M:
+                    continue
+                if not hunt_law.obstructs(tx, ty, det['x'], det['y']):
+                    continue
+                od = math.hypot(det['x'], det['y'])
+                if best is None or od < best['od']:
+                    best = {'label': str(label), 'od': od,
+                            'x': float(det['x']), 'y': float(det['y'])}
+        return best
+
+    # -- target helpers ----------------------------------------------------------
+
