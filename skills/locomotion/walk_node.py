@@ -2472,3 +2472,24 @@ class WalkNode(Node):
         except Exception as e:          # diagnostics never cost the FSM
             self.get_logger().warn(f'[near-edge] settle log failed: {e!r}')
 
+    def _latch_target(self, det):
+        """Freeze the target's world position (body→world via odom yaw).
+
+        B8k (2026-10-16): FRAME FIX.  Detections are body frame x = RIGHT,
+        y = FORWARD; the odometry (/unitree/slam_mapping/odom, skills/odom)
+        is REP-103: x = forward, y = left, yaw CCW (+omega = LEFT).  The old
+        code rotated (right, forward) as if it were (forward, left): harmless
+        while the odom never published (yaw 0, pose 0), but with live odom a
+        target 1 m ahead read 0.5 m to the LEFT after walking 0.5 m forward
+        (tests/unit/walk/test_walk_odom_latch_frame.py).  Convert first:
+        forward = y_b, left = -x_b."""
+        with self._odom_lock:
+            rx, ry, yaw = self._robot_x, self._robot_y, self._robot_yaw
+        fwd, left = det['y'], -det['x']
+        self._twx = rx + math.cos(yaw) * fwd - math.sin(yaw) * left
+        self._twy = ry + math.sin(yaw) * fwd + math.cos(yaw) * left
+        self._twz = det['z']
+        self._tw_label = det['label']
+        self.get_logger().info(
+            f'Latched "{self._tw_label}" world=({self._twx:.3f}, {self._twy:.3f})')
+
