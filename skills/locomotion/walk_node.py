@@ -2404,3 +2404,11 @@ class WalkNode(Node):
 
     # -- stop-law and blind-cap helpers ------------------------------------------
 
+    @staticmethod
+    def _stop_law(label, x, y, z, width_m, depth_m, stop_distance_m):
+        """B8j: the active stop law -- hunt_law.near_edge_law, or the B8i
+        hunt_law.stop_law under OPENBOT_STOP_LAW=legacy.  Same signature and
+        (in_zone, evidence) return as both."""
+        law = hunt_law.stop_law if STOP_LAW_LEGACY else hunt_law.near_edge_law
+        return law(label, x, y, z, width_m, depth_m, stop_distance_m)
+
