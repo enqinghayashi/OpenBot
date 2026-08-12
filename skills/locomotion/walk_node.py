@@ -2609,3 +2609,7 @@ def main(args=None):
             rclpy.shutdown()
         except Exception:
             pass           # already shut down
+
+
+if __name__ == '__main__':
+    main()
