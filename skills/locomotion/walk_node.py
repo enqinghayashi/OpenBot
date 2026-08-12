@@ -2493,3 +2493,32 @@ class WalkNode(Node):
         self.get_logger().info(
             f'Latched "{self._tw_label}" world=({self._twx:.3f}, {self._twy:.3f})')
 
+    def _current_target(self):
+        """Target in body frame: fresh detection when available, else the
+        odometry-tracked latched world target. Returns (x_b, y_b, z, label) or
+        None if the target is lost entirely."""
+        fresh = self._fresh_target(self._target_label)
+        if fresh is not None:
+            return fresh['x'], fresh['y'], fresh['z'], fresh['label']
+        if self._twx is None or not WALK_ODOM_LATCH:
+            return None                 # odometry steering is opt-in
+        with self._odom_lock:
+            rx, ry, yaw = self._robot_x, self._robot_y, self._robot_yaw
+            odom_age = time.time() - self._odom_t if self._odom_t else -1.0
+        if odom_age < 0 or odom_age > 1.0:
+            # the latch fallback re-projects against the odometry pose;
+            # with no fresh odometry that pose is stale or zero, so
+            # refuse rather than steer on it
+            return None
+        dx = self._twx - rx
+        dy = self._twy - ry
+        # world to body, the inverse of _latch_target: odom
+        # (forward, left) first, then the detection frame
+        # (x = right = -left, y = forward)
+        fwd = dx * math.cos(yaw) + dy * math.sin(yaw)
+        left = -dx * math.sin(yaw) + dy * math.cos(yaw)
+        x_b, y_b = -left, fwd
+        return x_b, y_b, self._twz, self._tw_label
+
+    # -- locomotion plumbing ------------------------------------------------------
+
