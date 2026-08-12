@@ -2522,3 +2522,53 @@ class WalkNode(Node):
 
     # -- locomotion plumbing ------------------------------------------------------
 
+    def _connect_loco(self):
+        """Connect the loco backend. Selection (T6):
+
+        - LOCO_BACKEND=mujoco → MujocoLoco (sim bridge, walk-node/sim/);
+        - FAKE_LOCO=1 → dev stub;
+        - LOCO_BACKEND=g1_inproc → in-process G1Loco (REFERENCE ONLY — the
+          rclpy + raw-DDS crash class it represents is why the daemon exists);
+        - default LOCO_BACKEND=daemon → spawn walk_loco_daemon.py (or
+          fake_loco_daemon.py when FAKE_DAEMON=1) and wait for READY.
+
+        start() is intentionally NOT called: from R2+A the robot is already
+        in sport-FSM 801, and Stuart's SDK copy maps Start() to SetFsmId(200)
+        (dev-box copy: 500) — see hardware-day/RECOMMENDATION.md §2(a). A
+        connect failure raises — caught by _run_fsm → error status, node
+        survives.
+        """
+        if self._loco is not None:
+            return
+        self.get_logger().info(
+            f'Connecting locomotion backend on "{NETWORK_IFACE}" '
+            f'(LOCO_BACKEND={LOCO_BACKEND}, FAKE_DAEMON={FAKE_DAEMON})...')
+        if LOCO_BACKEND == 'mujoco':
+            from mujoco_loco import MujocoLoco      # sim backend
+            self._loco = MujocoLoco(NETWORK_IFACE)
+            self._loco.connect()
+            self.get_logger().info(
+                'LOCO_BACKEND=mujoco — MuJoCo sim backend (no DDS).')
+        elif FAKE_LOCO:
+            self._loco = _FakeLoco()
+            self.get_logger().info('FAKE_LOCO=1 — using the dev stub.')
+        elif LOCO_BACKEND == 'g1_inproc':
+            from g1_loco import G1Loco      # lazy import: pulls the vendor SDK
+            self._loco = G1Loco(NETWORK_IFACE)
+            self._loco.connect()
+            self.get_logger().info(
+                'LOCO_BACKEND=g1_inproc — in-process G1Loco (reference only; '
+                'rclpy + raw-DDS in one process crashes on Stuart).')
+        else:                                   # daemon, the default
+            daemon_script = os.path.join(
+                _SCRIPT_DIR, 'fake_loco_daemon.py' if FAKE_DAEMON
+                else 'walk_loco_daemon.py')
+            self._loco = _DaemonLoco(NETWORK_IFACE, daemon_script=daemon_script)
+            self._loco.connect()
+            self.get_logger().info(
+                'daemon backend connected: '
+                f'{os.path.basename(daemon_script)} READY.')
+        # deliberately no start() on hardware: after R2+A the robot
+        # is already in sport FSM 801, and the vendor start() sends
+        # SetFsmId(200)
+
