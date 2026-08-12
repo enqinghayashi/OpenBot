@@ -2412,3 +2412,15 @@ class WalkNode(Node):
         law = hunt_law.stop_law if STOP_LAW_LEGACY else hunt_law.near_edge_law
         return law(label, x, y, z, width_m, depth_m, stop_distance_m)
 
+    @staticmethod
+    def _blind_age(fresh, now):
+        """B8j: the age (s) of the target row when the blind cap must hold
+        the robot, else None (cap off, no row, no receive time, or young)."""
+        if not WALK_BLIND_CAP or not isinstance(fresh, dict):
+            return None
+        t = fresh.get('t')
+        if not isinstance(t, (int, float)) or isinstance(t, bool):
+            return None
+        age = now - t
+        return age if age > BLIND_MAX_S else None
+
