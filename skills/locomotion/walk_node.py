@@ -2363,3 +2363,13 @@ class WalkNode(Node):
             return False
         return time.time() - ts <= STALE_DETECTION_S
 
+    def _fresh_target(self, label):
+        """Latest body-frame target for the label if fresh, else None."""
+        with self._targets_lock:
+            det = self._targets.get(label)
+        if det is None:
+            return None
+        if time.time() - det['t'] > STALE_DETECTION_S:
+            return None
+        return det
+
