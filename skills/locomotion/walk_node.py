@@ -2424,3 +2424,51 @@ class WalkNode(Node):
         age = now - t
         return age if age > BLIND_MAX_S else None
 
+    def _log_settled(self):
+        """B8j diagnostic (log only): where the robot ENDED, SETTLE_LOG_S
+        after REACHED, against the decision -- the coast that LARGE_LEAD_M
+        stands for.  Never raises; silent under OPENBOT_STOP_LAW=legacy."""
+        if STOP_LAW_LEGACY:
+            return
+        try:
+            ev = dict(self._reach_evidence or {})
+            label = self._target_label
+            dec = (f'decision d={ev.get("d_m")} d_edge={ev.get("d_edge_m")} '
+                   f'tier={ev.get("tier")} gate={ev.get("gate_m")}')
+            row = self._fresh_target(label)
+            if row is not None and time.time() - row['t'] > BLIND_MAX_S:
+                row = None              # a stale row has no useful data
+            if row is None:
+                seen = ''
+                xm, ym = ev.get('x_m'), ev.get('y_m')
+                if xm is not None and ym is not None:
+                    now = time.time()
+                    with self._targets_lock:
+                        near = [(math.hypot(v['x'] - xm, v['y'] - ym), k, v)
+                                for k, v in self._targets.items()
+                                if k != label
+                                and now - v['t'] <= STALE_DETECTION_S]
+                    near = [c for c in near if c[0] <= hunt_law.CONT_RADIUS_M]
+                    if near:
+                        _dd, k, v = min(near, key=lambda c: c[0])
+                        seen = (f'; seen as "{k}" d='
+                                f'{math.hypot(v["x"], v["y"]):.3f}')
+                self.get_logger().info(
+                    f'[near-edge] settled "{label}": no fresh row{seen} | {dec}')
+                return
+            _inz, sev = self._stop_law(
+                row['label'], row['x'], row['y'], row.get('z', 0.0),
+                row.get('width_m'), row.get('depth_m'), STOP_DISTANCE_M)
+            coast = None
+            if ev.get('d_edge_m') is not None and sev.get('d_edge_m') is not None:
+                coast = round(ev['d_edge_m'] - sev['d_edge_m'], 3)
+            self.get_logger().info(
+                f'[near-edge] settled "{label}": d={sev.get("d_m")} '
+                f'd_edge={sev.get("d_edge_m")} half={sev.get("half_m")}'
+                f'({sev.get("half_src")}) row_age='
+                f'{time.time() - row["t"]:.2f}s'
+                + (f' via "{row.get("cont_label")}"' if row.get('cont') else '')
+                + f' | {dec} | coast={coast}')
+        except Exception as e:          # diagnostics never cost the FSM
+            self.get_logger().warn(f'[near-edge] settle log failed: {e!r}')
+
