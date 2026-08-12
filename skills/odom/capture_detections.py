@@ -44,3 +44,12 @@ def _num(v):
     return f
 
 
+def yaw_err_deg(x, y):
+    """degrees(atan2(x, y)) wrapped to (-180, 180] -- the walk_node definition
+    `yaw_err = _wrap_pi(math.atan2(x_b, y_b))` (walk_node.py:1394 / :1423).
+    x = lateral (+right), y = forward."""
+    a = math.degrees(math.atan2(x, y))
+    a = (a + 180.0) % 360.0 - 180.0
+    if a == -180.0:
+        a = 180.0
+    return a
