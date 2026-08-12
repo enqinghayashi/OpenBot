@@ -2355,3 +2355,11 @@ class WalkNode(Node):
 
     # -- target helpers ----------------------------------------------------------
 
+    def _label_visible(self, label):
+        """True if /detections has seen the label within STALE_DETECTION_S."""
+        with self._visible_lock:
+            ts = self._visible.get(label)
+        if ts is None:
+            return False
+        return time.time() - ts <= STALE_DETECTION_S
+
