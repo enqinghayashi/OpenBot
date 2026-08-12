@@ -2589,3 +2589,5 @@ class WalkNode(Node):
             except Exception:
                 pass
         super().destroy_node()
+
+
