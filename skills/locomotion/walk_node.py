@@ -2309,3 +2309,14 @@ class WalkNode(Node):
         time.sleep(walk_lock.POSE_BACKOFF_SETTLE_S)
         return None
 
+    def _odom_pose_age(self, max_age_s):
+        """(x, y, yaw) when the odometry pose is at most ``max_age_s`` old."""
+        olock = getattr(self, '_odom_lock', None)
+        if olock is None:
+            return None
+        with olock:
+            t = getattr(self, '_odom_t', 0.0)
+            if not t or time.time() - t > max_age_s:
+                return None
+            return (self._robot_x, self._robot_y, self._robot_yaw)
+
