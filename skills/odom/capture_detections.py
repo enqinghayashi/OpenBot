@@ -101,3 +101,5 @@ def classify_width(ws):
         return ('DISCRIMINATOR: w bimodal (>=2 clusters separated by >%.2f m) '
                 '-> MASK MERGING' % WIDTH_GAP_M)
     return ('DISCRIMINATOR: w unimodal -> LABEL HOPPING / projector jitter')
+
+
