@@ -80,3 +80,5 @@ def parse_message(json_text, recv_t):
             'conf': _num(det.get('conf')),
         })
     return rows
+
+
