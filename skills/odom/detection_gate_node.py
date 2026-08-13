@@ -53,3 +53,12 @@ def load_ref_resolver():
 
 
 class _RosAdapter(object):
+    def __init__(self):
+        import rclpy
+        from std_msgs.msg import String
+        self._rclpy = rclpy
+        self._String = String
+        rclpy.init()
+        self._node = rclpy.create_node('detection_gate')
+        self._pub = None
+
