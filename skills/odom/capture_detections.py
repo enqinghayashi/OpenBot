@@ -208,3 +208,5 @@ def run_ros(sink, seconds, clock=time.time):
         pass
     node.destroy_node()
     rclpy.shutdown()
+
+
