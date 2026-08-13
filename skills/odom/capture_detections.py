@@ -82,3 +82,10 @@ def parse_message(json_text, recv_t):
     return rows
 
 
+def _cell(v):
+    if v is None:
+        return ''
+    if isinstance(v, float):
+        return repr(round(v, 6))
+    s = str(v)
+    return '"%s"' % s.replace('"', '""') if (',' in s or '"' in s) else s
