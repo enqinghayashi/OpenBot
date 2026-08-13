@@ -139,3 +139,5 @@ class CsvSink(object):
             self.per_label[r['label']] = self.per_label.get(r['label'], 0) + 1
         return n
 
+    def close(self):
+        self._fh.close()
