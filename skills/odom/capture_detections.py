@@ -141,3 +141,5 @@ class CsvSink(object):
 
     def close(self):
         self._fh.close()
+
+
