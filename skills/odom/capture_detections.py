@@ -210,3 +210,24 @@ def run_ros(sink, seconds, clock=time.time):
     rclpy.shutdown()
 
 
+def main(argv=None):
+    p = argparse.ArgumentParser(description='read-only detection capture')
+    p.add_argument('--seconds', type=float, required=True)
+    p.add_argument('--max-rows', type=int, default=MAX_ROWS_DEFAULT)
+    p.add_argument('--label', default=None)
+    p.add_argument('--out', default='/tmp/odom_capture_%d.csv' % int(time.time()))
+    p.add_argument('--from-stdin', action='store_true')
+    a = p.parse_args(argv)
+    if not 1 <= a.seconds <= 600:
+        p.error('--seconds must be within 1..600')
+    sink = CsvSink(a.out, max_rows=a.max_rows, label=a.label)
+    try:
+        if a.from_stdin:
+            run_stdin(sink, sys.stdin, time.time, a.seconds)
+        else:
+            run_ros(sink, a.seconds)
+    finally:
+        sink.close()
+    print('wrote %s (malformed messages skipped: %d)' % (a.out, sink.malformed))
+    print(summarize_csv(a.out))
+    return 0
