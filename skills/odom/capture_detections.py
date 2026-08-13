@@ -106,3 +106,13 @@ def classify_width(ws):
 class CsvSink(object):
     """Streams rows to the file; keeps only O(labels) counters."""
 
+    def __init__(self, path, max_rows=MAX_ROWS_DEFAULT, label=None):
+        self._fh = open(path, 'w')
+        self._fh.write(','.join(COLUMNS) + '\n')
+        self._fh.flush()
+        self.max_rows = int(max_rows)
+        self.label = label
+        self.rows = 0
+        self.malformed = 0
+        self.per_label = {}
+
