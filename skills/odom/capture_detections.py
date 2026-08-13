@@ -120,3 +120,22 @@ class CsvSink(object):
     def full(self):
         return self.rows >= self.max_rows
 
+    def feed(self, json_text, recv_t):
+        try:
+            rows = parse_message(json_text, recv_t)
+        except ValueError:
+            self.malformed += 1
+            return 0
+        n = 0
+        for r in rows:
+            if self.full:
+                break
+            if self.label is not None and r['label'] != self.label:
+                continue
+            self._fh.write(','.join(_cell(r[c]) for c in COLUMNS) + '\n')
+            self._fh.flush()
+            self.rows += 1
+            n += 1
+            self.per_label[r['label']] = self.per_label.get(r['label'], 0) + 1
+        return n
+
