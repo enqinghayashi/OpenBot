@@ -116,3 +116,7 @@ class CsvSink(object):
         self.malformed = 0
         self.per_label = {}
 
+    @property
+    def full(self):
+        return self.rows >= self.max_rows
+
