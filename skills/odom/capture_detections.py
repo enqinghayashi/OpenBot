@@ -149,3 +149,35 @@ def _median(v):
     return v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2.0
 
 
+def summarize_csv(path):
+    """Post-run summary (re-reads the file; the recording phase held no rows)."""
+    per = {}
+    ws_all = []
+    total = 0
+    with open(path) as fh:
+        header = fh.readline().strip().split(',')
+        iw, iy, il = header.index('w'), header.index('yaw_err_deg'), header.index('label')
+        for line in fh:
+            cells = line.rstrip('\n').split(',')
+            if len(cells) < len(header):
+                continue
+            total += 1
+            d = per.setdefault(cells[il], {'n': 0, 'w': [], 'yaw': []})
+            d['n'] += 1
+            if cells[iw] != '':
+                d['w'].append(float(cells[iw]))
+                ws_all.append(float(cells[iw]))
+            if cells[iy] != '':
+                d['yaw'].append(float(cells[iy]))
+    lines = ['rows: %d' % total]
+    for lab in sorted(per):
+        d = per[lab]
+        lines.append('label=%s n=%d' % (lab, d['n']))
+        for name, vals in (('w', d['w']), ('yaw_err_deg', d['yaw'])):
+            if vals:
+                lines.append('  %s min/median/max = %.4f / %.4f / %.4f' % (
+                    name, min(vals), _median(vals), max(vals)))
+            else:
+                lines.append('  %s: no samples' % name)
+    lines.append(classify_width(ws_all))
+    return '\n'.join(lines)
