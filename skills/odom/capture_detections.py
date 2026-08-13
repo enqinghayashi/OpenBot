@@ -91,3 +91,13 @@ def _cell(v):
     return '"%s"' % s.replace('"', '""') if (',' in s or '"' in s) else s
 
 
+def classify_width(ws):
+    """Gap-based 1-D clustering verdict on the width samples."""
+    ws = sorted(w for w in ws if w is not None)
+    if not ws:
+        return 'DISCRIMINATOR: no width samples -> INCONCLUSIVE'
+    clusters = 1 + sum(1 for a, b in zip(ws, ws[1:]) if b - a > WIDTH_GAP_M)
+    if clusters >= 2:
+        return ('DISCRIMINATOR: w bimodal (>=2 clusters separated by >%.2f m) '
+                '-> MASK MERGING' % WIDTH_GAP_M)
+    return ('DISCRIMINATOR: w unimodal -> LABEL HOPPING / projector jitter')
