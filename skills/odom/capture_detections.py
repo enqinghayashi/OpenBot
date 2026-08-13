@@ -143,3 +143,7 @@ class CsvSink(object):
         self._fh.close()
 
 
+def _median(v):
+    v = sorted(v)
+    n = len(v)
+    return v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2.0
