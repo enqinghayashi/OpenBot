@@ -52,3 +52,4 @@ def load_ref_resolver():
                                'walk target label verbatim')
 
 
+class _RosAdapter(object):
