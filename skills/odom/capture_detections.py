@@ -55,3 +55,28 @@ def yaw_err_deg(x, y):
     return a
 
 
+def parse_message(json_text, recv_t):
+    """-> list of row dicts, one per detection.  Raises ValueError on a
+    malformed message (callers count and skip)."""
+    data = json.loads(json_text)
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list):
+        raise ValueError('not a detection list')
+    rows = []
+    for det in data:
+        if not isinstance(det, dict):
+            continue
+        x, y = _num(det.get('x')), _num(det.get('y'))
+        rows.append({
+            't_recv': recv_t,
+            'stamp': _num(det.get('stamp')),
+            'label': det.get('label'),
+            'w': _num(det.get('width_m')),
+            'h': _num(det.get('height_m')),
+            'x': x, 'y': y, 'z': _num(det.get('z')),
+            'yaw_err_deg': (yaw_err_deg(x, y)
+                            if x is not None and y is not None else None),
+            'conf': _num(det.get('conf')),
+        })
+    return rows
