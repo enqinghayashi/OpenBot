@@ -193,3 +193,18 @@ def run_stdin(sink, lines, clock, seconds):
             sink.feed(line, clock())
 
 
+def run_ros(sink, seconds, clock=time.time):
+    import rclpy
+    from std_msgs.msg import String
+    rclpy.init()
+    node = rclpy.create_node('capture_detections')
+    node.create_subscription(
+        String, BODY_TOPIC, lambda m: sink.feed(m.data, clock()), 10)
+    deadline = clock() + seconds
+    try:
+        while rclpy.ok() and clock() < deadline and not sink.full:
+            rclpy.spin_once(node, timeout_sec=0.2)
+    except KeyboardInterrupt:
+        pass
+    node.destroy_node()
+    rclpy.shutdown()
