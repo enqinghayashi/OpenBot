@@ -183,3 +183,11 @@ def summarize_csv(path):
     return '\n'.join(lines)
 
 
+def run_stdin(sink, lines, clock, seconds):
+    deadline = clock() + seconds
+    for line in lines:
+        if clock() >= deadline or sink.full:
+            break
+        line = line.strip()
+        if line:
+            sink.feed(line, clock())
