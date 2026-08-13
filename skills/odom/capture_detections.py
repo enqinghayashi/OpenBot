@@ -103,3 +103,6 @@ def classify_width(ws):
     return ('DISCRIMINATOR: w unimodal -> LABEL HOPPING / projector jitter')
 
 
+class CsvSink(object):
+    """Streams rows to the file; keeps only O(labels) counters."""
+
