@@ -191,3 +191,5 @@ def run_stdin(sink, lines, clock, seconds):
         line = line.strip()
         if line:
             sink.feed(line, clock())
+
+
