@@ -50,3 +50,5 @@ def load_ref_resolver():
     except ImportError:
         return (lambda s: s), ('instance_labels NOT importable -- using the '
                                'walk target label verbatim')
+
+
