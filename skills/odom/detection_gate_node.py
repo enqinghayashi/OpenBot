@@ -37,3 +37,16 @@ SETTLE_S = 2.0
 LOG_EVERY_S = 2.0
 
 
+def load_ref_resolver():
+    """Same try-import fallback as walk_node.py:119-121.  Returns (fn, note)."""
+    try:
+        from instance_labels import ref_to_label            # box layout
+        return ref_to_label, 'instance_labels (box layout)'
+    except ImportError:
+        pass
+    try:
+        from skills.perception.instance_labels import ref_to_label   # repo layout
+        return ref_to_label, 'skills.perception.instance_labels (repo layout)'
+    except ImportError:
+        return (lambda s: s), ('instance_labels NOT importable -- using the '
+                               'walk target label verbatim')
