@@ -74,3 +74,9 @@ class _RosAdapter(object):
     def make_publisher(self):
         self._pub = self._node.create_publisher(self._String, GATED_TOPIC, 10)
 
+    def subscribe(self, on_target, on_detections):
+        self._node.create_subscription(
+            self._String, TARGET_TOPIC, lambda m: on_target(m.data), 10)
+        self._node.create_subscription(
+            self._String, BODY_TOPIC, lambda m: on_detections(m.data), 10)
+
