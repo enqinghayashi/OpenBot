@@ -85,3 +85,9 @@ class _RosAdapter(object):
         msg.data = text
         self._pub.publish(msg)
 
+    def shutdown(self):
+        try:
+            self._node.destroy_node()
+            self._rclpy.shutdown()
+        except Exception:
+            pass
