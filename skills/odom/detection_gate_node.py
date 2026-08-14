@@ -136,3 +136,11 @@ def run(ros, clock, args, resolver=None):
         lock.close()
 
 
+def parse_args(argv=None):
+    p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    p.add_argument('--noise-floor-m', type=float, default=gc.NOISE_FLOOR_DEFAULT_M)
+    p.add_argument('--passthrough', action='store_true',
+                   help='kill-switch: relay every message unchanged')
+    p.add_argument('--lock-path', default=LOCK_PATH)
+    p.add_argument('--settle-s', type=float, default=SETTLE_S)
+    return p.parse_args(argv)
