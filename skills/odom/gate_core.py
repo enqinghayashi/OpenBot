@@ -25,3 +25,11 @@ REACQ_DEFAULT_S = 1.0          # INFERRED: matches the doc's >= 1 s dropout
 STOP_WORDS = ('stop', 'abort', '')
 
 
+def _num(v):
+    if isinstance(v, bool) or v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if (math.isnan(f) or math.isinf(f)) else f
