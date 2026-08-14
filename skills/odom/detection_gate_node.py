@@ -166,3 +166,5 @@ def install_signal_handlers():
     import signal
     for name in ('SIGINT', 'SIGTERM'):
         signal.signal(getattr(signal, name), _on_signal)
+
+
