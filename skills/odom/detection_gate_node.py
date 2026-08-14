@@ -134,3 +134,5 @@ def run(ros, clock, args, resolver=None):
         return RC_OK
     finally:
         lock.close()
+
+
