@@ -91,3 +91,5 @@ class _RosAdapter(object):
             self._rclpy.shutdown()
         except Exception:
             pass
+
+
