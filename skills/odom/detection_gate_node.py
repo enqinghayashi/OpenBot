@@ -71,3 +71,6 @@ class _RosAdapter(object):
     def count_publishers(self, topic):
         return self._node.count_publishers(topic)
 
+    def make_publisher(self):
+        self._pub = self._node.create_publisher(self._String, GATED_TOPIC, 10)
+
