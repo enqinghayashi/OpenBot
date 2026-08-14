@@ -80,3 +80,8 @@ class _RosAdapter(object):
         self._node.create_subscription(
             self._String, BODY_TOPIC, lambda m: on_detections(m.data), 10)
 
+    def publish(self, text):
+        msg = self._String()
+        msg.data = text
+        self._pub.publish(msg)
+
