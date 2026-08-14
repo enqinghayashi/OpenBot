@@ -68,3 +68,6 @@ class _RosAdapter(object):
     def spin_once(self, timeout_s):
         self._rclpy.spin_once(self._node, timeout_sec=timeout_s)
 
+    def count_publishers(self, topic):
+        return self._node.count_publishers(topic)
+
