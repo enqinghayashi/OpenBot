@@ -144,3 +144,8 @@ def parse_args(argv=None):
     p.add_argument('--lock-path', default=LOCK_PATH)
     p.add_argument('--settle-s', type=float, default=SETTLE_S)
     return p.parse_args(argv)
+
+
+_SIGNALLED = []
+
+
