@@ -93,3 +93,44 @@ class _RosAdapter(object):
             pass
 
 
+def run(ros, clock, args, resolver=None):
+    lock = acquire_lock(args.lock_path)
+    if lock is None:
+        log('LOCK: %s is held by another detection_gate -- exiting' % args.lock_path)
+        return RC_LOCK
+    try:
+        t0 = clock.now()
+        while clock.now() - t0 < args.settle_s:
+            ros.spin_once(0.1)
+        n = ros.count_publishers(GATED_TOPIC)
+        if oc.decide_startup(n) == 'REFUSE':
+            log('REFUSE: %d publisher(s) already on %s -- not publishing'
+                % (n, GATED_TOPIC))
+            return RC_REFUSED
+        ros.make_publisher()
+        if resolver is None:
+            resolver, note = load_ref_resolver()
+            log('gate: ref resolver = %s' % note)
+        gate = gc.TargetGate(noise_floor_m=args.noise_floor_m)
+        core = gc.RelayCore(gate, resolver, passthrough=args.passthrough)
+        state = {'last_log': clock.now()}
+
+        def on_target(text):
+            core.on_target(text)
+
+        def on_det(raw):
+            now = clock.now()
+            out = core.on_detections(raw, now)
+            if out is not None:
+                ros.publish(out)
+            if core.label is not None and now - state['last_log'] >= LOG_EVERY_S:
+                state['last_log'] = now
+                log('gate: label=%s accepted=%d dropped=%d R=%.3f' % (
+                    core.label, gate.accepted, gate.dropped, gate.last_radius))
+
+        ros.subscribe(on_target, on_det)
+        while ros.ok():
+            ros.spin_once(0.1)
+        return RC_OK
+    finally:
+        lock.close()
