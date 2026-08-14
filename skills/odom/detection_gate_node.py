@@ -159,3 +159,10 @@ def _on_signal(signum, frame):
     raise KeyboardInterrupt
 
 
+def install_signal_handlers():
+    """Explicit handlers: an inherited SIG_IGN (nohup ... & in a non-interactive
+    shell) means Python installs NONE by itself, and rclpy.init() may replace
+    SIGINT again, so main() calls this before AND after _RosAdapter()."""
+    import signal
+    for name in ('SIGINT', 'SIGTERM'):
+        signal.signal(getattr(signal, name), _on_signal)
