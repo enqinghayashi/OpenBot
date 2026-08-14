@@ -182,3 +182,7 @@ def main(argv=None):
         if ros is not None:
             ros.shutdown()
     return rc
+
+
+if __name__ == '__main__':
+    sys.exit(main())
