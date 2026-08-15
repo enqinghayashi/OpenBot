@@ -125,3 +125,13 @@ class RelayCore(object):
         self.passthrough = bool(passthrough)
         self.label = None
 
+    def on_target(self, text):
+        cmd = (text or '').strip().lower()
+        if cmd in STOP_WORDS:
+            new = None
+        else:
+            new = (self._resolve(cmd) or '').strip().lower() or None
+        if new != self.label:
+            self.gate.reset()
+        self.label = new
+
