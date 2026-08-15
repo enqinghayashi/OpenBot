@@ -65,3 +65,9 @@ class TargetGate(object):
         self._last_stamp = None
         self._last_recv = None
 
+    def _dt(self, det, recv_t):
+        s = _stamp(det)
+        if s is not None and self._last_stamp is not None:
+            return max(0.0, s - self._last_stamp)
+        return max(0.0, recv_t - self._last_recv)
+
