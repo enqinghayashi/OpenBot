@@ -76,3 +76,7 @@ class TargetGate(object):
         self._last_stamp = _stamp(det)
         self._last_recv = recv_t
 
+    @staticmethod
+    def _best(dets):
+        return max(dets, key=lambda d: _num(d.get('conf')) or 0.0)
+
