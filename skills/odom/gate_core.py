@@ -44,3 +44,5 @@ def _stamp(det):
 def radius(noise_floor_m, vx_max, yaw_rate_max, d_last_m, dt_s):
     """Acceptance radius around the last accepted (x, y)."""
     return noise_floor_m + (vx_max + yaw_rate_max * d_last_m) * dt_s
+
+
