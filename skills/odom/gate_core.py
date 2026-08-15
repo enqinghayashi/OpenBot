@@ -47,3 +47,16 @@ def radius(noise_floor_m, vx_max, yaw_rate_max, d_last_m, dt_s):
 
 
 class TargetGate(object):
+    def __init__(self, noise_floor_m=NOISE_FLOOR_DEFAULT_M,
+                 vx_max=VX_MAX_DEFAULT, yaw_rate_max=YAW_RATE_MAX_DEFAULT,
+                 dt_cap_s=DT_CAP_DEFAULT_S, reacq_s=REACQ_DEFAULT_S):
+        self.noise_floor_m = float(noise_floor_m)
+        self.vx_max = float(vx_max)
+        self.yaw_rate_max = float(yaw_rate_max)
+        self.dt_cap_s = float(dt_cap_s)
+        self.reacq_s = float(reacq_s)
+        self.accepted = 0
+        self.dropped = 0
+        self.last_radius = 0.0
+        self.reset()
+
