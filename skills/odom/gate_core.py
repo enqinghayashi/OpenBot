@@ -135,3 +135,25 @@ class RelayCore(object):
             self.gate.reset()
         self.label = new
 
+    def on_detections(self, raw, recv_t):
+        """Returns the JSON text to republish, or None to publish nothing."""
+        if self.passthrough or self.label is None:
+            return raw
+        try:
+            dets = json.loads(raw)
+        except ValueError:
+            return raw
+        if not isinstance(dets, list):
+            return raw
+        same = [d for d in dets
+                if isinstance(d, dict) and str(d.get('label')).lower() == self.label]
+        if not same:
+            return raw if dets else None
+        kept_same = self.gate.filter(same, recv_t)
+        if len(kept_same) == len(same):
+            return raw
+        kept_ids = set(id(d) for d in kept_same)
+        same_ids = set(id(d) for d in same)
+        out = [d for d in dets
+               if id(d) not in same_ids or id(d) in kept_ids]
+        return json.dumps(out) if out else None
