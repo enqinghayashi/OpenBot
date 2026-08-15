@@ -46,3 +46,4 @@ def radius(noise_floor_m, vx_max, yaw_rate_max, d_last_m, dt_s):
     return noise_floor_m + (vx_max + yaw_rate_max * d_last_m) * dt_s
 
 
+class TargetGate(object):
