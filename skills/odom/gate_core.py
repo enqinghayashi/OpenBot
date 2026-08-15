@@ -119,3 +119,9 @@ class TargetGate(object):
 class RelayCore(object):
     """Message-level relay logic around a TargetGate."""
 
+    def __init__(self, gate=None, resolver=None, passthrough=False):
+        self.gate = gate if gate is not None else TargetGate()
+        self._resolve = resolver if resolver is not None else (lambda s: s)
+        self.passthrough = bool(passthrough)
+        self.label = None
+
