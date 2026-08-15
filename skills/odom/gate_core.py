@@ -60,3 +60,8 @@ class TargetGate(object):
         self.last_radius = 0.0
         self.reset()
 
+    def reset(self):
+        self._last_xy = None
+        self._last_stamp = None
+        self._last_recv = None
+
