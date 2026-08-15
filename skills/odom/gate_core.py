@@ -35,3 +35,7 @@ def _num(v):
     return None if (math.isnan(f) or math.isinf(f)) else f
 
 
+def _stamp(det):
+    """Capture stamp as float, or None (the G18 _det_stamp rule,
+    walk_node.py:1498-1511)."""
+    return _num(det.get('stamp'))
