@@ -80,3 +80,37 @@ class TargetGate(object):
     def _best(dets):
         return max(dets, key=lambda d: _num(d.get('conf')) or 0.0)
 
+    def filter(self, same, recv_t):
+        """same: the same-label detections of ONE message.  Returns the kept
+        subset (order preserved).  Entries without numeric x/y are kept."""
+        cand = [d for d in same
+                if _num(d.get('x')) is not None and _num(d.get('y')) is not None]
+        if not cand:
+            return list(same)
+        best = self._best(cand)
+        acquire = (self._last_xy is None
+                   or recv_t - self._last_recv >= self.reacq_s
+                   or self._dt(best, recv_t) > self.dt_cap_s)
+        if acquire:
+            self._take(best, recv_t)
+            self.accepted += 1
+            return list(same)
+        lx, ly = self._last_xy
+        d_last = math.hypot(lx, ly)
+        cand_ids = set(id(d) for d in cand)
+        keep_ids = set()
+        kept_cand = []
+        for d in cand:
+            dt = self._dt(d, recv_t)
+            r = radius(self.noise_floor_m, self.vx_max, self.yaw_rate_max,
+                       d_last, dt)
+            self.last_radius = r
+            if math.hypot(_num(d['x']) - lx, _num(d['y']) - ly) <= r:
+                keep_ids.add(id(d))
+                kept_cand.append(d)
+        out = [d for d in same if id(d) in keep_ids or id(d) not in cand_ids]
+        self.dropped += len(cand) - len(kept_cand)
+        if kept_cand:
+            self._take(self._best(kept_cand), recv_t)
+            self.accepted += 1
+        return out
