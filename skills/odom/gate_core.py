@@ -33,3 +33,5 @@ def _num(v):
     except (TypeError, ValueError):
         return None
     return None if (math.isnan(f) or math.isinf(f)) else f
+
+
