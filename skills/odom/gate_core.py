@@ -116,3 +116,6 @@ class TargetGate(object):
         return out
 
 
+class RelayCore(object):
+    """Message-level relay logic around a TargetGate."""
+
