@@ -99,3 +99,12 @@ def wrap_pi(a):
     return (a + math.pi) % (2.0 * math.pi) - math.pi
 
 
+def quat_to_yaw(w, x, y, z):
+    """Yaw (rotation about +z) from a quaternion.  The SAME formula the
+    consumer uses, skills/locomotion/walk_node.py:763-769:
+        yaw = math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y),
+            1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+    """
+    return math.atan2(2.0 * (w * z + x * y),
+                      1.0 - 2.0 * (y * y + z * z))
