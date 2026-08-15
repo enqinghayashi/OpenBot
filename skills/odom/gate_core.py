@@ -71,3 +71,8 @@ class TargetGate(object):
             return max(0.0, s - self._last_stamp)
         return max(0.0, recv_t - self._last_recv)
 
+    def _take(self, det, recv_t):
+        self._last_xy = (_num(det.get('x')), _num(det.get('y')))
+        self._last_stamp = _stamp(det)
+        self._last_recv = recv_t
+
