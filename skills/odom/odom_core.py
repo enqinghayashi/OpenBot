@@ -138,3 +138,5 @@ def _axis_mat(axis, ang):
 def _mm(a, b):
     return tuple(tuple(sum(a[i][k] * b[k][j] for k in range(3))
                        for j in range(3)) for i in range(3))
+
+
