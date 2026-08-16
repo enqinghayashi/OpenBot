@@ -208,3 +208,15 @@ def decide_runtime(total_publisher_count, ours=1):
     return 'OK' if total_publisher_count <= ours else 'YIELD'
 
 
+def odometry_fields(state):
+    """Plain-dict form of the nav_msgs/Odometry the node publishes.  No twist,
+    no covariance claims."""
+    qx, qy, qz, qw = yaw_to_quat(state['yaw'])
+    return {
+        'frame_id': FRAME_ID,
+        'child_frame_id': CHILD_FRAME_ID,
+        'x': float(state['x']),
+        'y': float(state['y']),
+        'z': 0.0,
+        'qx': qx, 'qy': qy, 'qz': qz, 'qw': qw,
+    }
