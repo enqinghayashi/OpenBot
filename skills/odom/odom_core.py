@@ -182,3 +182,17 @@ default_fk = foot_in_pelvis
 # --------------------------------------------------------------------------
 # freshness, startup, runtime
 # --------------------------------------------------------------------------
+def is_fresh(now, t_sample, max_age_s=MAX_SAMPLE_AGE_S):
+    """True only for a finite sample time that is neither future-dated beyond
+    FUTURE_TOL_S nor older than max_age_s.  None is never fresh."""
+    if t_sample is None:
+        return False
+    try:
+        age = float(now) - float(t_sample)
+    except (TypeError, ValueError):
+        return False
+    if math.isnan(age) or math.isinf(age):
+        return False
+    if age < -FUTURE_TOL_S:
+        return False
+    return age <= max_age_s
