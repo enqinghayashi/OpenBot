@@ -238,3 +238,18 @@ class OdomIntegrator(object):
     samples; increments across a gap > max_dt_s are skipped.  No gyro fallback.
     """
 
+    def __init__(self, foot_fk=default_fk, max_dt_s=MAX_DT_S,
+                 stance_hysteresis_m=STANCE_HYSTERESIS_M):
+        self._fk = foot_fk
+        self.max_dt_s = float(max_dt_s)
+        self.hyst = float(stance_hysteresis_m)
+        self.rejected = 0
+        self.accepted = 0
+        self.x = 0.0
+        self.y = 0.0
+        self.yaw = 0.0
+        self._t_prev = None
+        self._yaw_origin = None
+        self._fw_prev = None      # (left, right) world coords, last sample
+        self._stance = None       # 0 means left, 1 means right
+
