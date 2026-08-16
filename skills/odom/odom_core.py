@@ -174,3 +174,11 @@ def foot_in_pelvis(q12, side):
     p, r = leg_fk(q12, side)
     o = _mv(r, SOLE_PT_IN_ANKLE_ROLL)
     return (p[0] + o[0], p[1] + o[1], p[2] + o[2])
+
+
+default_fk = foot_in_pelvis
+
+
+# --------------------------------------------------------------------------
+# freshness, startup, runtime
+# --------------------------------------------------------------------------
