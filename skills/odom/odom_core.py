@@ -161,3 +161,5 @@ def leg_fk(q12, side):
             r = _mm(r, _quat_to_mat(*fq))
         r = _mm(r, _axis_mat(axis, float(q12[i])))
     return p, r
+
+
