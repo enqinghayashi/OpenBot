@@ -126,3 +126,10 @@ def _quat_to_mat(w, x, y, z):
     )
 
 
+def _axis_mat(axis, ang):
+    c, s = math.cos(ang), math.sin(ang)
+    if axis == (1, 0, 0):
+        return ((1, 0, 0), (0, c, -s), (0, s, c))
+    if axis == (0, 1, 0):
+        return ((c, 0, s), (0, 1, 0), (-s, 0, c))
+    return ((c, -s, 0), (s, c, 0), (0, 0, 1))
