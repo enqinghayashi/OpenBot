@@ -203,3 +203,6 @@ def decide_startup(foreign_publisher_count):
     return 'PROCEED' if foreign_publisher_count == 0 else 'REFUSE'
 
 
+def decide_runtime(total_publisher_count, ours=1):
+    """'OK' while the only publisher is ours, 'YIELD' once another appears."""
+    return 'OK' if total_publisher_count <= ours else 'YIELD'
