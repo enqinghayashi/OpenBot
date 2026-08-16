@@ -168,3 +168,9 @@ def ankle_in_pelvis(q12, side):
     return leg_fk(q12, side)[0]
 
 
+def foot_in_pelvis(q12, side):
+    """Sole point in the pelvis frame (x, y, z): the ankle_roll origin plus the
+    flat-foot sole point rotated by the ankle_roll orientation (INFERRED)."""
+    p, r = leg_fk(q12, side)
+    o = _mv(r, SOLE_PT_IN_ANKLE_ROLL)
+    return (p[0] + o[0], p[1] + o[1], p[2] + o[2])
