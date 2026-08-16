@@ -227,3 +227,5 @@ def odometry_fields(state):
 # --------------------------------------------------------------------------
 def _finite(v):
     return not (math.isnan(v) or math.isinf(v))
+
+
