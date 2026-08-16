@@ -229,3 +229,12 @@ def _finite(v):
     return not (math.isnan(v) or math.isinf(v))
 
 
+class OdomIntegrator(object):
+    """IMU-yaw + stance-foot-FK planar odometry.
+
+    update(t, quat_wxyz, q12) -> {'x','y','yaw','t'} or None (rejected).
+    Yaw is ABSOLUTE from the IMU quaternion each sample.  Position integrates
+    -(R_k f_k - R_{k-1} f_{k-1}) for the stance foot chosen at k-1 on BOTH
+    samples; increments across a gap > max_dt_s are skipped.  No gyro fallback.
+    """
+
