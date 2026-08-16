@@ -140,3 +140,5 @@ def _mm(a, b):
                        for j in range(3)) for i in range(3))
 
 
+def _mv(a, v):
+    return tuple(sum(a[i][k] * v[k] for k in range(3)) for i in range(3))
