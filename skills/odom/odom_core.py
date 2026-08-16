@@ -198,3 +198,6 @@ def is_fresh(now, t_sample, max_age_s=MAX_SAMPLE_AGE_S):
     return age <= max_age_s
 
 
+def decide_startup(foreign_publisher_count):
+    """'PROCEED' only when nobody else publishes the odom topic."""
+    return 'PROCEED' if foreign_publisher_count == 0 else 'REFUSE'
