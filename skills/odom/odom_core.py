@@ -392,3 +392,11 @@ class BodyPoseFilter(object):
         self.min_samples = int(min_samples)
         self._buf = []
 
+    def add(self, sample):
+        if sample is None:
+            return
+        self._buf.append(sample)
+        cut = sample["t"] - self.window_s
+        while self._buf and self._buf[0]["t"] < cut:
+            self._buf.pop(0)
+
