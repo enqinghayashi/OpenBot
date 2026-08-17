@@ -378,3 +378,11 @@ def _median(vals):
     return v[n // 2] if n % 2 else 0.5 * (v[n // 2 - 1] + v[n // 2])
 
 
+class BodyPoseFilter(object):
+    """Rolling median of body_pose_sample() over BODY_POSE_WINDOW_S.
+
+    pose(now) -> {"src": "measured", "torso_z", "pitch", "roll",
+    "waist_pitch", "t", "n", "via": "odom"} or None when fewer than
+    BODY_POSE_MIN_SAMPLES fresh samples sit in the window (never a stale or
+    fabricated pose)."""
+
