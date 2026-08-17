@@ -400,3 +400,13 @@ class BodyPoseFilter(object):
         while self._buf and self._buf[0]["t"] < cut:
             self._buf.pop(0)
 
+    def pose(self, now):
+        fresh = [s for s in self._buf
+                 if is_fresh(now, s["t"], max_age_s=self.window_s + MAX_SAMPLE_AGE_S)]
+        if len(fresh) < self.min_samples:
+            return None
+        out = {"src": "measured", "via": "odom", "n": len(fresh),
+               "t": fresh[-1]["t"]}
+        for k in ("torso_z", "pitch", "roll", "waist_pitch"):
+            out[k] = _median([s[k] for s in fresh])
+        return out
