@@ -306,3 +306,34 @@ class OdomIntegrator(object):
         self.yaw = wrap_pi(imu_yaw - self._yaw_origin)
         self.accepted += 1
         return {'x': self.x, 'y': self.y, 'yaw': self.yaw, 't': t}
+
+
+# --------------------------------------------------------------------------
+# a measured body pose for the point-cloud lane
+#
+# gateway/pointcloud_client.py (pc_client.py on the robot)
+# refuses point-cloud verdicts with UNKNOWN(pose_unmeasured)
+# unless it can compare TWO measured poses (POSE_KEYS:
+# torso_z / pitch / roll / waist_pitch, src "measured";
+# equal = |dz| <= 1 cm, |d angle| <= 1 deg)
+# with no writer `pose` verb available, this
+# process reads
+# rt/lowstate, so it hands the pose over read-only,
+# no 250 Hz writer involved
+#
+#   torso_z      torso_link origin above the LOWER sole,
+#                along gravity.  Waist origin offset
+#                (pelvis -> waist_roll_link (-0.0039635, 0, 0.044),
+#                XML) rotated by waist yaw
+#   pitch, roll  IMU frame, ZYX Euler from the quaternion
+#   waist_pitch  motor 14 (waist locked, constant still a key)
+# for pose EQUALITY between two moments, not calibration
+# --------------------------------------------------------------------------
+WAIST_ROLL_IN_PELVIS = (-0.0039635, 0.0, 0.044)   # waist_roll_link pos, from the XML
+WAIST_YAW_IDX, WAIST_ROLL_IDX, WAIST_PITCH_IDX = 12, 13, 14
+BODY_POSE_WINDOW_S = 0.5      # rolling median window, sway/noise
+BODY_POSE_MIN_SAMPLES = 5
+BODY_POSE_HZ = 10.0
+BODY_POSE_TOPIC = '/openbot/body_pose'   # std_msgs/String JSON, BodyPoseFilter.pose
+
+
