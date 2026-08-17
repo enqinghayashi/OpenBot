@@ -48,3 +48,5 @@ LEG_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           'odom_sdk_leg.py')
 
 
+class LegDied(Exception):
+    pass
