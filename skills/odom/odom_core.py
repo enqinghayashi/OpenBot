@@ -346,3 +346,27 @@ def quat_to_pitch_roll(w, x, y, z):
     return pitch, roll
 
 
+def body_pose_sample(t, quat_wxyz, q12, waist3):
+    """One instantaneous pose dict, or None for unusable input."""
+    try:
+        w, x, y, z = (float(v) for v in quat_wxyz)
+        q = [float(v) for v in q12]
+        wy, wr, wp = (float(v) for v in waist3)
+        t = float(t)
+    except (TypeError, ValueError):
+        return None
+    vals = [w, x, y, z, wy, wr, wp, t] + q
+    if len(q) != 12 or not all(_finite(v) for v in vals):
+        return None
+    if abs(math.sqrt(w * w + x * x + y * y + z * z) - 1.0) > QUAT_NORM_TOL:
+        return None
+    r = _quat_to_mat(w, x, y, z)
+    c, sn = math.cos(wy), math.sin(wy)
+    ox, oy, oz = WAIST_ROLL_IN_PELVIS
+    torso = (c * ox - sn * oy, sn * ox + c * oy, oz)
+    soles = (_mv(r, foot_in_pelvis(q, LEFT)), _mv(r, foot_in_pelvis(q, RIGHT)))
+    lower = soles[0] if soles[0][2] <= soles[1][2] else soles[1]
+    tz = _mv(r, torso)[2] - lower[2]
+    pitch, roll = quat_to_pitch_roll(w, x, y, z)
+    return {"t": t, "torso_z": tz, "pitch": pitch, "roll": roll,
+            "waist_pitch": wp}
