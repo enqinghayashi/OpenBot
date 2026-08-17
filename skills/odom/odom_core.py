@@ -344,3 +344,5 @@ def quat_to_pitch_roll(w, x, y, z):
     pitch = math.asin(sinp)
     roll = math.atan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y))
     return pitch, roll
+
+
