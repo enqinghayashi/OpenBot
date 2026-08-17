@@ -65,3 +65,12 @@ def build_leg_env(environ):
     return env
 
 
+def acquire_lock(path):
+    """flock the single-instance lock; returns the open file or None if held."""
+    fh = open(path, 'a+')
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (IOError, OSError):
+        fh.close()
+        return None
+    return fh
