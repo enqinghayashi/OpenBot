@@ -337,3 +337,10 @@ BODY_POSE_HZ = 10.0
 BODY_POSE_TOPIC = '/openbot/body_pose'   # std_msgs/String JSON, BodyPoseFilter.pose
 
 
+def quat_to_pitch_roll(w, x, y, z):
+    """(pitch, roll) in radians, ZYX Euler, of a unit quaternion wxyz."""
+    sinp = 2.0 * (w * y - z * x)
+    sinp = max(-1.0, min(1.0, sinp))
+    pitch = math.asin(sinp)
+    roll = math.atan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y))
+    return pitch, roll
