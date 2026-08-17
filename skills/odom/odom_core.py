@@ -386,3 +386,9 @@ class BodyPoseFilter(object):
     BODY_POSE_MIN_SAMPLES fresh samples sit in the window (never a stale or
     fabricated pose)."""
 
+    def __init__(self, window_s=BODY_POSE_WINDOW_S,
+                 min_samples=BODY_POSE_MIN_SAMPLES):
+        self.window_s = float(window_s)
+        self.min_samples = int(min_samples)
+        self._buf = []
+
