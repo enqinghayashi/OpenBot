@@ -253,3 +253,7 @@ class OdomIntegrator(object):
         self._fw_prev = None      # (left, right) world coords, last sample
         self._stance = None       # 0 means left, 1 means right
 
+    def _reject(self):
+        self.rejected += 1
+        return None
+
