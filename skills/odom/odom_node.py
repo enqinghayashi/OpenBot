@@ -76,3 +76,6 @@ def acquire_lock(path):
     return fh
 
 
+class SdkLeg(object):
+    """Spawns odom_sdk_leg.py and yields parsed sample dicts."""
+
