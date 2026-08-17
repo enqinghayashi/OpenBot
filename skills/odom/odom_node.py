@@ -52,3 +52,6 @@ class LegDied(Exception):
     pass
 
 
+def log(msg):
+    sys.stderr.write(msg + '\n')
+    sys.stderr.flush()
