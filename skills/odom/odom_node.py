@@ -79,3 +79,10 @@ def acquire_lock(path):
 class SdkLeg(object):
     """Spawns odom_sdk_leg.py and yields parsed sample dicts."""
 
+    def __init__(self, iface='eth0', script=LEG_SCRIPT):
+        self._iface = iface
+        self._script = script
+        self._proc = None
+        self._buf = ''
+        self._lines = collections.deque(maxlen=500)
+
