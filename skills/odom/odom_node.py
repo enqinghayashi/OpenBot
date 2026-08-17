@@ -57,3 +57,9 @@ def log(msg):
     sys.stderr.flush()
 
 
+def build_leg_env(environ):
+    """Scrubbed env for the SDK leg (mirrors walk_node.py:473): the leg inserts
+    its own SDK path, so PYTHONPATH must be empty."""
+    env = dict(environ)
+    env['PYTHONPATH'] = ''
+    return env
