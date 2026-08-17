@@ -257,3 +257,52 @@ class OdomIntegrator(object):
         self.rejected += 1
         return None
 
+    def update(self, t, quat_wxyz, q12):
+        try:
+            t = float(t)
+            w, x, y, z = (float(v) for v in quat_wxyz)
+            q = [float(v) for v in q12]
+        except (TypeError, ValueError):
+            return self._reject()
+        if len(q) != 12 or not _finite(t):
+            return self._reject()
+        if not all(_finite(v) for v in (w, x, y, z)):
+            return self._reject()
+        if not all(_finite(v) for v in q):
+            return self._reject()
+        norm = math.sqrt(w * w + x * x + y * y + z * z)
+        if abs(norm - 1.0) > QUAT_NORM_TOL:
+            return self._reject()
+        if self._t_prev is not None and t <= self._t_prev:
+            return self._reject()
+
+        imu_yaw = quat_to_yaw(w, x, y, z)
+        first = self._yaw_origin is None
+        if first:
+            self._yaw_origin = imu_yaw
+        r = _quat_to_mat(w, x, y, z)
+        fw = (_mv(r, self._fk(q, LEFT)), _mv(r, self._fk(q, RIGHT)))
+
+        if first:
+            self._stance = 0 if fw[0][2] <= fw[1][2] else 1
+        else:
+            if t - self._t_prev <= self.max_dt_s:
+                s = self._stance
+                dx = -(fw[s][0] - self._fw_prev[s][0])
+                dy = -(fw[s][1] - self._fw_prev[s][1])
+                # IMU world -> odom, yaw origin = first sample
+                c = math.cos(-self._yaw_origin)
+                sn = math.sin(-self._yaw_origin)
+                self.x += c * dx - sn * dy
+                self.y += sn * dx + c * dy
+                other = 1 - s
+                if fw[other][2] < fw[s][2] - self.hyst:
+                    self._stance = other
+            else:
+                # gap: hold position, re-set baseline + stance
+                self._stance = 0 if fw[0][2] <= fw[1][2] else 1
+        self._fw_prev = fw
+        self._t_prev = t
+        self.yaw = wrap_pi(imu_yaw - self._yaw_origin)
+        self.accepted += 1
+        return {'x': self.x, 'y': self.y, 'yaw': self.yaw, 't': t}
