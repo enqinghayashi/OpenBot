@@ -372,3 +372,7 @@ def body_pose_sample(t, quat_wxyz, q12, waist3):
             "waist_pitch": wp}
 
 
+def _median(vals):
+    v = sorted(vals)
+    n = len(v)
+    return v[n // 2] if n % 2 else 0.5 * (v[n // 2 - 1] + v[n // 2])
