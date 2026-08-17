@@ -370,3 +370,5 @@ def body_pose_sample(t, quat_wxyz, q12, waist3):
     pitch, roll = quat_to_pitch_roll(w, x, y, z)
     return {"t": t, "torso_z": tz, "pitch": pitch, "roll": roll,
             "waist_pitch": wp}
+
+
