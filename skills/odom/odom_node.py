@@ -212,3 +212,4 @@ class _RosAdapter(object):
             pass
 
 
+class _Clock(object):
