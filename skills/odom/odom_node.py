@@ -86,3 +86,21 @@ class SdkLeg(object):
         self._buf = ''
         self._lines = collections.deque(maxlen=500)
 
+    def start(self, timeout_s=LEG_READY_TIMEOUT_S):
+        python = os.environ.get('ODOM_SDK_PYTHON', sys.executable)
+        try:
+            self._proc = subprocess.Popen(
+                [python, self._script, self._iface],
+                stdout=subprocess.PIPE, env=build_leg_env(os.environ),
+                universal_newlines=True)
+        except OSError as exc:
+            raise LegDied('cannot spawn SDK leg (%s): %s' % (python, exc))
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            line = self._next_line(0.2)
+            if line is None:
+                continue
+            if line.strip() == LEG_READY_LINE:
+                return True
+        raise LegDied('SDK leg not READY within %.0fs' % timeout_s)
+
