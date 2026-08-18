@@ -160,3 +160,6 @@ class _RosAdapter(object):
         self._node = rclpy.create_node('odom_node')
         self._pub = None
 
+    def ok(self):
+        return self._rclpy.ok()
+
