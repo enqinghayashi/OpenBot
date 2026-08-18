@@ -121,3 +121,8 @@ class SdkLeg(object):
             line, self._buf = self._buf.split('\n', 1)
             self._lines.append(line)
 
+    def _next_line(self, timeout_s):
+        if not self._lines:
+            self._fill(timeout_s)
+        return self._lines.popleft() if self._lines else None
+
