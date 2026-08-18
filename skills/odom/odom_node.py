@@ -213,3 +213,5 @@ class _RosAdapter(object):
 
 
 class _Clock(object):
+    def now(self):
+        return time.time()
