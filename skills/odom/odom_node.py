@@ -297,3 +297,11 @@ def _run_locked(ros, leg, clock, args):
     return RC_OK
 
 
+def parse_args(argv=None):
+    p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    p.add_argument('--iface', default='eth0')
+    p.add_argument('--lock-path', default=LOCK_PATH)
+    p.add_argument('--settle-s', type=float, default=DISCOVERY_SETTLE_S)
+    p.add_argument('--recheck-s', type=float, default=RECHECK_S)
+    p.add_argument('--log-s', type=float, default=LOG_EVERY_S)
+    return p.parse_args(argv)
