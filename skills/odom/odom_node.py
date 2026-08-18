@@ -151,3 +151,12 @@ class SdkLeg(object):
 class _RosAdapter(object):
     """rclpy wrapper.  rclpy / nav_msgs are imported HERE, lazily."""
 
+    def __init__(self):
+        import rclpy
+        from nav_msgs.msg import Odometry
+        self._rclpy = rclpy
+        self._Odometry = Odometry
+        rclpy.init()
+        self._node = rclpy.create_node('odom_node')
+        self._pub = None
+
