@@ -305,3 +305,8 @@ def parse_args(argv=None):
     p.add_argument('--recheck-s', type=float, default=RECHECK_S)
     p.add_argument('--log-s', type=float, default=LOG_EVERY_S)
     return p.parse_args(argv)
+
+
+_SIGNALLED = []
+
+
