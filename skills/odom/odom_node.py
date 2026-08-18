@@ -146,3 +146,5 @@ class SdkLeg(object):
                 self._proc.wait(2.0)
             except Exception:
                 self._proc.kill()
+
+
