@@ -310,3 +310,11 @@ def parse_args(argv=None):
 _SIGNALLED = []
 
 
+def _on_signal(signum, frame):
+    """First SIGINT/SIGTERM -> KeyboardInterrupt (main() maps it to RC_OK and the
+    finally blocks run).  Later ones are swallowed so a second ^C / kill cannot
+    abort the shutdown half-way."""
+    if _SIGNALLED:
+        return
+    _SIGNALLED.append(signum)
+    raise KeyboardInterrupt
