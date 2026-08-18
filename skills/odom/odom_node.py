@@ -126,3 +126,16 @@ class SdkLeg(object):
             self._fill(timeout_s)
         return self._lines.popleft() if self._lines else None
 
+    def read(self, timeout_s):
+        """One parsed sample dict, or None on timeout.  Raises LegDied."""
+        line = self._next_line(timeout_s)
+        if line is None:
+            return None
+        try:
+            d = json.loads(line)
+            if isinstance(d, dict) and 'quat' in d and 'q' in d and 't' in d:
+                return d
+        except ValueError:
+            pass
+        return self.read(0.0) if self._lines else None   # skip junk line
+
