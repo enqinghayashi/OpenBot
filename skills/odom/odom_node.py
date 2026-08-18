@@ -190,3 +190,17 @@ class _RosAdapter(object):
         msg.data = json.dumps(pose, sort_keys=True)
         self._body_pub.publish(msg)
 
+    def publish(self, f):
+        msg = self._Odometry()
+        msg.header.stamp = self._node.get_clock().now().to_msg()
+        msg.header.frame_id = f['frame_id']
+        msg.child_frame_id = f['child_frame_id']
+        msg.pose.pose.position.x = f['x']
+        msg.pose.pose.position.y = f['y']
+        msg.pose.pose.position.z = f['z']
+        msg.pose.pose.orientation.x = f['qx']
+        msg.pose.pose.orientation.y = f['qy']
+        msg.pose.pose.orientation.z = f['qz']
+        msg.pose.pose.orientation.w = f['qw']
+        self._pub.publish(msg)
+
