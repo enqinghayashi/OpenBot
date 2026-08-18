@@ -104,3 +104,20 @@ class SdkLeg(object):
                 return True
         raise LegDied('SDK leg not READY within %.0fs' % timeout_s)
 
+    def _fill(self, timeout_s):
+        """Raw os.read on the pipe fd (never the TextIOWrapper, so select()
+        and the buffer cannot disagree)."""
+        if self._proc.poll() is not None and not self._buf:
+            raise LegDied('SDK leg exited rc=%s' % self._proc.returncode)
+        fd = self._proc.stdout.fileno()
+        ready, _, _ = select.select([fd], [], [], timeout_s)
+        if not ready:
+            return
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            raise LegDied('SDK leg closed stdout')
+        self._buf += chunk.decode('utf-8', 'replace')
+        while '\n' in self._buf:
+            line, self._buf = self._buf.split('\n', 1)
+            self._lines.append(line)
+
