@@ -217,3 +217,17 @@ class _Clock(object):
         return time.time()
 
 
+def run(ros, leg, clock, args):
+    """Orchestration, fully injectable.  Returns the process exit code."""
+    lock = acquire_lock(args.lock_path)
+    if lock is None:
+        log('LOCK: %s is held by another odom_node -- exiting' % args.lock_path)
+        return RC_LOCK
+    try:
+        return _run_locked(ros, leg, clock, args)
+    finally:
+        try:
+            leg.close()
+        except Exception:
+            pass
+        lock.close()
