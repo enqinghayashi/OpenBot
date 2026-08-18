@@ -163,3 +163,6 @@ class _RosAdapter(object):
     def ok(self):
         return self._rclpy.ok()
 
+    def spin_once(self, timeout_s):
+        self._rclpy.spin_once(self._node, timeout_sec=timeout_s)
+
