@@ -139,3 +139,10 @@ class SdkLeg(object):
             pass
         return self.read(0.0) if self._lines else None   # skip junk line
 
+    def close(self):
+        if self._proc is not None and self._proc.poll() is None:
+            self._proc.terminate()
+            try:
+                self._proc.wait(2.0)
+            except Exception:
+                self._proc.kill()
