@@ -169,3 +169,17 @@ class _RosAdapter(object):
     def count_publishers(self, topic):
         return self._node.count_publishers(topic)
 
+    def make_publisher(self):
+        self._pub = self._node.create_publisher(self._Odometry, oc.ODOM_TOPIC, 10)
+        # measured body pose for the cloud lane
+        # (JSON String). optional: no std_msgs,
+        # still publish odometry.
+        self._body_pub = None
+        try:
+            from std_msgs.msg import String
+        except ImportError as e:
+            log('BODY_POSE: std_msgs not importable (%s) -- body pose OFF' % e)
+            return
+        self._String = String
+        self._body_pub = self._node.create_publisher(String, oc.BODY_POSE_TOPIC, 10)
+
