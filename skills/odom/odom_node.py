@@ -183,3 +183,10 @@ class _RosAdapter(object):
         self._String = String
         self._body_pub = self._node.create_publisher(String, oc.BODY_POSE_TOPIC, 10)
 
+    def publish_body(self, pose):
+        if self._body_pub is None:
+            return
+        msg = self._String()
+        msg.data = json.dumps(pose, sort_keys=True)
+        self._body_pub.publish(msg)
+
