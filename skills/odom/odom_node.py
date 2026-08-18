@@ -148,3 +148,6 @@ class SdkLeg(object):
                 self._proc.kill()
 
 
+class _RosAdapter(object):
+    """rclpy wrapper.  rclpy / nav_msgs are imported HERE, lazily."""
+
