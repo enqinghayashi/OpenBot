@@ -31,3 +31,22 @@ def sample_from_msg(msg, now):
     return {'t': now, 'quat': quat, 'q': q, 'qw': qw}
 
 
+def stream(sub, out, clock=time.time, hz=EMIT_HZ, max_lines=None):
+    """Poll-only loop: latest-wins decimation of the ~500 Hz stream to <= hz.
+    Returns the number of lines written (only differs from forever when
+    max_lines is given, which tests use)."""
+    period = 1.0 / hz
+    last_emit = 0.0
+    n = 0
+    while max_lines is None or n < max_lines:
+        msg = sub.Read(READ_TIMEOUT_S)
+        if msg is None:
+            continue
+        now = clock()
+        if now - last_emit < period - 1e-6:
+            continue
+        last_emit = now
+        out.write(json.dumps(sample_from_msg(msg, now)) + '\n')
+        out.flush()
+        n += 1
+    return n
