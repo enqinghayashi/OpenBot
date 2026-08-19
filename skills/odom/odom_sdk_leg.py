@@ -23,3 +23,9 @@ READ_TIMEOUT_S = 0.1
 READY_LINE = 'SDK_LEG_READY'
 
 
+def sample_from_msg(msg, now):
+    """Build the wire dict from an hg LowState_ message."""
+    quat = [float(msg.imu_state.quaternion[i]) for i in range(4)]   # order is wxyz
+    q = [float(msg.motor_state[i].q) for i in range(12)]            # motor idx 0-11
+    qw = [float(msg.motor_state[i].q) for i in range(12, 15)]       # waist idx 12-14
+    return {'t': now, 'quat': quat, 'q': q, 'qw': qw}
