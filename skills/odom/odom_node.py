@@ -310,3 +310,41 @@ def parse_args(argv=None):
 _SIGNALLED = []
 
 
+def _on_signal(signum, frame):
+    """First SIGINT/SIGTERM -> KeyboardInterrupt (main() maps it to RC_OK and the
+    finally blocks run).  Later ones are swallowed so a second ^C / kill cannot
+    abort the shutdown half-way."""
+    if _SIGNALLED:
+        return
+    _SIGNALLED.append(signum)
+    raise KeyboardInterrupt
+
+
+def install_signal_handlers():
+    """Explicit handlers: an inherited SIG_IGN (nohup ... & in a non-interactive
+    shell) means Python installs NONE by itself, and rclpy.init() may replace
+    SIGINT again, so main() calls this before AND after _RosAdapter()."""
+    import signal
+    for name in ('SIGINT', 'SIGTERM'):
+        signal.signal(getattr(signal, name), _on_signal)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    install_signal_handlers()
+    ros = None
+    try:
+        ros = _RosAdapter()
+        install_signal_handlers()
+        leg = SdkLeg(iface=args.iface)
+        rc = run(ros, leg, _Clock(), args)
+    except KeyboardInterrupt:
+        rc = RC_OK
+    finally:
+        if ros is not None:
+            ros.shutdown()
+    return rc
+
+
+if __name__ == '__main__':
+    sys.exit(main())
