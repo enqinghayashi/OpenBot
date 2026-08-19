@@ -96,3 +96,51 @@ NORMAL_BAND_MIN_M = 0.01
 NORMAL_MIN_PTS = 30
 
 
+def surface_normal_cam(pts_cam, xs, ys):
+    """(normal_cam, n_used, central) for one object's deprojected mask points.
+
+    ``pts_cam`` (N, 3) camera-frame points, ``xs`` / ``ys`` their depth-image
+    pixel columns / rows.  The normal is the least-variance axis of the
+    central-region points (see the NORMAL_* constants), flipped to point
+    toward the camera (camera z <= 0); ``central`` says whether the centre
+    region was used (False = the whole-mask fit).  Pure numpy, never raises
+    for N >= 3."""
+    pts_cam = np.asarray(pts_cam, dtype=float)
+    xs = np.asarray(xs)
+    ys = np.asarray(ys)
+    use = pts_cam
+    central = False
+    try:
+        order = np.argsort(ys, kind="stable")
+        ys_s = ys[order]
+        xs_s = xs[order]
+        rows, start = np.unique(ys_s, return_index=True)
+        rmin = np.minimum.reduceat(xs_s, start).astype(float)
+        rmax = np.maximum.reduceat(xs_s, start).astype(float)
+        ri = np.searchsorted(rows, ys)
+        c = 0.5 * (rmin[ri] + rmax[ri])
+        half = 0.5 * (rmax[ri] - rmin[ri])
+        keep = np.abs(xs - c) <= NORMAL_CENTRAL_FRAC * half
+        ylo, yhi = float(ys.min()), float(ys.max())
+        span = yhi - ylo
+        keep &= (ys >= ylo + NORMAL_EDGE_FRAC * span) & \
+                (ys <= yhi - NORMAL_EDGE_FRAC * span)
+        cand = pts_cam[keep]
+        if len(cand) >= NORMAL_MIN_PTS:
+            z = cand[:, 2]
+            med = float(np.median(z))
+            mad = float(np.median(np.abs(z - med)))
+            band = max(NORMAL_MAD_K * 1.4826 * mad, NORMAL_BAND_MIN_M)
+            cand = cand[np.abs(z - med) <= band]
+            if len(cand) >= NORMAL_MIN_PTS:
+                use = cand
+                central = True
+    except Exception:  # noqa: BLE001 - fallback fit
+        use = pts_cam
+        central = False
+    centered = use - np.median(use, axis=0)
+    _, _, vt = np.linalg.svd(centered, full_matrices=False)
+    normal_cam = vt[2]
+    if normal_cam[2] > 0:
+        normal_cam = -normal_cam
+    return normal_cam, int(len(use)), central
