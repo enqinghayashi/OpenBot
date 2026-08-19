@@ -84,3 +84,15 @@ def foreground_depth(depth_values, num_bins=5, min_cluster_size=3):
             cluster_vals = depth_values[cluster_mask]
             return float(np.median(cluster_vals)), cluster_mask
     return float(np.median(depth_values)), np.ones(len(depth_values), dtype=bool)
+
+
+# fit the normal on the mask centre: silhouette pixels carry the
+# table's depth, so a whole-mask fit picks width as the least-variance
+# axis. centre rows, 10% edge cut, robust band; under 30 pts -> whole mask
+NORMAL_CENTRAL_FRAC = 0.5
+NORMAL_EDGE_FRAC = 0.1
+NORMAL_MAD_K = 3.0
+NORMAL_BAND_MIN_M = 0.01
+NORMAL_MIN_PTS = 30
+
+
