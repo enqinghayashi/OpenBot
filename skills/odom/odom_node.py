@@ -329,3 +329,18 @@ def install_signal_handlers():
         signal.signal(getattr(signal, name), _on_signal)
 
 
+def main(argv=None):
+    args = parse_args(argv)
+    install_signal_handlers()
+    ros = None
+    try:
+        ros = _RosAdapter()
+        install_signal_handlers()
+        leg = SdkLeg(iface=args.iface)
+        rc = run(ros, leg, _Clock(), args)
+    except KeyboardInterrupt:
+        rc = RC_OK
+    finally:
+        if ros is not None:
+            ros.shutdown()
+    return rc
