@@ -29,3 +29,5 @@ def sample_from_msg(msg, now):
     q = [float(msg.motor_state[i].q) for i in range(12)]            # motor idx 0-11
     qw = [float(msg.motor_state[i].q) for i in range(12, 15)]       # waist idx 12-14
     return {'t': now, 'quat': quat, 'q': q, 'qw': qw}
+
+
