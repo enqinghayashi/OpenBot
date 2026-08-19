@@ -210,3 +210,103 @@ class _RosAdapter(object):
             self._rclpy.shutdown()
         except Exception:
             pass
+
+
+class _Clock(object):
+    def now(self):
+        return time.time()
+
+
+def run(ros, leg, clock, args):
+    """Orchestration, fully injectable.  Returns the process exit code."""
+    lock = acquire_lock(args.lock_path)
+    if lock is None:
+        log('LOCK: %s is held by another odom_node -- exiting' % args.lock_path)
+        return RC_LOCK
+    try:
+        return _run_locked(ros, leg, clock, args)
+    finally:
+        try:
+            leg.close()
+        except Exception:
+            pass
+        lock.close()
+
+
+def _run_locked(ros, leg, clock, args):
+    t0 = clock.now()
+    while clock.now() - t0 < args.settle_s:
+        ros.spin_once(0.1)
+    n = ros.count_publishers(oc.ODOM_TOPIC)
+    if oc.decide_startup(n) == 'REFUSE':
+        log('REFUSE: %d publisher(s) already on %s -- the vendor/other odom is '
+            'not masked; not publishing' % (n, oc.ODOM_TOPIC))
+        return RC_REFUSED
+    ros.make_publisher()
+    try:
+        leg.start()
+    except LegDied as e:
+        log('LEG: %s' % e)
+        return RC_LEG
+    integ = oc.OdomIntegrator()
+    body = oc.BodyPoseFilter()                       # body pose
+    publish_body = getattr(ros, 'publish_body', None)
+    body_dt = 1.0 / oc.BODY_POSE_HZ - 1e-6
+    last_body = -1e9
+    min_dt = 1.0 / oc.PUBLISH_HZ - 1e-6
+    last_pub = -1e9
+    published = 0
+    last_log = last_recheck = clock.now()
+    log_pub0 = 0
+    while ros.ok():
+        try:
+            sample = leg.read(0.1)
+        except LegDied as e:
+            log('LEG: %s -- exiting, no frozen-pose republish' % e)
+            return RC_LEG
+        ros.spin_once(0.0)
+        now = clock.now()
+        if sample is not None:
+            st = integ.update(sample.get('t'), sample.get('quat'), sample.get('q'))
+            fresh = oc.is_fresh(now, sample.get('t'))
+            if st is not None and fresh and now - last_pub >= min_dt:
+                ros.publish(oc.odometry_fields(st))
+                last_pub = now
+                published += 1
+            if publish_body is not None and sample.get('qw') is not None:
+                body.add(oc.body_pose_sample(sample.get('t'), sample.get('quat'),
+                                             sample.get('q'), sample.get('qw')))
+                if now - last_body >= body_dt:
+                    pose = body.pose(now)
+                    if pose is not None:
+                        publish_body(pose)
+                        last_body = now
+        if now - last_recheck >= args.recheck_s:
+            last_recheck = now
+            total = ros.count_publishers(oc.ODOM_TOPIC)
+            if oc.decide_runtime(total) == 'YIELD':
+                log('YIELD: another publisher appeared')
+                return RC_YIELDED
+        if now - last_log >= args.log_s:
+            hz = (published - log_pub0) / max(now - last_log, 1e-9)
+            log('odom: pose=(%.3f,%.3f,%.1f) hz=%.1f rejected=%d' % (
+                integ.x, integ.y, integ.yaw * 57.29577951308232, hz,
+                integ.rejected))
+            last_log = now
+            log_pub0 = published
+    return RC_OK
+
+
+def parse_args(argv=None):
+    p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    p.add_argument('--iface', default='eth0')
+    p.add_argument('--lock-path', default=LOCK_PATH)
+    p.add_argument('--settle-s', type=float, default=DISCOVERY_SETTLE_S)
+    p.add_argument('--recheck-s', type=float, default=RECHECK_S)
+    p.add_argument('--log-s', type=float, default=LOG_EVERY_S)
+    return p.parse_args(argv)
+
+
+_SIGNALLED = []
+
+
