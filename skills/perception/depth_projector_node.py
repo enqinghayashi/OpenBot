@@ -96,3 +96,151 @@ NORMAL_BAND_MIN_M = 0.01
 NORMAL_MIN_PTS = 30
 
 
+def surface_normal_cam(pts_cam, xs, ys):
+    """(normal_cam, n_used, central) for one object's deprojected mask points.
+
+    ``pts_cam`` (N, 3) camera-frame points, ``xs`` / ``ys`` their depth-image
+    pixel columns / rows.  The normal is the least-variance axis of the
+    central-region points (see the NORMAL_* constants), flipped to point
+    toward the camera (camera z <= 0); ``central`` says whether the centre
+    region was used (False = the whole-mask fit).  Pure numpy, never raises
+    for N >= 3."""
+    pts_cam = np.asarray(pts_cam, dtype=float)
+    xs = np.asarray(xs)
+    ys = np.asarray(ys)
+    use = pts_cam
+    central = False
+    try:
+        order = np.argsort(ys, kind="stable")
+        ys_s = ys[order]
+        xs_s = xs[order]
+        rows, start = np.unique(ys_s, return_index=True)
+        rmin = np.minimum.reduceat(xs_s, start).astype(float)
+        rmax = np.maximum.reduceat(xs_s, start).astype(float)
+        ri = np.searchsorted(rows, ys)
+        c = 0.5 * (rmin[ri] + rmax[ri])
+        half = 0.5 * (rmax[ri] - rmin[ri])
+        keep = np.abs(xs - c) <= NORMAL_CENTRAL_FRAC * half
+        ylo, yhi = float(ys.min()), float(ys.max())
+        span = yhi - ylo
+        keep &= (ys >= ylo + NORMAL_EDGE_FRAC * span) & \
+                (ys <= yhi - NORMAL_EDGE_FRAC * span)
+        cand = pts_cam[keep]
+        if len(cand) >= NORMAL_MIN_PTS:
+            z = cand[:, 2]
+            med = float(np.median(z))
+            mad = float(np.median(np.abs(z - med)))
+            band = max(NORMAL_MAD_K * 1.4826 * mad, NORMAL_BAND_MIN_M)
+            cand = cand[np.abs(z - med) <= band]
+            if len(cand) >= NORMAL_MIN_PTS:
+                use = cand
+                central = True
+    except Exception:  # noqa: BLE001 - fallback fit
+        use = pts_cam
+        central = False
+    centered = use - np.median(use, axis=0)
+    _, _, vt = np.linalg.svd(centered, full_matrices=False)
+    normal_cam = vt[2]
+    if normal_cam[2] > 0:
+        normal_cam = -normal_cam
+    return normal_cam, int(len(use)), central
+
+
+def rasterize_mask(mask_poly, out_h, out_w, src_h=COLOR_H, src_w=COLOR_W):
+    """Rasterize a color-space segmentation polygon into a binary mask.
+
+    ``mask_poly`` is a COCO-style polygon (list of [x, y] pairs) in color-pixel
+    coords (from yolo_node_SEG_version.py).  Returns an ``(out_h, out_w)``
+    uint8 binary mask with the polygon filled, scaling coords from color to the
+    output (depth) resolution.  Returns None if cv2 is unavailable or the
+    polygon is degenerate — callers fall back to the 7x7 bbox patch.
+    """
+    if cv2 is None or not mask_poly or len(mask_poly) < 3:
+        return None
+    try:
+        pts = np.asarray(mask_poly, dtype=np.float32).reshape(-1, 2)
+        pts = pts * np.array([out_w / src_w, out_h / src_h], dtype=np.float32)
+        pts = np.round(pts).astype(np.int32).reshape(-1, 1, 2)
+        m = np.zeros((out_h, out_w), dtype=np.uint8)
+        cv2.fillPoly(m, [pts], 1)
+        return m
+    except Exception:
+        return None
+
+
+def build_pointcloud(points, obj_ids, frame_id, stamp):
+    """Pack a list of (x, y, z) torso-frame points + per-point object_id into a
+    sensor_msgs/PointCloud2 with fields x/y/z (float32) and object_id (uint32).
+    object_id indexes the co-published /object_detections_body array so labels
+    join by index.  ``points`` is a list of (x, y, z) tuples or an (N, 3) array,
+    ``obj_ids`` a matching sequence of non-negative ints (H-PROJ-3)."""
+    fields = [
+        PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
+        PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
+        PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
+        PointField(name='object_id', offset=12, datatype=PointField.UINT32, count=1),
+    ]
+    header = Header()
+    header.frame_id = frame_id
+    header.stamp = stamp
+    cloud = PointCloud2()
+    cloud.header = header
+    cloud.height = 1
+    cloud.width = len(points)
+    cloud.is_bigendian = False
+    cloud.point_step = 16
+    cloud.row_step = cloud.point_step * cloud.width
+    cloud.is_dense = True
+    cloud.fields = fields
+    # vectorised wire
+    # byte-identical to the old per-point '<fffI'
+    # loop (LE, 16 B: x y z f32 + oid u32)
+    rec = np.zeros(len(points), dtype=np.dtype(
+        [('x', '<f4'), ('y', '<f4'), ('z', '<f4'), ('oid', '<u4')]))
+    if len(points):
+        P = np.asarray(points, dtype=np.float64)
+        rec['x'], rec['y'], rec['z'] = P[:, 0], P[:, 1], P[:, 2]
+        rec['oid'] = np.asarray(obj_ids, dtype=np.uint32)
+    cloud.data = rec.tobytes()
+    return cloud
+
+
+class DepthProjectorNode(Node):
+    def __init__(self):
+        super().__init__('depth_projector_node')
+
+        self._latest_depth = None
+        self._robot_x   = 0.0
+        self._robot_y   = 0.0
+        self._robot_z   = 0.0
+        self._robot_yaw = 0.0
+
+        self.create_subscription(
+            String,   '/detections',                self._on_detections, 10)
+        # depth QoS
+        # KEEP_LAST 1, best-effort - only the newest
+        # frame is used; a queue just holds RAM
+        self.create_subscription(
+            Image, '/camera/depth/image_raw', self._on_depth,
+            qos_profile=rclpy.qos.QoSProfile(
+                depth=1,
+                reliability=rclpy.qos.ReliabilityPolicy.BEST_EFFORT))
+        self.create_subscription(
+            Odometry, '/unitree/slam_mapping/odom', self._on_odom,       10)
+
+        self.pub      = self.create_publisher(String, '/object_detections',      10)
+        self.pub_body = self.create_publisher(String, '/object_detections_body', 10)
+        self.pub_cloud = self.create_publisher(
+            PointCloud2, '/object_pointcloud', 10)
+
+        self.get_logger().info(
+            f'Depth projector (SEG) ready. '
+            f'Camera: z={T_CAM_IN_TORSO[2]:.4f}m above torso, '
+            f'y={T_CAM_IN_TORSO[1]:.4f}m forward, tilt=48deg '
+            f'cv2={"yes" if cv2 is not None else "NO (mask path disabled)"}')
+
+        # periodic gc + rss logging keeps memory bounded
+        self._cb_count = 0
+        self._gc_every = 200
+        self._log_rss_every = 300
+
