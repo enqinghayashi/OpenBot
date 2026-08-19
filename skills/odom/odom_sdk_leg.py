@@ -52,3 +52,20 @@ def stream(sub, out, clock=time.time, hz=EMIT_HZ, max_lines=None):
     return n
 
 
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    iface = argv[0] if argv else DEFAULT_IFACE
+    from unitree_sdk2py.core.channel import ChannelFactoryInitialize
+    from unitree_sdk2py.core.channel import ChannelSubscriber
+    from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
+    ChannelFactoryInitialize(0, iface)
+    sub = ChannelSubscriber('rt/lowstate', LowState_)
+    sub.Init()
+    sys.stdout.write(READY_LINE + '\n')
+    sys.stdout.flush()
+    sys.stderr.write('odom_sdk_leg: subscribed rt/lowstate on %s\n' % iface)
+    try:
+        stream(sub, sys.stdout)
+    except KeyboardInterrupt:
+        pass
+    return 0
