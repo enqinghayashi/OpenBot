@@ -244,3 +244,73 @@ class DepthProjectorNode(Node):
         self._gc_every = 200
         self._log_rss_every = 300
 
+    def _on_odom(self, msg):
+        self._robot_x = msg.pose.pose.position.x
+        self._robot_y = msg.pose.pose.position.y
+        self._robot_z = msg.pose.pose.position.z
+        q = msg.pose.pose.orientation
+        r = Rotation.from_quat([q.x, q.y, q.z, q.w])
+        self._robot_yaw = r.as_euler('ZYX')[0]
+
+    def _log_rss(self):
+        """RSS telemetry from /proc/self/statm (stdlib) — the deploy gate
+        measures <500 MB steady-state over 30 min."""
+        try:
+            with open('/proc/self/statm') as f:
+                kb = int(f.read().split()[1]) * os.sysconf('SC_PAGE_SIZE') // 1024
+        except Exception:
+            return
+        self.get_logger().info(f'[mem] rss={kb} kB')
+
+    def _on_depth(self, msg):
+        # uint16 -> f32 m, scaled in place
+        # (no third full-frame temp per callback;
+        # QoS keeps only the newest frame)
+        arr = np.frombuffer(bytes(msg.data), dtype=np.uint16).reshape(
+            msg.height, msg.width).astype(np.float32)
+        arr *= 0.001
+        self._latest_depth = arr
+
+    def _cloud_wanted(self):
+        """H-PROJ-3: True when the PointCloud2 must be built and published.
+
+        Nothing consumes /object_pointcloud unless a node subscribes, so the
+        per-callback build is skipped while the subscription count is 0.  Fails
+        OPEN: any doubt returns True, which is the behaviour before this hook
+        (build on every callback).  rclpy Foxy's Publisher.get_subscription_count
+        is INFERRED, NOT verified on the box; if the attribute is missing the
+        node-level count_subscribers() is asked about the cloud topic instead,
+        and any other failure returns True.
+        """
+        try:
+            try:
+                return self.pub_cloud.get_subscription_count() > 0
+            except AttributeError:
+                return self.count_subscribers('/object_pointcloud') > 0
+        except Exception:  # noqa: BLE001 -- fail open
+            return True
+
+    def _on_detections(self, msg):
+        """HOTFIX 2026-10-09: one bad frame must never kill the node.
+
+        An exception escaping a subscription callback ends rclpy.spin() and the
+        node dies (robot, 16:04:29: IndexError in the fallback normal fit ->
+        /object_detections_body silent, the brain's scene 'unavailable' for the
+        rest of the session).  The frame is dropped and logged instead; the
+        next frame is processed normally.
+        """
+        try:
+            self._on_detections_impl(msg)
+        except Exception as exc:  # noqa: BLE001 -- node survives
+            n = getattr(self, '_cb_failures', 0) + 1
+            self._cb_failures = n
+            if n <= 5 or n % 100 == 0:
+                tb, where = exc.__traceback__, ''
+                while tb is not None:  # innermost frame, this file
+                    if tb.tb_frame.f_code.co_filename == __file__:
+                        where = ' at line %d' % tb.tb_lineno
+                    tb = tb.tb_next
+                self.get_logger().error(
+                    f'detections callback failed ({n}x), frame dropped{where}: '
+                    f'{type(exc).__name__}: {exc}')
+
