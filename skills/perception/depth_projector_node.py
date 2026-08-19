@@ -67,3 +67,20 @@ T_CAM_IN_TORSO = np.array([0.0, 0.04764, 0.46268])
 CAM_YAW_OFFSET = -1.5708
 
 
+def foreground_depth(depth_values, num_bins=5, min_cluster_size=3):
+    """5-bin histogram of depth values.
+
+    Return the median of the closest (smallest depth) cluster that has at
+    least ``min_cluster_size`` pixels, together with a mask of the indices
+    that belong to that cluster.
+    """
+    if len(depth_values) == 0:
+        raise ValueError("empty depth array")
+    counts, bin_edges = np.histogram(depth_values, bins=num_bins)
+    for i in range(len(counts)):
+        if counts[i] >= min_cluster_size:
+            lo, hi = bin_edges[i], bin_edges[i + 1]
+            cluster_mask = (depth_values >= lo) & (depth_values < hi)
+            cluster_vals = depth_values[cluster_mask]
+            return float(np.median(cluster_vals)), cluster_mask
+    return float(np.median(depth_values)), np.ones(len(depth_values), dtype=bool)
