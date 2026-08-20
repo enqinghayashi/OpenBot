@@ -244,3 +244,11 @@ class DepthProjectorNode(Node):
         self._gc_every = 200
         self._log_rss_every = 300
 
+    def _on_odom(self, msg):
+        self._robot_x = msg.pose.pose.position.x
+        self._robot_y = msg.pose.pose.position.y
+        self._robot_z = msg.pose.pose.position.z
+        q = msg.pose.pose.orientation
+        r = Rotation.from_quat([q.x, q.y, q.z, q.w])
+        self._robot_yaw = r.as_euler('ZYX')[0]
+
