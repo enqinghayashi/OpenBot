@@ -184,3 +184,88 @@ class RankCarryover(object):
         self._dup_iou_min = dup_iou_min
         self._state = {}   # rank -> [t, xyxy]
 
+    def _prune(self, class_name, now):
+        state = self._state.get(class_name)
+        if not state:
+            return state
+        for rank in [r for r, (t0, _b) in state.items()
+                     if (now - t0) > self._evict_s]:
+            del state[rank]
+        return state
+
+    def update(self, class_name, boxes, now):
+        state = self._prune(class_name, now)
+        if state is None:
+            state = self._state[class_name] = {}
+        pre = set(state)                      # pre-frame ranks
+        ordered = sorted(enumerate(boxes or ()),
+                         key=lambda eb: (-float(eb[1][2]), eb[0]))
+        # dup fusion: drop boxes overlapping a
+        # higher-conf one at IoU >= dup_iou_min
+        kept = []
+        for _idx, (key, xyxy, conf) in ordered:
+            drop = False
+            for _k2, keep_xyxy, _c2 in kept:
+                if self._dup_iou_min is not None and \
+                        box_iou(xyxy, keep_xyxy) >= self._dup_iou_min:
+                    drop = True
+                    break
+            if not drop:
+                kept.append((key, xyxy, conf))
+        # carryover, conf desc; equal IoU →
+        # lowest rank
+        busy = set()                          # taken this frame
+        out = {}                              # key -> (rank, carried)
+        pending = []
+        for key, xyxy, conf in kept:
+            best_iou = None
+            best_rank = None
+            for rank in sorted(state):
+                if rank in busy:
+                    continue
+                iou = box_iou(xyxy, state[rank][1])
+                if iou >= self._iou_min and \
+                        (best_iou is None or iou > best_iou or
+                         (iou == best_iou and rank < best_rank)):
+                    best_iou = iou
+                    best_rank = rank
+            if best_rank is not None:
+                busy.add(best_rank)
+                out[key] = (best_rank, True)
+            else:
+                pending.append((key, xyxy, conf))
+        # free rank: smallest positive not taken
+        # this frame, not reserved by a live rank
+        for key, xyxy, _conf in pending:
+            free = 1
+            while free in busy or free in pre:
+                free += 1
+            busy.add(free)
+            out[key] = (free, False)
+        # slot refreshed
+        for key, xyxy, _conf in kept:
+            rank = out[key][0]
+            state[rank] = [now, xyxy]
+        return [(key,) + out[key] for key, _x, _c in boxes or ()
+                if key in out]
+
+
+# ── colour over sticky-mask px ────────────────────────────────────────────────
+def _hue_ok(hue):
+    try:
+        hue = float(hue)
+    except (TypeError, ValueError):
+        return None
+    if hue != hue:      # NaN caught here
+        return None
+    return hue % 360.0
+
+
+def _band_contains(hue, lo, hi):
+    """Half-open containment of a [0,360) hue in a band (wrap-safe)."""
+    return ((hue - lo) % 360.0) < (hi - lo)
+
+
+def _band_matches_tol(hue, lo, hi, tol):
+    """Containment after expanding the band by tol on both edges (wrap-safe)."""
+    return ((hue - (lo - tol)) % 360.0) < ((hi - lo) + 2.0 * tol)
