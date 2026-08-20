@@ -271,3 +271,22 @@ class DepthProjectorNode(Node):
         arr *= 0.001
         self._latest_depth = arr
 
+    def _cloud_wanted(self):
+        """H-PROJ-3: True when the PointCloud2 must be built and published.
+
+        Nothing consumes /object_pointcloud unless a node subscribes, so the
+        per-callback build is skipped while the subscription count is 0.  Fails
+        OPEN: any doubt returns True, which is the behaviour before this hook
+        (build on every callback).  rclpy Foxy's Publisher.get_subscription_count
+        is INFERRED, NOT verified on the box; if the attribute is missing the
+        node-level count_subscribers() is asked about the cloud topic instead,
+        and any other failure returns True.
+        """
+        try:
+            try:
+                return self.pub_cloud.get_subscription_count() > 0
+            except AttributeError:
+                return self.count_subscribers('/object_pointcloud') > 0
+        except Exception:  # noqa: BLE001 -- fail open
+            return True
+
