@@ -314,3 +314,327 @@ class DepthProjectorNode(Node):
                     f'detections callback failed ({n}x), frame dropped{where}: '
                     f'{type(exc).__name__}: {exc}')
 
+    def _on_detections_impl(self, msg):
+        if self._latest_depth is None:
+            return
+        # GC + RSS telemetry
+        self._cb_count += 1
+        if self._cb_count % self._gc_every == 0:
+            gc.collect()
+        if self._cb_count % self._log_rss_every == 0:
+            self._log_rss()
+
+        detections = json.loads(msg.data)
+        depth      = self._latest_depth
+        dh, dw     = depth.shape
+
+        world_results = []
+        body_results  = []
+        cloud_pts     = []
+        cloud_ids     = []
+
+        for det in detections:
+            label = det['label']
+            conf  = det['conf']
+            cx = int(det['cx'])
+            cy = int(det['cy'])
+
+            # ── working out the orientation ──────────────────────────────
+            orientation = det.get('orientation', 'upright')
+            if not orientation or orientation == 'unknown':
+                orientation = "upright"
+                if det.get('label') == 'bottle' and 'aspect_ratio' in det:
+                    ar = det['aspect_ratio']
+                    if ar > 1.5:
+                        orientation = "horizontal"
+                    elif ar < 0.7:
+                        orientation = "upright"
+
+            normal_x = normal_y = normal_z = None
+            width_m = depth_m = height_m = None
+            x_off = object_radius = quality = None
+            primitive_type = None
+
+            # ── SEG path: mask → just the object's pixels ────────────────
+            # mask pixels only
+            # the 7x7 bbox patch is gone, so table/
+            # background can't leak into centroid, normal
+            seg_ok = False
+            n_pts_this = None  # dims or cloud
+            mask_poly = det.get('mask')
+            depth_mask = rasterize_mask(mask_poly, dh, dw) if mask_poly else None
+            if depth_mask is not None and int((depth_mask > 0).sum()) >= 3:
+                obj_pix = (depth_mask > 0) & (depth > DEPTH_MIN) & (depth < DEPTH_MAX)
+                if int(obj_pix.sum()) >= 3:
+                    ys, xs = np.where(obj_pix)
+                    z_pts = depth[ys, xs]
+                    # no foreground_depth
+                    # the mask already isolates the object, and
+                    # closest-cluster would keep only the nearest
+                    # slice of a depth gradient (48deg bottle),
+                    # shrinking height_m; use a robust band
+                    # on boundary pixels
+                    if len(z_pts) >= 3:
+                        z_lo, z_hi = np.percentile(z_pts, [5, 95])
+                        keep = (z_pts >= z_lo) & (z_pts <= z_hi)
+                        if int(keep.sum()) >= 3:
+                            ys = ys[keep]
+                            xs = xs[keep]
+                            z_pts = z_pts[keep]
+                        # colour space
+                        cols_c = xs * (COLOR_W / float(dw))
+                        rows_c = ys * (COLOR_H / float(dh))
+                        x_c = (cols_c - CX) * z_pts / FX
+                        y_c = (rows_c - CY) * z_pts / FY
+                        pts_cam = np.column_stack([x_c, y_c, z_pts])
+                        # median centroid
+                        centroid_cam = np.median(pts_cam, axis=0)
+
+                        # centre SVD
+                        # flipped to face camera
+                        normal_cam, _n_nrm, _nrm_central = surface_normal_cam(
+                            pts_cam, xs, ys)
+                        normal_torso = R_CAM_TO_TORSO @ normal_cam
+                        normal_x = round(float(normal_torso[0]), 4)
+                        normal_y = round(float(normal_torso[1]), 4)
+                        normal_z = round(float(normal_torso[2]), 4)
+
+                        # percentile dims
+                        # (outliers don't skew) + cloud points
+                        pts_torso = (R_CAM_TO_TORSO @ pts_cam.T).T + T_CAM_IN_TORSO
+                        p5, p95 = np.percentile(pts_torso, [5, 95], axis=0)
+                        width_m = round(float(p95[0] - p5[0]), 4)
+                        depth_m = round(float(p95[1] - p5[1]), 4)
+                        height_m = round(float(p95[2] - p5[2]), 4)
+
+                        # point = centroid
+                        x_cam = float(centroid_cam[0])
+                        y_cam = float(centroid_cam[1])
+                        z_cam = float(centroid_cam[2])
+
+                        # ── point-cloud grasp params (grasp_geometry) ─────
+                        # fit a primitive
+                        # x_off = -(radius + palm + insertion),
+                        # replacing the daemon's -0.08 standoff
+                        try:
+                            # stride fit points
+                            # to MAX_FIT_PTS (ceil rule, like the cloud);
+                            # SVD normal + dims use every point
+                            fit_stride = max(1, (len(pts_torso) + MAX_FIT_PTS - 1) // MAX_FIT_PTS)
+                            pts_fit = pts_torso[::fit_stride]
+                            primitive = fit_geometric_primitive(pts_fit)
+                            object_radius = (float(primitive.radius)
+                                             if primitive.radius is not None
+                                             else 0.035)
+                            _grasp_z = float(primitive.centre[2]) + 0.04
+                            _x, _q = compute_x_off(
+                                primitive.type,
+                                radius=object_radius,
+                                object_width=2.0 * object_radius,
+                                object_centre_z=float(primitive.centre[2]),
+                                grasp_z=_grasp_z)
+                            x_off = round(float(_x), 4)
+                            quality = round(float(_q), 4)
+                            object_radius = round(object_radius, 4)
+                            primitive_type = primitive.type
+                        except Exception:
+                            x_off = object_radius = quality = None
+                            primitive_type = None
+
+                        # cloud downsample
+                        # ceil division so the cap applies: floor let
+                        # N=3800 publish 3800, 2x the cap
+                        stride = max(1, (len(pts_torso) + MAX_PTS_PER_OBJ - 1) // MAX_PTS_PER_OBJ)
+                        oid = len(body_results)  # body_results index
+                        # accumulate arrays, not points: one vstack
+                        # before the cap; same points, same order
+                        sub = pts_torso[::stride]
+                        cloud_pts.append(sub)
+                        cloud_ids.append(np.full(len(sub), oid, dtype=np.uint32))
+                        # post-stride count
+                        # pre-cap
+                        n_pts_this = len(sub)
+
+                        seg_ok = True
+
+            if not seg_ok:
+                # ── FALLBACK: fixed 7x7 bbox-center patch (same as before) ─────
+                cx_d = int(cx * dw / COLOR_W)
+                cy_d = int(cy * dh / COLOR_H)
+                x1 = max(0, cx_d - 3); x2 = min(dw, cx_d + 4)
+                y1 = max(0, cy_d - 3); y2 = min(dh, cy_d + 4)
+
+                patch = depth[y1:y2, x1:x2]
+                valid_mask = (patch > DEPTH_MIN) & (patch < DEPTH_MAX)
+                valid = patch[valid_mask]
+                if len(valid) == 0:
+                    continue
+
+                z_cam, cluster_mask_1d = foreground_depth(valid)
+                # '< hi' drops ties
+                # in the LAST bin, so ">= 3" can hold 0-2
+                # points; 0 -> NaN depth, no row, never on
+                # the wire
+                if not np.isfinite(z_cam):
+                    continue
+
+                # ── the 7x7 patch normal (SVD plane fit) ────────────────
+                # count CLUSTER points
+                # 2 pts crashed Vt[2]
+                if int(np.count_nonzero(cluster_mask_1d)) >= 3:
+                    cluster_mask_2d = np.zeros_like(patch, dtype=bool)
+                    valid_indices_2d = np.where(valid_mask)
+                    selected_indices = np.where(cluster_mask_1d)[0]
+                    cluster_mask_2d[valid_indices_2d[0][selected_indices],
+                                    valid_indices_2d[1][selected_indices]] = True
+
+                    py, px = np.where(cluster_mask_2d)
+                    cx_full = x1 + px
+                    cy_full = y1 + py
+                    z_vals = patch[py, px]
+
+                    x_cam_i = (cx_full - CX) * z_vals / FX
+                    y_cam_i = (cy_full - CY) * z_vals / FY
+                    z_cam_i = z_vals
+
+                    points_3d = np.column_stack([x_cam_i, y_cam_i, z_cam_i])
+                    centered = points_3d - points_3d.mean(axis=0)
+                    _, _, Vt = np.linalg.svd(centered, full_matrices=False)
+                    normal_cam = Vt[2]
+                    if normal_cam[2] > 0:
+                        normal_cam = -normal_cam
+                    normal_torso = R_CAM_TO_TORSO @ normal_cam
+                    normal_x = round(float(normal_torso[0]), 4)
+                    normal_y = round(float(normal_torso[1]), 4)
+                    normal_z = round(float(normal_torso[2]), 4)
+
+                # pixel -> cam
+                x_cam = (cx - CX) * z_cam / FX
+                y_cam = (cy - CY) * z_cam / FY
+
+                # 2D height signal: bbox height in px -> m via depth, tilt-corrected
+                if 'bbox_h' in det:
+                    bbox_h_d = det['bbox_h'] * dh / COLOR_H
+                    height_m = round(float(bbox_h_d * z_cam / (FY * 0.66913)), 4)
+
+            # ── shared: torso-frame + world-frame transforms ─────────────
+            p_cam = np.array([x_cam, y_cam, z_cam])
+            p_torso = R_CAM_TO_TORSO @ p_cam + T_CAM_IN_TORSO
+
+            body = {
+                'label': label,
+                'conf':  conf,
+                'x': round(float(p_torso[0]), 3),   # +x = right
+                'y': round(float(p_torso[1]), 3),   # forward distance
+                'z': round(float(p_torso[2]), 3),   # height above torso
+                # capture stamp
+                # 0.041-0.281 s latency (p50 0.061,
+                # p90 0.209), publish gaps to 0.331 s
+                # walk_node needs the CAPTURE gap, not the
+                # receipt gap; additive + None-safe
+                'stamp': det.get('stamp'),
+                'nx': normal_x,
+                'ny': normal_y,
+                'nz': normal_z,
+                'orientation': orientation,
+                # colour link
+                # forward hue/color_name; frame_side is
+                # display-only, so it's dropped
+                'hue': det.get('hue'),
+                'color_name': det.get('color_name'),
+                # torso only
+                # never from the world transform (KNOWN BROKEN)
+                'body_side': 'right' if p_torso[0] > 0 else 'left',
+            }
+            if width_m is not None:
+                body['width_m'] = width_m
+            if depth_m is not None:
+                body['depth_m'] = depth_m
+            if height_m is not None:
+                body['height_m'] = height_m
+            if x_off is not None:
+                body['x_off'] = x_off
+                body['object_radius'] = object_radius
+                body['primitive_type'] = primitive_type
+                body['quality'] = quality
+            # instance block
+            # only rows with OPENBOT_INSTANCE_IDS=1
+            # carry it; class_name is never forwarded
+            if 'instance_id' in det:
+                body['instance_id'] = det['instance_id']
+                body['track_age_s'] = det.get('track_age_s')
+                body['class_name'] = det.get('class_name')
+            # n_pts: SEG only
+            # (they carry width_m); cloud_stamp_ns
+            # goes on just before the body is published
+            if n_pts_this is not None:
+                body['n_pts'] = n_pts_this
+            body_results.append(body)
+
+            # world: KNOWN BROKEN
+            # (double -pi/2 quirk); nothing subscribes
+            pt_body = np.array([z_cam, -x_cam, -y_cam])
+            yaw     = self._robot_yaw + CAM_YAW_OFFSET
+            cos_y, sin_y = np.cos(yaw), np.sin(yaw)
+            world_x = self._robot_x + cos_y * pt_body[0] - sin_y * pt_body[1]
+            world_y = self._robot_y + sin_y * pt_body[0] + cos_y * pt_body[1]
+            world_z = self._robot_z + T_CAM_IN_TORSO[2] + pt_body[2]
+            world_results.append({
+                'label': label,
+                'conf':  conf,
+                'x': round(world_x, 3),
+                'y': round(world_y, 3),
+                'z': round(world_z, 3),
+            })
+
+        if world_results:
+            out = String()
+            out.data = json.dumps(world_results)
+            self.pub.publish(out)
+
+        # one stamp
+        # taken before the body publish so SEG rows
+        # carry cloud_stamp_ns (ns = sec*1e9 +
+        # nanosec); the cloud reuses this object
+        stamp = self.get_clock().now().to_msg()
+        cloud_stamp_ns = int(stamp.sec) * 1000000000 + int(stamp.nanosec)
+        for _r in body_results:
+            if 'width_m' in _r:
+                _r['cloud_stamp_ns'] = cloud_stamp_ns
+        if body_results:
+            bout = String()
+            bout.data = json.dumps(body_results)
+            self.pub_body.publish(bout)
+            for r in body_results:
+                self.get_logger().info(
+                    f"{r['label']} | "
+                    f"x={r['x']:+.3f}(lr) "
+                    f"y={r['y']:+.3f}(fwd) "
+                    f"z={r['z']:+.3f}(ht)"
+                    + (f" w={r['width_m']:.3f}" if 'width_m' in r else "")
+                    + (f" d={r['depth_m']:.3f}" if 'depth_m' in r else "")
+                    + (f" h={r['height_m']:.3f}" if 'height_m' in r else "")
+                    + (f" x_off={r['x_off']:.3f} r={r['object_radius']:.3f}"
+                       f" q={r['quality']:.2f} {r['primitive_type']}"
+                       if 'x_off' in r else "")
+                )
+
+        # publish only if
+        # subscribed (_cloud_wanted fails OPEN);
+        # body JSON goes out either way.  CPU <
+        # 91.5 % with nothing subscribed is ROBOT
+        # ACCEPTANCE, not measured here (one top
+        # -b sample, no rate probe)
+        if cloud_pts and self._cloud_wanted():
+            # cap before publish
+            # bounds peak
+            cloud_pts = np.vstack(cloud_pts)
+            cloud_ids = np.concatenate(cloud_ids)
+            n_pts = len(cloud_pts)
+            if n_pts > MAX_CLOUD_POINTS:
+                cloud_pts = cloud_pts[:MAX_CLOUD_POINTS]
+                cloud_ids = cloud_ids[:MAX_CLOUD_POINTS]
+                self.get_logger().warn(
+                    f'[mem] cloud truncated {n_pts} -> {MAX_CLOUD_POINTS} pts')
+            self.pub_cloud.publish(
+                build_pointcloud(cloud_pts, cloud_ids, 'torso', stamp))
