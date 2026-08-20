@@ -262,3 +262,12 @@ class DepthProjectorNode(Node):
             return
         self.get_logger().info(f'[mem] rss={kb} kB')
 
+    def _on_depth(self, msg):
+        # uint16 -> f32 m, scaled in place
+        # (no third full-frame temp per callback;
+        # QoS keeps only the newest frame)
+        arr = np.frombuffer(bytes(msg.data), dtype=np.uint16).reshape(
+            msg.height, msg.width).astype(np.float32)
+        arr *= 0.001
+        self._latest_depth = arr
+
