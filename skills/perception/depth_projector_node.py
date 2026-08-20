@@ -252,3 +252,13 @@ class DepthProjectorNode(Node):
         r = Rotation.from_quat([q.x, q.y, q.z, q.w])
         self._robot_yaw = r.as_euler('ZYX')[0]
 
+    def _log_rss(self):
+        """RSS telemetry from /proc/self/statm (stdlib) — the deploy gate
+        measures <500 MB steady-state over 30 min."""
+        try:
+            with open('/proc/self/statm') as f:
+                kb = int(f.read().split()[1]) * os.sysconf('SC_PAGE_SIZE') // 1024
+        except Exception:
+            return
+        self.get_logger().info(f'[mem] rss={kb} kB')
+
