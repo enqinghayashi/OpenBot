@@ -203,3 +203,5 @@ def build_pointcloud(points, obj_ids, frame_id, stamp):
         rec['oid'] = np.asarray(obj_ids, dtype=np.uint32)
     cloud.data = rec.tobytes()
     return cloud
+
+
