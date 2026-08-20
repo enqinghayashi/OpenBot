@@ -144,3 +144,5 @@ def surface_normal_cam(pts_cam, xs, ys):
     if normal_cam[2] > 0:
         normal_cam = -normal_cam
     return normal_cam, int(len(use)), central
+
+
