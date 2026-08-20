@@ -117,3 +117,70 @@ def split_label(label):
 def stem(label):
     """Class part of a possibly-composite label ('bottle#2' -> 'bottle')."""
     return split_label(label)[0]
+
+
+def is_composite(label):
+    """True when the label carries a rank part ('class#N', N >= 1)."""
+    return split_label(label)[1] is not None
+
+
+# ── IoU maths ─────────────────────────────────────────────────────────────────
+def box_iou(a, b):
+    """Intersection-over-union of two (x1, y1, x2, y2) boxes. 0.0 if no area."""
+    ax1, ay1, ax2, ay2 = (float(v) for v in a)
+    bx1, by1, bx2, by2 = (float(v) for v in b)
+    iw = max(0.0, min(ax2, bx2) - max(ax1, bx1))
+    ih = max(0.0, min(ay2, by2) - max(ay1, by1))
+    inter = iw * ih
+    if inter <= 0.0:
+        return 0.0
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - inter
+    return inter / union if union > 0.0 else 0.0
+
+
+# ── carrying ranks over ───────────────────────────────────────────────────────
+class RankCarryover(object):
+    """Greedy per-class rank persistence (C3-lite, plan D1).
+
+    update(class_name, boxes, now) with boxes = [(key, xyxy, conf), ...]:
+      returns [(key, rank, carried), ...] in INPUT order. Ranks are positive
+      ints, 1-based per class.
+
+    Rules (all deterministic):
+      1. Eviction: a persisted rank idle > evict_s seconds is dropped first
+         (idle == evict_s exactly keeps it). New boxes then get fresh IDs.
+      2. Dup fusion (D9): same-class boxes overlapping at IoU >= dup_iou_min
+         collapse to the higher-conf one (ties -> earlier input), so one
+         object can never mint 'bottle#1'/'#2' at 80 classes. Callers that
+         already fused upstream see a no-op here.
+      3. Carryover: each present box, in conf-descending order (tie -> input
+         order), takes the not-yet-claimed persisted rank whose last box has
+         the highest IoU >= iou_min; equal IoU -> the lowest rank number.
+      4. Free fill: boxes that carried nothing take the smallest positive
+         rank not in use this frame AND not reserved by a still-valid
+         persisted rank (reservations keep a re-appearing instance's #N from
+         being stolen by a newcomer -- the visible #1/#2 swap this design
+         exists to stop). Conf-descending boxes get lower free ranks.
+      5. State is pruned on every update of the same class (eviction above);
+         ranks of classes never seen again are dropped the next time that
+         class updates.
+      6. Numbers are session-scoped and NOT renumbered: an instance idle
+         < evict_s that returns at a location with IoU < iou_min free-fills
+         PAST the still-reserved rank (a newcomer takes #3 while #2 stays
+         reserved) and keeps that number after the reservation is evicted,
+         so two same-class instances can persistently display '#1'/'#3'
+         with no '#2' (and with >2 instances the gaps can grow). This is
+         deliberate -- renumbering would reintroduce the visible mid-stare
+         '#1'/'#2' swap the reservations exist to stop. Tests and box-trial
+         expectations must not read a persistent gap as a failure.
+    """
+
+    def __init__(self, iou_min=RANK_IOU_MIN, evict_s=RANK_EVICT_S,
+                 dup_iou_min=DUP_IOU_MIN):
+        self._iou_min = iou_min
+        self._evict_s = evict_s
+        self._dup_iou_min = dup_iou_min
+        self._state = {}   # rank -> [t, xyxy]
+
