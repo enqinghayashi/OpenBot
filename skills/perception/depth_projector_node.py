@@ -146,3 +146,23 @@ def surface_normal_cam(pts_cam, xs, ys):
     return normal_cam, int(len(use)), central
 
 
+def rasterize_mask(mask_poly, out_h, out_w, src_h=COLOR_H, src_w=COLOR_W):
+    """Rasterize a color-space segmentation polygon into a binary mask.
+
+    ``mask_poly`` is a COCO-style polygon (list of [x, y] pairs) in color-pixel
+    coords (from yolo_node_SEG_version.py).  Returns an ``(out_h, out_w)``
+    uint8 binary mask with the polygon filled, scaling coords from color to the
+    output (depth) resolution.  Returns None if cv2 is unavailable or the
+    polygon is degenerate — callers fall back to the 7x7 bbox patch.
+    """
+    if cv2 is None or not mask_poly or len(mask_poly) < 3:
+        return None
+    try:
+        pts = np.asarray(mask_poly, dtype=np.float32).reshape(-1, 2)
+        pts = pts * np.array([out_w / src_w, out_h / src_h], dtype=np.float32)
+        pts = np.round(pts).astype(np.int32).reshape(-1, 1, 2)
+        m = np.zeros((out_h, out_w), dtype=np.uint8)
+        cv2.fillPoly(m, [pts], 1)
+        return m
+    except Exception:
+        return None
