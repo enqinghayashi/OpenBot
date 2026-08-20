@@ -290,3 +290,27 @@ class DepthProjectorNode(Node):
         except Exception:  # noqa: BLE001 -- fail open
             return True
 
+    def _on_detections(self, msg):
+        """HOTFIX 2026-10-09: one bad frame must never kill the node.
+
+        An exception escaping a subscription callback ends rclpy.spin() and the
+        node dies (robot, 16:04:29: IndexError in the fallback normal fit ->
+        /object_detections_body silent, the brain's scene 'unavailable' for the
+        rest of the session).  The frame is dropped and logged instead; the
+        next frame is processed normally.
+        """
+        try:
+            self._on_detections_impl(msg)
+        except Exception as exc:  # noqa: BLE001 -- node survives
+            n = getattr(self, '_cb_failures', 0) + 1
+            self._cb_failures = n
+            if n <= 5 or n % 100 == 0:
+                tb, where = exc.__traceback__, ''
+                while tb is not None:  # innermost frame, this file
+                    if tb.tb_frame.f_code.co_filename == __file__:
+                        where = ' at line %d' % tb.tb_lineno
+                    tb = tb.tb_next
+                self.get_logger().error(
+                    f'detections callback failed ({n}x), frame dropped{where}: '
+                    f'{type(exc).__name__}: {exc}')
+
