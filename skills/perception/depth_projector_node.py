@@ -166,3 +166,5 @@ def rasterize_mask(mask_poly, out_h, out_w, src_h=COLOR_H, src_w=COLOR_W):
         return m
     except Exception:
         return None
+
+
