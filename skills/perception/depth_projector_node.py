@@ -205,3 +205,4 @@ def build_pointcloud(points, obj_ids, frame_id, stamp):
     return cloud
 
 
+class DepthProjectorNode(Node):
