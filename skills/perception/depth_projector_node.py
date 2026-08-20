@@ -640,3 +640,13 @@ class DepthProjectorNode(Node):
                 build_pointcloud(cloud_pts, cloud_ids, 'torso', stamp))
 
 
+def main(args=None):
+    rclpy.init(args=args)
+    node = DepthProjectorNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
