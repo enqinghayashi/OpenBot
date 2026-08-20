@@ -168,3 +168,38 @@ def rasterize_mask(mask_poly, out_h, out_w, src_h=COLOR_H, src_w=COLOR_W):
         return None
 
 
+def build_pointcloud(points, obj_ids, frame_id, stamp):
+    """Pack a list of (x, y, z) torso-frame points + per-point object_id into a
+    sensor_msgs/PointCloud2 with fields x/y/z (float32) and object_id (uint32).
+    object_id indexes the co-published /object_detections_body array so labels
+    join by index.  ``points`` is a list of (x, y, z) tuples or an (N, 3) array,
+    ``obj_ids`` a matching sequence of non-negative ints (H-PROJ-3)."""
+    fields = [
+        PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
+        PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
+        PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
+        PointField(name='object_id', offset=12, datatype=PointField.UINT32, count=1),
+    ]
+    header = Header()
+    header.frame_id = frame_id
+    header.stamp = stamp
+    cloud = PointCloud2()
+    cloud.header = header
+    cloud.height = 1
+    cloud.width = len(points)
+    cloud.is_bigendian = False
+    cloud.point_step = 16
+    cloud.row_step = cloud.point_step * cloud.width
+    cloud.is_dense = True
+    cloud.fields = fields
+    # vectorised wire
+    # byte-identical to the old per-point '<fffI'
+    # loop (LE, 16 B: x y z f32 + oid u32)
+    rec = np.zeros(len(points), dtype=np.dtype(
+        [('x', '<f4'), ('y', '<f4'), ('z', '<f4'), ('oid', '<u4')]))
+    if len(points):
+        P = np.asarray(points, dtype=np.float64)
+        rec['x'], rec['y'], rec['z'] = P[:, 0], P[:, 1], P[:, 2]
+        rec['oid'] = np.asarray(obj_ids, dtype=np.uint32)
+    cloud.data = rec.tobytes()
+    return cloud
