@@ -638,3 +638,5 @@ class DepthProjectorNode(Node):
                     f'[mem] cloud truncated {n_pts} -> {MAX_CLOUD_POINTS} pts')
             self.pub_cloud.publish(
                 build_pointcloud(cloud_pts, cloud_ids, 'torso', stamp))
+
+
