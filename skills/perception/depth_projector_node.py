@@ -206,3 +206,41 @@ def build_pointcloud(points, obj_ids, frame_id, stamp):
 
 
 class DepthProjectorNode(Node):
+    def __init__(self):
+        super().__init__('depth_projector_node')
+
+        self._latest_depth = None
+        self._robot_x   = 0.0
+        self._robot_y   = 0.0
+        self._robot_z   = 0.0
+        self._robot_yaw = 0.0
+
+        self.create_subscription(
+            String,   '/detections',                self._on_detections, 10)
+        # depth QoS
+        # KEEP_LAST 1, best-effort - only the newest
+        # frame is used; a queue just holds RAM
+        self.create_subscription(
+            Image, '/camera/depth/image_raw', self._on_depth,
+            qos_profile=rclpy.qos.QoSProfile(
+                depth=1,
+                reliability=rclpy.qos.ReliabilityPolicy.BEST_EFFORT))
+        self.create_subscription(
+            Odometry, '/unitree/slam_mapping/odom', self._on_odom,       10)
+
+        self.pub      = self.create_publisher(String, '/object_detections',      10)
+        self.pub_body = self.create_publisher(String, '/object_detections_body', 10)
+        self.pub_cloud = self.create_publisher(
+            PointCloud2, '/object_pointcloud', 10)
+
+        self.get_logger().info(
+            f'Depth projector (SEG) ready. '
+            f'Camera: z={T_CAM_IN_TORSO[2]:.4f}m above torso, '
+            f'y={T_CAM_IN_TORSO[1]:.4f}m forward, tilt=48deg '
+            f'cv2={"yes" if cv2 is not None else "NO (mask path disabled)"}')
+
+        # periodic gc + rss logging keeps memory bounded
+        self._cb_count = 0
+        self._gc_every = 200
+        self._log_rss_every = 300
+
