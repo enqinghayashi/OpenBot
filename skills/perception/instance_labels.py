@@ -269,3 +269,138 @@ def _band_contains(hue, lo, hi):
 def _band_matches_tol(hue, lo, hi, tol):
     """Containment after expanding the band by tol on both edges (wrap-safe)."""
     return ((hue - (lo - tol)) % 360.0) < ((hi - lo) + 2.0 * tol)
+
+
+def dominant_color(rows_hsv):
+    """Dominant color stats over sticky-mask pixels. -> dict.
+
+    rows_hsv: iterable of (h, s, v) rows, h in degrees [0, 360), s/v in
+    [0, 1] fractions (see module docstring). Pure, no cv2.
+
+    Returns dict with keys:
+      hue             float|None  -- circular (vector) mean over the valid
+                                     pixels, degrees, rounded to 3 dp;
+                                     None whenever the color is untrusted
+      sat_frac        float  -- fraction of ALL rows with s >= SAT_PIX_MIN
+      color_frac      float  -- fraction of ALL rows with s >= SAT_PIX_MIN and
+                                v >= V_PIX_MIN (the pixels the hue uses)
+      color_name_hint str    -- band name containing the mean hue, else
+                                'unknown' (display-only hint, never matched)
+      n_px            int    -- number of usable rows
+      reason          str    -- 'ok' | 'no_pixels' | 'low_px' | 'low_color_frac'
+                                | 'low_purity' | 'no_band'
+
+    Honest-unknown gates (in order): zero usable rows -> reason 'no_pixels'
+    (distinct from too-few: no rows at all, e.g. a mask-less input);
+    fewer than MIN_COLOR_PX usable rows -> 'low_px'; color_frac <
+    COLOR_FRAC_MIN (low-sat / gray / dark object) -> 'low_color_frac';
+    purity < HUE_PURE_FRAC_MIN (bimodal/multicolor object -- the vector
+    mean would be garbage, so hue is reported None) -> 'low_purity'; hue
+    falling in no band (can't happen while the table tiles, kept as a
+    guard) -> 'no_band'. sat_frac/color_frac are per-pixel FRACTION
+    statistics over the rows (never means/medians) and are always reported,
+    unknown or not.
+    """
+    rows = []
+    for row in rows_hsv or ():
+        try:
+            h, s, v = float(row[0]), float(row[1]), float(row[2])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if h != h or s != s or v != v:
+            continue
+        rows.append((h % 360.0, s, v))
+    n = len(rows)
+    if n:
+        sat_frac = sum(1 for _h, s, _v in rows if s >= SAT_PIX_MIN) / float(n)
+        chrom = [(h, s, v) for h, s, v in rows
+                 if s >= SAT_PIX_MIN and v >= V_PIX_MIN]
+        color_frac = len(chrom) / float(n)
+    else:
+        sat_frac = 0.0
+        color_frac = 0.0
+        chrom = []
+    out = {'hue': None, 'sat_frac': sat_frac, 'color_frac': color_frac,
+           'color_name_hint': 'unknown', 'n_px': n, 'reason': 'no_pixels'}
+    if n == 0:
+        # zero usable rows: 'no_pixels', not 'low_px'
+        # (otherwise 0 < 30 would swallow it)
+        return out
+    if n < MIN_COLOR_PX:
+        out['reason'] = 'low_px'
+        return out
+    if color_frac < COLOR_FRAC_MIN:
+        out['reason'] = 'low_color_frac'
+        return out
+    sx = sum(math.cos(math.radians(h)) for h, _s, _v in chrom)
+    sy = sum(math.sin(math.radians(h)) for h, _s, _v in chrom)
+    mean_hue = (math.degrees(math.atan2(sy, sx)) % 360.0)
+    within = 0
+    for h, _s, _v in chrom:
+        d = abs((h - mean_hue) % 360.0)
+        if d > 180.0:
+            d = 360.0 - d
+        if d <= HUE_PURE_RADIUS_DEG:
+            within += 1
+    if (within / float(len(chrom))) < HUE_PURE_FRAC_MIN:
+        out['reason'] = 'low_purity'
+        return out
+    name = 'unknown'
+    for bname, lo, hi in HUE_BANDS:
+        if _band_contains(mean_hue, lo, hi):
+            name = bname
+            break
+    out['hue'] = round(mean_hue, 3)
+    out['color_name_hint'] = name
+    out['reason'] = 'ok' if name != 'unknown' else 'no_band'
+    return out
+
+
+def color_matches(hue, name, tol=COLOR_TOL_DEG):
+    """Does a measured hue (degrees, None allowed) match the color NAME?
+
+    Match = hue inside the name's band expanded by tol on both edges, with
+    wraparound (so the red band hugs the 0/360 seam). hue None (no trusted
+    color) -> False; 'unknown' never matches; unknown names never match.
+    Bands tile, so at shared edges a hue can legitimately match both colours
+    within tolerance (D4 continuous hue -- the caller picks by preference).
+    """
+    if name is None:
+        return False
+    name = str(name).strip().lower()
+    if name == 'unknown':
+        return False
+    band = HUE_BAND_BY_NAME.get(name)
+    if band is None:
+        return False
+    hue = _hue_ok(hue)
+    if hue is None:
+        return False
+    lo, hi = band
+    return _band_matches_tol(hue, lo, hi, tol)
+
+
+def nearest_color_name(hue):
+    """Nearest HUE_BANDS name to the hue (circular); 'unknown' for None/NaN."""
+    hue = _hue_ok(hue)
+    if hue is None:
+        return 'unknown'
+    best_name = None
+    best_d = None
+    for name, lo, hi in HUE_BANDS:
+        centre = ((lo + hi) / 2.0) % 360.0
+        d = abs(hue - centre) % 360.0
+        if d > 180.0:
+            d = 360.0 - d
+        if best_d is None or d < best_d:
+            best_d = d
+            best_name = name
+    return best_name
+
+
+def frame_side(cx, img_w=IMG_W):
+    """Image-frame side of a box centre: cx >= w/2 -> 'right', else 'left'."""
+    try:
+        return 'right' if float(cx) >= float(img_w) / 2.0 else 'left'
+    except (TypeError, ValueError):
+        return 'left'
