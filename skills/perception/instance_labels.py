@@ -404,3 +404,34 @@ def frame_side(cx, img_w=IMG_W):
         return 'right' if float(cx) >= float(img_w) / 2.0 else 'left'
     except (TypeError, ValueError):
         return 'left'
+
+
+# ── resolving the pick-target grammar ─────────────────────────────────────────
+def _det_t(d):
+    """Freshness stamp of a det dict.
+
+    Two keys are honoured: 't' (the coordinator's cross-compat key, stamped
+    alongside '_t' in pick_walk_coordinator._on_detections) and '_t' (pick_node's
+    own receive-stamp key, stamped without 't' in _on_detections). Both are
+    time.time() floats at receive; None (or float-ing garbage) -> not fresh.
+    """
+    for key in ('t', '_t'):
+        try:
+            return float(d.get(key))
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _det_conf(d):
+    try:
+        return float(d.get('conf'))
+    except (TypeError, ValueError):
+        return None
+
+
+def _cand_side(d):
+    s = d.get('body_side')
+    if s is None:
+        s = d.get('side')      # fallback key when body_side is absent
+    return str(s or '').lower() if s is not None else None
