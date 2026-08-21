@@ -184,3 +184,12 @@ class RankCarryover(object):
         self._dup_iou_min = dup_iou_min
         self._state = {}   # rank -> [t, xyxy]
 
+    def _prune(self, class_name, now):
+        state = self._state.get(class_name)
+        if not state:
+            return state
+        for rank in [r for r, (t0, _b) in state.items()
+                     if (now - t0) > self._evict_s]:
+            del state[rank]
+        return state
+
