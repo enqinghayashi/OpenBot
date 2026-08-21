@@ -114,3 +114,6 @@ def split_label(label):
     return (label, None)
 
 
+def stem(label):
+    """Class part of a possibly-composite label ('bottle#2' -> 'bottle')."""
+    return split_label(label)[0]
