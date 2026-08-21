@@ -380,3 +380,19 @@ def color_matches(hue, name, tol=COLOR_TOL_DEG):
     return _band_matches_tol(hue, lo, hi, tol)
 
 
+def nearest_color_name(hue):
+    """Nearest HUE_BANDS name to the hue (circular); 'unknown' for None/NaN."""
+    hue = _hue_ok(hue)
+    if hue is None:
+        return 'unknown'
+    best_name = None
+    best_d = None
+    for name, lo, hi in HUE_BANDS:
+        centre = ((lo + hi) / 2.0) % 360.0
+        d = abs(hue - centre) % 360.0
+        if d > 180.0:
+            d = 360.0 - d
+        if best_d is None or d < best_d:
+            best_d = d
+            best_name = name
+    return best_name
