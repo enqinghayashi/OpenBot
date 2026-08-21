@@ -404,3 +404,6 @@ def frame_side(cx, img_w=IMG_W):
         return 'right' if float(cx) >= float(img_w) / 2.0 else 'left'
     except (TypeError, ValueError):
         return 'left'
+
+
+# ── resolving the pick-target grammar ─────────────────────────────────────────
