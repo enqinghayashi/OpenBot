@@ -138,3 +138,6 @@ def box_iou(a, b):
     area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
     union = area_a + area_b - inter
     return inter / union if union > 0.0 else 0.0
+
+
+# ── carrying ranks over ───────────────────────────────────────────────────────
