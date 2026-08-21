@@ -398,3 +398,9 @@ def nearest_color_name(hue):
     return best_name
 
 
+def frame_side(cx, img_w=IMG_W):
+    """Image-frame side of a box centre: cx >= w/2 -> 'right', else 'left'."""
+    try:
+        return 'right' if float(cx) >= float(img_w) / 2.0 else 'left'
+    except (TypeError, ValueError):
+        return 'left'
