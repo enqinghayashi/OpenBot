@@ -356,3 +356,25 @@ def dominant_color(rows_hsv):
     return out
 
 
+def color_matches(hue, name, tol=COLOR_TOL_DEG):
+    """Does a measured hue (degrees, None allowed) match the color NAME?
+
+    Match = hue inside the name's band expanded by tol on both edges, with
+    wraparound (so the red band hugs the 0/360 seam). hue None (no trusted
+    color) -> False; 'unknown' never matches; unknown names never match.
+    Bands tile, so at shared edges a hue can legitimately match both colours
+    within tolerance (D4 continuous hue -- the caller picks by preference).
+    """
+    if name is None:
+        return False
+    name = str(name).strip().lower()
+    if name == 'unknown':
+        return False
+    band = HUE_BAND_BY_NAME.get(name)
+    if band is None:
+        return False
+    hue = _hue_ok(hue)
+    if hue is None:
+        return False
+    lo, hi = band
+    return _band_matches_tol(hue, lo, hi, tol)
