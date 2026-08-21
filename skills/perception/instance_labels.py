@@ -141,3 +141,39 @@ def box_iou(a, b):
 
 
 # ── carrying ranks over ───────────────────────────────────────────────────────
+class RankCarryover(object):
+    """Greedy per-class rank persistence (C3-lite, plan D1).
+
+    update(class_name, boxes, now) with boxes = [(key, xyxy, conf), ...]:
+      returns [(key, rank, carried), ...] in INPUT order. Ranks are positive
+      ints, 1-based per class.
+
+    Rules (all deterministic):
+      1. Eviction: a persisted rank idle > evict_s seconds is dropped first
+         (idle == evict_s exactly keeps it). New boxes then get fresh IDs.
+      2. Dup fusion (D9): same-class boxes overlapping at IoU >= dup_iou_min
+         collapse to the higher-conf one (ties -> earlier input), so one
+         object can never mint 'bottle#1'/'#2' at 80 classes. Callers that
+         already fused upstream see a no-op here.
+      3. Carryover: each present box, in conf-descending order (tie -> input
+         order), takes the not-yet-claimed persisted rank whose last box has
+         the highest IoU >= iou_min; equal IoU -> the lowest rank number.
+      4. Free fill: boxes that carried nothing take the smallest positive
+         rank not in use this frame AND not reserved by a still-valid
+         persisted rank (reservations keep a re-appearing instance's #N from
+         being stolen by a newcomer -- the visible #1/#2 swap this design
+         exists to stop). Conf-descending boxes get lower free ranks.
+      5. State is pruned on every update of the same class (eviction above);
+         ranks of classes never seen again are dropped the next time that
+         class updates.
+      6. Numbers are session-scoped and NOT renumbered: an instance idle
+         < evict_s that returns at a location with IoU < iou_min free-fills
+         PAST the still-reserved rank (a newcomer takes #3 while #2 stays
+         reserved) and keeps that number after the reservation is evicted,
+         so two same-class instances can persistently display '#1'/'#3'
+         with no '#2' (and with >2 instances the gaps can grow). This is
+         deliberate -- renumbering would reintroduce the visible mid-stare
+         '#1'/'#2' swap the reservations exist to stop. Tests and box-trial
+         expectations must not read a persistent gap as a failure.
+    """
+
