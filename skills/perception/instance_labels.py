@@ -407,3 +407,17 @@ def frame_side(cx, img_w=IMG_W):
 
 
 # ── resolving the pick-target grammar ─────────────────────────────────────────
+def _det_t(d):
+    """Freshness stamp of a det dict.
+
+    Two keys are honoured: 't' (the coordinator's cross-compat key, stamped
+    alongside '_t' in pick_walk_coordinator._on_detections) and '_t' (pick_node's
+    own receive-stamp key, stamped without 't' in _on_detections). Both are
+    time.time() floats at receive; None (or float-ing garbage) -> not fresh.
+    """
+    for key in ('t', '_t'):
+        try:
+            return float(d.get(key))
+        except (TypeError, ValueError):
+            continue
+    return None
