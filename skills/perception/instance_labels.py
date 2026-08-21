@@ -251,3 +251,11 @@ class RankCarryover(object):
 
 
 # ── colour over sticky-mask px ────────────────────────────────────────────────
+def _hue_ok(hue):
+    try:
+        hue = float(hue)
+    except (TypeError, ValueError):
+        return None
+    if hue != hue:      # NaN caught here
+        return None
+    return hue % 360.0
