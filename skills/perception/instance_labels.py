@@ -122,3 +122,6 @@ def stem(label):
 def is_composite(label):
     """True when the label carries a rank part ('class#N', N >= 1)."""
     return split_label(label)[1] is not None
+
+
+# ── IoU maths ─────────────────────────────────────────────────────────────────
