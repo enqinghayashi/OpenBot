@@ -378,3 +378,5 @@ def color_matches(hue, name, tol=COLOR_TOL_DEG):
         return False
     lo, hi = band
     return _band_matches_tol(hue, lo, hi, tol)
+
+
