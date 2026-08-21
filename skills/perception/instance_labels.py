@@ -248,3 +248,6 @@ class RankCarryover(object):
             state[rank] = [now, xyxy]
         return [(key,) + out[key] for key, _x, _c in boxes or ()
                 if key in out]
+
+
+# ── colour over sticky-mask px ────────────────────────────────────────────────
