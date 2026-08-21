@@ -435,3 +435,79 @@ def _cand_side(d):
     if s is None:
         s = d.get('side')      # fallback key when body_side is absent
     return str(s or '').lower() if s is not None else None
+
+
+def _render_visible(d):
+    """'bottle#1(x=+0.04, right, color=orange)' style instance description."""
+    label = str(d.get('label') or '?')
+    comps = []
+    try:
+        x = float(d.get('x'))
+        comps.append('x=%+.2f' % x)
+    except (TypeError, ValueError):
+        pass
+    side = _cand_side(d)
+    if side is None:
+        side = d.get('frame_side')
+    if side:
+        comps.append(str(side).lower())
+    comps.append('color=%s' % str(d.get('color_name_hint') or 'unknown'))
+    return '%s(%s)' % (label, ', '.join(comps))
+
+
+def _dedupe_best(visible):
+    """Best-conf per label, stable on input order for conf ties."""
+    best = {}
+    for d in visible:
+        lab = str(d.get('label') or '')
+        conf = _det_conf(d)
+        if conf is None:
+            continue
+        prev = best.get(lab)
+        if prev is None or conf > _det_conf(prev):
+            best[lab] = d
+    return list(best.values())
+
+
+def _sort_insts(insts):
+    return sorted(insts, key=lambda d: (-(_det_conf(d) or 0.0),
+                                        str(d.get('label') or '')))
+
+
+def _pick_mods(rank, side, color):
+    mods = []
+    if rank is not None:
+        mods.append('#%d' % rank)
+    if side is not None:
+        mods.append('side=%s' % side)
+    if color is not None:
+        mods.append('color=%s' % color)
+    return ' '.join(mods)
+
+
+# 80 COCO names (16->80 widening).
+# Multi-word names are the stems the grammar
+# joins greedily - a word plus one completing it
+# is ONE stem: 'wine glass', 'wine glass#1',
+# 'dining table', 'teddy bear'... Unknown single
+# words stay legal stems; they just never match.
+COCO_NAMES_80 = (
+    'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train',
+    'truck', 'boat', 'traffic light', 'fire hydrant', 'stop sign',
+    'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow',
+    'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella', 'handbag',
+    'tie', 'suitcase', 'frisbee', 'skis', 'snowboard', 'sports ball', 'kite',
+    'baseball bat', 'baseball glove', 'skateboard', 'surfboard',
+    'tennis racket', 'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon',
+    'bowl', 'banana', 'apple', 'sandwich', 'orange', 'broccoli', 'carrot',
+    'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch', 'potted plant',
+    'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 'remote',
+    'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink',
+    'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear',
+    'hair drier', 'toothbrush',
+)
+COCO_MULTI_WORD_NAMES = tuple(n for n in COCO_NAMES_80 if ' ' in n)
+_COCO_MULTI_WORD = frozenset(COCO_MULTI_WORD_NAMES)
+
+
+# ── scene-graph refs -> labels ────────────────────────────────────────────────
