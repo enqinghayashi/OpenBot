@@ -177,3 +177,10 @@ class RankCarryover(object):
          expectations must not read a persistent gap as a failure.
     """
 
+    def __init__(self, iou_min=RANK_IOU_MIN, evict_s=RANK_EVICT_S,
+                 dup_iou_min=DUP_IOU_MIN):
+        self._iou_min = iou_min
+        self._evict_s = evict_s
+        self._dup_iou_min = dup_iou_min
+        self._state = {}   # rank -> [t, xyxy]
+
