@@ -511,3 +511,324 @@ _COCO_MULTI_WORD = frozenset(COCO_MULTI_WORD_NAMES)
 
 
 # ── scene-graph refs -> labels ────────────────────────────────────────────────
+def ref_to_label(raw):
+    """A scene-graph REF (or a sanitised target) -> the label perception publishes.
+
+    WHY THIS EXISTS -- MEASURED on Stuart, trial 8, 2026-09-28.
+    ``brain/scene_graph.py:_new_ref`` mints a ref as ``f"{base}_{n}"`` with
+    ``base = _sanitize(label)``, and ``_sanitize`` maps every character outside
+    ``[a-z0-9_]`` to ``_``.  ``scene_brief`` then renders ``f"{ref}: {label} ..."``,
+    so the model reads a line like ``bottle_3: bottle x=0.08 y=0.51 ...`` and --
+    having no way to tell which of the two tokens is the action handle -- sends
+    the REF as its target.  Every consumer below the brain matches labels
+    VERBATIM (``walk_node._fresh_target`` / ``_label_visible`` are dict lookups
+    keyed by the published label, and ``pick_walk_coordinator`` looks the label
+    up in its own detection snapshot), and ``stem()`` splits on ``#`` only, so a
+    ``label_N`` target matches NOTHING.
+
+    The measured cost: the walk FSM spent 77 s sweeping 12 turns through a scene
+    in which YOLO confirmed ``bottle`` **167 times**, then declared ``NOT_FOUND``
+    and burned a further 43 s of the coordinator's in-flight lock.  The operator's
+    own laptop test of the same lane passes because they type the clean label.
+
+    THE LADDER -- order matters, and only the last step needs a vocabulary:
+
+      'bottle#2'     -> 'bottle#2'     UNCHANGED: ``#`` is the pick grammar's
+                                       rank and must survive for _parse_pick_cmd
+      'bottle_3'     -> 'bottle'       drop the ref counter
+      'cell_phone_1' -> 'cell phone'   drop the counter, THEN restore the space:
+                                       'cell phone' sanitises to 'cell_phone',
+                                       so the underscored form is NOT the label
+      'sports_ball'  -> 'sports ball'  a bare sanitised name needs only the space
+
+    A string containing no underscore is returned untouched (the overwhelmingly
+    common case, and the fast path).  The vocabulary consulted is this module's
+    own ``_COCO_MULTI_WORD`` and it is needed ONLY for the classes whose names
+    contain a space -- every single-word class name is its own ref base, so no
+    alias table is owed and none is kept.  ``tests/test_instance_labels_ref.py``
+    round-trips the WHOLE published vocabulary through ``sanitize(name) + '_7'``
+    and back, so this ladder cannot silently rot when the vocabulary changes.
+
+    Args:
+        raw: the ref/target string as it arrived (any case, any surrounding
+            whitespace).  None and '' -> ''.
+
+    Returns:
+        str: the class label to match on, lowercased and stripped.
+    """
+    s = str(raw or '').strip().lower()
+    if '_' not in s:
+        return s                      # no underscore → as-is
+    head, sep, tail = s.rpartition('_')
+    if sep and head and tail.isdigit():
+        s = head                      # drop the counter
+    spaced = s.replace('_', ' ')
+    if spaced in _COCO_MULTI_WORD:
+        return spaced                 # put the space back
+    return s
+
+
+def _parse_pick_cmd(cmd):
+    """-> (stem, rank, side, color). Raises ValueError on bad shape.
+
+    Grammar (see the module docstring): one surrounding double-quote layer
+    is stripped first; remaining tokens are classified rank ('#N'),
+    modifier ('side=...' / 'color=...') or word (optionally 'word#N'); two
+    consecutive word tokens spelling a COCO multi-word name are joined into
+    ONE stem token BEFORE modifiers are read ('wine glass#1' and
+    'wine glass #1' both give stem 'wine glass', rank 1). At most 2
+    meaningful tokens total (a joined multi-word stem counts as one).
+    """
+    raw = str(cmd or '').strip()
+    if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"':
+        raw = raw[1:-1].strip()          # one quote layer
+    toks = raw.split()
+    if not toks:
+        raise ValueError('empty command')
+    # sort tokens: 'rank' | 'side' | 'color' |
+    # 'word' | 'bad'. payload = digits / side /
+    # color / (word, rank) / None; orig kept
+    # for error messages
+    kinds = []
+    for tok in toks:
+        t = tok.strip().lower()
+        if not t:
+            continue
+        if t.startswith('#'):
+            kinds.append(('rank', t[1:], tok))
+        elif t.startswith('side='):
+            kinds.append(('side', t[len('side='):], tok))
+        elif t.startswith('color='):
+            kinds.append(('color', t[len('color='):], tok))
+        else:
+            word, rk = split_label(t)
+            if rk is None and '#' in t:
+                kinds.append(('bad', None, tok))
+            else:
+                # un-mint refs HERE, before the join, so
+                # 'cell_phone_1' and 'cell phone_1' both
+                # become 'cell phone'. A '#' rank is left
+                # alone, so 'bottle#2' stays (bottle, 2)
+                kinds.append(('word', (ref_to_label(word), rk), tok))
+    # greedy join: two word tokens spelling a
+    # COCO multi-word stem become one stem; a
+    # rank may hang off either word. Two ranks
+    # → duplicate-rank refusal
+    merged = []
+    i = 0
+    while i < len(kinds):
+        kind, payload, orig = kinds[i]
+        if kind == 'word' and i + 1 < len(kinds) \
+                and kinds[i + 1][0] == 'word':
+            w1, rk1 = payload
+            w2, rk2 = kinds[i + 1][1]
+            if (w1 + ' ' + w2) in _COCO_MULTI_WORD:
+                if rk1 is not None and rk2 is not None:
+                    raise ValueError('duplicate rank token')
+                merged.append(('word', (w1 + ' ' + w2,
+                                        rk1 if rk1 is not None else rk2),
+                               orig))
+                i += 2
+                continue
+        merged.append((kind, payload, orig))
+        i += 1
+    if len(merged) > 2:
+        raise ValueError('more than 2 tokens')
+    target = None
+    rank = None
+    side = None
+    color = None
+    for kind, payload, orig in merged:
+        if kind == 'rank':
+            digits = payload
+            if not digits.isdigit() or int(digits) < 1:
+                raise ValueError("malformed rank token '%s'" % orig)
+            if rank is not None:
+                raise ValueError('duplicate rank token')
+            rank = int(digits)
+        elif kind == 'side':
+            if payload not in ('left', 'right'):
+                raise ValueError("invalid side '%s'" % orig)
+            if side is not None:
+                raise ValueError('duplicate side token')
+            side = payload
+        elif kind == 'color':
+            if not payload:
+                raise ValueError('empty color name')
+            if color is not None:
+                raise ValueError('duplicate color token')
+            color = payload
+        elif kind == 'bad':
+            raise ValueError("malformed label token '%s'" % orig)
+        else:   # the 'word' case
+            word, rk = payload
+            if target is not None:
+                raise ValueError("two target words ('%s' and '%s')"
+                                 % (target, word))
+            target = word
+            if rk is not None:
+                if rank is not None:
+                    raise ValueError('duplicate rank token')
+                rank = rk
+    if target is None:
+        raise ValueError('missing target')
+    return target, rank, side, color
+
+
+def _bad(why):
+    return {'status': 'bad_shape', 'det': None, 'candidates': [],
+            'visible_text': '', 'reason': 'bad shape: %s' % why}
+
+
+def resolve_pick_target(cmd, detections, now, stale_s=PICK_STALE_S,
+                        min_conf=PICK_MIN_CONF):
+    """Resolve a /pick_target grammar command against fresh detections.
+
+    -> dict {'status': 'none'|'single'|'ambiguous'|'bad_shape', 'det': dict|None,
+             'candidates': [matched dets, conf desc], 'visible_text': str,
+             'reason': str}. status 'single' carries the winning det.
+
+    Order of operations (design): freshness (now - t <= stale_s) and the
+    confidence floor (conf >= min_conf) are applied BEFORE any selection;
+    then stem / rank / side / color filters over best-conf-per-label.
+    side= resolves on body_side (D5: torso x sign), never frame_side.
+    color= resolves on the raw hue (D4: continuous band +-tol); a candidate
+    with hue None ('unknown' color) never matches a color request.
+    Rank relaxation: when the stem's instances are all plain (n_same == 1 the
+    sole instance has no '#N'), a requested '#1' still resolves -- an unranked
+    sole instance is trivially instance #1 of its class. '#2' on a plain sole
+    instance stays a no-match ('none').
+    """
+    try:
+        target, rank, side, color = _parse_pick_cmd(cmd)
+    except ValueError as exc:
+        return _bad(str(exc))
+    pool = []
+    for d in detections or ():
+        if not isinstance(d, dict):
+            continue
+        t = _det_t(d)
+        conf = _det_conf(d)
+        if t is None or conf is None:
+            continue
+        if (now - t) > stale_s:
+            continue
+        if conf < min_conf:
+            continue
+        pool.append(d)
+    by_label = {}
+    for d in pool:
+        if stem(str(d.get('label') or '')) == target:
+            lab = str(d.get('label') or '')
+            prev = by_label.get(lab)
+            if prev is None or _det_conf(d) > _det_conf(prev):
+                by_label[lab] = d
+    visible = _sort_insts(list(by_label.values()))
+    matched = []
+    for d in visible:
+        dr = split_label(str(d.get('label') or ''))[1]
+        if rank is not None and not (dr == rank or (dr is None and rank == 1)):
+            continue
+        if side is not None and _cand_side(d) != side:
+            continue
+        if color is not None and not color_matches(d.get('hue'), color):
+            continue
+        matched.append(d)
+    matched = _sort_insts(matched)
+    visible_text = ', '.join(_render_visible(d) for d in visible)
+    mods = _pick_mods(rank, side, color)
+    if not visible:
+        return {'status': 'none', 'det': None, 'candidates': matched,
+                'visible_text': visible_text,
+                'reason': '%s not detected' % target}
+    if not matched:
+        return {'status': 'none', 'det': None, 'candidates': matched,
+                'visible_text': visible_text,
+                'reason': 'no %s instance matches %s'
+                          % (target, mods or '(none)')}
+    if len(matched) == 1:
+        return {'status': 'single', 'det': matched[0], 'candidates': matched,
+                'visible_text': visible_text, 'reason': 'ok'}
+    return {'status': 'ambiguous', 'det': None, 'candidates': matched,
+            'visible_text': visible_text,
+            'reason': 'ambiguous: %d %s instances match %s'
+                      % (len(matched), target, mods or '(none)')}
+
+
+def resolve_nav_target(label, detections, now, fresh_s=NAV_FRESH_S):
+    """Coordinator-side nav target: raw label -> unique instance label.
+
+    -> dict {'status': 'none'|'single'|'ambiguous', 'label': str|None,
+             'det': dict|None, 'candidates': [fresh same-stem dets],
+             'reason': str}. No color/side nav grammar this round (D8).
+
+    Input may be plain ('bottle') or composite ('bottle#2'). Fresh = published
+    within fresh_s of now (best-conf per label). Plain input resolves: 0 ->
+    'none' (keep PENDING path), exactly 1 instance -> 'single' pinning its
+    label (composite or plain), >1 -> 'ambiguous' (operator must name #N).
+    Composite input must match a fresh instance verbatim by rank; the same
+    rank-1 relaxation as resolve_pick_target applies to a plain sole instance.
+    """
+    # un-mint ref-shaped input first, or the
+    # plain branch compares 'bottle_3' to
+    # 'bottle' and nothing is ever found
+    raw = ref_to_label(str(label or '').strip().lower())
+    target, rank = split_label(raw)
+    fresh = []
+    for d in detections or ():
+        if not isinstance(d, dict):
+            continue
+        t = _det_t(d)
+        if t is None:
+            continue
+        if (now - t) <= fresh_s:
+            fresh.append(d)
+    by_label = {}
+    for d in fresh:
+        if not raw or stem(str(d.get('label') or '')) != target:
+            continue
+        lab = str(d.get('label') or '')
+        prev = by_label.get(lab)
+        if prev is None or _det_conf(d) > _det_conf(prev):
+            by_label[lab] = d
+    visible = _sort_insts(list(by_label.values()))
+    visible_text = ', '.join(_render_visible(d) for d in visible)
+    if not raw or not visible:
+        return {'status': 'none', 'label': None, 'det': None,
+                'candidates': visible, 'reason': '%s not detected' % (raw or '')
+                if raw else 'empty label', 'visible_text': visible_text}
+    if rank is not None:
+        matched = []
+        for d in visible:
+            dr = split_label(str(d.get('label') or ''))[1]
+            if dr == rank or (dr is None and rank == 1):
+                matched.append(d)
+        if len(matched) == 1:
+            d = matched[0]
+            return {'status': 'single', 'label': str(d.get('label') or ''),
+                    'det': d, 'candidates': matched,
+                    'reason': 'ok', 'visible_text': visible_text}
+        if not matched:
+            return {'status': 'none', 'label': None, 'det': None,
+                    'candidates': visible,
+                    'reason': 'no %s instance matches #%d' % (target, rank),
+                    'visible_text': visible_text}
+        return {'status': 'ambiguous', 'label': None, 'det': None,
+                'candidates': matched,
+                'reason': 'ambiguous: %d %s instances match #%d'
+                          % (len(matched), target, rank),
+                'visible_text': visible_text}
+    if len(visible) == 1:
+        d = visible[0]
+        return {'status': 'single', 'label': str(d.get('label') or ''),
+                'det': d, 'candidates': visible, 'reason': 'ok',
+                'visible_text': visible_text}
+    return {'status': 'ambiguous', 'label': None, 'det': None,
+            'candidates': visible,
+            'reason': 'ambiguous: %d %s instances -- name one with #N'
+                      % (len(visible), target),
+            'visible_text': visible_text}
+
+
+if __name__ == '__main__':
+    raise SystemExit('instance_labels.py is a library; run tests instead.')
