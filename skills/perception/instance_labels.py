@@ -96,3 +96,19 @@ HUE_BAND_BY_NAME = dict((name, (lo, hi)) for name, lo, hi in HUE_BANDS)
 
 
 # ── label splitting ───────────────────────────────────────────────────────────
+def split_label(label):
+    """'bottle#2' -> ('bottle', 2); 'bottle' -> ('bottle', None).
+
+    Malformed composites ('bottle#', 'bottle#x', '#0', '#', 'bottle#2#x') are
+    NOT split: the whole string comes back as the stem with rank None, so they
+    can never collide with a real class stem (verbatim-matching safety).
+    Ranks are positive ints only ('#0' is malformed).
+    """
+    label = str(label or '')
+    if '#' in label:
+        head, sep, tail = label.rpartition('#')
+        if sep and head and tail.isdigit():
+            rank = int(tail)
+            if rank >= 1:
+                return (head, rank)
+    return (label, None)
