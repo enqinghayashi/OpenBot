@@ -354,3 +354,5 @@ def dominant_color(rows_hsv):
     out['color_name_hint'] = name
     out['reason'] = 'ok' if name != 'unknown' else 'no_band'
     return out
+
+
