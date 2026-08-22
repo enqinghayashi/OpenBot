@@ -437,3 +437,19 @@ def _cand_side(d):
     return str(s or '').lower() if s is not None else None
 
 
+def _render_visible(d):
+    """'bottle#1(x=+0.04, right, color=orange)' style instance description."""
+    label = str(d.get('label') or '?')
+    comps = []
+    try:
+        x = float(d.get('x'))
+        comps.append('x=%+.2f' % x)
+    except (TypeError, ValueError):
+        pass
+    side = _cand_side(d)
+    if side is None:
+        side = d.get('frame_side')
+    if side:
+        comps.append(str(side).lower())
+    comps.append('color=%s' % str(d.get('color_name_hint') or 'unknown'))
+    return '%s(%s)' % (label, ', '.join(comps))
