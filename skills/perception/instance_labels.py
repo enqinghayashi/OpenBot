@@ -675,3 +675,6 @@ def _parse_pick_cmd(cmd):
     return target, rank, side, color
 
 
+def _bad(why):
+    return {'status': 'bad_shape', 'det': None, 'candidates': [],
+            'visible_text': '', 'reason': 'bad shape: %s' % why}
