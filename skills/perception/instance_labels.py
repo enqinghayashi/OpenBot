@@ -568,3 +568,108 @@ def ref_to_label(raw):
     return s
 
 
+def _parse_pick_cmd(cmd):
+    """-> (stem, rank, side, color). Raises ValueError on bad shape.
+
+    Grammar (see the module docstring): one surrounding double-quote layer
+    is stripped first; remaining tokens are classified rank ('#N'),
+    modifier ('side=...' / 'color=...') or word (optionally 'word#N'); two
+    consecutive word tokens spelling a COCO multi-word name are joined into
+    ONE stem token BEFORE modifiers are read ('wine glass#1' and
+    'wine glass #1' both give stem 'wine glass', rank 1). At most 2
+    meaningful tokens total (a joined multi-word stem counts as one).
+    """
+    raw = str(cmd or '').strip()
+    if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"':
+        raw = raw[1:-1].strip()          # one quote layer
+    toks = raw.split()
+    if not toks:
+        raise ValueError('empty command')
+    # sort tokens: 'rank' | 'side' | 'color' |
+    # 'word' | 'bad'. payload = digits / side /
+    # color / (word, rank) / None; orig kept
+    # for error messages
+    kinds = []
+    for tok in toks:
+        t = tok.strip().lower()
+        if not t:
+            continue
+        if t.startswith('#'):
+            kinds.append(('rank', t[1:], tok))
+        elif t.startswith('side='):
+            kinds.append(('side', t[len('side='):], tok))
+        elif t.startswith('color='):
+            kinds.append(('color', t[len('color='):], tok))
+        else:
+            word, rk = split_label(t)
+            if rk is None and '#' in t:
+                kinds.append(('bad', None, tok))
+            else:
+                # un-mint refs HERE, before the join, so
+                # 'cell_phone_1' and 'cell phone_1' both
+                # become 'cell phone'. A '#' rank is left
+                # alone, so 'bottle#2' stays (bottle, 2)
+                kinds.append(('word', (ref_to_label(word), rk), tok))
+    # greedy join: two word tokens spelling a
+    # COCO multi-word stem become one stem; a
+    # rank may hang off either word. Two ranks
+    # → duplicate-rank refusal
+    merged = []
+    i = 0
+    while i < len(kinds):
+        kind, payload, orig = kinds[i]
+        if kind == 'word' and i + 1 < len(kinds) \
+                and kinds[i + 1][0] == 'word':
+            w1, rk1 = payload
+            w2, rk2 = kinds[i + 1][1]
+            if (w1 + ' ' + w2) in _COCO_MULTI_WORD:
+                if rk1 is not None and rk2 is not None:
+                    raise ValueError('duplicate rank token')
+                merged.append(('word', (w1 + ' ' + w2,
+                                        rk1 if rk1 is not None else rk2),
+                               orig))
+                i += 2
+                continue
+        merged.append((kind, payload, orig))
+        i += 1
+    if len(merged) > 2:
+        raise ValueError('more than 2 tokens')
+    target = None
+    rank = None
+    side = None
+    color = None
+    for kind, payload, orig in merged:
+        if kind == 'rank':
+            digits = payload
+            if not digits.isdigit() or int(digits) < 1:
+                raise ValueError("malformed rank token '%s'" % orig)
+            if rank is not None:
+                raise ValueError('duplicate rank token')
+            rank = int(digits)
+        elif kind == 'side':
+            if payload not in ('left', 'right'):
+                raise ValueError("invalid side '%s'" % orig)
+            if side is not None:
+                raise ValueError('duplicate side token')
+            side = payload
+        elif kind == 'color':
+            if not payload:
+                raise ValueError('empty color name')
+            if color is not None:
+                raise ValueError('duplicate color token')
+            color = payload
+        elif kind == 'bad':
+            raise ValueError("malformed label token '%s'" % orig)
+        else:   # the 'word' case
+            word, rk = payload
+            if target is not None:
+                raise ValueError("two target words ('%s' and '%s')"
+                                 % (target, word))
+            target = word
+            if rk is not None:
+                if rank is not None:
+                    raise ValueError('duplicate rank token')
+                rank = rk
+    if target is None:
+        raise ValueError('missing target')
+    return target, rank, side, color
