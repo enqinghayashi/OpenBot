@@ -430,3 +430,8 @@ def _det_conf(d):
         return None
 
 
+def _cand_side(d):
+    s = d.get('body_side')
+    if s is None:
+        s = d.get('side')      # fallback key when body_side is absent
+    return str(s or '').lower() if s is not None else None
