@@ -483,3 +483,31 @@ def _pick_mods(rank, side, color):
     if color is not None:
         mods.append('color=%s' % color)
     return ' '.join(mods)
+
+
+# 80 COCO names (16->80 widening).
+# Multi-word names are the stems the grammar
+# joins greedily - a word plus one completing it
+# is ONE stem: 'wine glass', 'wine glass#1',
+# 'dining table', 'teddy bear'... Unknown single
+# words stay legal stems; they just never match.
+COCO_NAMES_80 = (
+    'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train',
+    'truck', 'boat', 'traffic light', 'fire hydrant', 'stop sign',
+    'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow',
+    'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella', 'handbag',
+    'tie', 'suitcase', 'frisbee', 'skis', 'snowboard', 'sports ball', 'kite',
+    'baseball bat', 'baseball glove', 'skateboard', 'surfboard',
+    'tennis racket', 'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon',
+    'bowl', 'banana', 'apple', 'sandwich', 'orange', 'broccoli', 'carrot',
+    'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch', 'potted plant',
+    'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 'remote',
+    'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink',
+    'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear',
+    'hair drier', 'toothbrush',
+)
+COCO_MULTI_WORD_NAMES = tuple(n for n in COCO_NAMES_80 if ' ' in n)
+_COCO_MULTI_WORD = frozenset(COCO_MULTI_WORD_NAMES)
+
+
+# ── scene-graph refs -> labels ────────────────────────────────────────────────
