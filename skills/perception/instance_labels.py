@@ -421,3 +421,5 @@ def _det_t(d):
         except (TypeError, ValueError):
             continue
     return None
+
+
