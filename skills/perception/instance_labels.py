@@ -673,3 +673,5 @@ def _parse_pick_cmd(cmd):
     if target is None:
         raise ValueError('missing target')
     return target, rank, side, color
+
+
