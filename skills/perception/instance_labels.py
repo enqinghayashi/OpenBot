@@ -828,3 +828,7 @@ def resolve_nav_target(label, detections, now, fresh_s=NAV_FRESH_S):
             'reason': 'ambiguous: %d %s instances -- name one with #N'
                       % (len(visible), target),
             'visible_text': visible_text}
+
+
+if __name__ == '__main__':
+    raise SystemExit('instance_labels.py is a library; run tests instead.')
