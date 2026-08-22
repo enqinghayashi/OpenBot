@@ -755,3 +755,76 @@ def resolve_pick_target(cmd, detections, now, stale_s=PICK_STALE_S,
                       % (len(matched), target, mods or '(none)')}
 
 
+def resolve_nav_target(label, detections, now, fresh_s=NAV_FRESH_S):
+    """Coordinator-side nav target: raw label -> unique instance label.
+
+    -> dict {'status': 'none'|'single'|'ambiguous', 'label': str|None,
+             'det': dict|None, 'candidates': [fresh same-stem dets],
+             'reason': str}. No color/side nav grammar this round (D8).
+
+    Input may be plain ('bottle') or composite ('bottle#2'). Fresh = published
+    within fresh_s of now (best-conf per label). Plain input resolves: 0 ->
+    'none' (keep PENDING path), exactly 1 instance -> 'single' pinning its
+    label (composite or plain), >1 -> 'ambiguous' (operator must name #N).
+    Composite input must match a fresh instance verbatim by rank; the same
+    rank-1 relaxation as resolve_pick_target applies to a plain sole instance.
+    """
+    # un-mint ref-shaped input first, or the
+    # plain branch compares 'bottle_3' to
+    # 'bottle' and nothing is ever found
+    raw = ref_to_label(str(label or '').strip().lower())
+    target, rank = split_label(raw)
+    fresh = []
+    for d in detections or ():
+        if not isinstance(d, dict):
+            continue
+        t = _det_t(d)
+        if t is None:
+            continue
+        if (now - t) <= fresh_s:
+            fresh.append(d)
+    by_label = {}
+    for d in fresh:
+        if not raw or stem(str(d.get('label') or '')) != target:
+            continue
+        lab = str(d.get('label') or '')
+        prev = by_label.get(lab)
+        if prev is None or _det_conf(d) > _det_conf(prev):
+            by_label[lab] = d
+    visible = _sort_insts(list(by_label.values()))
+    visible_text = ', '.join(_render_visible(d) for d in visible)
+    if not raw or not visible:
+        return {'status': 'none', 'label': None, 'det': None,
+                'candidates': visible, 'reason': '%s not detected' % (raw or '')
+                if raw else 'empty label', 'visible_text': visible_text}
+    if rank is not None:
+        matched = []
+        for d in visible:
+            dr = split_label(str(d.get('label') or ''))[1]
+            if dr == rank or (dr is None and rank == 1):
+                matched.append(d)
+        if len(matched) == 1:
+            d = matched[0]
+            return {'status': 'single', 'label': str(d.get('label') or ''),
+                    'det': d, 'candidates': matched,
+                    'reason': 'ok', 'visible_text': visible_text}
+        if not matched:
+            return {'status': 'none', 'label': None, 'det': None,
+                    'candidates': visible,
+                    'reason': 'no %s instance matches #%d' % (target, rank),
+                    'visible_text': visible_text}
+        return {'status': 'ambiguous', 'label': None, 'det': None,
+                'candidates': matched,
+                'reason': 'ambiguous: %d %s instances match #%d'
+                          % (len(matched), target, rank),
+                'visible_text': visible_text}
+    if len(visible) == 1:
+        d = visible[0]
+        return {'status': 'single', 'label': str(d.get('label') or ''),
+                'det': d, 'candidates': visible, 'reason': 'ok',
+                'visible_text': visible_text}
+    return {'status': 'ambiguous', 'label': None, 'det': None,
+            'candidates': visible,
+            'reason': 'ambiguous: %d %s instances -- name one with #N'
+                      % (len(visible), target),
+            'visible_text': visible_text}
