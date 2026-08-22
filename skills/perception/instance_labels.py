@@ -428,3 +428,5 @@ def _det_conf(d):
         return float(d.get('conf'))
     except (TypeError, ValueError):
         return None
+
+
