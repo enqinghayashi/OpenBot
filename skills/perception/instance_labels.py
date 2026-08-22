@@ -753,3 +753,5 @@ def resolve_pick_target(cmd, detections, now, stale_s=PICK_STALE_S,
             'visible_text': visible_text,
             'reason': 'ambiguous: %d %s instances match %s'
                       % (len(matched), target, mods or '(none)')}
+
+
