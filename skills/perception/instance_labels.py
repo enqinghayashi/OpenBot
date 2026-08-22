@@ -474,3 +474,12 @@ def _sort_insts(insts):
                                         str(d.get('label') or '')))
 
 
+def _pick_mods(rank, side, color):
+    mods = []
+    if rank is not None:
+        mods.append('#%d' % rank)
+    if side is not None:
+        mods.append('side=%s' % side)
+    if color is not None:
+        mods.append('color=%s' % color)
+    return ' '.join(mods)
