@@ -455,3 +455,15 @@ def _render_visible(d):
     return '%s(%s)' % (label, ', '.join(comps))
 
 
+def _dedupe_best(visible):
+    """Best-conf per label, stable on input order for conf ties."""
+    best = {}
+    for d in visible:
+        lab = str(d.get('label') or '')
+        conf = _det_conf(d)
+        if conf is None:
+            continue
+        prev = best.get(lab)
+        if prev is None or conf > _det_conf(prev):
+            best[lab] = d
+    return list(best.values())
