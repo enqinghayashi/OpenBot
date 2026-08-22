@@ -469,3 +469,6 @@ def _dedupe_best(visible):
     return list(best.values())
 
 
+def _sort_insts(insts):
+    return sorted(insts, key=lambda d: (-(_det_conf(d) or 0.0),
+                                        str(d.get('label') or '')))
