@@ -453,3 +453,5 @@ def _render_visible(d):
         comps.append(str(side).lower())
     comps.append('color=%s' % str(d.get('color_name_hint') or 'unknown'))
     return '%s(%s)' % (label, ', '.join(comps))
+
+
