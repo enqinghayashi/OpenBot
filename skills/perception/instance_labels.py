@@ -680,3 +680,76 @@ def _bad(why):
             'visible_text': '', 'reason': 'bad shape: %s' % why}
 
 
+def resolve_pick_target(cmd, detections, now, stale_s=PICK_STALE_S,
+                        min_conf=PICK_MIN_CONF):
+    """Resolve a /pick_target grammar command against fresh detections.
+
+    -> dict {'status': 'none'|'single'|'ambiguous'|'bad_shape', 'det': dict|None,
+             'candidates': [matched dets, conf desc], 'visible_text': str,
+             'reason': str}. status 'single' carries the winning det.
+
+    Order of operations (design): freshness (now - t <= stale_s) and the
+    confidence floor (conf >= min_conf) are applied BEFORE any selection;
+    then stem / rank / side / color filters over best-conf-per-label.
+    side= resolves on body_side (D5: torso x sign), never frame_side.
+    color= resolves on the raw hue (D4: continuous band +-tol); a candidate
+    with hue None ('unknown' color) never matches a color request.
+    Rank relaxation: when the stem's instances are all plain (n_same == 1 the
+    sole instance has no '#N'), a requested '#1' still resolves -- an unranked
+    sole instance is trivially instance #1 of its class. '#2' on a plain sole
+    instance stays a no-match ('none').
+    """
+    try:
+        target, rank, side, color = _parse_pick_cmd(cmd)
+    except ValueError as exc:
+        return _bad(str(exc))
+    pool = []
+    for d in detections or ():
+        if not isinstance(d, dict):
+            continue
+        t = _det_t(d)
+        conf = _det_conf(d)
+        if t is None or conf is None:
+            continue
+        if (now - t) > stale_s:
+            continue
+        if conf < min_conf:
+            continue
+        pool.append(d)
+    by_label = {}
+    for d in pool:
+        if stem(str(d.get('label') or '')) == target:
+            lab = str(d.get('label') or '')
+            prev = by_label.get(lab)
+            if prev is None or _det_conf(d) > _det_conf(prev):
+                by_label[lab] = d
+    visible = _sort_insts(list(by_label.values()))
+    matched = []
+    for d in visible:
+        dr = split_label(str(d.get('label') or ''))[1]
+        if rank is not None and not (dr == rank or (dr is None and rank == 1)):
+            continue
+        if side is not None and _cand_side(d) != side:
+            continue
+        if color is not None and not color_matches(d.get('hue'), color):
+            continue
+        matched.append(d)
+    matched = _sort_insts(matched)
+    visible_text = ', '.join(_render_visible(d) for d in visible)
+    mods = _pick_mods(rank, side, color)
+    if not visible:
+        return {'status': 'none', 'det': None, 'candidates': matched,
+                'visible_text': visible_text,
+                'reason': '%s not detected' % target}
+    if not matched:
+        return {'status': 'none', 'det': None, 'candidates': matched,
+                'visible_text': visible_text,
+                'reason': 'no %s instance matches %s'
+                          % (target, mods or '(none)')}
+    if len(matched) == 1:
+        return {'status': 'single', 'det': matched[0], 'candidates': matched,
+                'visible_text': visible_text, 'reason': 'ok'}
+    return {'status': 'ambiguous', 'det': None, 'candidates': matched,
+            'visible_text': visible_text,
+            'reason': 'ambiguous: %d %s instances match %s'
+                      % (len(matched), target, mods or '(none)')}
