@@ -511,3 +511,58 @@ _COCO_MULTI_WORD = frozenset(COCO_MULTI_WORD_NAMES)
 
 
 # ── scene-graph refs -> labels ────────────────────────────────────────────────
+def ref_to_label(raw):
+    """A scene-graph REF (or a sanitised target) -> the label perception publishes.
+
+    WHY THIS EXISTS -- MEASURED on Stuart, trial 8, 2026-09-28.
+    ``brain/scene_graph.py:_new_ref`` mints a ref as ``f"{base}_{n}"`` with
+    ``base = _sanitize(label)``, and ``_sanitize`` maps every character outside
+    ``[a-z0-9_]`` to ``_``.  ``scene_brief`` then renders ``f"{ref}: {label} ..."``,
+    so the model reads a line like ``bottle_3: bottle x=0.08 y=0.51 ...`` and --
+    having no way to tell which of the two tokens is the action handle -- sends
+    the REF as its target.  Every consumer below the brain matches labels
+    VERBATIM (``walk_node._fresh_target`` / ``_label_visible`` are dict lookups
+    keyed by the published label, and ``pick_walk_coordinator`` looks the label
+    up in its own detection snapshot), and ``stem()`` splits on ``#`` only, so a
+    ``label_N`` target matches NOTHING.
+
+    The measured cost: the walk FSM spent 77 s sweeping 12 turns through a scene
+    in which YOLO confirmed ``bottle`` **167 times**, then declared ``NOT_FOUND``
+    and burned a further 43 s of the coordinator's in-flight lock.  The operator's
+    own laptop test of the same lane passes because they type the clean label.
+
+    THE LADDER -- order matters, and only the last step needs a vocabulary:
+
+      'bottle#2'     -> 'bottle#2'     UNCHANGED: ``#`` is the pick grammar's
+                                       rank and must survive for _parse_pick_cmd
+      'bottle_3'     -> 'bottle'       drop the ref counter
+      'cell_phone_1' -> 'cell phone'   drop the counter, THEN restore the space:
+                                       'cell phone' sanitises to 'cell_phone',
+                                       so the underscored form is NOT the label
+      'sports_ball'  -> 'sports ball'  a bare sanitised name needs only the space
+
+    A string containing no underscore is returned untouched (the overwhelmingly
+    common case, and the fast path).  The vocabulary consulted is this module's
+    own ``_COCO_MULTI_WORD`` and it is needed ONLY for the classes whose names
+    contain a space -- every single-word class name is its own ref base, so no
+    alias table is owed and none is kept.  ``tests/test_instance_labels_ref.py``
+    round-trips the WHOLE published vocabulary through ``sanitize(name) + '_7'``
+    and back, so this ladder cannot silently rot when the vocabulary changes.
+
+    Args:
+        raw: the ref/target string as it arrived (any case, any surrounding
+            whitespace).  None and '' -> ''.
+
+    Returns:
+        str: the class label to match on, lowercased and stripped.
+    """
+    s = str(raw or '').strip().lower()
+    if '_' not in s:
+        return s                      # no underscore → as-is
+    head, sep, tail = s.rpartition('_')
+    if sep and head and tail.isdigit():
+        s = head                      # drop the counter
+    spaced = s.replace('_', ' ')
+    if spaced in _COCO_MULTI_WORD:
+        return spaced                 # put the space back
+    return s
