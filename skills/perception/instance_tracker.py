@@ -121,3 +121,8 @@ class InstanceTracker(object):
     def ids(self):
         return list(self._tracks)
 
+    def age(self, iid):
+        """last_seen - first_seen of a live track (seconds), else None."""
+        t = self._tracks.get(iid)
+        return None if t is None else t.last_seen - t.first_seen
+
