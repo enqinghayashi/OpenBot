@@ -70,3 +70,5 @@ def _centre(xyxy):
     return ((xyxy[0] + xyxy[2]) / 2.0, (xyxy[1] + xyxy[3]) / 2.0)
 
 
+def _dist(p, q):
+    return ((p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2) ** 0.5
