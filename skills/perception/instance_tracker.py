@@ -88,3 +88,4 @@ class _Track(object):
         self.streak = 0             # observations in a row
 
 
+class InstanceTracker(object):
