@@ -133,3 +133,7 @@ class InstanceTracker(object):
 
     majority = label        # old name; callers still use it
 
+    @staticmethod
+    def _label(t):
+        return t.label
+
