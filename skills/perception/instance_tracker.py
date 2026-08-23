@@ -86,3 +86,5 @@ class _Track(object):
         self.label = label          # the class we publish now
         self.challenger = None      # different class leading right now
         self.streak = 0             # observations in a row
+
+
