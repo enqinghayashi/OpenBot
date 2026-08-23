@@ -66,3 +66,5 @@ def _fmt(xyxy):
     return '[%s]' % ','.join('%.0f' % v for v in xyxy)
 
 
+def _centre(xyxy):
+    return ((xyxy[0] + xyxy[2]) / 2.0, (xyxy[1] + xyxy[3]) / 2.0)
