@@ -166,3 +166,15 @@ class InstanceTracker(object):
         iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
         return ix * iy
 
+    def _fuse_key(self, boxes, i):
+        """Dup-fusion priority of box ``i``: an active extra at or above its
+        admit floor first, then the base classes, then sub-floor extras;
+        within a rank higher conf, then input order.  Base against base and
+        extra against extra order exactly as before."""
+        cls, conf = boxes[i][0], float(boxes[i][2])
+        if cls in self.base:
+            rank = 1
+        else:
+            rank = 0 if conf >= self.extra_floor else 2
+        return (rank, -conf, i)
+
