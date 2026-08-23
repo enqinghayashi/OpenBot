@@ -137,3 +137,22 @@ class InstanceTracker(object):
     def _label(t):
         return t.label
 
+    def _observe(self, t, cls):
+        """Fold one observed class into the track's sticky label."""
+        if cls == t.label:
+            t.challenger = None
+            t.streak = 0
+            return
+        if cls == t.challenger:
+            t.streak += 1
+        else:
+            t.challenger = cls
+            t.streak = 1
+        k = (self.sticky_k_base if cls in self.base
+             else self.sticky_k_extra)
+        if t.streak >= k:
+            t.label = cls
+            t.challenger = None
+            t.streak = 0
+
+    # ── fusing boxes ─────────────────────────────────────────────────────
