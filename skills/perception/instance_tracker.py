@@ -160,3 +160,9 @@ class InstanceTracker(object):
         """Area of a box (x1, y1, x2, y2)."""
         return (xyxy[2] - xyxy[0]) * (xyxy[3] - xyxy[1])
 
+    def _intersection_area(self, a, b):
+        """Intersection area of two boxes."""
+        ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+        iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+        return ix * iy
+
