@@ -249,3 +249,8 @@ class InstanceTracker(object):
         return sorted(final_kept)
 
     # ── the main entry points ────────────────────────────────────────────
+    def update(self, boxes, now):
+        """[(class_name, xyxy, conf)] -> [(iid, class_name, xyxy, conf,
+        carried)] in input order (fused-away boxes omitted)."""
+        return [r[1:] for r in self.update_indexed(boxes, now)]
+
