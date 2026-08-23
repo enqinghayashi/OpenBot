@@ -118,3 +118,6 @@ class InstanceTracker(object):
     def __len__(self):
         return len(self._tracks)
 
+    def ids(self):
+        return list(self._tracks)
+
