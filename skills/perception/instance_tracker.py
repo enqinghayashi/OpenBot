@@ -126,3 +126,10 @@ class InstanceTracker(object):
         t = self._tracks.get(iid)
         return None if t is None else t.last_seen - t.first_seen
 
+    def label(self, iid):
+        """The track's published (sticky) class, else None."""
+        t = self._tracks.get(iid)
+        return None if t is None else self._label(t)
+
+    majority = label        # old name; callers still use it
+
