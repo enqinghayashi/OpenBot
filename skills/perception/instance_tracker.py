@@ -89,3 +89,29 @@ class _Track(object):
 
 
 class InstanceTracker(object):
+    def __init__(self, iou_min=0.5, dup_iou=0.7, evict_s=2.0,
+                 centroid_gate_px=60, sticky_k_base=10, sticky_k_extra=3,
+                 base=None, id_source=None, min_new_conf=0.35,
+                 contain_frac=0.7, extra_floor=0.35):
+        self.iou_min = float(iou_min)
+        self.dup_iou = float(dup_iou)
+        self.evict_s = float(evict_s)
+        self.centroid_gate_px = float(centroid_gate_px)
+        self.sticky_k_base = max(1, int(sticky_k_base))
+        self.sticky_k_extra = max(1, int(sticky_k_extra))
+        self.base = frozenset(base or ())
+        self._ids = _PROCESS_IDS if id_source is None else id_source
+        self._tracks = {}           # iid -> _Track; insertion order = age
+        self.min_new_conf = float(min_new_conf)
+        self.contain_frac = float(contain_frac)
+        # admit floor for an operator extra (bin / box)
+        # at or above it, an extra beats an overlapping BASE box
+        # in dup fusion; at equal score the extra beats the base box
+        # (bin 0.90 vs handbag 0.21 on one box)
+        # node keeps this = its own admit floor
+        self.extra_floor = float(extra_floor)
+        # optional callable(str): every fusion removal + why
+        # (OPENBOT_YOLOE_SCORE_TAP).  None = silent
+        self.tap = None
+
+    # ── query methods ────────────────────────────────────────────────────
