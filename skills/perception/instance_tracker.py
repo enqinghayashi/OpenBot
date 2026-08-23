@@ -156,3 +156,7 @@ class InstanceTracker(object):
             t.streak = 0
 
     # ── fusing boxes ─────────────────────────────────────────────────────
+    def _box_area(self, xyxy):
+        """Area of a box (x1, y1, x2, y2)."""
+        return (xyxy[2] - xyxy[0]) * (xyxy[3] - xyxy[1])
+
