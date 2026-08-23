@@ -62,3 +62,5 @@ def iou_xyxy(a, b):
     return inter / ua if ua > 0.0 else 0.0
 
 
+def _fmt(xyxy):
+    return '[%s]' % ','.join('%.0f' % v for v in xyxy)
