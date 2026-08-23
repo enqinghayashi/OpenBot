@@ -74,3 +74,7 @@ def _dist(p, q):
     return ((p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2) ** 0.5
 
 
+class _Track(object):
+    __slots__ = ('iid', 'xyxy', 'first_seen', 'last_seen', 'label',
+                 'challenger', 'streak')
+
