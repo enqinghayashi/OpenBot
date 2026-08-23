@@ -254,3 +254,61 @@ class InstanceTracker(object):
         carried)] in input order (fused-away boxes omitted)."""
         return [r[1:] for r in self.update_indexed(boxes, now)]
 
+    def update_indexed(self, boxes, now):
+        """Same as update() with the source index first:
+        [(src_index, iid, class_name, xyxy, conf, carried)]."""
+        boxes = [(c, tuple(float(v) for v in b), float(f))
+                 for c, b, f in boxes]
+        self._evict(now)
+        kept = self.fuse(boxes)
+        order = sorted(kept, key=lambda i: (-boxes[i][2], i))
+        free = dict(self._tracks)
+        match = {}
+        # 1) greedy IoU association, class-agnostic
+        for i in order:
+            best, best_iou = None, self.iou_min
+            for iid, t in free.items():
+                v = iou_xyxy(boxes[i][1], t.xyxy)
+                if v >= best_iou and (best is None or v > best_iou):
+                    best, best_iou = iid, v
+            if best is not None:
+                match[i] = best
+                del free[best]
+        # 2) centroid gate + ambiguity check
+        gate = self.centroid_gate_px
+        for i in order:
+            if i in match:
+                continue
+            c = _centre(boxes[i][1])
+            near = [iid for iid, t in self._tracks.items()
+                    if _dist(c, _centre(t.xyxy)) < gate]
+            if len(near) != 1 or near[0] not in free:
+                continue
+            tc = _centre(free[near[0]].xyxy)
+            rivals = [j for j in kept
+                      if j != i and _dist(_centre(boxes[j][1]), tc) < gate]
+            if rivals:
+                continue
+            match[i] = near[0]
+            del free[near[0]]
+        # 3) commit: refresh matches, mint ids for strong boxes
+        out = []
+        for i in kept:
+            cls, xyxy, conf = boxes[i]
+            iid = match.get(i)
+            carried = iid is not None
+            if carried:
+                t = self._tracks[iid]
+                t.xyxy = xyxy
+                t.last_seen = now
+                self._observe(t, cls)
+                out.append((i, iid, self._label(t), xyxy, conf, carried))
+            elif conf >= self._new_track_floor(cls):
+                # mint a track only if conf is strong enough
+                iid = next(self._ids)
+                t = _Track(iid, xyxy, now, cls)
+                self._tracks[iid] = t
+                out.append((i, iid, self._label(t), xyxy, conf, carried))
+            # weak + unmatched: just dropped
+        return out
+
