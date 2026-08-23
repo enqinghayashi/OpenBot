@@ -78,3 +78,11 @@ class _Track(object):
     __slots__ = ('iid', 'xyxy', 'first_seen', 'last_seen', 'label',
                  'challenger', 'streak')
 
+    def __init__(self, iid, xyxy, now, label):
+        self.iid = iid
+        self.xyxy = xyxy
+        self.first_seen = now
+        self.last_seen = now
+        self.label = label          # the class we publish now
+        self.challenger = None      # different class leading right now
+        self.streak = 0             # observations in a row
