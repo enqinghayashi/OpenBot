@@ -42,3 +42,15 @@ DEPTH_EVERY_N = 3              # publish depth every Nth frameset
 FRAME_TIMEOUT_MS = 5000
 
 
+def to_image_msg(pixels, stamp, encoding, bytes_per_pixel):
+    """A sensor_msgs/Image for one HxW (or HxWx3) uint array."""
+    msg = Image()
+    msg.header.stamp = stamp
+    msg.header.frame_id = FRAME_ID
+    msg.height = int(pixels.shape[0])
+    msg.width = int(pixels.shape[1])
+    msg.encoding = encoding
+    msg.is_bigendian = 0
+    msg.step = int(pixels.shape[1]) * bytes_per_pixel
+    msg.data = pixels.tobytes()
+    return msg
