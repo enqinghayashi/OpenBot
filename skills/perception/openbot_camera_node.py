@@ -107,3 +107,10 @@ class OpenBotCamera(Node):
                 if not self._stop.is_set():
                     self.get_logger().error('OpenBot camera frame error: %s' % exc)
 
+    def destroy_node(self):
+        self._stop.set()
+        try:
+            self.pipeline.stop()
+        except Exception as exc:
+            self.get_logger().error('OpenBot camera stop error: %s' % exc)
+        super().destroy_node()
