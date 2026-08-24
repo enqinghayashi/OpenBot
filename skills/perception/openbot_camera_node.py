@@ -98,3 +98,12 @@ class OpenBotCamera(Node):
                 np.asanyarray(depth.get_data()), stamp, '16UC1', 2))
         return True
 
+    def _publish_loop(self):
+        while not self._stop.is_set():
+            try:
+                self.publish_frameset(
+                    self.pipeline.wait_for_frames(timeout_ms=FRAME_TIMEOUT_MS))
+            except Exception as exc:     # timeout / USB hiccup: keep going
+                if not self._stop.is_set():
+                    self.get_logger().error('OpenBot camera frame error: %s' % exc)
+
