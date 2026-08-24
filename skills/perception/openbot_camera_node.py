@@ -83,3 +83,18 @@ class OpenBotCamera(Node):
         self.get_logger().info('OpenBot camera publishing on %s and %s'
                                % (COLOR_TOPIC, DEPTH_TOPIC))
 
+    def publish_frameset(self, frames):
+        """Publish one frameset; False when it lacks a colour or depth frame."""
+        color = frames.get_color_frame()
+        depth = frames.get_depth_frame()
+        if not color or not depth:
+            return False
+        stamp = self.get_clock().now().to_msg()
+        self.framesets += 1
+        self.color_pub.publish(to_image_msg(
+            np.asanyarray(color.get_data()), stamp, 'bgr8', 3))
+        if self.framesets % DEPTH_EVERY_N == 0:
+            self.depth_pub.publish(to_image_msg(
+                np.asanyarray(depth.get_data()), stamp, '16UC1', 2))
+        return True
+
