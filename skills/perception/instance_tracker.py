@@ -249,3 +249,93 @@ class InstanceTracker(object):
         return sorted(final_kept)
 
     # ── the main entry points ────────────────────────────────────────────
+    def update(self, boxes, now):
+        """[(class_name, xyxy, conf)] -> [(iid, class_name, xyxy, conf,
+        carried)] in input order (fused-away boxes omitted)."""
+        return [r[1:] for r in self.update_indexed(boxes, now)]
+
+    def update_indexed(self, boxes, now):
+        """Same as update() with the source index first:
+        [(src_index, iid, class_name, xyxy, conf, carried)]."""
+        boxes = [(c, tuple(float(v) for v in b), float(f))
+                 for c, b, f in boxes]
+        self._evict(now)
+        kept = self.fuse(boxes)
+        order = sorted(kept, key=lambda i: (-boxes[i][2], i))
+        free = dict(self._tracks)
+        match = {}
+        # 1) greedy IoU association, class-agnostic
+        for i in order:
+            best, best_iou = None, self.iou_min
+            for iid, t in free.items():
+                v = iou_xyxy(boxes[i][1], t.xyxy)
+                if v >= best_iou and (best is None or v > best_iou):
+                    best, best_iou = iid, v
+            if best is not None:
+                match[i] = best
+                del free[best]
+        # 2) centroid gate + ambiguity check
+        gate = self.centroid_gate_px
+        for i in order:
+            if i in match:
+                continue
+            c = _centre(boxes[i][1])
+            near = [iid for iid, t in self._tracks.items()
+                    if _dist(c, _centre(t.xyxy)) < gate]
+            if len(near) != 1 or near[0] not in free:
+                continue
+            tc = _centre(free[near[0]].xyxy)
+            rivals = [j for j in kept
+                      if j != i and _dist(_centre(boxes[j][1]), tc) < gate]
+            if rivals:
+                continue
+            match[i] = near[0]
+            del free[near[0]]
+        # 3) commit: refresh matches, mint ids for strong boxes
+        out = []
+        for i in kept:
+            cls, xyxy, conf = boxes[i]
+            iid = match.get(i)
+            carried = iid is not None
+            if carried:
+                t = self._tracks[iid]
+                t.xyxy = xyxy
+                t.last_seen = now
+                self._observe(t, cls)
+                out.append((i, iid, self._label(t), xyxy, conf, carried))
+            elif conf >= self._new_track_floor(cls):
+                # mint a track only if conf is strong enough
+                iid = next(self._ids)
+                t = _Track(iid, xyxy, now, cls)
+                self._tracks[iid] = t
+                out.append((i, iid, self._label(t), xyxy, conf, carried))
+            # weak + unmatched: just dropped
+        return out
+
+    def _new_track_floor(self, cls):
+        """Conf a box needs to MINT a track.  B8j-hf18 (2026-10-16): an
+        operator extra (not in ``base``) needs only its admit floor when that
+        is lower than ``min_new_conf``: the node admits extras from
+        ``extra_floor`` (look_for sends 0.25 since B8j-hf17), and a bin whose
+        track was evicted (> evict_s unseen, e.g. close range) and came back
+        at 0.25-0.35 was never published again.  Base classes keep
+        ``min_new_conf``."""
+        if cls in self.base:
+            return self.min_new_conf
+        return min(self.min_new_conf, self.extra_floor)
+
+    def _evict(self, now):
+        gone = [iid for iid, t in self._tracks.items()
+                if now - t.last_seen > self.evict_s]
+        for iid in gone:
+            del self._tracks[iid]
+        return gone
+
+    def drop_classes(self, allowed):
+        """Drop ONLY the tracks whose majority class is not in ``allowed``;
+        returns the dropped ids.  Every other id survives (vocab swap)."""
+        gone = [iid for iid, t in self._tracks.items()
+                if self._label(t) not in allowed]
+        for iid in gone:
+            del self._tracks[iid]
+        return gone
