@@ -116,3 +116,14 @@ class OpenBotCamera(Node):
         super().destroy_node()
 
 
+def main(args=None):
+    rclpy.init(args=args)
+    node = OpenBotCamera()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
