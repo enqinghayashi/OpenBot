@@ -56,3 +56,7 @@ PROJECTOR_CONSTANTS = {
 }
 
 
+class CaptureBuffer(object):
+    """Bounded in-memory store.  add() refuses a frame that would cross either
+    cap and marks the buffer full."""
+
