@@ -312,3 +312,15 @@ class InstanceTracker(object):
             # weak + unmatched: just dropped
         return out
 
+    def _new_track_floor(self, cls):
+        """Conf a box needs to MINT a track.  B8j-hf18 (2026-10-16): an
+        operator extra (not in ``base``) needs only its admit floor when that
+        is lower than ``min_new_conf``: the node admits extras from
+        ``extra_floor`` (look_for sends 0.25 since B8j-hf17), and a bin whose
+        track was evicted (> evict_s unseen, e.g. close range) and came back
+        at 0.25-0.35 was never published again.  Base classes keep
+        ``min_new_conf``."""
+        if cls in self.base:
+            return self.min_new_conf
+        return min(self.min_new_conf, self.extra_floor)
+
