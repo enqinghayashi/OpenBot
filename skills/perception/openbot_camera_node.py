@@ -114,3 +114,5 @@ class OpenBotCamera(Node):
         except Exception as exc:
             self.get_logger().error('OpenBot camera stop error: %s' % exc)
         super().destroy_node()
+
+
