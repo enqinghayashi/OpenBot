@@ -331,3 +331,11 @@ class InstanceTracker(object):
             del self._tracks[iid]
         return gone
 
+    def drop_classes(self, allowed):
+        """Drop ONLY the tracks whose majority class is not in ``allowed``;
+        returns the dropped ids.  Every other id survives (vocab swap)."""
+        gone = [iid for iid, t in self._tracks.items()
+                if self._label(t) not in allowed]
+        for iid in gone:
+            del self._tracks[iid]
+        return gone
