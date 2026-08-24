@@ -59,3 +59,27 @@ def to_image_msg(pixels, stamp, encoding, bytes_per_pixel):
 class OpenBotCamera(Node):
     """Owns the RealSense pipeline; a worker thread publishes framesets."""
 
+    def __init__(self, pipeline_factory=None, config_factory=None):
+        super().__init__(NODE_NAME)
+        self.color_pub = self.create_publisher(Image, COLOR_TOPIC, QUEUE_DEPTH)
+        self.depth_pub = self.create_publisher(Image, DEPTH_TOPIC, QUEUE_DEPTH)
+        self.framesets = 0
+        self._stop = threading.Event()
+
+        self.pipeline = (pipeline_factory or rs.pipeline)()
+        cfg = (config_factory or rs.config)()
+        cfg.enable_stream(rs.stream.color, COLOR_SIZE[0], COLOR_SIZE[1],
+                          rs.format.bgr8, FPS)
+        cfg.enable_stream(rs.stream.depth, DEPTH_SIZE[0], DEPTH_SIZE[1],
+                          rs.format.z16, FPS)
+        self.pipeline.start(cfg)
+        self.get_logger().info(
+            'OpenBot camera started: colour %dx%d bgr8 + depth %dx%d z16 @ %d fps '
+            '(depth published every %d framesets)'
+            % (COLOR_SIZE + DEPTH_SIZE + (FPS, DEPTH_EVERY_N)))
+
+        self._worker = threading.Thread(target=self._publish_loop, daemon=True)
+        self._worker.start()
+        self.get_logger().info('OpenBot camera publishing on %s and %s'
+                               % (COLOR_TOPIC, DEPTH_TOPIC))
+
