@@ -56,3 +56,6 @@ def to_image_msg(pixels, stamp, encoding, bytes_per_pixel):
     return msg
 
 
+class OpenBotCamera(Node):
+    """Owns the RealSense pipeline; a worker thread publishes framesets."""
+
