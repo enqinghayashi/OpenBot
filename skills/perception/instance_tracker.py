@@ -115,3 +115,25 @@ class InstanceTracker(object):
         self.tap = None
 
     # ── query methods ────────────────────────────────────────────────────
+    def __len__(self):
+        return len(self._tracks)
+
+    def ids(self):
+        return list(self._tracks)
+
+    def age(self, iid):
+        """last_seen - first_seen of a live track (seconds), else None."""
+        t = self._tracks.get(iid)
+        return None if t is None else t.last_seen - t.first_seen
+
+    def label(self, iid):
+        """The track's published (sticky) class, else None."""
+        t = self._tracks.get(iid)
+        return None if t is None else self._label(t)
+
+    majority = label        # old name; callers still use it
+
+    @staticmethod
+    def _label(t):
+        return t.label
+
