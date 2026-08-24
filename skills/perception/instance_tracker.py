@@ -137,3 +137,115 @@ class InstanceTracker(object):
     def _label(t):
         return t.label
 
+    def _observe(self, t, cls):
+        """Fold one observed class into the track's sticky label."""
+        if cls == t.label:
+            t.challenger = None
+            t.streak = 0
+            return
+        if cls == t.challenger:
+            t.streak += 1
+        else:
+            t.challenger = cls
+            t.streak = 1
+        k = (self.sticky_k_base if cls in self.base
+             else self.sticky_k_extra)
+        if t.streak >= k:
+            t.label = cls
+            t.challenger = None
+            t.streak = 0
+
+    # ── fusing boxes ─────────────────────────────────────────────────────
+    def _box_area(self, xyxy):
+        """Area of a box (x1, y1, x2, y2)."""
+        return (xyxy[2] - xyxy[0]) * (xyxy[3] - xyxy[1])
+
+    def _intersection_area(self, a, b):
+        """Intersection area of two boxes."""
+        ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+        iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+        return ix * iy
+
+    def _fuse_key(self, boxes, i):
+        """Dup-fusion priority of box ``i``: an active extra at or above its
+        admit floor first, then the base classes, then sub-floor extras;
+        within a rank higher conf, then input order.  Base against base and
+        extra against extra order exactly as before."""
+        cls, conf = boxes[i][0], float(boxes[i][2])
+        if cls in self.base:
+            rank = 1
+        else:
+            rank = 0 if conf >= self.extra_floor else 2
+        return (rank, -conf, i)
+
+    def fuse(self, boxes):
+        """Indices of ``boxes`` kept after dup fusion (IoU >= dup_iou) and
+        SAME-CLASS containment fusion (intersection/own_area >= contain_frac
+        inside a higher-conf box of the same class: the F4 ghost boxes,
+        MEASURED on Stuart 2026-10-06)."""
+        # pass 1: containment fusion into higher-conf boxes
+        order = sorted(range(len(boxes)),
+                       key=lambda i: self._fuse_key(boxes, i))
+
+        # containment check vs higher-conf boxes
+        to_remove = set()
+        for i in range(len(boxes)):
+            if i in to_remove:
+                continue
+            # any higher-conf box containing i
+            for j in range(len(boxes)):
+                if i == j or j in to_remove:
+                    continue
+                if float(boxes[j][2]) <= float(boxes[i][2]):
+                    # not more confident, skip
+                    continue
+                if boxes[j][0] != boxes[i][0]:
+                    # SAME class only: a ghost / partial box of one object
+                    # a different-class box inside a larger one is a real
+                    # object ON or IN it (wallet on a book, cup in a bowl)
+                    continue
+                # contained? intersection / i.area >= contain_frac
+                inter = self._intersection_area(boxes[i][1], boxes[j][1])
+                own_area = self._box_area(boxes[i][1])
+                if own_area > 0.0:
+                    frac = inter / own_area
+                    if frac >= self.contain_frac:
+                        to_remove.add(i)
+                        if self.tap is not None:
+                            self.tap('[score_tap] fuse DROP box=%d %s '
+                                     'conf=%.3f xyxy=%s: contained %.2f in '
+                                     'same-class box=%d conf=%.3f'
+                                     % (i, boxes[i][0], float(boxes[i][2]),
+                                        _fmt(boxes[i][1]), frac, j,
+                                        float(boxes[j][2])))
+                        break
+
+        kept = [i for i in range(len(boxes)) if i not in to_remove]
+
+        # pass 2: dup fusion over the survivors
+        order = sorted(kept, key=lambda i: self._fuse_key(boxes, i))
+        final_kept = []
+        for i in order:
+            xyxy = boxes[i][1]
+            hit = None
+            for k in final_kept:
+                v = iou_xyxy(boxes[k][1], xyxy)
+                if v >= self.dup_iou:
+                    hit = (k, v)
+                    break
+            if hit is not None:
+                if self.tap is not None:
+                    k, v = hit
+                    self.tap('[score_tap] fuse DROP box=%d %s conf=%.3f '
+                             'xyxy=%s: IoU %.2f with kept box=%d %s '
+                             'conf=%.3f (rank %d vs %d)'
+                             % (i, boxes[i][0], float(boxes[i][2]),
+                                _fmt(xyxy), v, k, boxes[k][0],
+                                float(boxes[k][2]),
+                                self._fuse_key(boxes, i)[0],
+                                self._fuse_key(boxes, k)[0]))
+                continue
+            final_kept.append(i)
+        return sorted(final_kept)
+
+    # ── the main entry points ────────────────────────────────────────────
