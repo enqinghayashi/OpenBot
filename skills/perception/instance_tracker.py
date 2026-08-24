@@ -324,3 +324,10 @@ class InstanceTracker(object):
             return self.min_new_conf
         return min(self.min_new_conf, self.extra_floor)
 
+    def _evict(self, now):
+        gone = [iid for iid, t in self._tracks.items()
+                if now - t.last_seen > self.evict_s]
+        for iid in gone:
+            del self._tracks[iid]
+        return gone
+
