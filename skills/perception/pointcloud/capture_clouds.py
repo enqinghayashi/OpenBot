@@ -74,3 +74,36 @@ class CaptureBuffer(object):
     def __len__(self):
         return len(self._pts)
 
+    def add(self, data, width, point_step, fields, is_bigendian, hdr_stamp_ns, t_mono, t_wall,
+            bodies, height=1):
+        """bodies: [(t_rx_mono, json_text), ...] newest first (<= 2 kept)."""
+        if self.full or len(self._pts) >= self.max_frames:
+            self.full = True
+            return False
+        try:
+            pts, oid, _ = core.decode_cloud(data, width, point_step, fields, is_bigendian, height)
+        except core.CloudFormatError:
+            self.n_format_err += 1
+            return False
+        b0 = bodies[0] if len(bodies) > 0 else (float("nan"), "")
+        b1 = bodies[1] if len(bodies) > 1 else (float("nan"), "")
+        cost = pts.nbytes + oid.nbytes + 4 * (len(b0[1]) + len(b1[1])) + 64
+        if self.nbytes + cost > self.max_bytes:
+            self.full = True
+            return False
+        self.nbytes += cost
+        self._pts.append(pts)
+        self._oid.append(oid)
+        c = self._cols
+        c["n_raw"].append(int(width) * int(height))
+        c["t_rx_wall"].append(float(t_wall))
+        c["t_rx_mono"].append(float(t_mono))
+        c["hdr_stamp_ns"].append(int(hdr_stamp_ns))
+        c["body_json"].append(b0[1])
+        c["body_t_rx_mono"].append(float(b0[0]))
+        c["body_prev_json"].append(b1[1])
+        c["body_prev_t_rx_mono"].append(float(b1[0]))
+        if len(self._pts) >= self.max_frames:
+            self.full = True
+        return True
+
