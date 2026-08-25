@@ -130,3 +130,5 @@ class CaptureBuffer(object):
         with open(path, "wb") as f:
             np.savez(f, **arrays)
         return arrays
+
+
