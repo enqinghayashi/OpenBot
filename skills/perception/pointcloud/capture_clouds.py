@@ -186,3 +186,82 @@ def parse_args(argv):
     return p.parse_args(argv)
 
 
+def main(argv=None):
+    a = parse_args(sys.argv[1:] if argv is None else argv)
+    errs = check_args(a)
+    if errs:
+        for e in errs:
+            sys.stderr.write("capture_clouds: %s\n" % e)
+        return 2
+    try:
+        import rclpy
+        from rclpy.node import Node
+        from rclpy.qos import QoSProfile, ReliabilityPolicy
+        from std_msgs.msg import String
+        from sensor_msgs.msg import PointCloud2
+    except ImportError as e:
+        sys.stderr.write("capture_clouds: ROS 2 (rclpy) is not available here: %s\n" % e)
+        return 2
+    try:
+        os.nice(10)
+    except OSError:
+        pass
+    out_dir = os.path.dirname(os.path.abspath(a.out))
+    if not os.path.isdir(out_dir):
+        os.makedirs(out_dir)
+    buf = CaptureBuffer(a.frames, int(a.max_mb * 1048576))
+    bodies = []
+    gaps_a, gaps_b = [], []
+    state = {"phase": "A" if a.body_baseline_s > 0 else "B"}
+    rclpy.init()
+    node = Node("pc_capture_clouds")
+    qos = QoSProfile(depth=2, reliability=ReliabilityPolicy.RELIABLE)
+
+    def on_body(msg):
+        t = time.monotonic()
+        (gaps_a if state["phase"] == "A" else gaps_b).append(t)
+        bodies.insert(0, (t, msg.data))
+        del bodies[2:]
+
+    def on_cloud(msg):
+        st = msg.header.stamp
+        buf.add(msg.data, msg.width, msg.point_step, msg.fields, msg.is_bigendian,
+                int(st.sec) * 1000000000 + int(st.nanosec), time.monotonic(), time.time(),
+                list(bodies), msg.height)
+
+    node.create_subscription(String, "/object_detections_body", on_body, qos)
+    t0 = time.monotonic()
+    cpu0 = time.process_time()
+    cloud_sub = None
+    try:
+        while rclpy.ok():
+            rclpy.spin_once(node, timeout_sec=0.1)
+            now = time.monotonic()
+            if state["phase"] == "A" and now - t0 >= a.body_baseline_s:
+                state["phase"] = "B"
+            if state["phase"] == "B" and cloud_sub is None:
+                cloud_sub = node.create_subscription(PointCloud2, "/object_pointcloud",
+                                                     on_cloud, qos)
+            if buf.full or now - t0 >= a.timeout_s + a.body_baseline_s:
+                break
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+    meta = {"projector": PROJECTOR_CONSTANTS, "args": vars(a), "t_start_wall": time.time(),
+            "n_format_err": buf.n_format_err, "cfg_hash": core.cfg_hash(core.DEFAULT_CFG)}
+    buf.save(a.out, meta)
+    side = summarize(a.out, a.label)
+    side.update({
+        "body_gaps_body_only": gap_stats(gaps_a),
+        "body_gaps_with_cloud_sub": gap_stats(gaps_b),
+        "proc_cpu_s": round(time.process_time() - cpu0, 3),
+        "wall_s": round(time.monotonic() - t0, 3),
+        "max_rss_kb": _maxrss_kb(), "stored_bytes": buf.nbytes,
+    })
+    with open(a.out[:-4] + ".json", "w") as f:
+        json.dump(side, f, indent=1)
+    sys.stdout.write("capture_clouds: %d frames -> %s (%.1f MB)\n"
+                     % (len(buf), a.out, buf.nbytes / 1048576.0))
+    return 0
