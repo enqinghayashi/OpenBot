@@ -71,3 +71,6 @@ class CaptureBuffer(object):
             "n_raw", "t_rx_wall", "t_rx_mono", "hdr_stamp_ns", "body_json", "body_t_rx_mono",
             "body_prev_json", "body_prev_t_rx_mono"))
 
+    def __len__(self):
+        return len(self._pts)
+
