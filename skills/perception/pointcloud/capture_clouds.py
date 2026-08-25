@@ -158,3 +158,5 @@ def summarize(path, label=None, cfg=None):
     n = len(frames) + unpaired
     return {"frames": n, "paired": len(frames), "pair_rate": (len(frames) / float(n)) if n else None,
             "points_per_label": by_label, "label": label}
+
+
