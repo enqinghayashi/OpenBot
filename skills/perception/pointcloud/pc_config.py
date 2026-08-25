@@ -184,3 +184,6 @@ def label_of(name):
     return LABELS.get(name, DEFAULT_LABEL)
 
 
+def cfg_hash(cfg):
+    items = sorted(dataclasses.asdict(cfg).items())
+    return hashlib.md5(repr(items).encode("utf-8")).hexdigest()
