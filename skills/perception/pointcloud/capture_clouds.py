@@ -146,3 +146,15 @@ def gap_stats(ts):
             "p90": float(np.percentile(g, 90)), "max": float(g.max())}
 
 
+def summarize(path, label=None, cfg=None):
+    frames, unpaired, meta = core.load_capture(path, cfg)
+    per = {}
+    for f in frames:
+        for o, s in f.segs.items():
+            if o < len(f.rows):
+                per.setdefault(str(f.rows[o].get("label")), []).append(len(s))
+    by_label = dict((k, {"min": int(min(v)), "median": float(np.median(v)), "max": int(max(v)),
+                         "frames": len(v)}) for k, v in per.items())
+    n = len(frames) + unpaired
+    return {"frames": n, "paired": len(frames), "pair_rate": (len(frames) / float(n)) if n else None,
+            "points_per_label": by_label, "label": label}
