@@ -138,3 +138,9 @@ def _str_array(xs):
     return np.asarray(list(xs), dtype=str)
 
 
+def gap_stats(ts):
+    if len(ts) < 3:
+        return {"n": len(ts)}
+    g = np.diff(np.asarray(ts, dtype=np.float64))
+    return {"n": int(len(ts)), "p50": float(np.percentile(g, 50)),
+            "p90": float(np.percentile(g, 90)), "max": float(g.max())}
