@@ -173,3 +173,5 @@ def check_args(a):
     if not a.out.endswith(".npz"):
         errs.append("--out must end with .npz")
     return errs
+
+
