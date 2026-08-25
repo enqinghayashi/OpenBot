@@ -175,3 +175,12 @@ def check_args(a):
     return errs
 
 
+def parse_args(argv):
+    p = argparse.ArgumentParser(description="bounded read-only cloud capture")
+    p.add_argument("--out", required=True)
+    p.add_argument("--frames", type=int, default=60)
+    p.add_argument("--max-mb", type=float, default=48.0)
+    p.add_argument("--timeout-s", type=float, default=60.0)
+    p.add_argument("--label", default=None)
+    p.add_argument("--body-baseline-s", type=float, default=5.0)
+    return p.parse_args(argv)
