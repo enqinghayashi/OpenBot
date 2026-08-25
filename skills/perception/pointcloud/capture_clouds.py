@@ -273,3 +273,7 @@ def _maxrss_kb():
         return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     except Exception:  # noqa: BLE001
         return None
+
+
+if __name__ == "__main__":
+    sys.exit(main())
