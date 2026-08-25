@@ -136,3 +136,47 @@ class PcConfig:
     NODE_RSS_CAP_MB: float = 400.0
     HOLD_BASE_KEEP_S: float = 120.0
     HOLD_BASE_MAX_KEPT: int = 4
+
+
+LABELS = {
+    "PAIR_MAX_GAP_S": "POLICY: body is published before the cloud in ONE callback "
+                      "(projector :459 then :484); 0.15 s ~ one callback gap p50 0.122-0.128 s (MEASURED run20)",
+    "PAIR_BOX_PAD_M": "POLICY (tight per critique; row xyz = R@median(pts_cam)+T, pre-stride)",
+    "ROW_MAX_AGE_S": "POLICY (row 'stamp' is yolo inference wall time, yolo :407)",
+    "ASSOC_GATE_M": "POLICY",
+    "MAX_CLOUD_POINTS": "MEASURED projector :37 MAX_CLOUD_POINTS = 20000",
+    "POSE_Z_TOL_M": "POLICY (1 cm, critique geometry-and-noise)",
+    "POSE_ANG_TOL_RAD": "POLICY (1 deg)",
+    "POSE_MAX_AGE_S": "POLICY",
+    "POSE_REQUIRE_MEASURED": "POLICY: a COMMANDED height cannot see the writer's 66 s re-stand (HRC-6/7)",
+    "HOLD_CHK_DELAY_S": "DERIVED: yolo candidate lifetime 2.0 s (yolo :382 '> 2.0') + 0.5 s margin (POLICY)",
+    "HOLD_MAX_SPAN_S": "DERIVED: writer height_hold_s 66.0 s (MEASURED box) minus 6 s margin (POLICY)",
+    "HOLD_BASE_DZ_M": "INFERRED floor; the live tolerance is max(this, 3*sigma of baseline per-frame p5z)",
+    "HOLD_SPAN_FRAC": "POLICY: a bottle has vertical extent; a ghost-mask table patch is flat",
+    "BOWL_CENTER_GATE_M": "POLICY; widened 0.03 -> 0.04 after the synthetic row-median bias was MEASURED (see design 4.2)",
+    "BOWL_EDGE_MIN_PTS": "POLICY: a bowl touching the image border is refused (synthetic clipped bowls fit rims up to 0.022 m LOW: MEASURED by test_pc_core A-P2-7 exploration)",
+    "HOLD_MIN_MEDIAN_RISE": "POLICY: baseline median z must rise >= 0.2*h0 above its p5 (a table-leak baseline around a transparent bottle does not)",
+    "BOWL_NOISE_UNKNOWN_M": "POLICY, synthetic-calibrated (test_pc_core noise sweep): the ring sigma estimate reads <=0.004 at true depth sigma <=5 mm and >=0.0055 at >=15 mm, where the rim bias exceeds +0.01; above it the fit abstains",
+    "BOWL_TOP_GAP_M": "POLICY: a fitted level more than 1.5 cm below on-or-outside-circle points is not the rim (review r1 HIGH)",
+    "BOWL_TOP_ABOVE_MAX_PTS": "POLICY, synthetic-calibrated: n_above was 0 on all 455 within-1-cm fits and >=1373 on all 11 wall-circle fits (2 noise x 4 depth x 3 y x 2 x x 3 rim x 6 seeds)",
+    "BOWL_MARGIN_K":"POLICY: drop_z adds max(0, K*sigma_rim) so a low-biased rim cannot drive the hand in",
+    "PLACE_CLEARANCE_M": "MEASURED gateway/place_target.py:74 PLACE_CLEARANCE_M = 0.02",
+    "COMFORT_Z": "MEASURED brain/descent_law.py:99 COMFORT_Z = 0.0 (copy, not import)",
+    "DEEP_FLOOR_Z": "MEASURED brief: z<-0.54 DEEP_FLOOR (copy)",
+    "SUPPORT_LABELS": "MEASURED yolo :137 TRACKED_CLASSES contains book/laptop/keyboard",
+    "SUPPORT_MAX_H_M": "POLICY: applied to the SUPPORT SEGMENT's own z-span, not row height_m "
+                       "(book rows read 0.46/1.27, lens 3 MEASURED)",
+    "GRASP_Z_OFFSET": "MEASURED pick_engine_v3.py GRASP_Z_OFFSET = 0.04 (copy)",
+    "GRASP_X_OFF_K": "MEASURED pick_engine_v3.py '# x_off trailing token - compute_x_off = -(r + 0.065)' (copy)",
+    "WIDTH_Q_LO": "DERIVED: p5-p95 of a uniform-in-x silhouette spans 0.90 of 2r; estimator divides by 0.90",
+    "PERSON_W_MIN_M": "INFERRED: two legs (sep 0.20 + 2*0.065) read >= ~0.25; ONE visible leg reads ~0.13 and is refused",
+    "PERSON_MID_AGREE_M": "POLICY: extent-midpoint and slab-median must agree, else asymmetric (one leg hidden / side bag)",
+    "PERSON_MIN_HEIGHT_M": "MEASURED gateway_node.py TURN_PERSON_MIN_HEIGHT_M = 0.30 (copy)",
+    "PERSON_EDGE_MIN_PTS": "POLICY: a silhouette TOUCHING the left/right image border is clipped (the design's 20 %-of-points rule could never fire: a clipped edge is ~3 px of a ~100 px person)",
+    "NODE_CB_BUDGET_S": "POLICY (critique integration-and-cpu: skip frames over 30 ms)",
+    "NODE_RSS_CAP_MB": "POLICY (box OOM history; MEASURED FUTURE_WORK file :262-264)",
+    "HOLD_BASE_KEEP_S": "POLICY (a pick plus a lane hold)",
+}
+DEFAULT_LABEL = "INFERRED (synthetic default; replace from capture)"
+
+
