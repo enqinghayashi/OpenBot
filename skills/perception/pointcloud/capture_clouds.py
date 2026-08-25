@@ -60,3 +60,14 @@ class CaptureBuffer(object):
     """Bounded in-memory store.  add() refuses a frame that would cross either
     cap and marks the buffer full."""
 
+    def __init__(self, max_frames, max_bytes):
+        self.max_frames = int(max_frames)
+        self.max_bytes = int(max_bytes)
+        self.nbytes = 0
+        self.full = False
+        self.n_format_err = 0
+        self._pts, self._oid = [], []
+        self._cols = dict((k, []) for k in (
+            "n_raw", "t_rx_wall", "t_rx_mono", "hdr_stamp_ns", "body_json", "body_t_rx_mono",
+            "body_prev_json", "body_prev_t_rx_mono"))
+
