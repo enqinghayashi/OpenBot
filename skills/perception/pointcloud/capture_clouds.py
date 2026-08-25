@@ -265,3 +265,5 @@ def main(argv=None):
     sys.stdout.write("capture_clouds: %d frames -> %s (%.1f MB)\n"
                      % (len(buf), a.out, buf.nbytes / 1048576.0))
     return 0
+
+
