@@ -83,3 +83,51 @@ class OpenBotCamera(Node):
         self.get_logger().info('OpenBot camera publishing on %s and %s'
                                % (COLOR_TOPIC, DEPTH_TOPIC))
 
+    def publish_frameset(self, frames):
+        """Publish one frameset; False when it lacks a colour or depth frame."""
+        color = frames.get_color_frame()
+        depth = frames.get_depth_frame()
+        if not color or not depth:
+            return False
+        stamp = self.get_clock().now().to_msg()
+        self.framesets += 1
+        self.color_pub.publish(to_image_msg(
+            np.asanyarray(color.get_data()), stamp, 'bgr8', 3))
+        if self.framesets % DEPTH_EVERY_N == 0:
+            self.depth_pub.publish(to_image_msg(
+                np.asanyarray(depth.get_data()), stamp, '16UC1', 2))
+        return True
+
+    def _publish_loop(self):
+        while not self._stop.is_set():
+            try:
+                self.publish_frameset(
+                    self.pipeline.wait_for_frames(timeout_ms=FRAME_TIMEOUT_MS))
+            except Exception as exc:     # timeout / USB hiccup: keep going
+                if not self._stop.is_set():
+                    self.get_logger().error('OpenBot camera frame error: %s' % exc)
+
+    def destroy_node(self):
+        self._stop.set()
+        try:
+            self.pipeline.stop()
+        except Exception as exc:
+            self.get_logger().error('OpenBot camera stop error: %s' % exc)
+        super().destroy_node()
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = OpenBotCamera()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
