@@ -136,3 +136,5 @@ def _str_array(xs):
     if not xs:
         return np.zeros((0,), dtype="<U1")
     return np.asarray(list(xs), dtype=str)
+
+
