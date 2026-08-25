@@ -180,3 +180,5 @@ LABELS = {
 DEFAULT_LABEL = "INFERRED (synthetic default; replace from capture)"
 
 
+def label_of(name):
+    return LABELS.get(name, DEFAULT_LABEL)
