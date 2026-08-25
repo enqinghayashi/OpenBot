@@ -160,3 +160,16 @@ def summarize(path, label=None, cfg=None):
             "points_per_label": by_label, "label": label}
 
 
+def check_args(a):
+    errs = []
+    if not (1 <= a.frames <= MAX_FRAMES_CAP):
+        errs.append("--frames must be 1..%d" % MAX_FRAMES_CAP)
+    if not (0 < a.max_mb <= MAX_MB_CAP):
+        errs.append("--max-mb must be (0, %d]" % MAX_MB_CAP)
+    if not (0 < a.timeout_s <= MAX_TIMEOUT_S):
+        errs.append("--timeout-s must be (0, %g]" % MAX_TIMEOUT_S)
+    if not (0 <= a.body_baseline_s <= MAX_BODY_BASELINE_S):
+        errs.append("--body-baseline-s must be 0..%g" % MAX_BODY_BASELINE_S)
+    if not a.out.endswith(".npz"):
+        errs.append("--out must end with .npz")
+    return errs
