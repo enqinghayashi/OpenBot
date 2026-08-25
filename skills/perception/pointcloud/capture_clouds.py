@@ -74,3 +74,87 @@ class CaptureBuffer(object):
     def __len__(self):
         return len(self._pts)
 
+    def add(self, data, width, point_step, fields, is_bigendian, hdr_stamp_ns, t_mono, t_wall,
+            bodies, height=1):
+        """bodies: [(t_rx_mono, json_text), ...] newest first (<= 2 kept)."""
+        if self.full or len(self._pts) >= self.max_frames:
+            self.full = True
+            return False
+        try:
+            pts, oid, _ = core.decode_cloud(data, width, point_step, fields, is_bigendian, height)
+        except core.CloudFormatError:
+            self.n_format_err += 1
+            return False
+        b0 = bodies[0] if len(bodies) > 0 else (float("nan"), "")
+        b1 = bodies[1] if len(bodies) > 1 else (float("nan"), "")
+        cost = pts.nbytes + oid.nbytes + 4 * (len(b0[1]) + len(b1[1])) + 64
+        if self.nbytes + cost > self.max_bytes:
+            self.full = True
+            return False
+        self.nbytes += cost
+        self._pts.append(pts)
+        self._oid.append(oid)
+        c = self._cols
+        c["n_raw"].append(int(width) * int(height))
+        c["t_rx_wall"].append(float(t_wall))
+        c["t_rx_mono"].append(float(t_mono))
+        c["hdr_stamp_ns"].append(int(hdr_stamp_ns))
+        c["body_json"].append(b0[1])
+        c["body_t_rx_mono"].append(float(b0[0]))
+        c["body_prev_json"].append(b1[1])
+        c["body_prev_t_rx_mono"].append(float(b1[0]))
+        if len(self._pts) >= self.max_frames:
+            self.full = True
+        return True
+
+    def save(self, path, meta):
+        F = len(self._pts)
+        off = np.zeros(F + 1, dtype=np.int64)
+        for k, p in enumerate(self._pts):
+            off[k + 1] = off[k] + len(p)
+        pts = np.concatenate(self._pts) if F else np.zeros((0, 3), np.float32)
+        oid = np.concatenate(self._oid) if F else np.zeros((0,), np.uint32)
+        c = self._cols
+        arrays = {
+            "pts": pts.astype(np.float32), "oid": oid.astype(np.uint32), "frame_off": off,
+            "n_raw": np.asarray(c["n_raw"], np.int64),
+            "t_rx_wall": np.asarray(c["t_rx_wall"], np.float64),
+            "t_rx_mono": np.asarray(c["t_rx_mono"], np.float64),
+            "hdr_stamp_ns": np.asarray(c["hdr_stamp_ns"], np.int64),
+            "body_json": _str_array(c["body_json"]),
+            "body_t_rx_mono": np.asarray(c["body_t_rx_mono"], np.float64),
+            "body_prev_json": _str_array(c["body_prev_json"]),
+            "body_prev_t_rx_mono": np.asarray(c["body_prev_t_rx_mono"], np.float64),
+            "meta": np.asarray(json.dumps(meta)),
+        }
+        with open(path, "wb") as f:
+            np.savez(f, **arrays)
+        return arrays
+
+
+def _str_array(xs):
+    if not xs:
+        return np.zeros((0,), dtype="<U1")
+    return np.asarray(list(xs), dtype=str)
+
+
+def gap_stats(ts):
+    if len(ts) < 3:
+        return {"n": len(ts)}
+    g = np.diff(np.asarray(ts, dtype=np.float64))
+    return {"n": int(len(ts)), "p50": float(np.percentile(g, 50)),
+            "p90": float(np.percentile(g, 90)), "max": float(g.max())}
+
+
+def summarize(path, label=None, cfg=None):
+    frames, unpaired, meta = core.load_capture(path, cfg)
+    per = {}
+    for f in frames:
+        for o, s in f.segs.items():
+            if o < len(f.rows):
+                per.setdefault(str(f.rows[o].get("label")), []).append(len(s))
+    by_label = dict((k, {"min": int(min(v)), "median": float(np.median(v)), "max": int(max(v)),
+                         "frames": len(v)}) for k, v in per.items())
+    n = len(frames) + unpaired
+    return {"frames": n, "paired": len(frames), "pair_rate": (len(frames) / float(n)) if n else None,
+            "points_per_label": by_label, "label": label}
