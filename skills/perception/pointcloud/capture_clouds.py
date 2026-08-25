@@ -107,3 +107,26 @@ class CaptureBuffer(object):
             self.full = True
         return True
 
+    def save(self, path, meta):
+        F = len(self._pts)
+        off = np.zeros(F + 1, dtype=np.int64)
+        for k, p in enumerate(self._pts):
+            off[k + 1] = off[k] + len(p)
+        pts = np.concatenate(self._pts) if F else np.zeros((0, 3), np.float32)
+        oid = np.concatenate(self._oid) if F else np.zeros((0,), np.uint32)
+        c = self._cols
+        arrays = {
+            "pts": pts.astype(np.float32), "oid": oid.astype(np.uint32), "frame_off": off,
+            "n_raw": np.asarray(c["n_raw"], np.int64),
+            "t_rx_wall": np.asarray(c["t_rx_wall"], np.float64),
+            "t_rx_mono": np.asarray(c["t_rx_mono"], np.float64),
+            "hdr_stamp_ns": np.asarray(c["hdr_stamp_ns"], np.int64),
+            "body_json": _str_array(c["body_json"]),
+            "body_t_rx_mono": np.asarray(c["body_t_rx_mono"], np.float64),
+            "body_prev_json": _str_array(c["body_prev_json"]),
+            "body_prev_t_rx_mono": np.asarray(c["body_prev_t_rx_mono"], np.float64),
+            "meta": np.asarray(json.dumps(meta)),
+        }
+        with open(path, "wb") as f:
+            np.savez(f, **arrays)
+        return arrays
