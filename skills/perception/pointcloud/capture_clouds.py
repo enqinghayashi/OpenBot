@@ -144,3 +144,5 @@ def gap_stats(ts):
     g = np.diff(np.asarray(ts, dtype=np.float64))
     return {"n": int(len(ts)), "p50": float(np.percentile(g, 50)),
             "p90": float(np.percentile(g, 90)), "max": float(g.max())}
+
+
