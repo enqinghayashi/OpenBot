@@ -267,3 +267,9 @@ def main(argv=None):
     return 0
 
 
+def _maxrss_kb():
+    try:
+        import resource
+        return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    except Exception:  # noqa: BLE001
+        return None
