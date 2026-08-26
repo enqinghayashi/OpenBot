@@ -117,3 +117,45 @@ def unknown(reason, **ev):
 
 
 # ---------------------------------------------------------------- decoding
+def _field_tuple(f):
+    if isinstance(f, (tuple, list)):
+        t = list(f) + [1]
+        return (str(t[0]), int(t[1]), int(t[2]), int(t[3]))
+    return (str(f.name), int(f.offset), int(f.datatype), int(getattr(f, "count", 1)))
+
+
+def decode_cloud(data, width, point_step, fields, is_bigendian=False, height=1):
+    """PointCloud2 payload -> (pts float32 (N,3), oid uint32 (N,), n_nonfinite).
+
+    REFUSES (CloudFormatError) any layout other than the projector's:
+    point_step 16, fields x/y/z FLOAT32 @0/4/8 + object_id UINT32 @12, LE."""
+    if is_bigendian:
+        raise CloudFormatError("big-endian cloud")
+    if int(point_step) != 16:
+        raise CloudFormatError("point_step %r != 16" % (point_step,))
+    ft = tuple(_field_tuple(f) for f in fields)
+    if ft != EXPECTED_FIELDS:
+        raise CloudFormatError("fields %r != %r" % (ft, EXPECTED_FIELDS))
+    n = int(width) * int(height)
+    mv = memoryview(data)
+    if mv.nbytes != n * 16:
+        raise CloudFormatError("len(data)=%d != %d*16" % (mv.nbytes, n))
+    rec = np.frombuffer(mv, dtype=CLOUD_DTYPE, count=n)
+    pts = np.empty((n, 3), dtype=np.float32)
+    pts[:, 0], pts[:, 1], pts[:, 2] = rec["x"], rec["y"], rec["z"]
+    oid = rec["oid"].astype(np.uint32)
+    fin = np.isfinite(pts).all(axis=1)
+    return pts[fin], oid[fin], int(n - int(fin.sum()))
+
+
+def parse_body(text):
+    rows = json.loads(text)
+    if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+        raise ValueError("body is not a list of dicts")
+    return rows
+
+
+# ---------------------------------------------------------- label matching
+def base_noun(label):
+    w = str(label or "").lower().split()
+    return w[-1] if w else ""
