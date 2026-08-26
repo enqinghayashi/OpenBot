@@ -189,3 +189,5 @@ def cfg_hash(cfg):
     return hashlib.md5(repr(items).encode("utf-8")).hexdigest()
 
 
+def replace(cfg, **kw):
+    return dataclasses.replace(cfg, **kw)
