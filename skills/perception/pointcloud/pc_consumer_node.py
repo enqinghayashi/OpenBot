@@ -82,3 +82,8 @@ class ConsumerCore(object):
         self._reset_counters()
 
     # ------------------------------------------------------------ small helpers
+    def _reset_counters(self):
+        self.skipped = {"rate": 0, "busy": 0, "budget": 0, "unpaired": 0, "format": 0,
+                        "early": 0, "body_parse": 0}
+        self.max_proc_s = 0.0
+
