@@ -181,3 +181,52 @@ class ConsumerCore(object):
             return
         self.bodies.appendleft((t_mono, rows))   # newest first
 
+    def on_cloud(self, data, width, point_step, fields, is_bigendian, hdr_stamp_ns,
+                 t_mono, t_wall=None, height=1):
+        if self.state != "armed":
+            return
+        if self._busy:
+            self.skipped["busy"] += 1
+            return
+        if t_mono - self._last_proc < self.cfg.NODE_MIN_PERIOD_S:
+            self.skipped["rate"] += 1
+            return
+        if self._cooldown > 0:
+            self._cooldown -= 1
+            self.skipped["budget"] += 1
+            return
+        self._busy = True
+        p0 = self._perf()
+        t_wall = self._wall() if t_wall is None else t_wall
+        try:
+            try:
+                pts, oid, _nf = core.decode_cloud(data, width, point_step, fields, is_bigendian,
+                                                  height)
+            except core.CloudFormatError:
+                self.skipped["format"] += 1
+                return
+            fr, _why = core.pair_cloud(list(self.bodies), pts, oid, t_mono, self.cfg,
+                                       t_wall=t_wall, n_raw=int(width) * int(height),
+                                       hdr_stamp_ns=hdr_stamp_ns)
+            if fr is None:
+                self.skipped["unpaired"] += 1
+                return
+            if self.req["task"] == "hold_check":
+                try:
+                    t_open = float(self.req.get("t_reply_wall")) + self.cfg.HOLD_CHK_DELAY_S
+                except (TypeError, ValueError):
+                    t_open = math.inf
+                if fr.t_wall < t_open:
+                    self.skipped["early"] += 1
+                    return
+            self.frames.append(fr)
+        finally:
+            dt = self._perf() - p0
+            self.max_proc_s = max(self.max_proc_s, dt)
+            self._last_proc = t_mono
+            self._busy = False
+            if dt > self.cfg.NODE_CB_BUDGET_S:
+                self._cooldown = int(math.ceil(dt / self.cfg.NODE_CB_BUDGET_S))
+        if self.state == "armed" and len(self.frames) >= self.frames.maxlen:
+            self._finish(None, t_mono=t_mono)
+
