@@ -162,3 +162,12 @@ class ConsumerCore(object):
         self._reset_counters()
         self._cpu0 = self._cpu()
 
+    def _ttl(self, req, cap):
+        try:
+            ttl = float(req.get("ttl_s", cap))
+        except (TypeError, ValueError):
+            ttl = cap
+        if not math.isfinite(ttl):
+            ttl = cap
+        return min(max(ttl, self.cfg.NODE_TTL_MIN_S), cap)
+
