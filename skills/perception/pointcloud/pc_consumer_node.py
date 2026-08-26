@@ -87,3 +87,8 @@ class ConsumerCore(object):
                         "early": 0, "body_parse": 0}
         self.max_proc_s = 0.0
 
+    def subscriptions(self):
+        if self.state == "disarmed":
+            return frozenset()
+        return frozenset({TOPIC_CLOUD, TOPIC_BODY})
+
