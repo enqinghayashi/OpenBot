@@ -60,3 +60,4 @@ def _rss_mb():
         return 0.0
 
 
+class ConsumerCore(object):
