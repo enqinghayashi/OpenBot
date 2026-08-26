@@ -101,3 +101,132 @@ class ConsumerCore(object):
                             rss_mb=round(self._rss(), 1), max_proc_s=0.0)
         self.out.append(env)
 
+    def _disarm(self):
+        self.state = "disarmed"
+        self.req = None
+        self.deadline = None
+        self.frames = collections.deque(maxlen=1)
+        self.bodies.clear()
+        self._cooldown = 0
+
+    # ------------------------------------------------------------ stuff coming in
+    def on_arm(self, text, t_mono):
+        try:
+            req = json.loads(text)
+            if not isinstance(req, dict):
+                raise ValueError("not an object")
+        except ValueError:
+            self._emit_immediate(None, None, core.result(core.ERROR, core.V_ERROR, "bad_json"), {})
+            return
+        rid = req.get("rid")
+        task = req.get("task")
+        if not isinstance(rid, str) or not rid:
+            self._emit_immediate(None, task, core.result(core.ERROR, core.V_ERROR, "no_rid"), req)
+            return
+        if task == "disarm":
+            if self.state == "armed" and self.req.get("rid") == rid:
+                self._finish("disarmed_by_caller", t_mono=t_mono)
+            elif self.state == "warm":
+                self._disarm()
+            return
+        if task == "warm":
+            if self.state == "disarmed":
+                ttl = self._ttl(req, self.cfg.NODE_WARM_TTL_MAX_S)
+                self.state = "warm"
+                self.deadline = t_mono + ttl
+            return
+        if task not in core.TASKS:
+            self._emit_immediate(rid, task, core.result(core.ERROR, core.V_ERROR, "bad_task"), req)
+            return
+        if self.state == "armed":
+            if self.req.get("rid") != rid:
+                self._emit_immediate(rid, task, core.result(core.ERROR, core.V_ERROR, "busy"), req)
+            return
+        pose = req.get("pose")
+        if task in ("hold_baseline", "hold_check", "place_rim") and isinstance(pose, dict) \
+                and "t" in pose:
+            try:
+                age = self._wall() - float(pose["t"])
+            except (TypeError, ValueError):
+                age = math.inf
+            if age > self.cfg.POSE_MAX_AGE_S or age < -self.cfg.POSE_MAX_AGE_S:
+                self._emit_immediate(rid, task, core.unknown("pose_stale"), req)
+                return
+        if task == "hold_check" and req.get("baseline_rid") not in self.baselines:
+            self._emit_immediate(rid, task, core.unknown("no_baseline"), req)
+            return
+        self.req = req
+        self.state = "armed"
+        self.deadline = t_mono + self._ttl(req, self.cfg.NODE_TTL_MAX_S)
+        self.frames = collections.deque(maxlen=_quota(task, self.cfg))
+        self._reset_counters()
+        self._cpu0 = self._cpu()
+
+    def _ttl(self, req, cap):
+        try:
+            ttl = float(req.get("ttl_s", cap))
+        except (TypeError, ValueError):
+            ttl = cap
+        if not math.isfinite(ttl):
+            ttl = cap
+        return min(max(ttl, self.cfg.NODE_TTL_MIN_S), cap)
+
+    def on_body(self, text, t_mono):
+        if self.state == "disarmed":
+            return
+        try:
+            rows = core.parse_body(text)
+        except ValueError:
+            self.skipped["body_parse"] += 1
+            return
+        self.bodies.appendleft((t_mono, rows))   # newest first
+
+    def on_cloud(self, data, width, point_step, fields, is_bigendian, hdr_stamp_ns,
+                 t_mono, t_wall=None, height=1):
+        if self.state != "armed":
+            return
+        if self._busy:
+            self.skipped["busy"] += 1
+            return
+        if t_mono - self._last_proc < self.cfg.NODE_MIN_PERIOD_S:
+            self.skipped["rate"] += 1
+            return
+        if self._cooldown > 0:
+            self._cooldown -= 1
+            self.skipped["budget"] += 1
+            return
+        self._busy = True
+        p0 = self._perf()
+        t_wall = self._wall() if t_wall is None else t_wall
+        try:
+            try:
+                pts, oid, _nf = core.decode_cloud(data, width, point_step, fields, is_bigendian,
+                                                  height)
+            except core.CloudFormatError:
+                self.skipped["format"] += 1
+                return
+            fr, _why = core.pair_cloud(list(self.bodies), pts, oid, t_mono, self.cfg,
+                                       t_wall=t_wall, n_raw=int(width) * int(height),
+                                       hdr_stamp_ns=hdr_stamp_ns)
+            if fr is None:
+                self.skipped["unpaired"] += 1
+                return
+            if self.req["task"] == "hold_check":
+                try:
+                    t_open = float(self.req.get("t_reply_wall")) + self.cfg.HOLD_CHK_DELAY_S
+                except (TypeError, ValueError):
+                    t_open = math.inf
+                if fr.t_wall < t_open:
+                    self.skipped["early"] += 1
+                    return
+            self.frames.append(fr)
+        finally:
+            dt = self._perf() - p0
+            self.max_proc_s = max(self.max_proc_s, dt)
+            self._last_proc = t_mono
+            self._busy = False
+            if dt > self.cfg.NODE_CB_BUDGET_S:
+                self._cooldown = int(math.ceil(dt / self.cfg.NODE_CB_BUDGET_S))
+        if self.state == "armed" and len(self.frames) >= self.frames.maxlen:
+            self._finish(None, t_mono=t_mono)
+
