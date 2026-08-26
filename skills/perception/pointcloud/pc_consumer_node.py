@@ -58,3 +58,5 @@ def _rss_mb():
             return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") / 1048576.0
     except Exception:  # noqa: BLE001 - not Linux, so it's unknown
         return 0.0
+
+
