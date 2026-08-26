@@ -171,3 +171,13 @@ class ConsumerCore(object):
             ttl = cap
         return min(max(ttl, self.cfg.NODE_TTL_MIN_S), cap)
 
+    def on_body(self, text, t_mono):
+        if self.state == "disarmed":
+            return
+        try:
+            rows = core.parse_body(text)
+        except ValueError:
+            self.skipped["body_parse"] += 1
+            return
+        self.bodies.appendleft((t_mono, rows))   # newest first
+
