@@ -110,3 +110,55 @@ class ConsumerCore(object):
         self._cooldown = 0
 
     # ------------------------------------------------------------ stuff coming in
+    def on_arm(self, text, t_mono):
+        try:
+            req = json.loads(text)
+            if not isinstance(req, dict):
+                raise ValueError("not an object")
+        except ValueError:
+            self._emit_immediate(None, None, core.result(core.ERROR, core.V_ERROR, "bad_json"), {})
+            return
+        rid = req.get("rid")
+        task = req.get("task")
+        if not isinstance(rid, str) or not rid:
+            self._emit_immediate(None, task, core.result(core.ERROR, core.V_ERROR, "no_rid"), req)
+            return
+        if task == "disarm":
+            if self.state == "armed" and self.req.get("rid") == rid:
+                self._finish("disarmed_by_caller", t_mono=t_mono)
+            elif self.state == "warm":
+                self._disarm()
+            return
+        if task == "warm":
+            if self.state == "disarmed":
+                ttl = self._ttl(req, self.cfg.NODE_WARM_TTL_MAX_S)
+                self.state = "warm"
+                self.deadline = t_mono + ttl
+            return
+        if task not in core.TASKS:
+            self._emit_immediate(rid, task, core.result(core.ERROR, core.V_ERROR, "bad_task"), req)
+            return
+        if self.state == "armed":
+            if self.req.get("rid") != rid:
+                self._emit_immediate(rid, task, core.result(core.ERROR, core.V_ERROR, "busy"), req)
+            return
+        pose = req.get("pose")
+        if task in ("hold_baseline", "hold_check", "place_rim") and isinstance(pose, dict) \
+                and "t" in pose:
+            try:
+                age = self._wall() - float(pose["t"])
+            except (TypeError, ValueError):
+                age = math.inf
+            if age > self.cfg.POSE_MAX_AGE_S or age < -self.cfg.POSE_MAX_AGE_S:
+                self._emit_immediate(rid, task, core.unknown("pose_stale"), req)
+                return
+        if task == "hold_check" and req.get("baseline_rid") not in self.baselines:
+            self._emit_immediate(rid, task, core.unknown("no_baseline"), req)
+            return
+        self.req = req
+        self.state = "armed"
+        self.deadline = t_mono + self._ttl(req, self.cfg.NODE_TTL_MAX_S)
+        self.frames = collections.deque(maxlen=_quota(task, self.cfg))
+        self._reset_counters()
+        self._cpu0 = self._cpu()
+
