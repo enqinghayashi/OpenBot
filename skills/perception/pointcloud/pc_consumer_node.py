@@ -243,3 +243,23 @@ class ConsumerCore(object):
                 self._finish(None, t_mono=t_mono)
 
     # ------------------------------------------------------------ finishing up
+    def _finish(self, forced_reason, t_mono):
+        req = self.req
+        task = req["task"]
+        frames = list(self.frames)
+        if forced_reason:
+            res = core.unknown(forced_reason)
+        else:
+            base_map = dict((k, v[1]) for k, v in self.baselines.items())
+            res = core.run_task(task, frames, req, self.cfg, base_map)
+        if task == "hold_baseline" and res["status"] == core.OK:
+            self.baselines[req["rid"]] = (t_mono, res["evidence"]["baseline"])
+            while len(self.baselines) > self.cfg.HOLD_BASE_MAX_KEPT:
+                self.baselines.popitem(last=False)
+        env = core.envelope(req["rid"], task, res, req, frames, self.cfg,
+                            skipped=dict(self.skipped),
+                            proc_cpu_s=round(self._cpu() - self._cpu0, 4),
+                            rss_mb=round(self._rss(), 1),
+                            max_proc_s=round(self.max_proc_s, 4))
+        self.out.append(env)
+        self._disarm()
