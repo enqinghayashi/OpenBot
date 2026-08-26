@@ -96,3 +96,8 @@ class ConsumerCore(object):
         r, self.out = self.out, []
         return r
 
+    def _emit_immediate(self, rid, task, res, req):
+        env = core.envelope(rid, task, res, req, [], self.cfg, skipped={}, proc_cpu_s=0.0,
+                            rss_mb=round(self._rss(), 1), max_proc_s=0.0)
+        self.out.append(env)
+
