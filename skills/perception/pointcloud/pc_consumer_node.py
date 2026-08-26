@@ -101,3 +101,12 @@ class ConsumerCore(object):
                             rss_mb=round(self._rss(), 1), max_proc_s=0.0)
         self.out.append(env)
 
+    def _disarm(self):
+        self.state = "disarmed"
+        self.req = None
+        self.deadline = None
+        self.frames = collections.deque(maxlen=1)
+        self.bodies.clear()
+        self._cooldown = 0
+
+    # ------------------------------------------------------------ stuff coming in
