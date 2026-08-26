@@ -191,3 +191,6 @@ def cfg_hash(cfg):
 
 def replace(cfg, **kw):
     return dataclasses.replace(cfg, **kw)
+
+
+DEFAULT = PcConfig()
