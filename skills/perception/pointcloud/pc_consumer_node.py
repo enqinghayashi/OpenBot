@@ -61,3 +61,43 @@ def _rss_mb():
 
 
 class ConsumerCore(object):
+    def __init__(self, cfg=None, wall=time.time, rss_fn=_rss_mb, cpu_fn=time.process_time,
+                 perf=time.perf_counter):
+        self.cfg = cfg or core.DEFAULT_CFG
+        self._wall = wall
+        self._rss = rss_fn
+        self._cpu = cpu_fn
+        self._perf = perf
+        self.state = "disarmed"
+        self.req = None
+        self.deadline = None
+        self.bodies = collections.deque(maxlen=2)
+        self.frames = collections.deque(maxlen=1)
+        self.baselines = collections.OrderedDict()   # rid -> (t_mono, baseline)
+        self.out = []
+        self._busy = False
+        self._last_proc = -math.inf
+        self._cooldown = 0
+        self._cpu0 = 0.0
+        self._reset_counters()
+
+    # ------------------------------------------------------------ small helpers
+    def _reset_counters(self):
+        self.skipped = {"rate": 0, "busy": 0, "budget": 0, "unpaired": 0, "format": 0,
+                        "early": 0, "body_parse": 0}
+        self.max_proc_s = 0.0
+
+    def subscriptions(self):
+        if self.state == "disarmed":
+            return frozenset()
+        return frozenset({TOPIC_CLOUD, TOPIC_BODY})
+
+    def pop_results(self):
+        r, self.out = self.out, []
+        return r
+
+    def _emit_immediate(self, rid, task, res, req):
+        env = core.envelope(rid, task, res, req, [], self.cfg, skipped={}, proc_cpu_s=0.0,
+                            rss_mb=round(self._rss(), 1), max_proc_s=0.0)
+        self.out.append(env)
+
