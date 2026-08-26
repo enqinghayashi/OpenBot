@@ -92,3 +92,7 @@ class ConsumerCore(object):
             return frozenset()
         return frozenset({TOPIC_CLOUD, TOPIC_BODY})
 
+    def pop_results(self):
+        r, self.out = self.out, []
+        return r
+
