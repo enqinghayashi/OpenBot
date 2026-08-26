@@ -41,3 +41,12 @@ TOPIC_CLOUD = "/object_pointcloud"
 TOPIC_BODY = "/object_detections_body"
 
 
+def _quota(task, cfg):
+    return {
+        "hold_baseline": cfg.HOLD_BASE_FRAMES,
+        "hold_check": cfg.HOLD_CHK_FRAMES,
+        "place_rim": cfg.BOWL_FRAMES,
+        "split": 1,
+        "grasp": 1,
+        "person": cfg.PERSON_POOL_N,
+    }[task]
