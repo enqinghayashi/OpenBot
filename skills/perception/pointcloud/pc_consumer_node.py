@@ -230,3 +230,16 @@ class ConsumerCore(object):
         if self.state == "armed" and len(self.frames) >= self.frames.maxlen:
             self._finish(None, t_mono=t_mono)
 
+    def tick(self, t_mono):
+        for rid in list(self.baselines):
+            if t_mono - self.baselines[rid][0] > self.cfg.HOLD_BASE_KEEP_S:
+                del self.baselines[rid]
+        if self.state == "warm" and t_mono >= self.deadline:
+            self._disarm()
+        elif self.state == "armed":
+            if self._rss() > self.cfg.NODE_RSS_CAP_MB:
+                self._finish("rss_cap", t_mono=t_mono)
+            elif t_mono >= self.deadline:
+                self._finish(None, t_mono=t_mono)
+
+    # ------------------------------------------------------------ finishing up
