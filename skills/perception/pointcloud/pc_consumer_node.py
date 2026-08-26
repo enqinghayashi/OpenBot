@@ -230,3 +230,112 @@ class ConsumerCore(object):
         if self.state == "armed" and len(self.frames) >= self.frames.maxlen:
             self._finish(None, t_mono=t_mono)
 
+    def tick(self, t_mono):
+        for rid in list(self.baselines):
+            if t_mono - self.baselines[rid][0] > self.cfg.HOLD_BASE_KEEP_S:
+                del self.baselines[rid]
+        if self.state == "warm" and t_mono >= self.deadline:
+            self._disarm()
+        elif self.state == "armed":
+            if self._rss() > self.cfg.NODE_RSS_CAP_MB:
+                self._finish("rss_cap", t_mono=t_mono)
+            elif t_mono >= self.deadline:
+                self._finish(None, t_mono=t_mono)
+
+    # ------------------------------------------------------------ finishing up
+    def _finish(self, forced_reason, t_mono):
+        req = self.req
+        task = req["task"]
+        frames = list(self.frames)
+        if forced_reason:
+            res = core.unknown(forced_reason)
+        else:
+            base_map = dict((k, v[1]) for k, v in self.baselines.items())
+            res = core.run_task(task, frames, req, self.cfg, base_map)
+        if task == "hold_baseline" and res["status"] == core.OK:
+            self.baselines[req["rid"]] = (t_mono, res["evidence"]["baseline"])
+            while len(self.baselines) > self.cfg.HOLD_BASE_MAX_KEPT:
+                self.baselines.popitem(last=False)
+        env = core.envelope(req["rid"], task, res, req, frames, self.cfg,
+                            skipped=dict(self.skipped),
+                            proc_cpu_s=round(self._cpu() - self._cpu0, 4),
+                            rss_mb=round(self._rss(), 1),
+                            max_proc_s=round(self.max_proc_s, 4))
+        self.out.append(env)
+        self._disarm()
+
+
+# ================================================================== ROS glue layer
+def main(argv=None):
+    try:
+        import rclpy
+        from rclpy.node import Node
+        from rclpy.qos import QoSProfile, ReliabilityPolicy
+        from std_msgs.msg import String
+        from sensor_msgs.msg import PointCloud2
+    except ImportError as e:
+        sys.stderr.write("pc_consumer_node: ROS 2 (rclpy) is not available here: %s\n" % e)
+        return 2
+    try:
+        os.nice(10)
+    except OSError:
+        pass
+    rclpy.init(args=argv)
+    cc = ConsumerCore()
+    node = Node("pc_consumer_node")
+    pub = node.create_publisher(String, TOPIC_RESULT, 10)
+    qos = QoSProfile(depth=2, reliability=ReliabilityPolicy.RELIABLE)
+    subs = {}
+
+    def flush():
+        for env in cc.pop_results():
+            m = String()
+            m.data = json.dumps(env)
+            pub.publish(m)
+            node.get_logger().info("[pc] %s %s %s %s" % (env.get("rid"), env.get("task"),
+                                                        env.get("verdict"), env.get("reason")))
+
+    def on_body(msg):
+        cc.on_body(msg.data, time.monotonic())
+
+    def on_cloud(msg):
+        st = msg.header.stamp
+        cc.on_cloud(msg.data, msg.width, msg.point_step, msg.fields, msg.is_bigendian,
+                    int(st.sec) * 1000000000 + int(st.nanosec), time.monotonic(),
+                    time.time(), msg.height)
+
+    def sync():
+        want = cc.subscriptions()
+        for t in list(subs):
+            if t not in want:
+                node.destroy_subscription(subs.pop(t))
+        if TOPIC_BODY in want and TOPIC_BODY not in subs:
+            subs[TOPIC_BODY] = node.create_subscription(String, TOPIC_BODY, on_body, qos)
+        if TOPIC_CLOUD in want and TOPIC_CLOUD not in subs:
+            subs[TOPIC_CLOUD] = node.create_subscription(PointCloud2, TOPIC_CLOUD, on_cloud, qos)
+
+    def on_arm(msg):
+        cc.on_arm(msg.data, time.monotonic())
+        flush()
+        sync()
+
+    def on_timer():
+        cc.tick(time.monotonic())
+        flush()
+        sync()
+
+    node.create_subscription(String, TOPIC_ARM, on_arm, 10)
+    node.create_timer(0.1, on_timer)
+    node.get_logger().info("[pc] consumer ready (disarmed; only %s subscribed)" % TOPIC_ARM)
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
