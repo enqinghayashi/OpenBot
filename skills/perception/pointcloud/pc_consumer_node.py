@@ -50,3 +50,5 @@ def _quota(task, cfg):
         "grasp": 1,
         "person": cfg.PERSON_POOL_N,
     }[task]
+
+
