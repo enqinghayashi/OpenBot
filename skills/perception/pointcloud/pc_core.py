@@ -358,3 +358,51 @@ def select_target(frame, label, ref_xy, cfg, need_ref=False):
 
 
 # ---------------------------------------------------------- geometry helpers
+def torso_to_pixel(P):
+    """Torso points -> (u, v, z_cam) in COLOUR pixels with the projector intrinsics."""
+    P = np.atleast_2d(np.asarray(P, dtype=np.float64))
+    pc = (P - T_CAM_IN_TORSO) @ R_CAM_TO_TORSO   # R^T (p - T)
+    # R orthonormal
+    z = pc[:, 2]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        u = FX * pc[:, 0] / z + CX
+        v = FY * pc[:, 1] / z + CY
+    return u, v, z
+
+
+def in_view(P):
+    u, v, z = torso_to_pixel(P)
+    return (z > DEPTH_MIN) & (z < DEPTH_MAX) & (u >= 0) & (u < COLOR_W) & (v >= 0) & (v < COLOR_H)
+
+
+def width_est(x, cfg):
+    """Full width of a silhouette from a percentile span, de-biased for a
+    uniform-in-x point set (p5-p95 spans 0.90 of the width: DERIVED)."""
+    lo, hi = np.percentile(x, [cfg.WIDTH_Q_LO, cfg.WIDTH_Q_HI])
+    return float(hi - lo) / ((cfg.WIDTH_Q_HI - cfg.WIDTH_Q_LO) / 100.0)
+
+
+def descent_band(z, cfg):
+    """Copy of brain/descent_law.classify_pick_z with the box floor (-0.54)."""
+    if z is None or not np.isfinite(z):
+        return "ABSENT"
+    if z >= cfg.COMFORT_Z:
+        return "NORMAL"
+    if z >= cfg.DEEP_FLOOR_Z:
+        return "DESCEND"
+    return "DEEP_FLOOR"
+
+
+# ----------------------------------------------------------- pose checks
+def pose_check(pose, cfg):
+    if not isinstance(pose, dict):
+        return False, "no_pose"
+    if cfg.POSE_REQUIRE_MEASURED and pose.get("src") != "measured":
+        return False, "pose_unmeasured"
+    for k in POSE_KEYS:
+        try:
+            if not math.isfinite(float(pose[k])):
+                return False, "pose_incomplete"
+        except (KeyError, TypeError, ValueError):
+            return False, "pose_incomplete"
+    return True, ""
