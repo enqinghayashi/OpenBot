@@ -202,3 +202,5 @@ def _row_xyz(row):
     except (KeyError, TypeError, ValueError):
         return None
     return v if np.all(np.isfinite(v)) else None
+
+
