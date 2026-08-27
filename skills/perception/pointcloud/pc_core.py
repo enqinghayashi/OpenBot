@@ -234,3 +234,13 @@ def check_body(rows, segs, trunc_oid, cfg):
     return True, ""
 
 
+def _bodies_equivalent(a, b, segs, cfg):
+    if len(a) != len(b):
+        return False
+    for o in segs:
+        if str(a[o].get("label")) != str(b[o].get("label")):
+            return False
+        va, vb = _row_xyz(a[o]), _row_xyz(b[o])
+        if va is None or vb is None or np.max(np.abs(va - vb)) > cfg.PAIR_BOX_PAD_M:
+            return False
+    return True
