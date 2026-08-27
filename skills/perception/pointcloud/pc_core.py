@@ -110,3 +110,5 @@ def result(status, verdict, reason="", **evidence):
     if status == UNKNOWN and not reason:
         raise AssertionError("UNKNOWN must carry a reason")
     return {"status": status, "verdict": verdict, "reason": reason, "evidence": evidence}
+
+
