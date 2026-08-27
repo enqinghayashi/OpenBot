@@ -202,3 +202,159 @@ def _row_xyz(row):
     except (KeyError, TypeError, ValueError):
         return None
     return v if np.all(np.isfinite(v)) else None
+
+
+def _row_inside(row, seg, pad):
+    v = _row_xyz(row)
+    if v is None or len(seg) == 0:
+        return False
+    lo, hi = np.percentile(seg, [5, 95], axis=0)
+    return bool(np.all(v >= lo - pad) and np.all(v <= hi + pad))
+
+
+def check_body(rows, segs, trunc_oid, cfg):
+    """Can this body packet be the one the cloud was built with?"""
+    if not segs:
+        return False, "empty_cloud"
+    if max(segs) >= len(rows):
+        return False, "oid_out_of_range"
+    seg_rows = set(i for i, r in enumerate(rows) if "width_m" in r)
+    present = set(segs)
+    if present - seg_rows:
+        return False, "points_on_fallback_row"
+    missing = seg_rows - present
+    if missing:
+        if trunc_oid is None or not all(m > trunc_oid for m in missing):
+            return False, "seg_row_without_points"
+    for o, s in segs.items():
+        if o == trunc_oid:
+            continue
+        if not _row_inside(rows[o], s, cfg.PAIR_BOX_PAD_M):
+            return False, "row_xyz_outside_segment"
+    return True, ""
+
+
+def _bodies_equivalent(a, b, segs, cfg):
+    if len(a) != len(b):
+        return False
+    for o in segs:
+        if str(a[o].get("label")) != str(b[o].get("label")):
+            return False
+        va, vb = _row_xyz(a[o]), _row_xyz(b[o])
+        if va is None or vb is None or np.max(np.abs(va - vb)) > cfg.PAIR_BOX_PAD_M:
+            return False
+    return True
+
+
+def pair_cloud(bodies, pts, oid, t_cloud_rx, cfg=None, t_wall=None, n_raw=None,
+               hdr_stamp_ns=None):
+    """Pair a decoded cloud with one of the latest two body packets.
+
+    bodies: [(t_rx_mono, rows), ...] NEWEST FIRST.
+    Exact mode (after hook H-PROJ-1): at least one row carries 'cloud_stamp_ns' equal
+    to the cloud header stamp; every row indexed by a segment carries 'cloud_stamp_ns'.
+    Fallback rows (no 'width_m', not indexed by any segment) do not block exact mode.
+    Heuristic mode (today): structural + xyz cross-check; if BOTH bodies pass
+    and they are not equivalent for every segment -> (None, 'pair_ambiguous').
+    Returns (Frame|None, reason)."""
+    cfg = cfg or DEFAULT_CFG
+    segs = split_segments(pts, oid)
+    n_raw = len(pts) if n_raw is None else n_raw
+    trunc_oid = max(segs) if (segs and n_raw >= cfg.MAX_CLOUD_POINTS) else None
+    cands = []
+    exact_seen = False
+    last_why = "no_body"
+    for (t_rx, rows) in list(bodies)[:2]:
+        gap = t_cloud_rx - t_rx
+        if gap < 0 or gap > cfg.PAIR_MAX_GAP_S:
+            last_why = "body_gap"
+            continue
+        # exact mode
+        # row stamps match cloud
+        has_any_stamp = rows and any("cloud_stamp_ns" in r for r in rows)
+        indexed_oids = set(segs.keys())
+        all_indexed_stamped = (indexed_oids and
+                               all("cloud_stamp_ns" in rows[o] for o in indexed_oids if o < len(rows)))
+        if has_any_stamp and hdr_stamp_ns is not None and all_indexed_stamped:
+            exact_seen = True
+            # stamps must agree
+            if any("cloud_stamp_ns" in r and int(r["cloud_stamp_ns"]) != int(hdr_stamp_ns) for r in rows):
+                last_why = "stamp_mismatch"
+                continue
+            bad = False
+            for o, s in segs.items():
+                if o >= len(rows) or ("n_pts" in rows[o] and o != trunc_oid
+                                      and int(rows[o]["n_pts"]) != len(s)):
+                    bad = True
+            if bad:
+                last_why = "n_pts_mismatch"
+                continue
+        ok, why = check_body(rows, segs, trunc_oid, cfg)
+        if ok:
+            cands.append(rows)
+        else:
+            last_why = why
+    if not cands:
+        return None, last_why
+    if exact_seen:
+        mode = "exact"
+    elif len(cands) == 1:
+        mode = "heuristic"
+    elif _bodies_equivalent(cands[0], cands[1], segs, cfg):
+        mode = "heuristic_equiv"
+    else:
+        return None, "pair_ambiguous"
+    rows = cands[0]
+    stale = set()
+    if t_wall is not None:
+        for i, r in enumerate(rows):
+            st = r.get("stamp")
+            try:
+                age = t_wall - float(st)
+            except (TypeError, ValueError):
+                stale.add(i)
+                continue
+            if age > cfg.ROW_MAX_AGE_S or age < -cfg.ROW_MAX_AGE_S:
+                stale.add(i)
+    return Frame(t_wall, t_cloud_rx, rows, segs,
+                 truncated=() if trunc_oid is None else (trunc_oid,),
+                 pair_mode=mode, stale=stale), ""
+
+
+def select_target(frame, label, ref_xy, cfg, need_ref=False):
+    """(state, idx, row, seg).  state in NO_ROW / NO_POINTS / TRUNCATED / OK."""
+    if frame is None:
+        return NO_PACKET, None, None, None
+    best = None
+    for i, r in enumerate(frame.rows):
+        if i in frame.stale or not label_matches(r.get("label"), label):
+            continue
+        v = _row_xyz(r)
+        if v is None:
+            continue
+        if ref_xy is not None:
+            d = math.hypot(v[0] - ref_xy[0], v[1] - ref_xy[1])
+            if d > cfg.ASSOC_GATE_M:
+                continue
+            key = d
+        elif need_ref:
+            continue
+        else:
+            try:
+                key = -float(r.get("conf") or 0.0)
+            except (TypeError, ValueError):
+                key = 0.0
+        if best is None or key < best[0]:
+            best = (key, i, r)
+    if best is None:
+        return NO_ROW, None, None, None
+    _, i, r = best
+    if i in frame.truncated:
+        return TRUNCATED, i, r, frame.segs.get(i)
+    seg = frame.segs.get(i)
+    if seg is None or len(seg) == 0:
+        return NO_POINTS, i, r, None
+    return SEL_OK, i, r, seg
+
+
+# ---------------------------------------------------------- geometry helpers
