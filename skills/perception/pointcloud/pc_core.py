@@ -182,3 +182,15 @@ class Frame(object):
         self.stale = frozenset(stale)
 
 
+def split_segments(pts, oid):
+    segs = {}
+    if len(pts) == 0:
+        return segs
+    order = np.argsort(oid, kind="stable")
+    o = oid[order]
+    P = np.asarray(pts, dtype=np.float64)[order]
+    u, start = np.unique(o, return_index=True)
+    ends = list(start[1:]) + [len(o)]
+    for k, s, e in zip(u, start, ends):
+        segs[int(k)] = P[s:e]
+    return segs
