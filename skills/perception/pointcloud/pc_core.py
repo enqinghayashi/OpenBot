@@ -114,3 +114,6 @@ def result(status, verdict, reason="", **evidence):
 
 def unknown(reason, **ev):
     return result(UNKNOWN, V_UNKNOWN, reason, **ev)
+
+
+# ---------------------------------------------------------------- decoding
