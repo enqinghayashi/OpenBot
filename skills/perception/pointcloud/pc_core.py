@@ -146,3 +146,5 @@ def decode_cloud(data, width, point_step, fields, is_bigendian=False, height=1):
     oid = rec["oid"].astype(np.uint32)
     fin = np.isfinite(pts).all(axis=1)
     return pts[fin], oid[fin], int(n - int(fin.sum()))
+
+
