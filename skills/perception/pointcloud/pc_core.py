@@ -117,3 +117,8 @@ def unknown(reason, **ev):
 
 
 # ---------------------------------------------------------------- decoding
+def _field_tuple(f):
+    if isinstance(f, (tuple, list)):
+        t = list(f) + [1]
+        return (str(t[0]), int(t[1]), int(t[2]), int(t[3]))
+    return (str(f.name), int(f.offset), int(f.datatype), int(getattr(f, "count", 1)))
