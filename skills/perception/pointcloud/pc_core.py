@@ -171,3 +171,12 @@ class Frame(object):
     """One PAIRED cloud: rows (body JSON list) + per-oid torso points."""
     __slots__ = ("t_wall", "t_mono", "rows", "segs", "truncated", "pair_mode", "stale")
 
+    def __init__(self, t_wall, t_mono, rows, segs, truncated=(), pair_mode="heuristic",
+                 stale=()):
+        self.t_wall = t_wall
+        self.t_mono = t_mono
+        self.rows = rows
+        self.segs = segs
+        self.truncated = frozenset(truncated)
+        self.pair_mode = pair_mode
+        self.stale = frozenset(stale)
