@@ -232,3 +232,5 @@ def check_body(rows, segs, trunc_oid, cfg):
         if not _row_inside(rows[o], s, cfg.PAIR_BOX_PAD_M):
             return False, "row_xyz_outside_segment"
     return True, ""
+
+
