@@ -167,3 +167,7 @@ def label_matches(row_label, label):
 
 
 # ---------------------------------------------------------- frame handling
+class Frame(object):
+    """One PAIRED cloud: rows (body JSON list) + per-oid torso points."""
+    __slots__ = ("t_wall", "t_mono", "rows", "segs", "truncated", "pair_mode", "stale")
+
