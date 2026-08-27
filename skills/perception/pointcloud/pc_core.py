@@ -164,3 +164,6 @@ def base_noun(label):
 def label_matches(row_label, label):
     q = base_noun(label)
     return bool(q) and q in str(row_label or "").lower().split()
+
+
+# ---------------------------------------------------------- frame handling
