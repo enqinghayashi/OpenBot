@@ -124,3 +124,25 @@ def _field_tuple(f):
     return (str(f.name), int(f.offset), int(f.datatype), int(getattr(f, "count", 1)))
 
 
+def decode_cloud(data, width, point_step, fields, is_bigendian=False, height=1):
+    """PointCloud2 payload -> (pts float32 (N,3), oid uint32 (N,), n_nonfinite).
+
+    REFUSES (CloudFormatError) any layout other than the projector's:
+    point_step 16, fields x/y/z FLOAT32 @0/4/8 + object_id UINT32 @12, LE."""
+    if is_bigendian:
+        raise CloudFormatError("big-endian cloud")
+    if int(point_step) != 16:
+        raise CloudFormatError("point_step %r != 16" % (point_step,))
+    ft = tuple(_field_tuple(f) for f in fields)
+    if ft != EXPECTED_FIELDS:
+        raise CloudFormatError("fields %r != %r" % (ft, EXPECTED_FIELDS))
+    n = int(width) * int(height)
+    mv = memoryview(data)
+    if mv.nbytes != n * 16:
+        raise CloudFormatError("len(data)=%d != %d*16" % (mv.nbytes, n))
+    rec = np.frombuffer(mv, dtype=CLOUD_DTYPE, count=n)
+    pts = np.empty((n, 3), dtype=np.float32)
+    pts[:, 0], pts[:, 1], pts[:, 2] = rec["x"], rec["y"], rec["z"]
+    oid = rec["oid"].astype(np.uint32)
+    fin = np.isfinite(pts).all(axis=1)
+    return pts[fin], oid[fin], int(n - int(fin.sum()))
