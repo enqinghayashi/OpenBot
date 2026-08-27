@@ -148,3 +148,8 @@ def decode_cloud(data, width, point_step, fields, is_bigendian=False, height=1):
     return pts[fin], oid[fin], int(n - int(fin.sum()))
 
 
+def parse_body(text):
+    rows = json.loads(text)
+    if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+        raise ValueError("body is not a list of dicts")
+    return rows
