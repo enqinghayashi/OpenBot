@@ -212,3 +212,23 @@ def _row_inside(row, seg, pad):
     return bool(np.all(v >= lo - pad) and np.all(v <= hi + pad))
 
 
+def check_body(rows, segs, trunc_oid, cfg):
+    """Can this body packet be the one the cloud was built with?"""
+    if not segs:
+        return False, "empty_cloud"
+    if max(segs) >= len(rows):
+        return False, "oid_out_of_range"
+    seg_rows = set(i for i, r in enumerate(rows) if "width_m" in r)
+    present = set(segs)
+    if present - seg_rows:
+        return False, "points_on_fallback_row"
+    missing = seg_rows - present
+    if missing:
+        if trunc_oid is None or not all(m > trunc_oid for m in missing):
+            return False, "seg_row_without_points"
+    for o, s in segs.items():
+        if o == trunc_oid:
+            continue
+        if not _row_inside(rows[o], s, cfg.PAIR_BOX_PAD_M):
+            return False, "row_xyz_outside_segment"
+    return True, ""
