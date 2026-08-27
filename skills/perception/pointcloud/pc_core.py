@@ -180,3 +180,5 @@ class Frame(object):
         self.truncated = frozenset(truncated)
         self.pair_mode = pair_mode
         self.stale = frozenset(stale)
+
+
