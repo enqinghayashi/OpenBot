@@ -266,3 +266,72 @@ class ConsumerCore(object):
 
 
 # ================================================================== ROS glue layer
+def main(argv=None):
+    try:
+        import rclpy
+        from rclpy.node import Node
+        from rclpy.qos import QoSProfile, ReliabilityPolicy
+        from std_msgs.msg import String
+        from sensor_msgs.msg import PointCloud2
+    except ImportError as e:
+        sys.stderr.write("pc_consumer_node: ROS 2 (rclpy) is not available here: %s\n" % e)
+        return 2
+    try:
+        os.nice(10)
+    except OSError:
+        pass
+    rclpy.init(args=argv)
+    cc = ConsumerCore()
+    node = Node("pc_consumer_node")
+    pub = node.create_publisher(String, TOPIC_RESULT, 10)
+    qos = QoSProfile(depth=2, reliability=ReliabilityPolicy.RELIABLE)
+    subs = {}
+
+    def flush():
+        for env in cc.pop_results():
+            m = String()
+            m.data = json.dumps(env)
+            pub.publish(m)
+            node.get_logger().info("[pc] %s %s %s %s" % (env.get("rid"), env.get("task"),
+                                                        env.get("verdict"), env.get("reason")))
+
+    def on_body(msg):
+        cc.on_body(msg.data, time.monotonic())
+
+    def on_cloud(msg):
+        st = msg.header.stamp
+        cc.on_cloud(msg.data, msg.width, msg.point_step, msg.fields, msg.is_bigendian,
+                    int(st.sec) * 1000000000 + int(st.nanosec), time.monotonic(),
+                    time.time(), msg.height)
+
+    def sync():
+        want = cc.subscriptions()
+        for t in list(subs):
+            if t not in want:
+                node.destroy_subscription(subs.pop(t))
+        if TOPIC_BODY in want and TOPIC_BODY not in subs:
+            subs[TOPIC_BODY] = node.create_subscription(String, TOPIC_BODY, on_body, qos)
+        if TOPIC_CLOUD in want and TOPIC_CLOUD not in subs:
+            subs[TOPIC_CLOUD] = node.create_subscription(PointCloud2, TOPIC_CLOUD, on_cloud, qos)
+
+    def on_arm(msg):
+        cc.on_arm(msg.data, time.monotonic())
+        flush()
+        sync()
+
+    def on_timer():
+        cc.tick(time.monotonic())
+        flush()
+        sync()
+
+    node.create_subscription(String, TOPIC_ARM, on_arm, 10)
+    node.create_timer(0.1, on_timer)
+    node.get_logger().info("[pc] consumer ready (disarmed; only %s subscribed)" % TOPIC_ARM)
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+    return 0
