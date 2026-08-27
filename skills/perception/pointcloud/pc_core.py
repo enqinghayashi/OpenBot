@@ -210,3 +210,5 @@ def _row_inside(row, seg, pad):
         return False
     lo, hi = np.percentile(seg, [5, 95], axis=0)
     return bool(np.all(v >= lo - pad) and np.all(v <= hi + pad))
+
+
