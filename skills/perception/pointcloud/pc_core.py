@@ -159,3 +159,46 @@ def parse_body(text):
 def base_noun(label):
     w = str(label or "").lower().split()
     return w[-1] if w else ""
+
+
+def label_matches(row_label, label):
+    q = base_noun(label)
+    return bool(q) and q in str(row_label or "").lower().split()
+
+
+# ---------------------------------------------------------- frame handling
+class Frame(object):
+    """One PAIRED cloud: rows (body JSON list) + per-oid torso points."""
+    __slots__ = ("t_wall", "t_mono", "rows", "segs", "truncated", "pair_mode", "stale")
+
+    def __init__(self, t_wall, t_mono, rows, segs, truncated=(), pair_mode="heuristic",
+                 stale=()):
+        self.t_wall = t_wall
+        self.t_mono = t_mono
+        self.rows = rows
+        self.segs = segs
+        self.truncated = frozenset(truncated)
+        self.pair_mode = pair_mode
+        self.stale = frozenset(stale)
+
+
+def split_segments(pts, oid):
+    segs = {}
+    if len(pts) == 0:
+        return segs
+    order = np.argsort(oid, kind="stable")
+    o = oid[order]
+    P = np.asarray(pts, dtype=np.float64)[order]
+    u, start = np.unique(o, return_index=True)
+    ends = list(start[1:]) + [len(o)]
+    for k, s, e in zip(u, start, ends):
+        segs[int(k)] = P[s:e]
+    return segs
+
+
+def _row_xyz(row):
+    try:
+        v = np.array([float(row["x"]), float(row["y"]), float(row["z"])])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return v if np.all(np.isfinite(v)) else None
