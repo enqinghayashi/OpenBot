@@ -153,3 +153,6 @@ def parse_body(text):
     if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
         raise ValueError("body is not a list of dicts")
     return rows
+
+
+# ---------------------------------------------------------- label matching
