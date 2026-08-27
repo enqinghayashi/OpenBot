@@ -204,3 +204,9 @@ def _row_xyz(row):
     return v if np.all(np.isfinite(v)) else None
 
 
+def _row_inside(row, seg, pad):
+    v = _row_xyz(row)
+    if v is None or len(seg) == 0:
+        return False
+    lo, hi = np.percentile(seg, [5, 95], axis=0)
+    return bool(np.all(v >= lo - pad) and np.all(v <= hi + pad))
