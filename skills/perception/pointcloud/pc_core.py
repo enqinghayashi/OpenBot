@@ -406,3 +406,83 @@ def pose_check(pose, cfg):
         except (KeyError, TypeError, ValueError):
             return False, "pose_incomplete"
     return True, ""
+
+
+def pose_equal(a, b, cfg):
+    """Same torso frame?  Both poses must be valid MEASURED vectors."""
+    for p in (a, b):
+        ok, why = pose_check(p, cfg)
+        if not ok:
+            return False, why
+    if abs(float(a["torso_z"]) - float(b["torso_z"])) > cfg.POSE_Z_TOL_M:
+        return False, "pose_changed"
+    for k in ("pitch", "roll", "waist_pitch"):
+        if abs(float(a[k]) - float(b[k])) > cfg.POSE_ANG_TOL_RAD:
+            return False, "pose_changed"
+    return True, ""
+
+
+# ================================================================ P1 - hold
+def _ext(seg):
+    lo, hi = np.percentile(seg, [5, 95], axis=0)
+    return hi - lo
+
+
+def hold_baseline(frames, label, ref_xy, pose, cfg=None):
+    """Baseline B0 of the pick target, taken before the arm enters the view."""
+    cfg = cfg or DEFAULT_CFG
+    if ref_xy is None:
+        return unknown("no_ref")
+    ok, why = pose_check(pose, cfg)
+    if not ok:
+        return unknown(why)
+    if not frames:
+        return unknown("no_packet")
+    segs, others, states = [], [], []
+    for f in list(frames)[-cfg.HOLD_BASE_FRAMES:]:
+        st, idx, row, seg = select_target(f, label, ref_xy, cfg, need_ref=True)
+        states.append(st)
+        if st != SEL_OK:
+            continue
+        segs.append(seg)
+        for o, s in f.segs.items():
+            if o == idx or o >= len(f.rows) or not label_matches(f.rows[o].get("label"), label):
+                continue
+            others.append(np.median(s[:, :2], axis=0).tolist())
+    if len(segs) < cfg.HOLD_BASE_MIN_FRAMES:
+        return unknown("baseline_short", n_ok=len(segs), states=states)
+    counts = [len(s) for s in segs]
+    N0 = float(np.median(counts))
+    if N0 < cfg.HOLD_MIN_N0:
+        return unknown("baseline_sparse", N0=N0)
+    P = np.vstack(segs)
+    c0 = np.median(P, axis=0)
+    zb0, zt0 = [float(v) for v in np.percentile(P[:, 2], [5, 95])]
+    h0 = zt0 - zb0
+    if h0 < cfg.HOLD_MIN_H0_M or float(c0[2]) - zb0 < cfg.HOLD_MIN_MEDIAN_RISE * h0:
+        # flat or swamped by its own base
+        # (mask leak on a clear bottle)
+        return unknown("baseline_flat", h0=h0, median_rise=float(c0[2]) - zb0)
+    r0 = max(width_est(P[:, 0], cfg) / 2.0, cfg.HOLD_R_MIN_M)
+    p5s = [float(np.percentile(s[:, 2], 5)) for s in segs]
+    p95s = [float(np.percentile(s[:, 2], 95)) for s in segs]
+    dz_tol = max(cfg.HOLD_BASE_DZ_M, 3.0 * float(np.std(p5s)))
+    top_tol = max(cfg.HOLD_TOP_DZ_M, 3.0 * float(np.std(p95s)))
+    others = [o for o in others if math.hypot(o[0] - c0[0], o[1] - c0[1]) > cfg.HOLD_OTHER_EXCL_M]
+    base = {
+        "label": label, "c0": [float(v) for v in c0], "zb0": zb0, "zt0": zt0, "h0": h0,
+        "r0": r0, "N0": N0, "dz_tol": dz_tol, "top_tol": top_tol,
+        "ext": [float(v) for v in _ext(P)], "others": others, "pose": dict(pose),
+        "t_wall": frames[-1].t_wall, "ref": [float(ref_xy[0]), float(ref_xy[1])],
+        "n_frames": len(segs),
+    }
+    return result(OK, V_BASELINE_OK, "", baseline=base)
+
+
+def footprint_corners(base, cfg):
+    c = base["c0"]
+    R = base["r0"] + cfg.HOLD_FOOT_PAD_M
+    zl = base["zb0"] - cfg.HOLD_FOOT_ZLO_M
+    zh = base["zt0"] + cfg.HOLD_FOOT_ZHI_M
+    return np.array([[c[0] + sx * R, c[1] + sy * R, z]
+                     for sx in (-1, 1) for sy in (-1, 1) for z in (zl, zh)])
