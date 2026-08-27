@@ -112,3 +112,5 @@ def result(status, verdict, reason="", **evidence):
     return {"status": status, "verdict": verdict, "reason": reason, "evidence": evidence}
 
 
+def unknown(reason, **ev):
+    return result(UNKNOWN, V_UNKNOWN, reason, **ev)
