@@ -263,3 +263,6 @@ class ConsumerCore(object):
                             max_proc_s=round(self.max_proc_s, 4))
         self.out.append(env)
         self._disarm()
+
+
+# ================================================================== ROS glue layer
