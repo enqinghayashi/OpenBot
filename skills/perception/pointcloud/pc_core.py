@@ -196,3 +196,9 @@ def split_segments(pts, oid):
     return segs
 
 
+def _row_xyz(row):
+    try:
+        v = np.array([float(row["x"]), float(row["y"]), float(row["z"])])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return v if np.all(np.isfinite(v)) else None
