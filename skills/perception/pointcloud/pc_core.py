@@ -486,3 +486,5 @@ def footprint_corners(base, cfg):
     zh = base["zt0"] + cfg.HOLD_FOOT_ZHI_M
     return np.array([[c[0] + sx * R, c[1] + sy * R, z]
                      for sx in (-1, 1) for sy in (-1, 1) for z in (zl, zh)])
+
+
