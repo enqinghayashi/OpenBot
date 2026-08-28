@@ -420,3 +420,6 @@ def pose_equal(a, b, cfg):
         if abs(float(a[k]) - float(b[k])) > cfg.POSE_ANG_TOL_RAD:
             return False, "pose_changed"
     return True, ""
+
+
+# ================================================================ P1 - hold
