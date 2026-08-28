@@ -358,3 +358,13 @@ def select_target(frame, label, ref_xy, cfg, need_ref=False):
 
 
 # ---------------------------------------------------------- geometry helpers
+def torso_to_pixel(P):
+    """Torso points -> (u, v, z_cam) in COLOUR pixels with the projector intrinsics."""
+    P = np.atleast_2d(np.asarray(P, dtype=np.float64))
+    pc = (P - T_CAM_IN_TORSO) @ R_CAM_TO_TORSO   # R^T (p - T)
+    # R orthonormal
+    z = pc[:, 2]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        u = FX * pc[:, 0] / z + CX
+        v = FY * pc[:, 1] / z + CY
+    return u, v, z
