@@ -246,3 +246,76 @@ def _bodies_equivalent(a, b, segs, cfg):
     return True
 
 
+def pair_cloud(bodies, pts, oid, t_cloud_rx, cfg=None, t_wall=None, n_raw=None,
+               hdr_stamp_ns=None):
+    """Pair a decoded cloud with one of the latest two body packets.
+
+    bodies: [(t_rx_mono, rows), ...] NEWEST FIRST.
+    Exact mode (after hook H-PROJ-1): at least one row carries 'cloud_stamp_ns' equal
+    to the cloud header stamp; every row indexed by a segment carries 'cloud_stamp_ns'.
+    Fallback rows (no 'width_m', not indexed by any segment) do not block exact mode.
+    Heuristic mode (today): structural + xyz cross-check; if BOTH bodies pass
+    and they are not equivalent for every segment -> (None, 'pair_ambiguous').
+    Returns (Frame|None, reason)."""
+    cfg = cfg or DEFAULT_CFG
+    segs = split_segments(pts, oid)
+    n_raw = len(pts) if n_raw is None else n_raw
+    trunc_oid = max(segs) if (segs and n_raw >= cfg.MAX_CLOUD_POINTS) else None
+    cands = []
+    exact_seen = False
+    last_why = "no_body"
+    for (t_rx, rows) in list(bodies)[:2]:
+        gap = t_cloud_rx - t_rx
+        if gap < 0 or gap > cfg.PAIR_MAX_GAP_S:
+            last_why = "body_gap"
+            continue
+        # exact mode
+        # row stamps match cloud
+        has_any_stamp = rows and any("cloud_stamp_ns" in r for r in rows)
+        indexed_oids = set(segs.keys())
+        all_indexed_stamped = (indexed_oids and
+                               all("cloud_stamp_ns" in rows[o] for o in indexed_oids if o < len(rows)))
+        if has_any_stamp and hdr_stamp_ns is not None and all_indexed_stamped:
+            exact_seen = True
+            # stamps must agree
+            if any("cloud_stamp_ns" in r and int(r["cloud_stamp_ns"]) != int(hdr_stamp_ns) for r in rows):
+                last_why = "stamp_mismatch"
+                continue
+            bad = False
+            for o, s in segs.items():
+                if o >= len(rows) or ("n_pts" in rows[o] and o != trunc_oid
+                                      and int(rows[o]["n_pts"]) != len(s)):
+                    bad = True
+            if bad:
+                last_why = "n_pts_mismatch"
+                continue
+        ok, why = check_body(rows, segs, trunc_oid, cfg)
+        if ok:
+            cands.append(rows)
+        else:
+            last_why = why
+    if not cands:
+        return None, last_why
+    if exact_seen:
+        mode = "exact"
+    elif len(cands) == 1:
+        mode = "heuristic"
+    elif _bodies_equivalent(cands[0], cands[1], segs, cfg):
+        mode = "heuristic_equiv"
+    else:
+        return None, "pair_ambiguous"
+    rows = cands[0]
+    stale = set()
+    if t_wall is not None:
+        for i, r in enumerate(rows):
+            st = r.get("stamp")
+            try:
+                age = t_wall - float(st)
+            except (TypeError, ValueError):
+                stale.add(i)
+                continue
+            if age > cfg.ROW_MAX_AGE_S or age < -cfg.ROW_MAX_AGE_S:
+                stale.add(i)
+    return Frame(t_wall, t_cloud_rx, rows, segs,
+                 truncated=() if trunc_oid is None else (trunc_oid,),
+                 pair_mode=mode, stale=stale), ""
