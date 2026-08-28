@@ -319,3 +319,5 @@ def pair_cloud(bodies, pts, oid, t_cloud_rx, cfg=None, t_wall=None, n_raw=None,
     return Frame(t_wall, t_cloud_rx, rows, segs,
                  truncated=() if trunc_oid is None else (trunc_oid,),
                  pair_mode=mode, stale=stale), ""
+
+
