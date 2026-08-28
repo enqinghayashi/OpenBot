@@ -321,3 +321,37 @@ def pair_cloud(bodies, pts, oid, t_cloud_rx, cfg=None, t_wall=None, n_raw=None,
                  pair_mode=mode, stale=stale), ""
 
 
+def select_target(frame, label, ref_xy, cfg, need_ref=False):
+    """(state, idx, row, seg).  state in NO_ROW / NO_POINTS / TRUNCATED / OK."""
+    if frame is None:
+        return NO_PACKET, None, None, None
+    best = None
+    for i, r in enumerate(frame.rows):
+        if i in frame.stale or not label_matches(r.get("label"), label):
+            continue
+        v = _row_xyz(r)
+        if v is None:
+            continue
+        if ref_xy is not None:
+            d = math.hypot(v[0] - ref_xy[0], v[1] - ref_xy[1])
+            if d > cfg.ASSOC_GATE_M:
+                continue
+            key = d
+        elif need_ref:
+            continue
+        else:
+            try:
+                key = -float(r.get("conf") or 0.0)
+            except (TypeError, ValueError):
+                key = 0.0
+        if best is None or key < best[0]:
+            best = (key, i, r)
+    if best is None:
+        return NO_ROW, None, None, None
+    _, i, r = best
+    if i in frame.truncated:
+        return TRUNCATED, i, r, frame.segs.get(i)
+    seg = frame.segs.get(i)
+    if seg is None or len(seg) == 0:
+        return NO_POINTS, i, r, None
+    return SEL_OK, i, r, seg
