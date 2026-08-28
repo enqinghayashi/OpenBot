@@ -426,3 +426,5 @@ def pose_equal(a, b, cfg):
 def _ext(seg):
     lo, hi = np.percentile(seg, [5, 95], axis=0)
     return hi - lo
+
+
