@@ -244,3 +244,5 @@ def _bodies_equivalent(a, b, segs, cfg):
         if va is None or vb is None or np.max(np.abs(va - vb)) > cfg.PAIR_BOX_PAD_M:
             return False
     return True
+
+
