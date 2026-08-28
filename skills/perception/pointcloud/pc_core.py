@@ -486,3 +486,155 @@ def footprint_corners(base, cfg):
     zh = base["zt0"] + cfg.HOLD_FOOT_ZHI_M
     return np.array([[c[0] + sx * R, c[1] + sy * R, z]
                      for sx in (-1, 1) for sy in (-1, 1) for z in (zl, zh)])
+
+
+def _in_footprint(P, base, cfg):
+    c = base["c0"]
+    R = base["r0"] + cfg.HOLD_FOOT_PAD_M
+    d = np.hypot(P[:, 0] - c[0], P[:, 1] - c[1])
+    return (d <= R) & (P[:, 2] >= base["zb0"] - cfg.HOLD_FOOT_ZLO_M) & \
+        (P[:, 2] <= base["zt0"] + cfg.HOLD_FOOT_ZHI_M)
+
+
+def _shape_match(seg, base, cfg):
+    e = _ext(seg)
+    b = np.asarray(base["ext"])
+    return bool(np.all(np.abs(e - b) <= cfg.HOLD_SHAPE_TOL * np.maximum(b, 1e-3)))
+
+
+def _classify_hold_frame(f, base, cfg):
+    """-> (kind, info). kind in hit / ghost_flat / partial / empty / occluded.
+
+    hit   : a label- (or shape-) matched segment with VERTICAL STRUCTURE
+            (z-span >= HOLD_SPAN_FRAC*h0) whose centre is within HOLD_STILL_XY_M
+            of c0, base within dz_tol of zb0, top within top_tol of zt0, and
+            enough points inside the footprint.  A ghost-mask table patch is
+            flat and can never be a hit.
+    moved : (info) a same-label, shape-matched, structured cluster that sits on
+            the table HOLD_MOVED_XY_M..HOLD_MOVED_MAX_XY_M from c0 and is not a
+            baseline neighbour."""
+    label = base["label"]
+    c0 = base["c0"]
+    in_pts, other_pts = [], []
+    moved = None
+    hit = False
+    n_need = max(cfg.HOLD_MIN_ABS, cfg.HOLD_MIN_FRAC * base["N0"])
+    for o, s in f.segs.items():
+        if o >= len(f.rows) or o in f.stale:
+            continue
+        row = f.rows[o]
+        same = label_matches(row.get("label"), label)
+        shaped = _shape_match(s, base, cfg)
+        if not (same or shaped):
+            other_pts.append(s)
+            continue
+        m = _in_footprint(s, base, cfg)
+        if m.any():
+            in_pts.append(s[m])
+        p5z, p95z = [float(v) for v in np.percentile(s[:, 2], [5, 95])]
+        span = p95z - p5z
+        if span < cfg.HOLD_SPAN_FRAC * base["h0"]:
+            continue
+        med = np.median(s[:, :2], axis=0)
+        dxy = math.hypot(med[0] - c0[0], med[1] - c0[1])
+        on_table = abs(p5z - base["zb0"]) <= base["dz_tol"]
+        if (dxy <= cfg.HOLD_STILL_XY_M and on_table
+                and abs(p95z - base["zt0"]) <= base["top_tol"] and int(m.sum()) >= n_need):
+            hit = True
+            continue
+        excl = any(math.hypot(med[0] - q[0], med[1] - q[1]) <= cfg.HOLD_OTHER_EXCL_M
+                   for q in base["others"])
+        fell = p5z < base["zb0"] - cfg.HOLD_MOVED_DZ_M
+        if (same and shaped and not excl and dxy <= cfg.HOLD_MOVED_MAX_XY_M
+                and ((dxy > cfg.HOLD_MOVED_XY_M and on_table) or fell)):
+            if moved is None or dxy < moved[0]:
+                moved = (dxy, [float(med[0]), float(med[1])], p5z)
+    info = {"moved": moved}
+    if hit:
+        return "hit", info
+    # occluder in front
+    if other_pts:
+        fc = footprint_corners(base, cfg)
+        u, v, zc = torso_to_pixel(fc)
+        Q = np.vstack(other_pts)
+        qu, qv, qz = torso_to_pixel(Q)
+        occ = (qu >= u.min()) & (qu <= u.max()) & (qv >= v.min()) & (qv <= v.max()) & \
+            (qz < zc.min())
+        info["n_occl"] = int(occ.sum())
+        if int(occ.sum()) >= cfg.HOLD_OCCL_MIN_PTS:
+            return "occluded", info
+    if in_pts:
+        I = np.vstack(in_pts)
+        n_in = len(I)
+        p5z, p50z, p95z = [float(v) for v in np.percentile(I[:, 2], [5, 50, 95])]
+        span = p95z - p5z
+        info.update(n_in=n_in, p5z=p5z, p95z=p95z, span=span)
+        if n_in >= cfg.HOLD_PARTIAL_MIN_PTS:
+            flat = span < 0.25 * base["h0"] and abs(p50z - base["zb0"]) <= base["dz_tol"] + 0.01
+            return ("ghost_flat" if flat else "partial"), info
+    info.setdefault("n_in", 0)
+    return "empty", info
+
+
+def hold_check(baseline, frames, pose, phase, t_reply_wall, cfg=None):
+    """NEGATIVE-ONLY hold check after the engine reply.
+
+    phase: what the engine reply says the arm did - 'tucked' (DONE after the
+    carry tuck), 'cancelled', 'error' or 'other'.  Only frames whose wall time
+    is >= t_reply_wall + HOLD_CHK_DELAY_S are used (the 2 s stale-mask
+    lifetime is ENFORCED here, not assumed)."""
+    cfg = cfg or DEFAULT_CFG
+    if not baseline:
+        return unknown("no_baseline")
+    if phase not in PHASES:
+        return unknown("bad_phase")
+    same, why = pose_equal(baseline.get("pose"), pose, cfg)
+    if not same:
+        return unknown(why)
+    if t_reply_wall is None:
+        return unknown("no_reply_time")
+    if t_reply_wall - baseline["t_wall"] > cfg.HOLD_MAX_SPAN_S:
+        return unknown("baseline_expired")
+    frames = list(frames or [])
+    if not frames:
+        return unknown("no_packet")
+    t_open = t_reply_wall + cfg.HOLD_CHK_DELAY_S
+    use = [f for f in frames if f.t_wall is not None and f.t_wall >= t_open][:cfg.HOLD_CHK_FRAMES]
+    n_early = len(frames) - len([f for f in frames if f.t_wall is not None and f.t_wall >= t_open])
+    if len(use) < cfg.HOLD_CHK_MIN_FRAMES:
+        return unknown("delay_not_elapsed" if not use and n_early else "few_frames",
+                       n_used=len(use), n_early=n_early)
+    if not bool(np.all(in_view(footprint_corners(baseline, cfg)))):
+        return unknown("footprint_out_of_view")
+    kinds, infos = [], []
+    for f in use:
+        k, inf = _classify_hold_frame(f, baseline, cfg)
+        kinds.append(k)
+        infos.append(inf)
+    ev = {"kinds": kinds, "n_in": [i.get("n_in", 0) for i in infos], "n_early": n_early,
+          "phase": phase}
+    hits = kinds.count("hit")
+    if hits >= cfg.HOLD_HIT_FRAMES:
+        return result(OK, V_STILL, "", **ev)
+    mv = [i["moved"] for i in infos if i.get("moved") is not None]
+    if len(mv) >= cfg.HOLD_HIT_FRAMES and hits == 0:
+        xy = np.array([m[1] for m in mv])
+        med = np.median(xy, axis=0)
+        if np.all(np.hypot(xy[:, 0] - med[0], xy[:, 1] - med[1]) <= cfg.HOLD_MOVED_CONSIST_M):
+            ev["moved_to"] = [float(med[0]), float(med[1])]
+            return result(OK, V_MOVED, "", **ev)
+    if "occluded" in kinds:
+        return unknown("footprint_occluded", **ev)
+    if "partial" in kinds or hits:
+        return unknown("partial_in_footprint", **ev)
+    if mv:
+        return unknown("moved_inconsistent", **ev)
+    empties = sum(1 for k in kinds if k in ("empty", "ghost_flat"))
+    if phase != "tucked":
+        return unknown("arm_not_tucked", **ev)
+    if empties >= cfg.HOLD_ABSENT_MIN_FRAMES:
+        return result(OK, V_ABSENT, "", **ev)
+    return unknown("insufficient", **ev)
+
+
+# ============================================================ P2 - bowl fit
