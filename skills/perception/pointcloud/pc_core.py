@@ -394,3 +394,15 @@ def descent_band(z, cfg):
 
 
 # ----------------------------------------------------------- pose checks
+def pose_check(pose, cfg):
+    if not isinstance(pose, dict):
+        return False, "no_pose"
+    if cfg.POSE_REQUIRE_MEASURED and pose.get("src") != "measured":
+        return False, "pose_unmeasured"
+    for k in POSE_KEYS:
+        try:
+            if not math.isfinite(float(pose[k])):
+                return False, "pose_incomplete"
+        except (KeyError, TypeError, ValueError):
+            return False, "pose_incomplete"
+    return True, ""
