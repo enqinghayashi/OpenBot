@@ -373,3 +373,5 @@ def torso_to_pixel(P):
 def in_view(P):
     u, v, z = torso_to_pixel(P)
     return (z > DEPTH_MIN) & (z < DEPTH_MAX) & (u >= 0) & (u < COLOR_W) & (v >= 0) & (v < COLOR_H)
+
+
