@@ -839,3 +839,145 @@ def _overlap_frac(a, b):
     inter = float(w[0] * w[1])
     area = float(np.prod(np.maximum(ahi - alo, 1e-6)))
     return inter / area
+
+
+def _width_step(T, cfg):
+    z = T[:, 2]
+    z0 = float(z.min())
+    n = int(math.ceil((float(z.max()) - z0) / cfg.SPLIT_SLAB_M)) or 1
+    k = np.minimum(((z - z0) / cfg.SPLIT_SLAB_M).astype(int), n - 1)
+    w = np.full(n, np.nan)
+    for i in range(n):
+        xs = T[k == i, 0]
+        if len(xs) >= cfg.SPLIT_MIN_SLAB_PTS:
+            w[i] = float(np.percentile(xs, 95) - np.percentile(xs, 5))
+    max_low = int(round(cfg.SUPPORT_MAX_H_M / cfg.SPLIT_SLAB_M))
+    # largest lower run first
+    # support top = wide top
+    for kk in range(min(max_low, n - 1), 0, -1):
+        lower = w[:kk]
+        lower = lower[np.isfinite(lower)]
+        if len(lower) == 0:
+            continue
+        Wl = float(np.median(lower))
+        upper_all = w[kk:]
+        # wide->narrow within
+        # SPLIT_LEDGE_MAX_SLABS slabs
+        upper = w[kk + cfg.SPLIT_LEDGE_MAX_SLABS:]
+        upper = upper[np.isfinite(upper)]
+        if len(upper) < 2:
+            continue
+        Wu = float(np.median(upper))
+        if Wu <= 0 or Wl < cfg.SPLIT_WIDTH_RATIO * Wu:
+            continue
+        h_low = kk * cfg.SPLIT_SLAB_M
+        h_up = (n - kk) * cfg.SPLIT_SLAB_M
+        if h_up < max(cfg.SPLIT_MIN_UPPER_H_M, cfg.SPLIT_UPPER_TO_LOWER_H * h_low):
+            continue
+        if np.any(upper > 1.25 * Wu + 0.01):
+            continue
+        tr = upper_all[:cfg.SPLIT_LEDGE_MAX_SLABS]
+        tr = tr[np.isfinite(tr)]
+        if np.any(tr > Wl * 1.25):
+            continue
+        # lower slabs all wide
+        if np.any(lower < 0.75 * Wl):
+            continue
+        # support top = p95 z of
+        # wide-run points outside
+        # the upper object
+        zc = z0 + (kk + cfg.SPLIT_LEDGE_MAX_SLABS) * cfg.SPLIT_SLAB_M
+        U = T[z >= zc]
+        ulo, uhi = np.percentile(U[:, 0], [cfg.WIDTH_Q_LO, cfg.WIDTH_Q_HI])
+        Wpts = T[(z < zc) & ((T[:, 0] < ulo - 0.01) | (T[:, 0] > uhi + 0.01))]
+        sz = float(np.percentile(Wpts[:, 2], 95)) if len(Wpts) >= 10 else z0 + h_low
+        return sz, {"W_lower": Wl, "W_upper": Wu, "h_lower": h_low, "n_support_pts": int(len(Wpts))}
+    return None, {"widths": [None if not np.isfinite(v) else round(float(v), 4) for v in w]}
+
+
+def split_support(frames, label, ref_xy, cfg=None):
+    cfg = cfg or DEFAULT_CFG
+    frame, idx, row, T = None, None, None, None
+    for f in list(frames or [])[::-1]:
+        st, i, r, seg = select_target(f, label, ref_xy, cfg)
+        if st == SEL_OK:
+            frame, idx, row, T = f, i, r, seg
+            break
+    if T is None:
+        return unknown("no_packet" if not frames else "no_segment")
+    if len(T) < cfg.SPLIT_MIN_PTS:
+        return unknown("sparse", n=len(T))
+    method, support_z, info, corroborated = None, None, {}, False
+    tb = _xy_box(T)
+    t_med_z = float(np.median(T[:, 2]))
+    for o, s in frame.segs.items():
+        if o == idx or o >= len(frame.rows) or o in frame.stale:
+            continue
+        if base_noun(frame.rows[o].get("label")) not in cfg.SUPPORT_LABELS:
+            continue
+        if len(s) < cfg.SPLIT_MIN_SLAB_PTS:
+            continue
+        span = float(np.percentile(s[:, 2], 95) - np.percentile(s[:, 2], 5))
+        top = float(np.percentile(s[:, 2], 90))
+        ov = _overlap_frac(tb, _xy_box(s))
+        if span <= cfg.SUPPORT_MAX_H_M and ov >= cfg.SPLIT_OVERLAP_FRAC and top < t_med_z:
+            method, support_z, corroborated = "support_row", top, True
+            info = {"support_label": frame.rows[o].get("label"), "overlap": ov, "support_span": span}
+            break
+    if method is None:
+        sz, info = _width_step(T, cfg)
+        if sz is not None:
+            method, support_z = "width_step", sz
+    if method is None:
+        return result(OK, V_NOSPLIT, "", centroid=[float(v) for v in np.median(T, axis=0)],
+                      n_total=int(len(T)), **info)
+    above = T[T[:, 2] > support_z + cfg.SPLIT_MARGIN_M]
+    if len(above) < cfg.SPLIT_MIN_ABOVE_PTS:
+        return unknown("above_sparse", method=method, support_z=support_z)
+    return result(OK, V_SPLIT, "", method=method, support_z=support_z,
+                  corroborated=corroborated,
+                  centroid=[float(v) for v in np.median(above, axis=0)],
+                  height_above=float(np.percentile(above[:, 2], 95) - support_z),
+                  n_above=int(len(above)), n_total=int(len(T)), **info)
+
+
+# =========================================================== P4 - grasp diag
+def grasp_diag(frames, label, ref_xy, cfg=None):
+    """DIAG only: front surface, radius, suggested x_off and right-hand corridor."""
+    cfg = cfg or DEFAULT_CFG
+    frame, idx, row, T = None, None, None, None
+    for f in list(frames or [])[::-1]:
+        st, i, r, seg = select_target(f, label, ref_xy, cfg)
+        if st == SEL_OK:
+            frame, idx, row, T = f, i, r, seg
+            break
+    if T is None:
+        return unknown("no_packet" if not frames else "no_segment")
+    c = np.median(T, axis=0)
+    zg = float(c[2]) + cfg.GRASP_Z_OFFSET
+    B = T[np.abs(T[:, 2] - zg) <= cfg.GRASP_BAND_M]
+    if len(B) < cfg.GRASP_MIN_BAND_PTS:
+        return unknown("band_sparse", n_band=int(len(B)))
+    y_front = float(np.percentile(B[:, 1], 5))
+    r_est = width_est(B[:, 0], cfg) / 2.0
+    xlo, xhi = np.percentile(B[:, 0], [cfg.WIDTH_Q_LO, cfg.WIDTH_Q_HI])
+    cx = float((xlo + xhi) / 2.0)
+    c_est = [cx, y_front + r_est]
+    x_lo = cx + r_est
+    x_hi = x_lo + cfg.HAND_CORRIDOR_W_M
+    blocked = None
+    for o, s in frame.segs.items():
+        if o == idx or o >= len(frame.rows):
+            continue
+        m = (s[:, 0] >= x_lo) & (s[:, 0] <= x_hi) & (s[:, 1] <= c_est[1] + r_est) & \
+            (np.abs(s[:, 2] - zg) <= cfg.GRASP_BAND_M + 0.05)
+        if int(m.sum()) >= cfg.CORRIDOR_BLOCK_PTS:
+            blocked = frame.rows[o].get("label")
+            break
+    return result(OK, V_GRASP, "", y_front=y_front, r_est=r_est, c_est=c_est,
+                  x_off_pc=-(r_est + cfg.GRASP_X_OFF_K), x_off_row=row.get("x_off"),
+                  corridor=("BLOCKED(%s)" % blocked) if blocked else "CLEAR",
+                  n_band=int(len(B)), grasp_z=zg)
+
+
+# ================================================================ P5 - person
