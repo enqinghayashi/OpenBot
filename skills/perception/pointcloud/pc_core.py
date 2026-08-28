@@ -808,3 +808,34 @@ def fit_bowl(frames, label, ref_xy, pose, cfg=None):
                   band=descent_band(drop["z"], cfg),
                   band_formula=descent_band(formula_z, cfg) if formula_z is not None else "ABSENT",
                   pose=dict(pose))
+
+
+def _border_pts(P, cfg):
+    u, v, z = torso_to_pixel(P)
+    e = cfg.BOWL_EDGE_PX
+    return int(((u <= e) | (u >= COLOR_W - 1 - e) | (v <= e) | (v >= COLOR_H - 1 - e)).sum())
+
+
+def _formula_z(row):
+    """Today's drop z: brain/agent/tools.py _drop_point 'z + lift + 0.02'."""
+    try:
+        z = float(row["z"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    h = row.get("height_m")
+    lift = h / 2.0 if isinstance(h, (int, float)) and h > 0.0 else 0.0
+    return z + lift + 0.02
+
+
+# ================================================================ P3 - split
+def _xy_box(seg):
+    lo, hi = np.percentile(seg[:, :2], [5, 95], axis=0)
+    return lo, hi
+
+
+def _overlap_frac(a, b):
+    (alo, ahi), (blo, bhi) = a, b
+    w = np.clip(np.minimum(ahi, bhi) - np.maximum(alo, blo), 0, None)
+    inter = float(w[0] * w[1])
+    area = float(np.prod(np.maximum(ahi - alo, 1e-6)))
+    return inter / area
