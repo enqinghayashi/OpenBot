@@ -355,3 +355,6 @@ def select_target(frame, label, ref_xy, cfg, need_ref=False):
     if seg is None or len(seg) == 0:
         return NO_POINTS, i, r, None
     return SEL_OK, i, r, seg
+
+
+# ---------------------------------------------------------- geometry helpers
