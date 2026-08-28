@@ -391,3 +391,6 @@ def descent_band(z, cfg):
     if z >= cfg.DEEP_FLOOR_Z:
         return "DESCEND"
     return "DEEP_FLOOR"
+
+
+# ----------------------------------------------------------- pose checks
