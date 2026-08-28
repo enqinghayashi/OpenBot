@@ -380,3 +380,5 @@ def width_est(x, cfg):
     uniform-in-x point set (p5-p95 spans 0.90 of the width: DERIVED)."""
     lo, hi = np.percentile(x, [cfg.WIDTH_Q_LO, cfg.WIDTH_Q_HI])
     return float(hi - lo) / ((cfg.WIDTH_Q_HI - cfg.WIDTH_Q_LO) / 100.0)
+
+
