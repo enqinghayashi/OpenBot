@@ -382,3 +382,12 @@ def width_est(x, cfg):
     return float(hi - lo) / ((cfg.WIDTH_Q_HI - cfg.WIDTH_Q_LO) / 100.0)
 
 
+def descent_band(z, cfg):
+    """Copy of brain/descent_law.classify_pick_z with the box floor (-0.54)."""
+    if z is None or not np.isfinite(z):
+        return "ABSENT"
+    if z >= cfg.COMFORT_Z:
+        return "NORMAL"
+    if z >= cfg.DEEP_FLOOR_Z:
+        return "DESCEND"
+    return "DEEP_FLOOR"
