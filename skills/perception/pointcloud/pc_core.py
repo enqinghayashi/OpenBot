@@ -408,3 +408,15 @@ def pose_check(pose, cfg):
     return True, ""
 
 
+def pose_equal(a, b, cfg):
+    """Same torso frame?  Both poses must be valid MEASURED vectors."""
+    for p in (a, b):
+        ok, why = pose_check(p, cfg)
+        if not ok:
+            return False, why
+    if abs(float(a["torso_z"]) - float(b["torso_z"])) > cfg.POSE_Z_TOL_M:
+        return False, "pose_changed"
+    for k in ("pitch", "roll", "waist_pitch"):
+        if abs(float(a[k]) - float(b[k])) > cfg.POSE_ANG_TOL_RAD:
+            return False, "pose_changed"
+    return True, ""
