@@ -479,3 +479,10 @@ def hold_baseline(frames, label, ref_xy, pose, cfg=None):
     return result(OK, V_BASELINE_OK, "", baseline=base)
 
 
+def footprint_corners(base, cfg):
+    c = base["c0"]
+    R = base["r0"] + cfg.HOLD_FOOT_PAD_M
+    zl = base["zb0"] - cfg.HOLD_FOOT_ZLO_M
+    zh = base["zt0"] + cfg.HOLD_FOOT_ZHI_M
+    return np.array([[c[0] + sx * R, c[1] + sy * R, z]
+                     for sx in (-1, 1) for sy in (-1, 1) for z in (zl, zh)])
