@@ -477,3 +477,5 @@ def hold_baseline(frames, label, ref_xy, pose, cfg=None):
         "n_frames": len(segs),
     }
     return result(OK, V_BASELINE_OK, "", baseline=base)
+
+
