@@ -368,3 +368,5 @@ def torso_to_pixel(P):
         u = FX * pc[:, 0] / z + CX
         v = FY * pc[:, 1] / z + CY
     return u, v, z
+
+
