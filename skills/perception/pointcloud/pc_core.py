@@ -406,3 +406,5 @@ def pose_check(pose, cfg):
         except (KeyError, TypeError, ValueError):
             return False, "pose_incomplete"
     return True, ""
+
+
