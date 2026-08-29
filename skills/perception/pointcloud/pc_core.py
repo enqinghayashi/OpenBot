@@ -488,3 +488,9 @@ def footprint_corners(base, cfg):
                      for sx in (-1, 1) for sy in (-1, 1) for z in (zl, zh)])
 
 
+def _in_footprint(P, base, cfg):
+    c = base["c0"]
+    R = base["r0"] + cfg.HOLD_FOOT_PAD_M
+    d = np.hypot(P[:, 0] - c[0], P[:, 1] - c[1])
+    return (d <= R) & (P[:, 2] >= base["zb0"] - cfg.HOLD_FOOT_ZLO_M) & \
+        (P[:, 2] <= base["zt0"] + cfg.HOLD_FOOT_ZHI_M)
