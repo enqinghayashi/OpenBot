@@ -808,3 +808,5 @@ def fit_bowl(frames, label, ref_xy, pose, cfg=None):
                   band=descent_band(drop["z"], cfg),
                   band_formula=descent_band(formula_z, cfg) if formula_z is not None else "ABSENT",
                   pose=dict(pose))
+
+
