@@ -810,3 +810,7 @@ def fit_bowl(frames, label, ref_xy, pose, cfg=None):
                   pose=dict(pose))
 
 
+def _border_pts(P, cfg):
+    u, v, z = torso_to_pixel(P)
+    e = cfg.BOWL_EDGE_PX
+    return int(((u <= e) | (u >= COLOR_W - 1 - e) | (v <= e) | (v >= COLOR_H - 1 - e)).sum())
