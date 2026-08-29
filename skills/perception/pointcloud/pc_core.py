@@ -833,3 +833,9 @@ def _xy_box(seg):
     return lo, hi
 
 
+def _overlap_frac(a, b):
+    (alo, ahi), (blo, bhi) = a, b
+    w = np.clip(np.minimum(ahi, bhi) - np.maximum(alo, blo), 0, None)
+    inter = float(w[0] * w[1])
+    area = float(np.prod(np.maximum(ahi - alo, 1e-6)))
+    return inter / area
