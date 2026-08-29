@@ -661,3 +661,5 @@ def _arc_deg(xy, cx, cy):
     a = np.sort(np.degrees(np.arctan2(xy[:, 1] - cy, xy[:, 0] - cx)))
     gaps = np.diff(np.concatenate([a, [a[0] + 360.0]]))
     return float(360.0 - gaps.max())
+
+
