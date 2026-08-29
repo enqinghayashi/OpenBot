@@ -825,3 +825,6 @@ def _formula_z(row):
     h = row.get("height_m")
     lift = h / 2.0 if isinstance(h, (int, float)) and h > 0.0 else 0.0
     return z + lift + 0.02
+
+
+# ================================================================ P3 - split
