@@ -663,3 +663,34 @@ def _arc_deg(xy, cx, cy):
     return float(360.0 - gaps.max())
 
 
+def ransac_circle(xy, iters, tol, rng, r_lo, r_hi):
+    """Vectorised RANSAC: `iters` 3-point circumcircles at once, best inlier
+    count wins, then a Kasa refit on its inliers."""
+    n = len(xy)
+    if n < 3:
+        return None
+    idx = np.stack([rng.choice(n, 3, replace=False) for _ in range(iters)])
+    A, B, Cc = xy[idx[:, 0]], xy[idx[:, 1]], xy[idx[:, 2]]
+    d = 2.0 * (A[:, 0] * (B[:, 1] - Cc[:, 1]) + B[:, 0] * (Cc[:, 1] - A[:, 1])
+               + Cc[:, 0] * (A[:, 1] - B[:, 1]))
+    a2, b2, c2 = (A * A).sum(1), (B * B).sum(1), (Cc * Cc).sum(1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ux = (a2 * (B[:, 1] - Cc[:, 1]) + b2 * (Cc[:, 1] - A[:, 1]) + c2 * (A[:, 1] - B[:, 1])) / d
+        uy = (a2 * (Cc[:, 0] - B[:, 0]) + b2 * (A[:, 0] - Cc[:, 0]) + c2 * (B[:, 0] - A[:, 0])) / d
+        r = np.hypot(A[:, 0] - ux, A[:, 1] - uy)
+    good = np.isfinite(r) & (r >= r_lo) & (r <= r_hi)
+    if not good.any():
+        return None
+    ux, uy, r = ux[good], uy[good], r[good]
+    dist = np.hypot(xy[None, :, 0] - ux[:, None], xy[None, :, 1] - uy[:, None])
+    cnt = (np.abs(dist - r[:, None]) <= tol).sum(1)
+    k = int(np.argmax(cnt))
+    if cnt[k] < 3:
+        return None
+    inl = np.abs(dist[k] - r[k]) <= tol
+    fit = _kasa(xy[inl])
+    if fit is None:
+        return None
+    cx, cy, rr = fit
+    inl = np.abs(np.hypot(xy[:, 0] - cx, xy[:, 1] - cy) - rr) <= tol
+    return cx, cy, rr, inl
