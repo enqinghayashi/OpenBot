@@ -494,3 +494,5 @@ def _in_footprint(P, base, cfg):
     d = np.hypot(P[:, 0] - c[0], P[:, 1] - c[1])
     return (d <= R) & (P[:, 2] >= base["zb0"] - cfg.HOLD_FOOT_ZLO_M) & \
         (P[:, 2] <= base["zt0"] + cfg.HOLD_FOOT_ZHI_M)
+
+
