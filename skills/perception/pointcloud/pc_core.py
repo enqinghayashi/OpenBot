@@ -500,3 +500,5 @@ def _shape_match(seg, base, cfg):
     e = _ext(seg)
     b = np.asarray(base["ext"])
     return bool(np.all(np.abs(e - b) <= cfg.HOLD_SHAPE_TOL * np.maximum(b, 1e-3)))
+
+
