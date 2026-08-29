@@ -696,3 +696,115 @@ def ransac_circle(xy, iters, tol, rng, r_lo, r_hi):
     return cx, cy, rr, inl
 
 
+def fit_bowl(frames, label, ref_xy, pose, cfg=None):
+    """P2: rim height of a bowl by a top-down z-sweep of circle fits.
+
+    The rim level is the HIGHEST z slice whose points fit a circle that passes
+    every gate (radius window vs width_m, centre near the row median, inlier
+    fraction, arc).  A contaminating blob above the rim (a hand) cannot pass
+    the circle gates, so the sweep descends past it (no p95 anchor)."""
+    cfg = cfg or DEFAULT_CFG
+    ok, why = pose_check(pose, cfg)
+    if not ok:
+        return unknown(why)
+    segs, row = [], None
+    for f in list(frames or [])[::-1]:
+        st, idx, r, seg = select_target(f, label, ref_xy, cfg)
+        if st == SEL_OK:
+            segs.append(seg)
+            if row is None:
+                row = r
+        if len(segs) >= cfg.BOWL_FRAMES:
+            break
+    if row is None:
+        return unknown("no_packet" if not frames else "no_segment")
+    formula_z = _formula_z(row)
+    ev0 = {"formula_z": formula_z}
+    P = np.vstack(segs)
+    if len(P) < cfg.BOWL_MIN_PTS:
+        return unknown("sparse", n=len(P), **ev0)
+    mx, my, rz = float(row["x"]), float(row["y"]), float(row["z"])
+    w = row.get("width_m")
+    r_nom = (float(w) / 2.0) / ((cfg.WIDTH_Q_HI - cfg.WIDTH_Q_LO) / 100.0) \
+        if isinstance(w, (int, float)) and w > 0 else None
+    trim = (r_nom * (1.0 + cfg.BOWL_R_WIDTH_TOL) if r_nom else cfg.BOWL_R_MAX_M) + 0.03
+    P = P[np.hypot(P[:, 0] - mx, P[:, 1] - my) <= trim]
+    if _border_pts(P, cfg) >= cfg.BOWL_EDGE_MIN_PTS:
+        # border bowl: rim LOW
+        # MEASURED -0.022 m
+        return unknown("edge_clipped", **ev0)
+    if len(P) < cfg.BOWL_MIN_PTS:
+        return unknown("sparse_after_trim", n=len(P), **ev0)
+    r_lo, r_hi = cfg.BOWL_R_MIN_M, cfg.BOWL_R_MAX_M
+    if r_nom:
+        r_lo = max(r_lo, r_nom * (1.0 - cfg.BOWL_R_WIDTH_TOL))
+        r_hi = min(r_hi, r_nom * (1.0 + cfg.BOWL_R_WIDTH_TOL))
+    if r_lo > r_hi:
+        return unknown("radius_window_empty", r_nom=r_nom, **ev0)
+    rng = np.random.default_rng(0)
+    z = P[:, 2]
+    levels = np.arange(np.percentile(z, 99.5), np.percentile(z, 40), -cfg.BOWL_SWEEP_STEP_M)
+    best = None
+    tried = 0
+    for zl in levels:
+        S = P[np.abs(z - zl) <= cfg.BOWL_SLICE_HALF_M]
+        if len(S) < cfg.BOWL_RIM_MIN_PTS:
+            continue
+        tried += 1
+        fit = ransac_circle(S[:, :2], cfg.BOWL_RANSAC_ITERS, cfg.BOWL_RIM_TOL_M, rng, r_lo, r_hi)
+        if fit is None:
+            continue
+        cx, cy, r, inl = fit
+        frac = float(inl.mean())
+        arc = _arc_deg(S[inl, :2], cx, cy)
+        if not (r_lo <= r <= r_hi):
+            continue
+        if math.hypot(cx - mx, cy - my) > cfg.BOWL_CENTER_GATE_M:
+            continue
+        if frac < cfg.BOWL_RIM_INLIER_FRAC or arc < cfg.BOWL_RIM_MIN_ARC_DEG:
+            continue
+        best = (float(zl), cx, cy, r, frac, arc)
+        break
+    if best is None:
+        return unknown("rim_fit", levels_tried=tried, **ev0)
+    zl, cx, cy, r, frac, arc = best
+    d = np.hypot(P[:, 0] - cx, P[:, 1] - cy)
+    # rim-is-top gate
+    # sparse rim -> sweep drops
+    # to a WALL circle 5-6 cm low
+    # bowl widens upward -> wall/rim
+    # on/outside; inside ignored
+    above = (d >= r - cfg.BOWL_RIM_TOL_M) & (z > zl + cfg.BOWL_TOP_GAP_M)
+    n_above = int(above.sum())
+    if n_above >= cfg.BOWL_TOP_ABOVE_MAX_PTS:
+        return unknown("rim_not_top", zl=float(zl), r=float(r), n_above=n_above, **ev0)
+    ring =np.abs(d - r) <= cfg.BOWL_RIM_TOL_M
+    near = ring & (z >= zl - 0.03) & (z <= zl + 0.03)
+    Z = z[near]
+    if len(Z) < cfg.BOWL_RIM_MIN_PTS:
+        return unknown("rim_sparse", **ev0)
+    # rim = top of z spread
+    # sigma from upper spread
+    # (wall is one-sided)
+    rim_z = float(np.percentile(Z, 90))
+    upper = Z[Z >= np.median(Z)]
+    sigma = float(1.4826 * np.median(np.abs(upper - np.median(upper)))) if len(upper) > 3 else 0.0
+    if sigma > cfg.BOWL_NOISE_UNKNOWN_M:
+        return unknown("too_noisy", sigma=sigma, **ev0)
+    if not (rz - cfg.BOWL_RIM_BELOW_MEDIAN_MAX_M <= rim_z <= rz + cfg.BOWL_RIM_ABOVE_MEDIAN_MAX_M):
+        return unknown("rim_vs_median_gross", rim_z=rim_z, row_z=rz, **ev0)
+    margin = max(0.0, cfg.BOWL_MARGIN_K * sigma)
+    drop = {"x": cx, "y": cy, "z": rim_z + cfg.PLACE_CLEARANCE_M + margin}
+    fl = (d <= cfg.BOWL_FLOOR_R_FRAC * r) & (z < rim_z - cfg.BOWL_FLOOR_MIN_DEPTH_M)
+    floor_z, floor_reason = None, "floor_not_seen"
+    if int(fl.sum()) >= cfg.BOWL_FLOOR_MIN_PTS:
+        floor_z = float(np.percentile(z[fl], 10))
+        floor_reason = ""
+    return result(OK, V_RIM, "", drop=drop, rim_z=rim_z, r=r, center=[cx, cy],
+                  arc_deg=arc, inlier_frac=frac, sigma=sigma, margin=margin, n_above=n_above,
+                  floor_z=floor_z, floor_reason=floor_reason, n_pts=int(len(P)),
+                  formula_z=formula_z,
+                  delta_z=(drop["z"] - formula_z) if formula_z is not None else None,
+                  band=descent_band(drop["z"], cfg),
+                  band_formula=descent_band(formula_z, cfg) if formula_z is not None else "ABSENT",
+                  pose=dict(pose))
