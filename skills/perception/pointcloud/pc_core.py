@@ -694,3 +694,5 @@ def ransac_circle(xy, iters, tol, rng, r_lo, r_hi):
     cx, cy, rr = fit
     inl = np.abs(np.hypot(xy[:, 0] - cx, xy[:, 1] - cy) - rr) <= tol
     return cx, cy, rr, inl
+
+
