@@ -638,3 +638,18 @@ def hold_check(baseline, frames, pose, phase, t_reply_wall, cfg=None):
 
 
 # ============================================================ P2 - bowl fit
+def _kasa(xy):
+    x, y = xy[:, 0], xy[:, 1]
+    A = np.column_stack([x, y, np.ones_like(x)])
+    b = x * x + y * y
+    try:
+        sol, _, rank, _ = np.linalg.lstsq(A, b, rcond=None)
+    except np.linalg.LinAlgError:
+        return None
+    if rank < 3:
+        return None
+    cx, cy = sol[0] / 2.0, sol[1] / 2.0
+    r2 = sol[2] + cx * cx + cy * cy
+    if not np.isfinite(r2) or r2 <= 0:
+        return None
+    return float(cx), float(cy), float(math.sqrt(r2))
