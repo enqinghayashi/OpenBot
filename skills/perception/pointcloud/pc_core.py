@@ -635,3 +635,6 @@ def hold_check(baseline, frames, pose, phase, t_reply_wall, cfg=None):
     if empties >= cfg.HOLD_ABSENT_MIN_FRAMES:
         return result(OK, V_ABSENT, "", **ev)
     return unknown("insufficient", **ev)
+
+
+# ============================================================ P2 - bowl fit
