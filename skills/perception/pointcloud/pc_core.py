@@ -576,3 +576,62 @@ def _classify_hold_frame(f, base, cfg):
     return "empty", info
 
 
+def hold_check(baseline, frames, pose, phase, t_reply_wall, cfg=None):
+    """NEGATIVE-ONLY hold check after the engine reply.
+
+    phase: what the engine reply says the arm did - 'tucked' (DONE after the
+    carry tuck), 'cancelled', 'error' or 'other'.  Only frames whose wall time
+    is >= t_reply_wall + HOLD_CHK_DELAY_S are used (the 2 s stale-mask
+    lifetime is ENFORCED here, not assumed)."""
+    cfg = cfg or DEFAULT_CFG
+    if not baseline:
+        return unknown("no_baseline")
+    if phase not in PHASES:
+        return unknown("bad_phase")
+    same, why = pose_equal(baseline.get("pose"), pose, cfg)
+    if not same:
+        return unknown(why)
+    if t_reply_wall is None:
+        return unknown("no_reply_time")
+    if t_reply_wall - baseline["t_wall"] > cfg.HOLD_MAX_SPAN_S:
+        return unknown("baseline_expired")
+    frames = list(frames or [])
+    if not frames:
+        return unknown("no_packet")
+    t_open = t_reply_wall + cfg.HOLD_CHK_DELAY_S
+    use = [f for f in frames if f.t_wall is not None and f.t_wall >= t_open][:cfg.HOLD_CHK_FRAMES]
+    n_early = len(frames) - len([f for f in frames if f.t_wall is not None and f.t_wall >= t_open])
+    if len(use) < cfg.HOLD_CHK_MIN_FRAMES:
+        return unknown("delay_not_elapsed" if not use and n_early else "few_frames",
+                       n_used=len(use), n_early=n_early)
+    if not bool(np.all(in_view(footprint_corners(baseline, cfg)))):
+        return unknown("footprint_out_of_view")
+    kinds, infos = [], []
+    for f in use:
+        k, inf = _classify_hold_frame(f, baseline, cfg)
+        kinds.append(k)
+        infos.append(inf)
+    ev = {"kinds": kinds, "n_in": [i.get("n_in", 0) for i in infos], "n_early": n_early,
+          "phase": phase}
+    hits = kinds.count("hit")
+    if hits >= cfg.HOLD_HIT_FRAMES:
+        return result(OK, V_STILL, "", **ev)
+    mv = [i["moved"] for i in infos if i.get("moved") is not None]
+    if len(mv) >= cfg.HOLD_HIT_FRAMES and hits == 0:
+        xy = np.array([m[1] for m in mv])
+        med = np.median(xy, axis=0)
+        if np.all(np.hypot(xy[:, 0] - med[0], xy[:, 1] - med[1]) <= cfg.HOLD_MOVED_CONSIST_M):
+            ev["moved_to"] = [float(med[0]), float(med[1])]
+            return result(OK, V_MOVED, "", **ev)
+    if "occluded" in kinds:
+        return unknown("footprint_occluded", **ev)
+    if "partial" in kinds or hits:
+        return unknown("partial_in_footprint", **ev)
+    if mv:
+        return unknown("moved_inconsistent", **ev)
+    empties = sum(1 for k in kinds if k in ("empty", "ghost_flat"))
+    if phase != "tucked":
+        return unknown("arm_not_tucked", **ev)
+    if empties >= cfg.HOLD_ABSENT_MIN_FRAMES:
+        return result(OK, V_ABSENT, "", **ev)
+    return unknown("insufficient", **ev)
