@@ -655,3 +655,9 @@ def _kasa(xy):
     return float(cx), float(cy), float(math.sqrt(r2))
 
 
+def _arc_deg(xy, cx, cy):
+    if len(xy) < 2:
+        return 0.0
+    a = np.sort(np.degrees(np.arctan2(xy[:, 1] - cy, xy[:, 0] - cx)))
+    gaps = np.diff(np.concatenate([a, [a[0] + 360.0]]))
+    return float(360.0 - gaps.max())
