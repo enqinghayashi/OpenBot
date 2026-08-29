@@ -816,3 +816,12 @@ def _border_pts(P, cfg):
     return int(((u <= e) | (u >= COLOR_W - 1 - e) | (v <= e) | (v >= COLOR_H - 1 - e)).sum())
 
 
+def _formula_z(row):
+    """Today's drop z: brain/agent/tools.py _drop_point 'z + lift + 0.02'."""
+    try:
+        z = float(row["z"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    h = row.get("height_m")
+    lift = h / 2.0 if isinstance(h, (int, float)) and h > 0.0 else 0.0
+    return z + lift + 0.02
