@@ -574,3 +574,5 @@ def _classify_hold_frame(f, base, cfg):
             return ("ghost_flat" if flat else "partial"), info
     info.setdefault("n_in", 0)
     return "empty", info
+
+
