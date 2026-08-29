@@ -502,3 +502,75 @@ def _shape_match(seg, base, cfg):
     return bool(np.all(np.abs(e - b) <= cfg.HOLD_SHAPE_TOL * np.maximum(b, 1e-3)))
 
 
+def _classify_hold_frame(f, base, cfg):
+    """-> (kind, info). kind in hit / ghost_flat / partial / empty / occluded.
+
+    hit   : a label- (or shape-) matched segment with VERTICAL STRUCTURE
+            (z-span >= HOLD_SPAN_FRAC*h0) whose centre is within HOLD_STILL_XY_M
+            of c0, base within dz_tol of zb0, top within top_tol of zt0, and
+            enough points inside the footprint.  A ghost-mask table patch is
+            flat and can never be a hit.
+    moved : (info) a same-label, shape-matched, structured cluster that sits on
+            the table HOLD_MOVED_XY_M..HOLD_MOVED_MAX_XY_M from c0 and is not a
+            baseline neighbour."""
+    label = base["label"]
+    c0 = base["c0"]
+    in_pts, other_pts = [], []
+    moved = None
+    hit = False
+    n_need = max(cfg.HOLD_MIN_ABS, cfg.HOLD_MIN_FRAC * base["N0"])
+    for o, s in f.segs.items():
+        if o >= len(f.rows) or o in f.stale:
+            continue
+        row = f.rows[o]
+        same = label_matches(row.get("label"), label)
+        shaped = _shape_match(s, base, cfg)
+        if not (same or shaped):
+            other_pts.append(s)
+            continue
+        m = _in_footprint(s, base, cfg)
+        if m.any():
+            in_pts.append(s[m])
+        p5z, p95z = [float(v) for v in np.percentile(s[:, 2], [5, 95])]
+        span = p95z - p5z
+        if span < cfg.HOLD_SPAN_FRAC * base["h0"]:
+            continue
+        med = np.median(s[:, :2], axis=0)
+        dxy = math.hypot(med[0] - c0[0], med[1] - c0[1])
+        on_table = abs(p5z - base["zb0"]) <= base["dz_tol"]
+        if (dxy <= cfg.HOLD_STILL_XY_M and on_table
+                and abs(p95z - base["zt0"]) <= base["top_tol"] and int(m.sum()) >= n_need):
+            hit = True
+            continue
+        excl = any(math.hypot(med[0] - q[0], med[1] - q[1]) <= cfg.HOLD_OTHER_EXCL_M
+                   for q in base["others"])
+        fell = p5z < base["zb0"] - cfg.HOLD_MOVED_DZ_M
+        if (same and shaped and not excl and dxy <= cfg.HOLD_MOVED_MAX_XY_M
+                and ((dxy > cfg.HOLD_MOVED_XY_M and on_table) or fell)):
+            if moved is None or dxy < moved[0]:
+                moved = (dxy, [float(med[0]), float(med[1])], p5z)
+    info = {"moved": moved}
+    if hit:
+        return "hit", info
+    # occluder in front
+    if other_pts:
+        fc = footprint_corners(base, cfg)
+        u, v, zc = torso_to_pixel(fc)
+        Q = np.vstack(other_pts)
+        qu, qv, qz = torso_to_pixel(Q)
+        occ = (qu >= u.min()) & (qu <= u.max()) & (qv >= v.min()) & (qv <= v.max()) & \
+            (qz < zc.min())
+        info["n_occl"] = int(occ.sum())
+        if int(occ.sum()) >= cfg.HOLD_OCCL_MIN_PTS:
+            return "occluded", info
+    if in_pts:
+        I = np.vstack(in_pts)
+        n_in = len(I)
+        p5z, p50z, p95z = [float(v) for v in np.percentile(I[:, 2], [5, 50, 95])]
+        span = p95z - p5z
+        info.update(n_in=n_in, p5z=p5z, p95z=p95z, span=span)
+        if n_in >= cfg.HOLD_PARTIAL_MIN_PTS:
+            flat = span < 0.25 * base["h0"] and abs(p50z - base["zb0"]) <= base["dz_tol"] + 0.01
+            return ("ghost_flat" if flat else "partial"), info
+    info.setdefault("n_in", 0)
+    return "empty", info
