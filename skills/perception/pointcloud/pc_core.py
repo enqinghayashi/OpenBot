@@ -831,3 +831,5 @@ def _formula_z(row):
 def _xy_box(seg):
     lo, hi = np.percentile(seg[:, :2], [5, 95], axis=0)
     return lo, hi
+
+
