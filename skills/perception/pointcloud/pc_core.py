@@ -942,3 +942,39 @@ def split_support(frames, label, ref_xy, cfg=None):
 
 
 # =========================================================== P4 - grasp diag
+def grasp_diag(frames, label, ref_xy, cfg=None):
+    """DIAG only: front surface, radius, suggested x_off and right-hand corridor."""
+    cfg = cfg or DEFAULT_CFG
+    frame, idx, row, T = None, None, None, None
+    for f in list(frames or [])[::-1]:
+        st, i, r, seg = select_target(f, label, ref_xy, cfg)
+        if st == SEL_OK:
+            frame, idx, row, T = f, i, r, seg
+            break
+    if T is None:
+        return unknown("no_packet" if not frames else "no_segment")
+    c = np.median(T, axis=0)
+    zg = float(c[2]) + cfg.GRASP_Z_OFFSET
+    B = T[np.abs(T[:, 2] - zg) <= cfg.GRASP_BAND_M]
+    if len(B) < cfg.GRASP_MIN_BAND_PTS:
+        return unknown("band_sparse", n_band=int(len(B)))
+    y_front = float(np.percentile(B[:, 1], 5))
+    r_est = width_est(B[:, 0], cfg) / 2.0
+    xlo, xhi = np.percentile(B[:, 0], [cfg.WIDTH_Q_LO, cfg.WIDTH_Q_HI])
+    cx = float((xlo + xhi) / 2.0)
+    c_est = [cx, y_front + r_est]
+    x_lo = cx + r_est
+    x_hi = x_lo + cfg.HAND_CORRIDOR_W_M
+    blocked = None
+    for o, s in frame.segs.items():
+        if o == idx or o >= len(frame.rows):
+            continue
+        m = (s[:, 0] >= x_lo) & (s[:, 0] <= x_hi) & (s[:, 1] <= c_est[1] + r_est) & \
+            (np.abs(s[:, 2] - zg) <= cfg.GRASP_BAND_M + 0.05)
+        if int(m.sum()) >= cfg.CORRIDOR_BLOCK_PTS:
+            blocked = frame.rows[o].get("label")
+            break
+    return result(OK, V_GRASP, "", y_front=y_front, r_est=r_est, c_est=c_est,
+                  x_off_pc=-(r_est + cfg.GRASP_X_OFF_K), x_off_row=row.get("x_off"),
+                  corridor=("BLOCKED(%s)" % blocked) if blocked else "CLEAR",
+                  n_band=int(len(B)), grasp_z=zg)
