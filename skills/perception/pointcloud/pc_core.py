@@ -939,3 +939,6 @@ def split_support(frames, label, ref_xy, cfg=None):
                   centroid=[float(v) for v in np.median(above, axis=0)],
                   height_above=float(np.percentile(above[:, 2], 95) - support_z),
                   n_above=int(len(above)), n_total=int(len(T)), **info)
+
+
+# =========================================================== P4 - grasp diag
