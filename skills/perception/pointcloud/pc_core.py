@@ -1001,3 +1001,5 @@ def _person_mid(P, cfg):
         lo, hi = np.percentile(P[:, 0], [cfg.WIDTH_Q_LO, cfg.WIDTH_Q_HI])
         return float((lo + hi) / 2.0)
     return float(np.median(mids))
+
+
