@@ -978,3 +978,6 @@ def grasp_diag(frames, label, ref_xy, cfg=None):
                   x_off_pc=-(r_est + cfg.GRASP_X_OFF_K), x_off_row=row.get("x_off"),
                   corridor=("BLOCKED(%s)" % blocked) if blocked else "CLEAR",
                   n_band=int(len(B)), grasp_z=zg)
+
+
+# ================================================================ P5 - person
