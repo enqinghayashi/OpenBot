@@ -1003,3 +1003,50 @@ def _person_mid(P, cfg):
     return float(np.median(mids))
 
 
+def person_track(frames, ref_xy=None, cfg=None, label="person"):
+    """SHADOW only.  bearing = atan2(x, y): the SAME law as gateway
+    _turn_bearing (+ = right)."""
+    cfg = cfg or DEFAULT_CFG
+    frames = list(frames or [])[-cfg.PERSON_POOL_N:]
+    if not frames:
+        return unknown("no_packet")
+    acc, skips, rowb = [], [], []
+    for f in frames:
+        st, i, r, seg = select_target(f, label, ref_xy, cfg)
+        if st != SEL_OK:
+            skips.append(st.lower())
+            continue
+        if len(seg) < cfg.PERSON_MIN_PTS:
+            skips.append("sparse")
+            continue
+        span = float(np.percentile(seg[:, 2], 95) - np.percentile(seg[:, 2], 5))
+        if span < cfg.PERSON_MIN_HEIGHT_M:
+            skips.append("too_short")
+            continue
+        w = width_est(seg[:, 0], cfg)
+        if not (cfg.PERSON_W_MIN_M <= w <= cfg.PERSON_W_MAX_M):
+            skips.append("width_gate")
+            continue
+        if _edge_pts(seg, cfg) >= cfg.PERSON_EDGE_MIN_PTS:
+            skips.append("edge_clipped")
+            continue
+        xb = _person_mid(seg, cfg)
+        lo, hi = np.percentile(seg[:, 0], [cfg.WIDTH_Q_LO, cfg.WIDTH_Q_HI])
+        xa = float((lo + hi) / 2.0)
+        if abs(xa - xb) > cfg.PERSON_MID_AGREE_M:
+            skips.append("asymmetric_silhouette")
+            continue
+        xm = (xa + xb) / 2.0
+        ym = float(np.median(seg[:, 1]))
+        yf = float(np.percentile(seg[:, 1], 5))
+        acc.append((math.atan2(xm, ym), math.hypot(xm, yf), math.hypot(xm, ym)))
+        rowb.append(math.atan2(float(r["x"]), float(r["y"])))
+    if len(acc) < cfg.PERSON_MIN_FRAMES:
+        reason = max(set(skips), key=skips.count) if skips else "few_frames"
+        return unknown(reason, skips=skips)
+    A = np.array(acc)
+    b = float(np.median(A[:, 0]))
+    return result(OK, V_PERSON, "", bearing_rad=b, range_front_m=float(np.median(A[:, 1])),
+                  range_med_m=float(np.median(A[:, 2])), n_frames=len(acc),
+                  spread_rad=float(np.median(np.abs(A[:, 0] - b))),
+                  row_bearing_rad=float(np.median(rowb)), skips=skips)
