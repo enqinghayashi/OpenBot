@@ -1076,3 +1076,22 @@ def run_task(task, frames, req, cfg=None, baselines=None):
     return result(ERROR, V_ERROR, "bad_task")
 
 
+def envelope(rid, task, res, req, frames, cfg=None, **extra):
+    cfg = cfg or DEFAULT_CFG
+    frames = list(frames or [])
+    degraded = []
+    if any(f.pair_mode != "exact" for f in frames):
+        degraded.append("pair_heuristic_pre_H-PROJ-1")
+    env = {
+        "rid": rid, "task": task, "status": res["status"], "verdict": res["verdict"],
+        "reason": res["reason"], "pose": (req or {}).get("pose"),
+        "n_frames": len(frames),
+        "n_pts": [int(sum(len(s) for s in f.segs.values())) for f in frames],
+        "evidence": _jsonable(res["evidence"]),
+        "labels": {"evidence": "MEASURED (synthetic until capture) / DERIVED"},
+        "t_first": frames[0].t_wall if frames else None,
+        "t_last": frames[-1].t_wall if frames else None,
+        "cfg_hash": cfg_hash(cfg), "degraded": degraded,
+    }
+    env.update(extra)
+    return env
