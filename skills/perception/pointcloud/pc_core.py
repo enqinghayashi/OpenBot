@@ -895,3 +895,47 @@ def _width_step(T, cfg):
     return None, {"widths": [None if not np.isfinite(v) else round(float(v), 4) for v in w]}
 
 
+def split_support(frames, label, ref_xy, cfg=None):
+    cfg = cfg or DEFAULT_CFG
+    frame, idx, row, T = None, None, None, None
+    for f in list(frames or [])[::-1]:
+        st, i, r, seg = select_target(f, label, ref_xy, cfg)
+        if st == SEL_OK:
+            frame, idx, row, T = f, i, r, seg
+            break
+    if T is None:
+        return unknown("no_packet" if not frames else "no_segment")
+    if len(T) < cfg.SPLIT_MIN_PTS:
+        return unknown("sparse", n=len(T))
+    method, support_z, info, corroborated = None, None, {}, False
+    tb = _xy_box(T)
+    t_med_z = float(np.median(T[:, 2]))
+    for o, s in frame.segs.items():
+        if o == idx or o >= len(frame.rows) or o in frame.stale:
+            continue
+        if base_noun(frame.rows[o].get("label")) not in cfg.SUPPORT_LABELS:
+            continue
+        if len(s) < cfg.SPLIT_MIN_SLAB_PTS:
+            continue
+        span = float(np.percentile(s[:, 2], 95) - np.percentile(s[:, 2], 5))
+        top = float(np.percentile(s[:, 2], 90))
+        ov = _overlap_frac(tb, _xy_box(s))
+        if span <= cfg.SUPPORT_MAX_H_M and ov >= cfg.SPLIT_OVERLAP_FRAC and top < t_med_z:
+            method, support_z, corroborated = "support_row", top, True
+            info = {"support_label": frame.rows[o].get("label"), "overlap": ov, "support_span": span}
+            break
+    if method is None:
+        sz, info = _width_step(T, cfg)
+        if sz is not None:
+            method, support_z = "width_step", sz
+    if method is None:
+        return result(OK, V_NOSPLIT, "", centroid=[float(v) for v in np.median(T, axis=0)],
+                      n_total=int(len(T)), **info)
+    above = T[T[:, 2] > support_z + cfg.SPLIT_MARGIN_M]
+    if len(above) < cfg.SPLIT_MIN_ABOVE_PTS:
+        return unknown("above_sparse", method=method, support_z=support_z)
+    return result(OK, V_SPLIT, "", method=method, support_z=support_z,
+                  corroborated=corroborated,
+                  centroid=[float(v) for v in np.median(above, axis=0)],
+                  height_above=float(np.percentile(above[:, 2], 95) - support_z),
+                  n_above=int(len(above)), n_total=int(len(T)), **info)
