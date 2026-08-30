@@ -841,3 +841,55 @@ def _overlap_frac(a, b):
     return inter / area
 
 
+def _width_step(T, cfg):
+    z = T[:, 2]
+    z0 = float(z.min())
+    n = int(math.ceil((float(z.max()) - z0) / cfg.SPLIT_SLAB_M)) or 1
+    k = np.minimum(((z - z0) / cfg.SPLIT_SLAB_M).astype(int), n - 1)
+    w = np.full(n, np.nan)
+    for i in range(n):
+        xs = T[k == i, 0]
+        if len(xs) >= cfg.SPLIT_MIN_SLAB_PTS:
+            w[i] = float(np.percentile(xs, 95) - np.percentile(xs, 5))
+    max_low = int(round(cfg.SUPPORT_MAX_H_M / cfg.SPLIT_SLAB_M))
+    # largest lower run first
+    # support top = wide top
+    for kk in range(min(max_low, n - 1), 0, -1):
+        lower = w[:kk]
+        lower = lower[np.isfinite(lower)]
+        if len(lower) == 0:
+            continue
+        Wl = float(np.median(lower))
+        upper_all = w[kk:]
+        # wide->narrow within
+        # SPLIT_LEDGE_MAX_SLABS slabs
+        upper = w[kk + cfg.SPLIT_LEDGE_MAX_SLABS:]
+        upper = upper[np.isfinite(upper)]
+        if len(upper) < 2:
+            continue
+        Wu = float(np.median(upper))
+        if Wu <= 0 or Wl < cfg.SPLIT_WIDTH_RATIO * Wu:
+            continue
+        h_low = kk * cfg.SPLIT_SLAB_M
+        h_up = (n - kk) * cfg.SPLIT_SLAB_M
+        if h_up < max(cfg.SPLIT_MIN_UPPER_H_M, cfg.SPLIT_UPPER_TO_LOWER_H * h_low):
+            continue
+        if np.any(upper > 1.25 * Wu + 0.01):
+            continue
+        tr = upper_all[:cfg.SPLIT_LEDGE_MAX_SLABS]
+        tr = tr[np.isfinite(tr)]
+        if np.any(tr > Wl * 1.25):
+            continue
+        # lower slabs all wide
+        if np.any(lower < 0.75 * Wl):
+            continue
+        # support top = p95 z of
+        # wide-run points outside
+        # the upper object
+        zc = z0 + (kk + cfg.SPLIT_LEDGE_MAX_SLABS) * cfg.SPLIT_SLAB_M
+        U = T[z >= zc]
+        ulo, uhi = np.percentile(U[:, 0], [cfg.WIDTH_Q_LO, cfg.WIDTH_Q_HI])
+        Wpts = T[(z < zc) & ((T[:, 0] < ulo - 0.01) | (T[:, 0] > uhi + 0.01))]
+        sz = float(np.percentile(Wpts[:, 2], 95)) if len(Wpts) >= 10 else z0 + h_low
+        return sz, {"W_lower": Wl, "W_upper": Wu, "h_lower": h_low, "n_support_pts": int(len(Wpts))}
+    return None, {"widths": [None if not np.isfinite(v) else round(float(v), 4) for v in w]}
