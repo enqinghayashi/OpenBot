@@ -893,3 +893,5 @@ def _width_step(T, cfg):
         sz = float(np.percentile(Wpts[:, 2], 95)) if len(Wpts) >= 10 else z0 + h_low
         return sz, {"W_lower": Wl, "W_upper": Wu, "h_lower": h_low, "n_support_pts": int(len(Wpts))}
     return None, {"widths": [None if not np.isfinite(v) else round(float(v), 4) for v in w]}
+
+
