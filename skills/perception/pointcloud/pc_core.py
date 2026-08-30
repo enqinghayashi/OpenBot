@@ -1050,3 +1050,6 @@ def person_track(frames, ref_xy=None, cfg=None, label="person"):
                   range_med_m=float(np.median(A[:, 2])), n_frames=len(acc),
                   spread_rad=float(np.median(np.abs(A[:, 0] - b))),
                   row_bearing_rad=float(np.median(rowb)), skips=skips)
+
+
+# --------------------------------------------------------------- dispatching
