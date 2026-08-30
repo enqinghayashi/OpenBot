@@ -987,3 +987,17 @@ def _edge_pts(P, cfg):
     return int(e.sum())
 
 
+def _person_mid(P, cfg):
+    z = P[:, 2]
+    z0 = float(z.min())
+    k = ((z - z0) / cfg.PERSON_SLAB_M).astype(int)
+    mids = []
+    for i in np.unique(k):
+        xs = P[k == i, 0]
+        if len(xs) >= 5:
+            lo, hi = np.percentile(xs, [cfg.WIDTH_Q_LO, cfg.WIDTH_Q_HI])
+            mids.append((lo + hi) / 2.0)
+    if not mids:
+        lo, hi = np.percentile(P[:, 0], [cfg.WIDTH_Q_LO, cfg.WIDTH_Q_HI])
+        return float((lo + hi) / 2.0)
+    return float(np.median(mids))
