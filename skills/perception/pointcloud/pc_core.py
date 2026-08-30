@@ -1053,3 +1053,24 @@ def person_track(frames, ref_xy=None, cfg=None, label="person"):
 
 
 # --------------------------------------------------------------- dispatching
+def run_task(task, frames, req, cfg=None, baselines=None):
+    """Run one task on collected frames. req is the /pc_arm request dict."""
+    cfg = cfg or DEFAULT_CFG
+    label = req.get("label")
+    ref = req.get("ref")
+    ref_xy = (float(ref[0]), float(ref[1])) if isinstance(ref, (list, tuple)) and len(ref) >= 2 else None
+    pose = req.get("pose")
+    if task == "hold_baseline":
+        return hold_baseline(frames, label, ref_xy, pose, cfg)
+    if task == "hold_check":
+        base = (baselines or {}).get(req.get("baseline_rid"))
+        return hold_check(base, frames, pose, req.get("phase"), req.get("t_reply_wall"), cfg)
+    if task == "place_rim":
+        return fit_bowl(frames, label, ref_xy, pose, cfg)
+    if task == "split":
+        return split_support(frames, label, ref_xy, cfg)
+    if task == "grasp":
+        return grasp_diag(frames, label, ref_xy, cfg)
+    if task == "person":
+        return person_track(frames, ref_xy, cfg, label=label or "person")
+    return result(ERROR, V_ERROR, "bad_task")
