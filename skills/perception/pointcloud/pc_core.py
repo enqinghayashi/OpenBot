@@ -985,3 +985,5 @@ def _edge_pts(P, cfg):
     u, v, z = torso_to_pixel(P)
     e = (u <= cfg.PERSON_EDGE_PX) | (u >= COLOR_W - 1 - cfg.PERSON_EDGE_PX)
     return int(e.sum())
+
+
