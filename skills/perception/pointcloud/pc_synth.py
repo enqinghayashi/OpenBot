@@ -150,3 +150,12 @@ def _hit_bowl(O, D, cx, cy, z_table, r_rim, depth, thick):
 class Obj(object):
     """A scene primitive.  kind in {plane, cyl, stack, box, bowl}."""
 
+    def __init__(self, kind, label=None, seg=True, conf=0.9, transparent=None,
+                 **geom):
+        self.kind = kind
+        self.label = label
+        self.seg = seg
+        self.conf = conf
+        self.transparent = transparent       # (hole_frac, see_through_frac)
+        self.geom = geom
+
