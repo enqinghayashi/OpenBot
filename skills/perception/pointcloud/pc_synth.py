@@ -126,3 +126,5 @@ def _sphere_iv(O, D, c, R):
     t2 = (-b + sq) / (2 * a)
     miss = disc < 0
     return np.where(miss, np.inf, t1), np.where(miss, -np.inf, t2)
+
+
