@@ -75,3 +75,22 @@ def _hit_plane(O, D, z, xlim=None, ylim=None):
     return t
 
 
+def _hit_cyl(O, D, cx, cy, r, z0, z1):
+    ox, oy = O[0] - cx, O[1] - cy
+    dx, dy, dz = D[..., 0], D[..., 1], D[..., 2]
+    a = dx * dx + dy * dy
+    b = 2.0 * (dx * ox + dy * oy)
+    c = ox * ox + oy * oy - r * r
+    disc = b * b - 4 * a * c
+    with np.errstate(invalid="ignore", divide="ignore"):
+        sq = np.sqrt(np.where(disc >= 0, disc, np.nan))
+        t1 = (-b - sq) / (2 * a)
+    z = O[2] + t1 * dz
+    t_side = np.where((disc >= 0) & (t1 > 0) & (z >= z0) & (z <= z1), t1, np.inf)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        tt = (z1 - O[2]) / dz
+    px = O[0] + tt * dx - cx
+    py = O[1] + tt * dy - cy
+    t_top = np.where((dz < 0) & (tt > 0) & (px * px + py * py <= r * r), tt, np.inf)
+    t = np.minimum(t_side, t_top)
+    return np.where(np.isnan(t), np.inf, t)
