@@ -145,3 +145,5 @@ def _hit_bowl(O, D, cx, cy, z_table, r_rim, depth, thick):
     entry = np.where(a < c1, a, np.where((d1 < b) & (d1 >= a), d1, np.inf))
     entry = np.where((a <= b) & (entry <= b), entry, np.inf)
     return np.where(entry > 0, entry, np.inf)
+
+
