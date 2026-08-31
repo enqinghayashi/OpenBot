@@ -147,3 +147,6 @@ def _hit_bowl(O, D, cx, cy, z_table, r_rim, depth, thick):
     return np.where(entry > 0, entry, np.inf)
 
 
+class Obj(object):
+    """A scene primitive.  kind in {plane, cyl, stack, box, bowl}."""
+
