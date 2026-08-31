@@ -73,3 +73,80 @@ def _hit_plane(O, D, z, xlim=None, ylim=None):
             ok &= (P[..., 1] >= ylim[0]) & (P[..., 1] <= ylim[1])
         t = np.where(ok, t, np.inf)
     return t
+
+
+def _hit_cyl(O, D, cx, cy, r, z0, z1):
+    ox, oy = O[0] - cx, O[1] - cy
+    dx, dy, dz = D[..., 0], D[..., 1], D[..., 2]
+    a = dx * dx + dy * dy
+    b = 2.0 * (dx * ox + dy * oy)
+    c = ox * ox + oy * oy - r * r
+    disc = b * b - 4 * a * c
+    with np.errstate(invalid="ignore", divide="ignore"):
+        sq = np.sqrt(np.where(disc >= 0, disc, np.nan))
+        t1 = (-b - sq) / (2 * a)
+    z = O[2] + t1 * dz
+    t_side = np.where((disc >= 0) & (t1 > 0) & (z >= z0) & (z <= z1), t1, np.inf)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        tt = (z1 - O[2]) / dz
+    px = O[0] + tt * dx - cx
+    py = O[1] + tt * dy - cy
+    t_top = np.where((dz < 0) & (tt > 0) & (px * px + py * py <= r * r), tt, np.inf)
+    t = np.minimum(t_side, t_top)
+    return np.where(np.isnan(t), np.inf, t)
+
+
+def _hit_box(O, D, lo, hi):
+    tmin = np.full(D.shape[:-1], -np.inf)
+    tmax = np.full(D.shape[:-1], np.inf)
+    for k in range(3):
+        d = D[..., k]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ta = (lo[k] - O[k]) / d
+            tb = (hi[k] - O[k]) / d
+        t_lo = np.minimum(ta, tb)
+        t_hi = np.maximum(ta, tb)
+        par = d == 0
+        inside = (O[k] >= lo[k]) & (O[k] <= hi[k])
+        t_lo = np.where(par, np.where(inside, -np.inf, np.inf), t_lo)
+        t_hi = np.where(par, np.where(inside, np.inf, -np.inf), t_hi)
+        tmin = np.maximum(tmin, t_lo)
+        tmax = np.minimum(tmax, t_hi)
+    return np.where((tmax >= tmin) & (tmin > 0), tmin, np.inf)
+
+
+def _sphere_iv(O, D, c, R):
+    oc = O - np.asarray(c, dtype=float)
+    a = (D * D).sum(-1)
+    b = 2.0 * (D * oc).sum(-1)
+    cc = (oc * oc).sum() - R * R
+    disc = b * b - 4 * a * cc
+    sq = np.sqrt(np.clip(disc, 0, None))
+    t1 = (-b - sq) / (2 * a)
+    t2 = (-b + sq) / (2 * a)
+    miss = disc < 0
+    return np.where(miss, np.inf, t1), np.where(miss, -np.inf, t2)
+
+
+def _hit_bowl(O, D, cx, cy, z_table, r_rim, depth, thick):
+    """Spherical-cap shell, rim (outer) radius r_rim at z_table+depth."""
+    Rs = (r_rim * r_rim + depth * depth) / (2.0 * depth)
+    zc = z_table + Rs
+    z_rim = z_table + depth
+    a1, b1 = _sphere_iv(O, D, (cx, cy, zc), Rs)
+    c1, d1 = _sphere_iv(O, D, (cx, cy, zc), Rs - thick)
+    dz = D[..., 2]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t_rim = (z_rim - O[2]) / dz          # dz<0: t>=t_rim means z<=z_rim
+    a = np.maximum(a1, np.where(dz < 0, t_rim, np.inf))
+    b = b1
+    # solid = [a,b]
+    # minus [c1,d1]
+    entry = np.where(a < c1, a, np.where((d1 < b) & (d1 >= a), d1, np.inf))
+    entry = np.where((a <= b) & (entry <= b), entry, np.inf)
+    return np.where(entry > 0, entry, np.inf)
+
+
+class Obj(object):
+    """A scene primitive.  kind in {plane, cyl, stack, box, bowl}."""
+
