@@ -59,3 +59,17 @@ def camera_rays(dh, dw):
 
 
 # ----------------------------------------------------------- the primitives
+def _hit_plane(O, D, z, xlim=None, ylim=None):
+    dz = D[..., 2]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = (z - O[2]) / dz
+    t = np.where((dz < 0) & (t > 0), t, np.inf)
+    if xlim is not None or ylim is not None:
+        P = O + t[..., None] * np.where(np.isfinite(t)[..., None], D, 0.0)
+        ok = np.isfinite(t)
+        if xlim is not None:
+            ok &= (P[..., 0] >= xlim[0]) & (P[..., 0] <= xlim[1])
+        if ylim is not None:
+            ok &= (P[..., 1] >= ylim[0]) & (P[..., 1] <= ylim[1])
+        t = np.where(ok, t, np.inf)
+    return t
