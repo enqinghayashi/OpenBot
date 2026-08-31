@@ -94,3 +94,5 @@ def _hit_cyl(O, D, cx, cy, r, z0, z1):
     t_top = np.where((dz < 0) & (tt > 0) & (px * px + py * py <= r * r), tt, np.inf)
     t = np.minimum(t_side, t_top)
     return np.where(np.isnan(t), np.inf, t)
+
+
