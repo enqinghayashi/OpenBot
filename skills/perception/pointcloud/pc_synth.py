@@ -56,3 +56,6 @@ def camera_rays(dh, dw):
     X, Y = np.meshgrid((cols_c - core.CX) / core.FX, (rows_c - core.CY) / core.FY)
     d_cam = np.stack([X, Y, np.ones_like(X)], axis=-1)
     return d_cam @ core.R_CAM_TO_TORSO.T
+
+
+# ----------------------------------------------------------- the primitives
