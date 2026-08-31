@@ -45,3 +45,14 @@ NOISE_D435 = {"k": 0.0075, "s0": 0.0, "fly": 0.0}            # z^2*subpx/(f*b)
 NOISE_STRESS = {"k": 0.0, "s0": 0.025, "fly": 0.05}          # stress: 2-3 cm, 5 % fly
 
 
+def camera_rays(dh, dw):
+    """Unit-z camera rays for every depth pixel, the way the projector
+    deprojects them (colour-scaled pixel coords, :270-273).  Returns the
+    torso-frame direction (dh, dw, 3) such that p = T + t * d, t = openbot depth."""
+    xs = np.arange(dw, dtype=np.float64)
+    ys = np.arange(dh, dtype=np.float64)
+    cols_c = xs * (core.COLOR_W / float(dw))
+    rows_c = ys * (core.COLOR_H / float(dh))
+    X, Y = np.meshgrid((cols_c - core.CX) / core.FX, (rows_c - core.CY) / core.FY)
+    d_cam = np.stack([X, Y, np.ones_like(X)], axis=-1)
+    return d_cam @ core.R_CAM_TO_TORSO.T
