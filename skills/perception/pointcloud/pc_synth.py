@@ -96,3 +96,20 @@ def _hit_cyl(O, D, cx, cy, r, z0, z1):
     return np.where(np.isnan(t), np.inf, t)
 
 
+def _hit_box(O, D, lo, hi):
+    tmin = np.full(D.shape[:-1], -np.inf)
+    tmax = np.full(D.shape[:-1], np.inf)
+    for k in range(3):
+        d = D[..., k]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ta = (lo[k] - O[k]) / d
+            tb = (hi[k] - O[k]) / d
+        t_lo = np.minimum(ta, tb)
+        t_hi = np.maximum(ta, tb)
+        par = d == 0
+        inside = (O[k] >= lo[k]) & (O[k] <= hi[k])
+        t_lo = np.where(par, np.where(inside, -np.inf, np.inf), t_lo)
+        t_hi = np.where(par, np.where(inside, np.inf, -np.inf), t_hi)
+        tmin = np.maximum(tmin, t_lo)
+        tmax = np.minimum(tmax, t_hi)
+    return np.where((tmax >= tmin) & (tmin > 0), tmin, np.inf)
