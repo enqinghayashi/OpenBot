@@ -113,3 +113,5 @@ def _hit_box(O, D, lo, hi):
         tmin = np.maximum(tmin, t_lo)
         tmax = np.minimum(tmax, t_hi)
     return np.where((tmax >= tmin) & (tmin > 0), tmin, np.inf)
+
+
