@@ -115,3 +115,14 @@ def _hit_box(O, D, lo, hi):
     return np.where((tmax >= tmin) & (tmin > 0), tmin, np.inf)
 
 
+def _sphere_iv(O, D, c, R):
+    oc = O - np.asarray(c, dtype=float)
+    a = (D * D).sum(-1)
+    b = 2.0 * (D * oc).sum(-1)
+    cc = (oc * oc).sum() - R * R
+    disc = b * b - 4 * a * cc
+    sq = np.sqrt(np.clip(disc, 0, None))
+    t1 = (-b - sq) / (2 * a)
+    t2 = (-b + sq) / (2 * a)
+    miss = disc < 0
+    return np.where(miss, np.inf, t1), np.where(miss, -np.inf, t2)
