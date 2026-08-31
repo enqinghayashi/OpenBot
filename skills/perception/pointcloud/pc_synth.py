@@ -73,3 +73,5 @@ def _hit_plane(O, D, z, xlim=None, ylim=None):
             ok &= (P[..., 1] >= ylim[0]) & (P[..., 1] <= ylim[1])
         t = np.where(ok, t, np.inf)
     return t
+
+
