@@ -1053,3 +1053,64 @@ def person_track(frames, ref_xy=None, cfg=None, label="person"):
 
 
 # --------------------------------------------------------------- dispatching
+def run_task(task, frames, req, cfg=None, baselines=None):
+    """Run one task on collected frames. req is the /pc_arm request dict."""
+    cfg = cfg or DEFAULT_CFG
+    label = req.get("label")
+    ref = req.get("ref")
+    ref_xy = (float(ref[0]), float(ref[1])) if isinstance(ref, (list, tuple)) and len(ref) >= 2 else None
+    pose = req.get("pose")
+    if task == "hold_baseline":
+        return hold_baseline(frames, label, ref_xy, pose, cfg)
+    if task == "hold_check":
+        base = (baselines or {}).get(req.get("baseline_rid"))
+        return hold_check(base, frames, pose, req.get("phase"), req.get("t_reply_wall"), cfg)
+    if task == "place_rim":
+        return fit_bowl(frames, label, ref_xy, pose, cfg)
+    if task == "split":
+        return split_support(frames, label, ref_xy, cfg)
+    if task == "grasp":
+        return grasp_diag(frames, label, ref_xy, cfg)
+    if task == "person":
+        return person_track(frames, ref_xy, cfg, label=label or "person")
+    return result(ERROR, V_ERROR, "bad_task")
+
+
+def envelope(rid, task, res, req, frames, cfg=None, **extra):
+    cfg = cfg or DEFAULT_CFG
+    frames = list(frames or [])
+    degraded = []
+    if any(f.pair_mode != "exact" for f in frames):
+        degraded.append("pair_heuristic_pre_H-PROJ-1")
+    env = {
+        "rid": rid, "task": task, "status": res["status"], "verdict": res["verdict"],
+        "reason": res["reason"], "pose": (req or {}).get("pose"),
+        "n_frames": len(frames),
+        "n_pts": [int(sum(len(s) for s in f.segs.values())) for f in frames],
+        "evidence": _jsonable(res["evidence"]),
+        "labels": {"evidence": "MEASURED (synthetic until capture) / DERIVED"},
+        "t_first": frames[0].t_wall if frames else None,
+        "t_last": frames[-1].t_wall if frames else None,
+        "cfg_hash": cfg_hash(cfg), "degraded": degraded,
+    }
+    env.update(extra)
+    return env
+
+
+def _jsonable(o):
+    if isinstance(o, dict):
+        return {str(k): _jsonable(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_jsonable(v) for v in o]
+    if isinstance(o, np.ndarray):
+        return _jsonable(o.tolist())
+    if isinstance(o, (np.floating,)):
+        return float(o)
+    if isinstance(o, (np.integer,)):
+        return int(o)
+    if isinstance(o, float) and not math.isfinite(o):
+        return None
+    return o
+
+
+# --------------------------------------------------------------- replaying
