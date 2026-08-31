@@ -200,3 +200,5 @@ def tapered_bottle(x, y, z_table, r_body=0.0425, h_body=0.14, h_shoulder=0.03,
     if cap:
         prof.append((r_neck + 0.003, zn + h_neck, zn + h_neck + 0.015))
     return Obj("stack", label=label, cx=x, cy=y, profile=prof, **kw)
+
+
