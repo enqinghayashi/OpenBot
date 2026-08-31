@@ -128,3 +128,20 @@ def _sphere_iv(O, D, c, R):
     return np.where(miss, np.inf, t1), np.where(miss, -np.inf, t2)
 
 
+def _hit_bowl(O, D, cx, cy, z_table, r_rim, depth, thick):
+    """Spherical-cap shell, rim (outer) radius r_rim at z_table+depth."""
+    Rs = (r_rim * r_rim + depth * depth) / (2.0 * depth)
+    zc = z_table + Rs
+    z_rim = z_table + depth
+    a1, b1 = _sphere_iv(O, D, (cx, cy, zc), Rs)
+    c1, d1 = _sphere_iv(O, D, (cx, cy, zc), Rs - thick)
+    dz = D[..., 2]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t_rim = (z_rim - O[2]) / dz          # dz<0: t>=t_rim means z<=z_rim
+    a = np.maximum(a1, np.where(dz < 0, t_rim, np.inf))
+    b = b1
+    # solid = [a,b]
+    # minus [c1,d1]
+    entry = np.where(a < c1, a, np.where((d1 < b) & (d1 >= a), d1, np.inf))
+    entry = np.where((a <= b) & (entry <= b), entry, np.inf)
+    return np.where(entry > 0, entry, np.inf)
