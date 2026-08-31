@@ -183,3 +183,5 @@ def table(z):
     return Obj("plane", label=None, seg=False, z=z)
 
 
+def bottle(x, y, z_table, r=0.0425, h=0.20, label="bottle", **kw):
+    return Obj("cyl", label=label, cx=x, cy=y, r=r, z0=z_table, h=h, **kw)
