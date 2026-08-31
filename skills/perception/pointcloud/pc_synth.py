@@ -176,3 +176,6 @@ class Obj(object):
             return _hit_bowl(O, D, g["cx"], g["cy"], g["z_table"], g["r_rim"],
                              g["depth"], g.get("thick", 0.005))
         raise ValueError(self.kind)
+
+
+# ----------------------------------------------------- little scene helpers
