@@ -181,3 +181,5 @@ class Obj(object):
 # ----------------------------------------------------- little scene helpers
 def table(z):
     return Obj("plane", label=None, seg=False, z=z)
+
+
