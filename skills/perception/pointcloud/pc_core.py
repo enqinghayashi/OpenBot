@@ -1114,3 +1114,30 @@ def _jsonable(o):
 
 
 # --------------------------------------------------------------- replaying
+def load_capture(path, cfg=None):
+    """Replay a capture_clouds.py .npz through decode-equivalent arrays and the
+    SAME pair_cloud.  Returns (frames, n_unpaired, meta)."""
+    cfg = cfg or DEFAULT_CFG
+    z = np.load(path, allow_pickle=False)
+    pts, oid, off = z["pts"], z["oid"], z["frame_off"]
+    meta = json.loads(str(z["meta"]))
+    frames, unpaired = [], 0
+    for k in range(len(off) - 1):
+        P = pts[off[k]:off[k + 1]]
+        I = oid[off[k]:off[k + 1]]
+        bodies = []
+        for key, tkey in (("body_json", "body_t_rx_mono"), ("body_prev_json", "body_prev_t_rx_mono")):
+            txt = str(z[key][k])
+            if txt:
+                try:
+                    bodies.append((float(z[tkey][k]), parse_body(txt)))
+                except ValueError:
+                    pass
+        fr, why = pair_cloud(bodies, P, I, float(z["t_rx_mono"][k]), cfg,
+                             t_wall=float(z["t_rx_wall"][k]), n_raw=int(z["n_raw"][k]),
+                             hdr_stamp_ns=int(z["hdr_stamp_ns"][k]))
+        if fr is None:
+            unpaired += 1
+        else:
+            frames.append(fr)
+    return frames, unpaired, meta
