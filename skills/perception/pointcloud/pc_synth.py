@@ -159,3 +159,20 @@ class Obj(object):
         self.transparent = transparent       # (hole_frac, see_through_frac)
         self.geom = geom
 
+    def hit(self, O, D):
+        g = self.geom
+        if self.kind == "plane":
+            return _hit_plane(O, D, g["z"], g.get("xlim"), g.get("ylim"))
+        if self.kind == "cyl":
+            return _hit_cyl(O, D, g["cx"], g["cy"], g["r"], g["z0"], g["z0"] + g["h"])
+        if self.kind == "stack":
+            t = np.full(D.shape[:-1], np.inf)
+            for (r, z0, z1) in g["profile"]:
+                t = np.minimum(t, _hit_cyl(O, D, g["cx"], g["cy"], r, z0, z1))
+            return t
+        if self.kind == "box":
+            return _hit_box(O, D, np.asarray(g["lo"], float), np.asarray(g["hi"], float))
+        if self.kind == "bowl":
+            return _hit_bowl(O, D, g["cx"], g["cy"], g["z_table"], g["r_rim"],
+                             g["depth"], g.get("thick", 0.005))
+        raise ValueError(self.kind)
