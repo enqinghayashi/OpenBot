@@ -410,3 +410,5 @@ def project(depth, dets, stamp=None):
         P = P[:core.MAX_CLOUD_POINTS]
         I = I[:core.MAX_CLOUD_POINTS]
     return rows, P.astype(np.float32), I.astype(np.uint32), n_before
+
+
