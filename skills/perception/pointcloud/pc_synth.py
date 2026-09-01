@@ -352,3 +352,61 @@ def _dilate(m, px):
 
 
 # ------------------------------------------------------ faking the projector
+def project(depth, dets, stamp=None):
+    """Emulate depth_projector_node_POINTCLOUD_version._on_detections for
+    the SEG path (mask given) and a coarse fallback (mask None).
+    Returns (rows, pts float32 (N,3), oids uint32 (N,), n_before_cap)."""
+    dh, dw = depth.shape
+    rows, cloud_pts, cloud_ids = [], [], []
+    for det in dets:
+        mask = det.get("mask")
+        seg_ok = False
+        row = {"label": det["label"], "conf": det.get("conf", 0.9), "stamp": stamp}
+        if mask is not None and int(mask.sum()) >= 3:
+            obj_pix = mask & (depth > core.DEPTH_MIN) & (depth < core.DEPTH_MAX)
+            if int(obj_pix.sum()) >= 3:
+                ys, xs = np.where(obj_pix)
+                z_pts = depth[ys, xs].astype(np.float64)
+                z_lo, z_hi = np.percentile(z_pts, [5, 95])
+                keep = (z_pts >= z_lo) & (z_pts <= z_hi)
+                if int(keep.sum()) >= 3:
+                    ys, xs, z_pts = ys[keep], xs[keep], z_pts[keep]
+                cols_c = xs * (core.COLOR_W / float(dw))
+                rows_c = ys * (core.COLOR_H / float(dh))
+                x_c = (cols_c - core.CX) * z_pts / core.FX
+                y_c = (rows_c - core.CY) * z_pts / core.FY
+                pts_cam = np.column_stack([x_c, y_c, z_pts])
+                centroid_cam = np.median(pts_cam, axis=0)
+                pts_torso = (core.R_CAM_TO_TORSO @ pts_cam.T).T + core.T_CAM_IN_TORSO
+                p5, p95 = np.percentile(pts_torso, [5, 95], axis=0)
+                row["width_m"] = round(float(p95[0] - p5[0]), 4)
+                row["depth_m"] = round(float(p95[1] - p5[1]), 4)
+                row["height_m"] = round(float(p95[2] - p5[2]), 4)
+                p_t = core.R_CAM_TO_TORSO @ centroid_cam + core.T_CAM_IN_TORSO
+                stride = max(1, (len(pts_torso) + core.MAX_PTS_PER_OBJ - 1) // core.MAX_PTS_PER_OBJ)
+                oid = len(rows)
+                sub = pts_torso[::stride]
+                cloud_pts.append(sub)
+                cloud_ids.append(np.full(len(sub), oid, dtype=np.uint32))
+                seg_ok = True
+        if not seg_ok:
+            fb = det.get("fallback_xyz")
+            if fb is None:
+                continue
+            p_t = np.asarray(fb, dtype=float)
+        row["x"] = round(float(p_t[0]), 3)
+        row["y"] = round(float(p_t[1]), 3)
+        row["z"] = round(float(p_t[2]), 3)
+        row["body_side"] = "right" if p_t[0] > 0 else "left"
+        rows.append(row)
+    if cloud_pts:
+        P = np.vstack(cloud_pts)
+        I = np.concatenate(cloud_ids)
+    else:
+        P = np.zeros((0, 3))
+        I = np.zeros((0,), np.uint32)
+    n_before = len(P)
+    if n_before > core.MAX_CLOUD_POINTS:
+        P = P[:core.MAX_CLOUD_POINTS]
+        I = I[:core.MAX_CLOUD_POINTS]
+    return rows, P.astype(np.float32), I.astype(np.uint32), n_before
