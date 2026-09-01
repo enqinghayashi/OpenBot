@@ -249,3 +249,9 @@ def person(x, y, z_floor, leg_r=0.065, leg_sep=0.20, leg_h=0.85, hip_w=0.36,
 
 
 # ------------------------------------------------------- the scene itself
+class Scene(object):
+    """objects: list of Obj (or nested lists, e.g. person()).  Each Obj with
+    seg=True and a label becomes one detection, unless grouped by ``merge``:
+    a list of (label, [index, ...]) groups whose masks are unioned into ONE
+    detection (indices refer to the flattened object list)."""
+
