@@ -420,3 +420,9 @@ def pack_struct(pts, oids):
     return bytes(buf)
 
 
+def pack_fast(pts, oids):
+    rec = np.zeros(len(pts), dtype=core.CLOUD_DTYPE)
+    if len(pts):
+        rec["x"], rec["y"], rec["z"] = pts[:, 0], pts[:, 1], pts[:, 2]
+        rec["oid"] = oids
+    return rec.tobytes()
