@@ -216,3 +216,33 @@ def bowl(x, y, z_table, r_rim=0.12, depth=0.07, thick=0.005, label="bowl", **kw)
                depth=depth, thick=thick, **kw)
 
 
+def person(x, y, z_floor, leg_r=0.065, leg_sep=0.20, leg_h=0.85, hip_w=0.36,
+           hip_d=0.22, hip_h=0.25, occlude_leg=None, arm=None, bag=None,
+           label="person"):
+    """A person as two legs + a hip/torso box.  Returns a list of Obj that are
+    MERGED into one detection (label person) by Scene(merge=...).
+    arm: 'right'|'left' extended arm box; bag: carried object box."""
+    parts = []
+    for side, sx in (("left", -leg_sep / 2), ("right", leg_sep / 2)):
+        if occlude_leg == side:
+            continue
+        parts.append(Obj("cyl", label=label, cx=x + sx, cy=y, r=leg_r, z0=z_floor, h=leg_h))
+    zh = z_floor + leg_h
+    parts.append(box((x - hip_w / 2, y - hip_d / 2, zh), (x + hip_w / 2, y + hip_d / 2, zh + hip_h),
+                     label=label))
+    zt = zh + hip_h
+    parts.append(box((x - hip_w / 2, y - hip_d / 2, zt), (x + hip_w / 2, y + hip_d / 2, zt + 0.5),
+                     label=label))
+    if arm:
+        s = 1.0 if arm == "right" else -1.0
+        x0 = x + s * hip_w / 2
+        lo = (min(x0, x0 + s * 0.55), y - 0.04, zt + 0.25)
+        hi = (max(x0, x0 + s * 0.55), y + 0.04, zt + 0.33)
+        parts.append(box(lo, hi, label=label))
+    if bag:
+        s = 1.0 if bag == "right" else -1.0
+        x0 = x + s * (hip_w / 2 + 0.02)
+        lo = (min(x0, x0 + s * 0.25), y - 0.10, zh - 0.35)
+        hi = (max(x0, x0 + s * 0.25), y + 0.10, zh + 0.05)
+        parts.append(box(lo, hi, label=label))
+    return parts
