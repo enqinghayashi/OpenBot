@@ -255,3 +255,15 @@ class Scene(object):
     a list of (label, [index, ...]) groups whose masks are unioned into ONE
     detection (indices refer to the flattened object list)."""
 
+    def __init__(self, objects, dh=240, dw=424, merge=None):
+        flat = []
+        for o in objects:
+            if isinstance(o, (list, tuple)):
+                flat.extend(o)
+            else:
+                flat.append(o)
+        self.objs = flat
+        self.dh, self.dw = dh, dw
+        self.merge = merge or []
+        self._clean = None
+
