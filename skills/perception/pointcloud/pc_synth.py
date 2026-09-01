@@ -204,3 +204,5 @@ def tapered_bottle(x, y, z_table, r_body=0.0425, h_body=0.14, h_shoulder=0.03,
 
 def box(lo, hi, label=None, seg=True, **kw):
     return Obj("box", label=label, seg=seg, lo=lo, hi=hi, **kw)
+
+
