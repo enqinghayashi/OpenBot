@@ -309,3 +309,29 @@ class Scene(object):
             dets.append({"label": o.label, "conf": o.conf, "mask": _dilate(m, leak_px), "members": [i]})
         return dets
 
+    def depth(self, rng, noise=None):
+        """A noisy depth frame (float32 metres, 0 = invalid) like _on_depth."""
+        t, idx, behind = self._render_clean()
+        d = t.copy()
+        # transparent: holes + see-through
+        for i, o in enumerate(self.objs):
+            if not o.transparent:
+                continue
+            hole, through = o.transparent
+            m = idx == i
+            u = rng.random(d.shape)
+            if behind is not None and through > 0:
+                st = m & (u < through) & np.isfinite(behind)
+                d = np.where(st, np.where(np.isfinite(behind), behind, 0.0), d)
+            if hole > 0:
+                d = np.where(m & (u >= through) & (u < through + hole), 0.0, d)
+        nz = noise or NOISE_NOMINAL
+        valid = d > 0
+        sig = nz.get("k", 0.0) * d * d + nz.get("s0", 0.0)
+        d = np.where(valid, d + rng.standard_normal(d.shape) * sig, 0.0)
+        fly = nz.get("fly", 0.0)
+        if fly > 0:
+            f = valid & (rng.random(d.shape) < fly)
+            d = np.where(f, d * rng.uniform(1.0, 1.25, d.shape), d)
+        d = np.round(np.clip(d, 0, 65.0) * 1000.0) / 1000.0     # wire: uint16 mm
+        return d.astype(np.float32)
