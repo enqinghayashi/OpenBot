@@ -412,3 +412,9 @@ def project(depth, dets, stamp=None):
     return rows, P.astype(np.float32), I.astype(np.uint32), n_before
 
 
+def pack_struct(pts, oids):
+    """The projector's build_pointcloud byte loop, verbatim semantics (:128-131)."""
+    buf = bytearray()
+    for (x, y, z), oid in zip(pts, oids):
+        buf += struct.pack('<fffI', float(x), float(y), float(z), int(oid))
+    return bytes(buf)
