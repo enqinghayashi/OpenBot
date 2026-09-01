@@ -246,3 +246,6 @@ def person(x, y, z_floor, leg_r=0.065, leg_sep=0.20, leg_h=0.85, hip_w=0.36,
         hi = (max(x0, x0 + s * 0.25), y + 0.10, zh + 0.05)
         parts.append(box(lo, hi, label=label))
     return parts
+
+
+# ------------------------------------------------------- the scene itself
