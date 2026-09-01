@@ -335,3 +335,5 @@ class Scene(object):
             d = np.where(f, d * rng.uniform(1.0, 1.25, d.shape), d)
         d = np.round(np.clip(d, 0, 65.0) * 1000.0) / 1000.0     # wire: uint16 mm
         return d.astype(np.float32)
+
+
