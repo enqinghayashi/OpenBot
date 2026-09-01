@@ -209,3 +209,5 @@ def box(lo, hi, label=None, seg=True, **kw):
 def book(x, y, z_table, wx=0.22, dy=0.15, th=0.03, label="book", **kw):
     return box((x - wx / 2, y - dy / 2, z_table), (x + wx / 2, y + dy / 2, z_table + th),
                label=label, **kw)
+
+
