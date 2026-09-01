@@ -267,3 +267,21 @@ class Scene(object):
         self.merge = merge or []
         self._clean = None
 
+    def _render_clean(self):
+        if self._clean is None:
+            O = core.T_CAM_IN_TORSO.astype(np.float64)
+            D = camera_rays(self.dh, self.dw)
+            T = np.stack([o.hit(O, D) for o in self.objs], axis=0) if self.objs \
+                else np.full((1, self.dh, self.dw), np.inf)
+            idx = np.argmin(T, axis=0)
+            t = np.min(T, axis=0)
+            idx = np.where(np.isfinite(t), idx, -1)
+            # 2nd nearest
+            # see-through depth
+            behind = None
+            if len(self.objs) > 1:
+                Ts = np.sort(T, axis=0)
+                behind = Ts[1]
+            self._clean = (np.where(np.isfinite(t), t, 0.0), idx, behind)
+        return self._clean
+
