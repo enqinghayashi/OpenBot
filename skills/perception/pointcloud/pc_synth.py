@@ -418,3 +418,5 @@ def pack_struct(pts, oids):
     for (x, y, z), oid in zip(pts, oids):
         buf += struct.pack('<fffI', float(x), float(y), float(z), int(oid))
     return bytes(buf)
+
+
