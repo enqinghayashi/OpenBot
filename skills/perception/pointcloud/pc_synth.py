@@ -214,3 +214,5 @@ def book(x, y, z_table, wx=0.22, dy=0.15, th=0.03, label="book", **kw):
 def bowl(x, y, z_table, r_rim=0.12, depth=0.07, thick=0.005, label="bowl", **kw):
     return Obj("bowl", label=label, cx=x, cy=y, z_table=z_table, r_rim=r_rim,
                depth=depth, thick=thick, **kw)
+
+
