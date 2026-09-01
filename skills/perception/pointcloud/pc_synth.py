@@ -349,3 +349,6 @@ def _dilate(m, px):
         g[:, :-1] |= out[:, 1:]
         out = g
     return out
+
+
+# ------------------------------------------------------ faking the projector
