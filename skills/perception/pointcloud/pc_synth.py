@@ -289,3 +289,23 @@ class Scene(object):
         _, idx, _ = self._render_clean()
         return idx == i
 
+    def detections(self, leak_px=0):
+        """Detection list (label, conf, mask) in the projector's row order."""
+        _, idx, _ = self._render_clean()
+        grouped = set()
+        dets = []
+        for label, members in self.merge:
+            m = np.zeros(idx.shape, bool)
+            for i in members:
+                m |= idx == i
+                grouped.add(i)
+            dets.append({"label": label, "conf": 0.9, "mask": _dilate(m, leak_px), "members": list(members)})
+        # rest of the seg objects; person() parts
+        # stay separate unless merged
+        for i, o in enumerate(self.objs):
+            if i in grouped or not o.seg or not o.label:
+                continue
+            m = idx == i
+            dets.append({"label": o.label, "conf": o.conf, "mask": _dilate(m, leak_px), "members": [i]})
+        return dets
+
