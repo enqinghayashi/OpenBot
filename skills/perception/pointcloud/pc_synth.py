@@ -285,3 +285,7 @@ class Scene(object):
             self._clean = (np.where(np.isfinite(t), t, 0.0), idx, behind)
         return self._clean
 
+    def visible_mask(self, i):
+        _, idx, _ = self._render_clean()
+        return idx == i
+
