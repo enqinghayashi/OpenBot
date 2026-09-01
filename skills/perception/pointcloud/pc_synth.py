@@ -337,3 +337,15 @@ class Scene(object):
         return d.astype(np.float32)
 
 
+def _dilate(m, px):
+    if px <= 0:
+        return m
+    out = m.copy()
+    for _ in range(int(px)):
+        g = out.copy()
+        g[1:, :] |= out[:-1, :]
+        g[:-1, :] |= out[1:, :]
+        g[:, 1:] |= out[:, :-1]
+        g[:, :-1] |= out[:, 1:]
+        out = g
+    return out
