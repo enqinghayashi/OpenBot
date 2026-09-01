@@ -426,3 +426,8 @@ def pack_fast(pts, oids):
         rec["x"], rec["y"], rec["z"] = pts[:, 0], pts[:, 1], pts[:, 2]
         rec["oid"] = oids
     return rec.tobytes()
+
+
+FIELDS = [("x", 0, 7, 1), ("y", 4, 7, 1), ("z", 8, 7, 1), ("object_id", 12, 6, 1)]
+
+
