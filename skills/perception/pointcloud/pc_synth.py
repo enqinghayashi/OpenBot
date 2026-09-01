@@ -431,3 +431,26 @@ def pack_fast(pts, oids):
 FIELDS = [("x", 0, 7, 1), ("y", 4, 7, 1), ("z", 8, 7, 1), ("object_id", 12, 6, 1)]
 
 
+def frame(scene, seed, t_wall=1000.0, noise=None, leak_px=1, ghost=None,
+          stamp_age=0.05, drop_labels=(), cfg=None, pair=True):
+    """Render, project and PAIR one synthetic frame through pc_core, exactly
+    the path the node takes (bytes -> decode_cloud -> pair_cloud).
+    ghost: {label: mask} STALE masks to deproject on this frame's depth.
+    Returns a pc_core.Frame, or (rows, pts, oids) when pair=False."""
+    rng = np.random.default_rng(seed)
+    depth = scene.depth(rng, noise)
+    dets = [d for d in scene.detections(leak_px) if d["label"] not in drop_labels]
+    if ghost:
+        for label, m in ghost.items():
+            dets.append({"label": label, "conf": 0.9, "mask": m, "members": []})
+    rows, pts, oids, _ = project(depth, dets, stamp=t_wall - stamp_age)
+    if not pair:
+        return rows, pts, oids
+    if not rows:
+        return None
+    data = pack_fast(pts, oids)
+    P, I, _ = core.decode_cloud(data, len(pts), 16, FIELDS)
+    cfg = cfg or core.DEFAULT_CFG
+    fr, why = core.pair_cloud([(t_wall - 0.01, rows)], P, I, t_wall, cfg,
+                              t_wall=t_wall, n_raw=len(pts))
+    return fr
