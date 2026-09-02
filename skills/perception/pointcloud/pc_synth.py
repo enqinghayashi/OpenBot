@@ -454,3 +454,5 @@ def frame(scene, seed, t_wall=1000.0, noise=None, leak_px=1, ghost=None,
     fr, why = core.pair_cloud([(t_wall - 0.01, rows)], P, I, t_wall, cfg,
                               t_wall=t_wall, n_raw=len(pts))
     return fr
+
+
