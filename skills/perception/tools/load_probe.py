@@ -71,3 +71,5 @@ def read_log_text(path):
         nl = text.find("\n")
         text = text[nl + 1:] if nl >= 0 else ""
     return text
+
+
