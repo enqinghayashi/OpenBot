@@ -465,3 +465,6 @@ def frames(scene, seeds, t0=1000.0, dt=0.15, **kw):
     return out
 
 
+def table_z_for_view(stand=True):
+    """Torso-frame table heights used in tests (INFERRED scene layouts)."""
+    return -0.10 if stand else 0.0
