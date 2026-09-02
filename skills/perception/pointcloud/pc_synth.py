@@ -463,3 +463,5 @@ def frames(scene, seeds, t0=1000.0, dt=0.15, **kw):
         if f is not None:
             out.append(f)
     return out
+
+
