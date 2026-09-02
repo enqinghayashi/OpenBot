@@ -109,3 +109,7 @@ def select_window(rows, window_s):
     return rows[start:]
 
 
+def min_lines_for(window_s):
+    if math.isinf(window_s):
+        return MIN_LINES_CAP
+    return min(MIN_LINES_CAP, max(2, int(math.ceil(0.75 * window_s))))
