@@ -456,3 +456,10 @@ def frame(scene, seed, t_wall=1000.0, noise=None, leak_px=1, ghost=None,
     return fr
 
 
+def frames(scene, seeds, t0=1000.0, dt=0.15, **kw):
+    out = []
+    for k, s in enumerate(seeds):
+        f = frame(scene, s, t_wall=t0 + k * dt, **kw)
+        if f is not None:
+            out.append(f)
+    return out
