@@ -115,3 +115,7 @@ def min_lines_for(window_s):
     return min(MIN_LINES_CAP, max(2, int(math.ceil(0.75 * window_s))))
 
 
+def percentile(sorted_vals, num, den):
+    """sorted_vals[min(n-1, n*num/den)] with integer arithmetic (probe's _pct convention)."""
+    n = len(sorted_vals)
+    return sorted_vals[min(n - 1, (num * n) // den)]
