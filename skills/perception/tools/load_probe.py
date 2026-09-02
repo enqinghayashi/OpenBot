@@ -73,3 +73,21 @@ def read_log_text(path):
     return text
 
 
+def parse_status_lines(text):
+    """[(t, overruns, poll_to, Tmax token or None, mode token or None)] in file order.
+
+    Only newline-terminated lines count: the last fragment of a block-buffered file may
+    stop in the middle of a number.
+    """
+    rows = []
+    for line in text.split("\n")[:-1]:
+        m_t = _T_RE.match(line)
+        m_ov = _OVERRUNS_RE.search(line)
+        m_pt = _POLL_TO_RE.search(line)
+        if not (m_t and m_ov and m_pt):
+            continue
+        m_tm = _TMAX_RE.search(line)
+        m_md = _MODE_RE.search(line)
+        rows.append((float(m_t.group(1)), int(m_ov.group(1)), int(m_pt.group(1)),
+                     m_tm.group(1) if m_tm else None, m_md.group(1) if m_md else None))
+    return rows
