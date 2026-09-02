@@ -93,3 +93,17 @@ def parse_status_lines(text):
     return rows
 
 
+def select_window(rows, window_s):
+    """The newest rows whose t is within window_s of the newest t, stopping at a restart."""
+    if not rows:
+        return []
+    start = len(rows) - 1
+    newest_t = rows[start][0]
+    while start > 0:
+        prev_t = rows[start - 1][0]
+        if prev_t > rows[start][0]:
+            break
+        if newest_t - prev_t > window_s:
+            break
+        start -= 1
+    return rows[start:]
