@@ -59,3 +59,15 @@ _MODE_RE = re.compile(r"\bmode=(\S+)")
 
 
 # ------------------------------------------------------------- the writer log
+def read_log_text(path):
+    """The log text; only the last TAIL_BYTES of a huge file, cut at a line start."""
+    with open(path, "rb") as fh:
+        fh.seek(0, os.SEEK_END)
+        start = max(0, fh.tell() - TAIL_BYTES)
+        fh.seek(start)
+        data = fh.read()
+    text = data.decode("utf-8", "replace")
+    if start > 0:
+        nl = text.find("\n")
+        text = text[nl + 1:] if nl >= 0 else ""
+    return text
