@@ -216,3 +216,25 @@ def own_pids():
     return seen
 
 
+def scan_procs(patterns, exclude):
+    """{pattern: [pid, ...]}: pids whose /proc/<pid>/cmdline contains the pattern."""
+    found = dict((p, []) for p in patterns)
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return found
+    for name in sorted(names, key=lambda s: (len(s), s)):
+        if not name.isdigit() or int(name) in exclude:
+            continue
+        try:
+            with open("/proc/%s/cmdline" % name, "rb") as fh:
+                raw = fh.read(65536)
+        except (OSError, IOError):
+            continue
+        if not raw:
+            continue
+        cmd = raw.replace(b"\0", b" ").decode("utf-8", "replace")
+        for p in patterns:
+            if p in cmd:
+                found[p].append(int(name))
+    return found
