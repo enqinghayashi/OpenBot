@@ -138,3 +138,5 @@ def window_stats(win):
         poll_delta += d_pt
     return {"rates": rates, "mean": (tot_ov / tot_dt) if tot_dt > 0 else None,
             "poll_to_delta": poll_delta, "resets": resets}
+
+
