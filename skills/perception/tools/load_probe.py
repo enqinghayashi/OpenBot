@@ -121,3 +121,20 @@ def percentile(sorted_vals, num, den):
     return sorted_vals[min(n - 1, (num * n) // den)]
 
 
+def window_stats(win):
+    """Statistics over the intervals of a window; an interval where a counter went down
+    (a writer restart) is left out and counted."""
+    rates, tot_dt, tot_ov, poll_delta, resets = [], 0.0, 0, 0, 0
+    for a, b in zip(win, win[1:]):
+        dt, d_ov, d_pt = b[0] - a[0], b[1] - a[1], b[2] - a[2]
+        if dt <= 0:
+            continue
+        if d_ov < 0 or d_pt < 0:
+            resets += 1
+            continue
+        rates.append(d_ov / dt)
+        tot_dt += dt
+        tot_ov += d_ov
+        poll_delta += d_pt
+    return {"rates": rates, "mean": (tot_ov / tot_dt) if tot_dt > 0 else None,
+            "poll_to_delta": poll_delta, "resets": resets}
