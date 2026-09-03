@@ -186,3 +186,18 @@ def read_stat(pid):
         return None
 
 
+def read_status(pid):
+    """(rss_mb, nthreads) from /proc/<pid>/status, or None."""
+    rss_kb = threads = None
+    try:
+        with open("/proc/%d/status" % pid, "rb") as fh:
+            for raw in fh.read().decode("utf-8", "replace").split("\n"):
+                if raw.startswith("VmRSS:"):
+                    rss_kb = int(raw.split()[1])
+                elif raw.startswith("Threads:"):
+                    threads = int(raw.split()[1])
+    except (OSError, IOError, ValueError, IndexError):
+        return None
+    if rss_kb is None or threads is None:
+        return None
+    return rss_kb / 1024.0, threads
