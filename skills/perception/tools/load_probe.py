@@ -140,3 +140,34 @@ def window_stats(win):
             "poll_to_delta": poll_delta, "resets": resets}
 
 
+def writer_report(path, window_s):
+    lines = []
+    err = None
+    try:
+        rows = parse_status_lines(read_log_text(path))
+    except (OSError, IOError) as exc:
+        rows, err = [], "cannot read %s (%s)" % (path, exc.strerror or exc)
+    win = select_window(rows, window_s)
+    need = min_lines_for(window_s)
+    if len(win) < need:
+        lines.append("WARN writer log has fewer than %d lines in the window (found %d, window "
+                     "%s s%s)" % (need, len(win), repr(window_s), "; " + err if err else ""))
+    else:
+        st = window_stats(win)
+        if not st["rates"]:
+            lines.append("WARN writer log window has no usable interval (every interval was "
+                         "a counter reset)")
+        else:
+            rates = sorted(st["rates"])
+            lines.append("writer_overruns_per_s_mean %s" % repr(st["mean"]))
+            lines.append("writer_overruns_per_s_p50 %s" % repr(percentile(rates, 50, 100)))
+            lines.append("writer_overruns_per_s_p90 %s" % repr(percentile(rates, 90, 100)))
+            lines.append("writer_poll_to_delta %d" % st["poll_to_delta"])
+    if win:
+        lines.append("writer_Tmax_last %s" % (win[-1][3] if win[-1][3] is not None else "NA"))
+        lines.append("writer_mode_machine %s" % (win[-1][4] if win[-1][4] is not None else "NA"))
+    lines.append("writer_lines_used %d" % len(win))
+    if win:
+        lines.append("writer_newest_t %s" % repr(win[-1][0]))
+        lines.append("writer_counter_resets %d" % window_stats(win)["resets"])
+    return lines
