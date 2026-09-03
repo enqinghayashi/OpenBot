@@ -171,3 +171,6 @@ def writer_report(path, window_s):
         lines.append("writer_newest_t %s" % repr(win[-1][0]))
         lines.append("writer_counter_resets %d" % window_stats(win)["resets"])
     return lines
+
+
+# ------------------------------------------------------------------- /proc bits
