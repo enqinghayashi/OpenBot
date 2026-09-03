@@ -273,3 +273,5 @@ def process_report(patterns, sample_s):
             lines.append("%s pid %d cpu_pct_of_one_core %.1f rss_mb %.1f nthreads %d"
                          % (p, pid, cpu, rss, nthr))
     return lines
+
+
