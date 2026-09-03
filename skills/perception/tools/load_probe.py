@@ -174,3 +174,13 @@ def writer_report(path, window_s):
 
 
 # ------------------------------------------------------------------- /proc bits
+def read_stat(pid):
+    """{"ticks", "ppid", "start"} from /proc/<pid>/stat, or None (gone / unreadable)."""
+    try:
+        with open("/proc/%d/stat" % pid, "rb") as fh:
+            data = fh.read().decode("utf-8", "replace")
+        rest = data[data.rindex(")") + 2:].split()
+        return {"ticks": int(rest[11]) + int(rest[12]), "ppid": int(rest[1]),
+                "start": rest[19]}
+    except (OSError, IOError, ValueError, IndexError):
+        return None
