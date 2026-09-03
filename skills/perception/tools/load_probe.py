@@ -240,3 +240,36 @@ def scan_procs(patterns, exclude):
     return found
 
 
+def process_report(patterns, sample_s):
+    try:
+        clk = float(os.sysconf("SC_CLK_TCK"))
+    except (ValueError, OSError, AttributeError):
+        clk = 100.0
+    found = scan_procs(patterns, own_pids())
+    first = {}
+    for pid in sorted(set(pid for lst in found.values() for pid in lst)):
+        st = read_stat(pid)
+        if st is not None:
+            first[pid] = (st, time.monotonic())
+    if first:
+        time.sleep(sample_s)
+    measured = {}
+    for pid in sorted(first):
+        st1, m1 = first[pid]
+        st2 = read_stat(pid)
+        info = read_status(pid)
+        m2 = time.monotonic()
+        if st2 is None or info is None or st2["start"] != st1["start"] or m2 <= m1:
+            continue
+        cpu = 100.0 * ((st2["ticks"] - st1["ticks"]) / clk) / (m2 - m1)
+        measured[pid] = (cpu, info[0], info[1])
+    lines = []
+    for p in patterns:
+        pids = [pid for pid in found[p] if pid in measured]
+        if not pids:
+            lines.append("%s ABSENT" % p)
+        for pid in pids:
+            cpu, rss, nthr = measured[pid]
+            lines.append("%s pid %d cpu_pct_of_one_core %.1f rss_mb %.1f nthreads %d"
+                         % (p, pid, cpu, rss, nthr))
+    return lines
