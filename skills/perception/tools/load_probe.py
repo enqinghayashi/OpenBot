@@ -203,3 +203,14 @@ def read_status(pid):
     return rss_kb / 1024.0, threads
 
 
+def own_pids():
+    """This process and its ancestors (a wrapper such as timeout carries our arguments)."""
+    seen = set([os.getpid()])
+    cur = os.getpid()
+    for _ in range(128):
+        st = read_stat(cur)
+        if st is None or st["ppid"] <= 0 or st["ppid"] in seen:
+            break
+        cur = st["ppid"]
+        seen.add(cur)
+    return seen
