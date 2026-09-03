@@ -184,3 +184,5 @@ def read_stat(pid):
                 "start": rest[19]}
     except (OSError, IOError, ValueError, IndexError):
         return None
+
+
