@@ -44,3 +44,25 @@ def walk(x, path, out):
                 walk(x[k], p, out)
 
 
+def summarize(r):
+    """The summary lines (without the path line) of one probe result r (a dict)."""
+    out = ["  match_staging_base = " + json.dumps(r.get("match_staging_base"))]
+    e = r.get("env")
+    if not isinstance(e, dict):
+        e = {}
+    for k in sorted(e):
+        if k != "sys_path" and not isinstance(e[k], (dict, list)):
+            out.append("  env.%s = %s" % (k, json.dumps(e[k])))
+        elif isinstance(e[k], dict):
+            for k2 in sorted(e[k]):
+                if not isinstance(e[k][k2], (dict, list)):
+                    out.append("  env.%s.%s = %s" % (k, k2, json.dumps(e[k][k2])))
+    for sec in ("bench", "record", "agree"):
+        walk(r.get(sec), sec, out)
+    errs = r.get("errors")
+    if not errs:
+        errs = []
+    elif not isinstance(errs, (list, tuple)):
+        errs = [errs]
+    out.append("  errors = %d %s" % (len(errs), json.dumps(list(errs)[:5])))
+    return out
