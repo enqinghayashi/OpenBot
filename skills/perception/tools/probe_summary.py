@@ -79,3 +79,9 @@ def load(path):
     return r
 
 
+def emit(text):
+    """print(text), but a path the terminal cannot encode is escaped, not raised."""
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        print(text.encode("utf-8", "backslashreplace").decode("ascii", "replace"))
