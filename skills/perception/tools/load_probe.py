@@ -283,3 +283,12 @@ def loadavg_line():
         return "loadavg_1m NA"
 
 
+def memavail_line():
+    try:
+        with open("/proc/meminfo", "rb") as fh:
+            for raw in fh.read().decode("utf-8", "replace").split("\n"):
+                if raw.startswith("MemAvailable:"):
+                    return "MemAvailable_mb %.1f" % (int(raw.split()[1]) / 1024.0)
+    except (OSError, IOError, ValueError, IndexError):
+        pass
+    return "MemAvailable_mb NA"
