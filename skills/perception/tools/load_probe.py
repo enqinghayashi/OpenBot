@@ -309,3 +309,12 @@ def _finite_positive(text):
     return value
 
 
+def build_parser():
+    ap = argparse.ArgumentParser(prog="load_probe.py", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--writer-log", default=DEFAULT_WRITER_LOG)
+    ap.add_argument("--window-s", type=_positive, default=60.0)
+    ap.add_argument("--sample-s", type=_finite_positive, default=5.0)
+    ap.add_argument("--procs", default=DEFAULT_PROCS,
+                    help="comma-separated command-line fragments")
+    return ap
