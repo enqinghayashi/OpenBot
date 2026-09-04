@@ -292,3 +292,6 @@ def memavail_line():
     except (OSError, IOError, ValueError, IndexError):
         pass
     return "MemAvailable_mb NA"
+
+
+# -------------------------------------------------------------------- the main
