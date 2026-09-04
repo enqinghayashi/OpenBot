@@ -275,3 +275,9 @@ def process_report(patterns, sample_s):
     return lines
 
 
+def loadavg_line():
+    try:
+        with open("/proc/loadavg", "rb") as fh:
+            return "loadavg_1m %s" % fh.read().decode("utf-8", "replace").split()[0]
+    except (OSError, IOError, IndexError):
+        return "loadavg_1m NA"
