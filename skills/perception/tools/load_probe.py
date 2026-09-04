@@ -281,3 +281,5 @@ def loadavg_line():
             return "loadavg_1m %s" % fh.read().decode("utf-8", "replace").split()[0]
     except (OSError, IOError, IndexError):
         return "loadavg_1m NA"
+
+
