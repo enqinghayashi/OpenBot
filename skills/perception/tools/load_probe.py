@@ -327,3 +327,21 @@ def _section(name, fn):
         return ["WARN %s section failed: %s: %s" % (name, type(exc).__name__, exc)]
 
 
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    patterns = [p.strip() for p in args.procs.split(",") if p.strip()]
+    out = []
+    out.extend(_section("writer", lambda: writer_report(args.writer_log, args.window_s)))
+    out.extend(_section("loadavg", lambda: [loadavg_line()]))
+    out.extend(_section("process", lambda: process_report(patterns, args.sample_s)))
+    out.extend(_section("memory", lambda: [memavail_line()]))
+    text = "\n".join(out) + "\n"
+    try:
+        try:
+            sys.stdout.write(text)
+        except UnicodeEncodeError:
+            sys.stdout.write(text.encode("ascii", "replace").decode("ascii"))
+        sys.stdout.flush()
+    except (OSError, IOError):
+        pass
+    return 0
