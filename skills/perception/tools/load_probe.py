@@ -345,3 +345,10 @@ def main(argv=None):
     except (OSError, IOError):
         pass
     return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)
