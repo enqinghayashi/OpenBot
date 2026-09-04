@@ -302,3 +302,8 @@ def _positive(text):
     return value
 
 
+def _finite_positive(text):
+    value = _positive(text)
+    if math.isinf(value):
+        raise argparse.ArgumentTypeError("must be finite")
+    return value
