@@ -68,3 +68,12 @@ def summarize(r):
     return out
 
 
+def load(path):
+    with open(path, "rb") as fh:
+        raw = fh.read()
+    if not raw.strip():
+        raise ValueError("empty file")
+    r = json.loads(raw.decode("utf-8"))
+    if not isinstance(r, dict):
+        raise ValueError("top level is %s, not an object" % type(r).__name__)
+    return r
