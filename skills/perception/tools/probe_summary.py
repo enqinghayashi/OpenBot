@@ -33,3 +33,12 @@ KEYS = ("median_ms", "p90_ms", "cpu_pct", "threads_effective", "load_ms", "rss_m
         "prompts_fired", "extra_rows_total", "frames_file")
 
 
+def walk(x, path, out):
+    """Append "  <path> = <json>" for every KEYS entry found in the dict tree under x."""
+    if isinstance(x, dict):
+        for k in sorted(x):
+            p = path + "." + str(k)
+            if k in KEYS and not isinstance(x[k], dict):
+                out.append("  %s = %s" % (p, json.dumps(x[k])))
+            else:
+                walk(x[k], p, out)
