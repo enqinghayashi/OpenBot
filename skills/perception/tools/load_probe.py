@@ -320,3 +320,8 @@ def build_parser():
     return ap
 
 
+def _section(name, fn):
+    try:
+        return fn()
+    except Exception as exc:  # noqa: BLE001 - the meter reports a broken section, it never raises
+        return ["WARN %s section failed: %s: %s" % (name, type(exc).__name__, exc)]
