@@ -42,3 +42,5 @@ def walk(x, path, out):
                 out.append("  %s = %s" % (p, json.dumps(x[k])))
             else:
                 walk(x[k], p, out)
+
+
