@@ -71,3 +71,14 @@ class WriteError(Exception):
     """An OS error while writing; the config was not replaced."""
 
 
+def read_switches(env):
+    """{key: bool} from PC_SHADOW / PC_HOLD_CHECK / PC_PLACE_RIM, each exactly true or false."""
+    want = {}
+    for key, name in ENV_NAMES:
+        value = env.get(name)
+        if value is None:
+            raise Refusal("%s is not set (it must be exactly true or false)" % name)
+        if value not in ("true", "false"):
+            raise Refusal("%s=%r is not exactly true or false" % (name, value))
+        want[key] = value == "true"
+    return want
