@@ -188,3 +188,21 @@ def verify_with_loader(path, want):
     return notes, None
 
 
+def create_backup(config, backup, data):
+    """Publish `data` as the backup atomically and without ever replacing a backup."""
+    tmp_bk = None
+    try:
+        fd, tmp_bk = tempfile.mkstemp(prefix="." + os.path.basename(backup) + ".tmp.",
+                                      dir=os.path.dirname(os.path.abspath(backup)))
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        shutil.copystat(config, tmp_bk)
+        try:
+            os.link(tmp_bk, backup)
+        except FileExistsError:
+            pass
+    finally:
+        if tmp_bk is not None and os.path.lexists(tmp_bk):
+            os.unlink(tmp_bk)
