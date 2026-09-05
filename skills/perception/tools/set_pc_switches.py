@@ -69,3 +69,5 @@ class Refusal(Exception):
 
 class WriteError(Exception):
     """An OS error while writing; the config was not replaced."""
+
+
