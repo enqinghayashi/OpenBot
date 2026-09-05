@@ -63,3 +63,5 @@ HEADER = ("    # \u2500\u2500 batch 3b point-cloud consumer switches (all defaul
           "docs/DEPLOY_yoloe_pointcloud.md) \u2500\u2500").encode("utf-8")
 
 
+class Refusal(Exception):
+    """A check failed before anything was written."""
