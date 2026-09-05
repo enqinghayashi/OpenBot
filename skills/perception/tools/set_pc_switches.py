@@ -89,3 +89,24 @@ def _blank_or_comment(line):
     return stripped == b"" or stripped.startswith(b"#")
 
 
+def find_envelope(lines):
+    """(start, end): index of "  envelope:" under the one top-level "embodiment:" and the
+    index just past the envelope block; None when either header is absent or not unique."""
+    tops = [i for i, line in enumerate(lines) if re.match(rb"embodiment:(?:[ \t]|$)", line)]
+    if len(tops) != 1:
+        return None
+    end_top = len(lines)
+    for j in range(tops[0] + 1, len(lines)):
+        if not _blank_or_comment(lines[j]) and not lines[j][:1].isspace():
+            end_top = j
+            break
+    envs = [j for j in range(tops[0] + 1, end_top)
+            if re.match(rb"  envelope:(?:[ \t]|$)", lines[j])]
+    if len(envs) != 1:
+        return None
+    end = end_top
+    for j in range(envs[0] + 1, end_top):
+        if not _blank_or_comment(lines[j]) and len(lines[j]) - len(lines[j].lstrip(b" ")) <= 2:
+            end = j
+            break
+    return envs[0], end
