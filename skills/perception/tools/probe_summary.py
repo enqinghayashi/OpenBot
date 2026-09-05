@@ -105,3 +105,7 @@ def main(argv=None):
             lines = ["UNREADABLE " + f]
         emit("\n".join(lines))
     return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
