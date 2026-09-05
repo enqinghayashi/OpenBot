@@ -112,3 +112,48 @@ def find_envelope(lines):
     return envs[0], end
 
 
+def plan_text(data, want):
+    """(new bytes, path) for the config bytes `data`; path is "insert" or "update"."""
+    if b"\r" in data:
+        raise Refusal("the config has CR characters (CRLF line ends); only LF files are edited")
+    lines = data.split(b"\n")
+    present = {}
+    for key in KEYS:
+        rx = re.compile(rb"[ \t]*" + key.encode("ascii") + rb"[ \t]*:")
+        present[key] = [i for i, line in enumerate(lines) if rx.match(line)]
+        if len(present[key]) > 1:
+            raise Refusal("%s is present %d times (lines %s)" % (
+                key, len(present[key]), ", ".join(str(i + 1) for i in present[key])))
+    have = [key for key in KEYS if present[key]]
+    if len(have) not in (0, len(KEYS)):
+        raise Refusal("only %s of the three keys are present (%s); all or none are expected"
+                      % (len(have), ", ".join(have)))
+    block = find_envelope(lines)
+    if block is None:
+        raise Refusal("the embodiment: -> envelope: block was not found exactly once")
+    start, end = block
+
+    if not have:
+        anchors = [i for i, line in enumerate(lines) if line.startswith(ANCHOR)]
+        if len(anchors) != 1:
+            raise Refusal("the insertion anchor (the low-workspace descent lane comment) was "
+                          "found %d times (expected exactly 1)" % len(anchors))
+        ai = anchors[0]
+        if not start < ai < end:
+            raise Refusal("the insertion anchor (line %d) is outside the envelope block" % (ai + 1))
+        block_lines = [HEADER] + [
+            ("    %s: %s" % (key, "true" if want[key] else "false")).encode("ascii")
+            for key in KEYS]
+        new_lines = lines[:ai] + block_lines + lines[ai:]
+        return b"\n".join(new_lines), "insert"
+
+    new_lines = list(lines)
+    for key in KEYS:
+        i = present[key][0]
+        rx = re.compile(rb"(    " + key.encode("ascii") + rb":[ ]+)(true|false)((?:[ ]+#.*)?[ ]*)")
+        m = rx.fullmatch(lines[i])
+        if not start < i < end or m is None:
+            raise Refusal("line %d (%s) is not a plain '    %s: true|false' line inside the "
+                          "envelope block" % (i + 1, key, key))
+        new_lines[i] = m.group(1) + (b"true" if want[key] else b"false") + m.group(3)
+    return b"\n".join(new_lines), "update"
