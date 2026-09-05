@@ -206,3 +206,5 @@ def create_backup(config, backup, data):
     finally:
         if tmp_bk is not None and os.path.lexists(tmp_bk):
             os.unlink(tmp_bk)
+
+
