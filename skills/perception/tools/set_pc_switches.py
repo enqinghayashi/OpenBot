@@ -82,3 +82,5 @@ def read_switches(env):
             raise Refusal("%s=%r is not exactly true or false" % (name, value))
         want[key] = value == "true"
     return want
+
+
