@@ -87,3 +87,21 @@ def emit(text):
         print(text.encode("utf-8", "backslashreplace").decode("ascii", "replace"))
 
 
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if len(argv) != 1 or argv[0] in ("-h", "--help"):
+        sys.stderr.write("usage: python3 probe_summary.py <probe root dir>\n")
+        return 0 if argv in (["-h"], ["--help"]) else 2
+    root = argv[0]
+    files = sorted(glob.glob(os.path.join(root, "*", "probe.json")))
+    if not files:
+        emit("NO_PROBE_JSON %s" % root)
+        return 0
+    for f in files:
+        try:
+            lines = [f] + summarize(load(f))
+        except Exception as exc:  # noqa: BLE001 - any input problem gets reported, never raised
+            sys.stderr.write("b6_probe_summary: %s: %s: %s\n" % (f, type(exc).__name__, exc))
+            lines = ["UNREADABLE " + f]
+        emit("\n".join(lines))
+    return 0
