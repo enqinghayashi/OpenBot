@@ -159,3 +159,30 @@ def plan_text(data, want):
     return b"\n".join(new_lines), "update"
 
 
+def verify_with_loader(path, want):
+    """([NOTE lines], refusal reason or None): load `path` with the real loader."""
+    cfg_dir = os.path.dirname(os.path.abspath(path))
+    sys.dont_write_bytecode = True
+    if cfg_dir not in sys.path:
+        sys.path.insert(0, cfg_dir)
+    try:
+        from brain.config_loader import load
+    except Exception:  # noqa: BLE001 - ImportError, SyntaxError, ...: means the loader can't run here
+        return ["NOTE: real loader not importable, values NOT verified by it"], None
+    notes = []
+    profile = PROFILE
+    if not os.path.isfile(os.path.join(cfg_dir, "config." + PROFILE + ".yaml")):
+        profile = "laptop"
+        notes.append("NOTE: %s not found; the real loader verified the values under profile "
+                     "'laptop' (base file only)"
+                     % os.path.join(cfg_dir, "config." + PROFILE + ".yaml"))
+    try:
+        env = load(path, profile=profile).embodiment.envelope
+        got = dict((key, getattr(env, key)) for key in KEYS)
+    except Exception as exc:  # noqa: BLE001 - anything the loader raises means "do not write"
+        return notes, "the real loader rejects the new config (%s: %s)" % (type(exc).__name__, exc)
+    for key in KEYS:
+        if got[key] is not want[key]:
+            return notes, "the real loader reads %s=%r, not the requested %r" % (
+                key, got[key], want[key])
+    return notes, None
