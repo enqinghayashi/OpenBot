@@ -84,3 +84,6 @@ def read_switches(env):
     return want
 
 
+def _blank_or_comment(line):
+    stripped = line.strip()
+    return stripped == b"" or stripped.startswith(b"#")
