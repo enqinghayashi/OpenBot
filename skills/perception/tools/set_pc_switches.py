@@ -208,3 +208,54 @@ def create_backup(config, backup, data):
             os.unlink(tmp_bk)
 
 
+def apply(argv, env):
+    """Run one edit.  Returns the lines to print; raises Refusal / WriteError."""
+    if argv:
+        raise Refusal("unexpected argument(s) %r (this tool reads its settings from the "
+                      "environment; see --help)" % (list(argv),))
+    want = read_switches(env)
+    config = env.get("CONFIG", "") or DEFAULT_CONFIG
+    if os.path.islink(config):
+        raise Refusal("CONFIG %s is a symlink (it would be replaced by a plain file)" % config)
+    if not os.path.isfile(config):
+        raise Refusal("CONFIG %s not found" % config)
+    try:
+        with open(config, "rb") as fh:
+            data = fh.read()
+    except (OSError, IOError) as exc:
+        raise Refusal("cannot read CONFIG %s (%s)" % (config, exc))
+    backup = config + BACKUP_SUFFIX
+    have_backup = os.path.lexists(backup)
+    if have_backup and (os.path.islink(backup) or not os.path.isfile(backup)):
+        raise Refusal("backup %s exists but is not a plain file" % backup)
+
+    new, _path = plan_text(data, want)
+    mode = stat.S_IMODE(os.stat(config).st_mode)
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(prefix="." + os.path.basename(config) + ".b6tmp.",
+                                   dir=os.path.dirname(os.path.abspath(config)))
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(new)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, mode)
+        notes, bad = verify_with_loader(tmp, want)
+        if bad:
+            raise Refusal(bad)
+        changed = new != data
+        if changed:
+            if not have_backup:
+                create_backup(config, backup, data)
+            os.replace(tmp, config)
+            tmp = None
+    except OSError as exc:
+        raise WriteError("write failed (%s)" % exc)
+    finally:
+        if tmp is not None and os.path.lexists(tmp):
+            os.unlink(tmp)
+
+    flags = " ".join("%s=%s" % (label, "true" if want[key] else "false") for label, key in (
+        ("shadow", "pc_shadow"), ("hold_check", "pc_hold_check"), ("place_rim", "pc_place_rim")))
+    return notes + ["PC_CFG %s %s md5=%s" % ("APPLIED" if changed else "ALREADY SET", flags,
+                                             hashlib.md5(new).hexdigest())]
