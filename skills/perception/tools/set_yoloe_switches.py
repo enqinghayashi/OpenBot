@@ -89,3 +89,13 @@ class WriteError(Exception):
     """An OS error while writing; the launcher was not replaced."""
 
 
+def build_line(form, stage, weights, threads, site):
+    """The new T2 line (str) for a stage 1-4."""
+    sw = SWITCHES[stage]
+    if weights:
+        sw += "OPENBOT_YOLOE_WEIGHTS=" + weights + " "
+    if threads:
+        sw += "OPENBOT_YOLOE_THREADS=" + threads + " "
+    if form == "jp":
+        return sw + "PYTHONPATH=" + site + ":" + FOXY + " " + JP + TAIL
+    return sw + "PYTHONPATH=" + site + "${PYTHONPATH:+:$PYTHONPATH} python3" + TAIL
