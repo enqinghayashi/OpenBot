@@ -278,3 +278,7 @@ def main(argv=None, environ=None):
     for line in out:
         print(line)
     return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
