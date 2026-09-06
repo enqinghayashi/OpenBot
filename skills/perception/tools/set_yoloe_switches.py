@@ -85,3 +85,5 @@ class Refusal(Exception):
     """A check failed before anything was written."""
 
 
+class WriteError(Exception):
+    """An OS error while writing; the launcher was not replaced."""
