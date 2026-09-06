@@ -259,3 +259,5 @@ def apply(argv, env):
         ("shadow", "pc_shadow"), ("hold_check", "pc_hold_check"), ("place_rim", "pc_place_rim")))
     return notes + ["PC_CFG %s %s md5=%s" % ("APPLIED" if changed else "ALREADY SET", flags,
                                              hashlib.md5(new).hexdigest())]
+
+
