@@ -106,3 +106,9 @@ def find_t2(lines):
     return [(i, form) for i, line in enumerate(lines) for form, old in STOCK if line == old]
 
 
+def _read(path, what):
+    try:
+        with open(path, "rb") as fh:
+            return fh.read()
+    except (OSError, IOError) as exc:
+        raise Refusal("cannot read %s %s (%s)" % (what, path, exc))
