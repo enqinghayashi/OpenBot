@@ -81,3 +81,5 @@ SAFE_VALUE = re.compile(r"[A-Za-z0-9_./+@%,=:-]+")
 THREADS_VALUE = re.compile(r"[1-8]")
 
 
+class Refusal(Exception):
+    """A check failed before anything was written."""
