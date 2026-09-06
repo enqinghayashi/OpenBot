@@ -112,3 +112,5 @@ def _read(path, what):
             return fh.read()
     except (OSError, IOError) as exc:
         raise Refusal("cannot read %s %s (%s)" % (what, path, exc))
+
+
