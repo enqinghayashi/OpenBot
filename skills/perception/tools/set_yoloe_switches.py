@@ -104,3 +104,5 @@ def build_line(form, stage, weights, threads, site):
 def find_t2(lines):
     """[(index, form)] for every line that is a stock T2 line."""
     return [(i, form) for i, line in enumerate(lines) for form, old in STOCK if line == old]
+
+
