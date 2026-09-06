@@ -261,3 +261,20 @@ def apply(argv, env):
                                              hashlib.md5(new).hexdigest())]
 
 
+def main(argv=None, environ=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    env = os.environ if environ is None else environ
+    if argv in (["-h"], ["--help"]):
+        print(__doc__.strip())
+        return 0
+    try:
+        out = apply(argv, env)
+    except Refusal as exc:
+        print("REFUSED: %s; nothing written" % " ".join(str(exc).split()))
+        return 1
+    except WriteError as exc:
+        print("ERROR: %s; config unchanged" % " ".join(str(exc).split()))
+        return 1
+    for line in out:
+        print(line)
+    return 0
