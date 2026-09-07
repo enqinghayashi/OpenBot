@@ -146,3 +146,95 @@ def create_backup(launcher, backup, data):
             os.unlink(tmp_bk)
 
 
+def apply(argv, env):
+    """Run one edit.  Returns (lines to print, notes for stderr); raises Refusal / WriteError."""
+    if argv:
+        raise Refusal("unexpected argument(s) %r (this tool reads LAUNCHER and STAGE from "
+                      "the environment; see --help)" % (list(argv),))
+    launcher = env.get("LAUNCHER", "")
+    if not launcher:
+        raise Refusal("LAUNCHER is not set")
+    stage_txt = env.get("STAGE")
+    if stage_txt is None:
+        raise Refusal("STAGE is not set")
+    if re.fullmatch(r"[0-4]", stage_txt) is None:
+        raise Refusal("STAGE %r is not one of 0, 1, 2, 3, 4" % (stage_txt,))
+    stage = int(stage_txt)
+    weights = _checked(env, "OPENBOT_YOLOE_WEIGHTS", SAFE_VALUE,
+                       "has a character outside [A-Za-z0-9_./+@%,=:-] "
+                       "(it would be spliced into a shell line)")
+    threads = _checked(env, "OPENBOT_YOLOE_THREADS", THREADS_VALUE,
+                       "is not a single digit 1-8")
+    site = env.get("OPENBOT_YOLOE_SITE", "") or DEFAULT_SITE
+    if SAFE_VALUE.fullmatch(site) is None:
+        raise Refusal("overlay directory %r has a character outside [A-Za-z0-9_./+@%%,=:-]"
+                      % (site,))
+
+    if os.path.islink(launcher):
+        raise Refusal("LAUNCHER %s is a symlink (it would be replaced by a plain file)"
+                      % launcher)
+    if not os.path.isfile(launcher):
+        raise Refusal("LAUNCHER %s not found" % launcher)
+    backup = launcher + BACKUP_SUFFIX
+    have_backup = os.path.lexists(backup)
+    if have_backup and (os.path.islink(backup) or not os.path.isfile(backup)):
+        raise Refusal("backup %s exists but is not a plain file" % backup)
+
+    cur = _read(launcher, "LAUNCHER")
+    if have_backup:
+        src = _read(backup, "backup")
+    else:
+        src = cur
+    lines = src.split(b"\n")
+    hits = find_t2(lines)
+    if len(hits) != 1:
+        if have_backup:
+            raise Refusal("T2 line found %d times in the backup %s (expected exactly 1 stock "
+                          "T2 line)" % (len(hits), backup))
+        raise Refusal("no backup %s and T2 line found %d times in the launcher %s (expected "
+                      "exactly 1 stock T2 line)" % (backup, len(hits), launcher))
+    idx, form = hits[0]
+    notes = []
+    if have_backup:
+        cur_lines = cur.split(b"\n")
+        if len(cur_lines) != len(lines) or any(
+                a != b for j, (a, b) in enumerate(zip(cur_lines, lines)) if j != idx):
+            notes.append("NOTE: the launcher differs from the backup outside the T2 line; those "
+                         "differences are discarded (the launcher is rebuilt from %s)" % backup)
+
+    if stage == 0:
+        new = src
+    else:
+        if not os.path.isdir(site):
+            raise Refusal("overlay directory %s does not exist (stages 1-4 need it)" % site)
+        new_lines = list(lines)
+        new_lines[idx] = build_line(form, stage, weights, threads, site).encode("ascii")
+        new = b"\n".join(new_lines)
+    if new.count(b"\n") != src.count(b"\n"):
+        raise Refusal("the line count would change")
+
+    mode = stat.S_IMODE(os.stat(launcher).st_mode)
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(prefix="." + os.path.basename(launcher) + ".b6tmp.",
+                                   dir=os.path.dirname(os.path.abspath(launcher)))
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(new)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, mode)
+        if not have_backup:
+            create_backup(launcher, backup, cur)
+        os.replace(tmp, launcher)
+        tmp = None
+    except OSError as exc:
+        raise WriteError("write failed (%s)" % exc)
+    finally:
+        if tmp is not None and os.path.lexists(tmp):
+            os.unlink(tmp)
+
+    return [
+        "STAGE %d form %s line %d" % (stage, form, idx + 1),
+        new.split(b"\n")[idx].decode("utf-8", "replace"),
+        "%s (stage 0 = the %s md5)" % (hashlib.md5(new).hexdigest(), BACKUP_SUFFIX),
+    ], notes
