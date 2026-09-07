@@ -71,3 +71,103 @@ def read_log_text(path):
         nl = text.find("\n")
         text = text[nl + 1:] if nl >= 0 else ""
     return text
+
+
+def parse_status_lines(text):
+    """[(t, overruns, poll_to, Tmax token or None, mode token or None)] in file order.
+
+    Only newline-terminated lines count: the last fragment of a block-buffered file may
+    stop in the middle of a number.
+    """
+    rows = []
+    for line in text.split("\n")[:-1]:
+        m_t = _T_RE.match(line)
+        m_ov = _OVERRUNS_RE.search(line)
+        m_pt = _POLL_TO_RE.search(line)
+        if not (m_t and m_ov and m_pt):
+            continue
+        m_tm = _TMAX_RE.search(line)
+        m_md = _MODE_RE.search(line)
+        rows.append((float(m_t.group(1)), int(m_ov.group(1)), int(m_pt.group(1)),
+                     m_tm.group(1) if m_tm else None, m_md.group(1) if m_md else None))
+    return rows
+
+
+def select_window(rows, window_s):
+    """The newest rows whose t is within window_s of the newest t, stopping at a restart."""
+    if not rows:
+        return []
+    start = len(rows) - 1
+    newest_t = rows[start][0]
+    while start > 0:
+        prev_t = rows[start - 1][0]
+        if prev_t > rows[start][0]:
+            break
+        if newest_t - prev_t > window_s:
+            break
+        start -= 1
+    return rows[start:]
+
+
+def min_lines_for(window_s):
+    if math.isinf(window_s):
+        return MIN_LINES_CAP
+    return min(MIN_LINES_CAP, max(2, int(math.ceil(0.75 * window_s))))
+
+
+def percentile(sorted_vals, num, den):
+    """sorted_vals[min(n-1, n*num/den)] with integer arithmetic (probe's _pct convention)."""
+    n = len(sorted_vals)
+    return sorted_vals[min(n - 1, (num * n) // den)]
+
+
+def window_stats(win):
+    """Statistics over the intervals of a window; an interval where a counter went down
+    (a writer restart) is left out and counted."""
+    rates, tot_dt, tot_ov, poll_delta, resets = [], 0.0, 0, 0, 0
+    for a, b in zip(win, win[1:]):
+        dt, d_ov, d_pt = b[0] - a[0], b[1] - a[1], b[2] - a[2]
+        if dt <= 0:
+            continue
+        if d_ov < 0 or d_pt < 0:
+            resets += 1
+            continue
+        rates.append(d_ov / dt)
+        tot_dt += dt
+        tot_ov += d_ov
+        poll_delta += d_pt
+    return {"rates": rates, "mean": (tot_ov / tot_dt) if tot_dt > 0 else None,
+            "poll_to_delta": poll_delta, "resets": resets}
+
+
+def writer_report(path, window_s):
+    lines = []
+    err = None
+    try:
+        rows = parse_status_lines(read_log_text(path))
+    except (OSError, IOError) as exc:
+        rows, err = [], "cannot read %s (%s)" % (path, exc.strerror or exc)
+    win = select_window(rows, window_s)
+    need = min_lines_for(window_s)
+    if len(win) < need:
+        lines.append("WARN writer log has fewer than %d lines in the window (found %d, window "
+                     "%s s%s)" % (need, len(win), repr(window_s), "; " + err if err else ""))
+    else:
+        st = window_stats(win)
+        if not st["rates"]:
+            lines.append("WARN writer log window has no usable interval (every interval was "
+                         "a counter reset)")
+        else:
+            rates = sorted(st["rates"])
+            lines.append("writer_overruns_per_s_mean %s" % repr(st["mean"]))
+            lines.append("writer_overruns_per_s_p50 %s" % repr(percentile(rates, 50, 100)))
+            lines.append("writer_overruns_per_s_p90 %s" % repr(percentile(rates, 90, 100)))
+            lines.append("writer_poll_to_delta %d" % st["poll_to_delta"])
+    if win:
+        lines.append("writer_Tmax_last %s" % (win[-1][3] if win[-1][3] is not None else "NA"))
+        lines.append("writer_mode_machine %s" % (win[-1][4] if win[-1][4] is not None else "NA"))
+    lines.append("writer_lines_used %d" % len(win))
+    if win:
+        lines.append("writer_newest_t %s" % repr(win[-1][0]))
+        lines.append("writer_counter_resets %d" % window_stats(win)["resets"])
+    return lines
