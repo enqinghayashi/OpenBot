@@ -181,3 +181,36 @@ class Obj(object):
 # ----------------------------------------------------- little scene helpers
 def table(z):
     return Obj("plane", label=None, seg=False, z=z)
+
+
+def bottle(x, y, z_table, r=0.0425, h=0.20, label="bottle", **kw):
+    return Obj("cyl", label=label, cx=x, cy=y, r=r, z0=z_table, h=h, **kw)
+
+
+def tapered_bottle(x, y, z_table, r_body=0.0425, h_body=0.14, h_shoulder=0.03,
+                   r_neck=0.015, h_neck=0.04, cap=False, label="bottle", **kw):
+    prof = [(r_body, z_table, z_table + h_body)]
+    n = 3
+    for i in range(n):  # 3-step taper body -> neck
+        rr = r_body + (r_neck - r_body) * (i + 1) / float(n + 1)
+        za = z_table + h_body + h_shoulder * i / float(n)
+        prof.append((rr, za, za + h_shoulder / float(n)))
+    zn = z_table + h_body + h_shoulder
+    prof.append((r_neck, zn, zn + h_neck))
+    if cap:
+        prof.append((r_neck + 0.003, zn + h_neck, zn + h_neck + 0.015))
+    return Obj("stack", label=label, cx=x, cy=y, profile=prof, **kw)
+
+
+def box(lo, hi, label=None, seg=True, **kw):
+    return Obj("box", label=label, seg=seg, lo=lo, hi=hi, **kw)
+
+
+def book(x, y, z_table, wx=0.22, dy=0.15, th=0.03, label="book", **kw):
+    return box((x - wx / 2, y - dy / 2, z_table), (x + wx / 2, y + dy / 2, z_table + th),
+               label=label, **kw)
+
+
+def bowl(x, y, z_table, r_rim=0.12, depth=0.07, thick=0.005, label="bowl", **kw):
+    return Obj("bowl", label=label, cx=x, cy=y, z_table=z_table, r_rim=r_rim,
+               depth=depth, thick=thick, **kw)
