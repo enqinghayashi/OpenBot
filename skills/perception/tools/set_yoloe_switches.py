@@ -240,3 +240,22 @@ def apply(argv, env):
     ], notes
 
 
+def main(argv=None, environ=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    env = os.environ if environ is None else environ
+    if argv in (["-h"], ["--help"]):
+        print(__doc__.strip())
+        return 0
+    try:
+        out, notes = apply(argv, env)
+    except Refusal as exc:
+        print("REFUSED: %s; nothing written" % " ".join(str(exc).split()))
+        return 1
+    except WriteError as exc:
+        print("ERROR: %s; launcher unchanged" % " ".join(str(exc).split()))
+        return 1
+    for note in notes:
+        sys.stderr.write(note + "\n")
+    for line in out:
+        print(line)
+    return 0
