@@ -116,3 +116,5 @@ def add_ultralytics_metadata(input_engine, output_engine, names, task='segment',
         'total_len': 4 + meta_len + len(engine_data),
         'metadata': metadata,
     }
+
+
