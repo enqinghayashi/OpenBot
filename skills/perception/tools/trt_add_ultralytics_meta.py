@@ -164,3 +164,7 @@ def main():
     print(f"ENGINE_LEN: {result['engine_len']}")
     print(f"TOTAL_LEN: {result['total_len']}")
     print(f"METADATA: {json.dumps(result['metadata'])}")
+
+
+if __name__ == '__main__':
+    main()
