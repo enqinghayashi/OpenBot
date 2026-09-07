@@ -119,3 +119,5 @@ WALK_COLORS = {                   # trail colour per walk state (BGR)
 
 def label_color(label):
     return PALETTE[abs(hash(label)) % len(PALETTE)]
+
+
