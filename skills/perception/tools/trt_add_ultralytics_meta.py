@@ -118,3 +118,49 @@ def add_ultralytics_metadata(input_engine, output_engine, names, task='segment',
     }
 
 
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--engine', required=True,
+                        help='Path to raw TensorRT engine (no metadata)')
+    parser.add_argument('--names', nargs='+', required=True,
+                        help='Class names in order')
+    parser.add_argument('--output', required=True,
+                        help='Path to save engine with metadata')
+    parser.add_argument('--task', default='segment',
+                        help='Task type (default: segment)')
+    parser.add_argument('--imgsz', type=int, nargs=2, default=[640, 640],
+                        help='Image size [height width] (default: 640 640)')
+    parser.add_argument('--stride', type=int, default=32,
+                        help='Model stride (default: 32)')
+    args = parser.parse_args()
+
+    # inputs first
+    import os
+    if not os.path.isfile(args.engine):
+        print(f"ERROR: {args.engine} not found", file=sys.stderr)
+        sys.exit(1)
+
+    # mkdir -p the output dir
+    output_dir = os.path.dirname(os.path.abspath(args.output))
+    if output_dir and not os.path.isdir(output_dir):
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except OSError as e:
+            print(f"ERROR: Failed to create {output_dir}: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    try:
+        result = add_ultralytics_metadata(
+            args.engine, args.output, args.names,
+            task=args.task, imgsz=tuple(args.imgsz), stride=args.stride
+        )
+    except Exception as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # evidence
+    print(f"OUTPUT_PATH: {result['output_path']}")
+    print(f"METADATA_LEN: {result['metadata_len']}")
+    print(f"ENGINE_LEN: {result['engine_len']}")
+    print(f"TOTAL_LEN: {result['total_len']}")
+    print(f"METADATA: {json.dumps(result['metadata'])}")
