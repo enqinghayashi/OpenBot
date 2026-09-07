@@ -454,3 +454,17 @@ def frame(scene, seed, t_wall=1000.0, noise=None, leak_px=1, ghost=None,
     fr, why = core.pair_cloud([(t_wall - 0.01, rows)], P, I, t_wall, cfg,
                               t_wall=t_wall, n_raw=len(pts))
     return fr
+
+
+def frames(scene, seeds, t0=1000.0, dt=0.15, **kw):
+    out = []
+    for k, s in enumerate(seeds):
+        f = frame(scene, s, t_wall=t0 + k * dt, **kw)
+        if f is not None:
+            out.append(f)
+    return out
+
+
+def table_z_for_view(stand=True):
+    """Torso-frame table heights used in tests (INFERRED scene layouts)."""
+    return -0.10 if stand else 0.0
