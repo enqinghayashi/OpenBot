@@ -18,3 +18,7 @@ def main(path):
             c = v.reshape(-1, v.shape[-1])[:, 4]
             line += ' conf_max=%.4f rows>=0.35=%d' % (float(np.nanmax(c)), int((c >= 0.35).sum()))
         print(line)
+
+
+if __name__ == '__main__':
+    main(sys.argv[1])
