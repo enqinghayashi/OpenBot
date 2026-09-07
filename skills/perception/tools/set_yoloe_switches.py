@@ -121,3 +121,26 @@ def _checked(env, name, rx, what):
     return value
 
 
+def create_backup(launcher, backup, data):
+    """Publish `data` as the backup, atomically and without ever replacing a backup.
+
+    The bytes go to a temp file first (mode and times copied from the launcher, as
+    cp -p does), then os.link makes them appear under the backup name in one step; a
+    backup that appeared meanwhile makes the link fail and is left alone.
+    """
+    tmp_bk = None
+    try:
+        fd, tmp_bk = tempfile.mkstemp(prefix="." + os.path.basename(backup) + ".tmp.",
+                                      dir=os.path.dirname(os.path.abspath(backup)))
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        shutil.copystat(launcher, tmp_bk)
+        try:
+            os.link(tmp_bk, backup)
+        except FileExistsError:
+            pass
+    finally:
+        if tmp_bk is not None and os.path.lexists(tmp_bk):
+            os.unlink(tmp_bk)
