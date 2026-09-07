@@ -125,3 +125,10 @@ def _wrap_angle(a):
     return (a + math.pi) % (2.0 * math.pi) - math.pi
 
 
+def _body_to_world(pose, x_b, y_b):
+    """Body frame (x right, y forward) -> odometry world; the walk node's
+    walk_lock.body_to_world, copied so this laptop tool has no robot import."""
+    rx, ry, yaw = pose
+    fwd, left = y_b, -x_b
+    return (rx + math.cos(yaw) * fwd - math.sin(yaw) * left,
+            ry + math.sin(yaw) * fwd + math.cos(yaw) * left)
