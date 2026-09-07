@@ -238,3 +238,5 @@ def apply(argv, env):
         new.split(b"\n")[idx].decode("utf-8", "replace"),
         "%s (stage 0 = the %s md5)" % (hashlib.md5(new).hexdigest(), BACKUP_SUFFIX),
     ], notes
+
+
