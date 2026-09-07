@@ -114,3 +114,8 @@ def _read(path, what):
         raise Refusal("cannot read %s %s (%s)" % (what, path, exc))
 
 
+def _checked(env, name, rx, what):
+    value = env.get(name, "")
+    if value != "" and rx.fullmatch(value) is None:
+        raise Refusal("%s %r %s" % (name, value, what))
+    return value
