@@ -251,3 +251,14 @@ class WhatRobotSees(Node):
                       'start_wall': time.time(), 'frames': 0}
         self._write_meta()
 
+    def _open_map_record(self, path):
+        size = (MAP_SIZE, MAP_SIZE)
+        self._mwriter, codec = self._make_writer(path, size)
+        self._mtimes = open(path + '.times.csv', 'w')
+        self._mtimes.write('frame,wall_s\n')
+        self._mmeta = {'record': os.path.abspath(path), 'codec': codec,
+                       'fps': self._fps, 'size': list(size), 'kind': 'map',
+                       'odom_topic': self._odom_topic,
+                       'start_wall': time.time(), 'frames': 0}
+        self._write_meta_dict(self._mmeta)
+
