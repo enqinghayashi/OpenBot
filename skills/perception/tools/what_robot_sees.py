@@ -262,3 +262,7 @@ class WhatRobotSees(Node):
                        'start_wall': time.time(), 'frames': 0}
         self._write_meta_dict(self._mmeta)
 
+    def _write_meta(self):
+        if self._meta is not None:
+            self._write_meta_dict(self._meta)
+
