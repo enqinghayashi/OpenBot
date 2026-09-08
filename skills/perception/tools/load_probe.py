@@ -238,3 +238,65 @@ def scan_procs(patterns, exclude):
             if p in cmd:
                 found[p].append(int(name))
     return found
+
+
+def process_report(patterns, sample_s):
+    try:
+        clk = float(os.sysconf("SC_CLK_TCK"))
+    except (ValueError, OSError, AttributeError):
+        clk = 100.0
+    found = scan_procs(patterns, own_pids())
+    first = {}
+    for pid in sorted(set(pid for lst in found.values() for pid in lst)):
+        st = read_stat(pid)
+        if st is not None:
+            first[pid] = (st, time.monotonic())
+    if first:
+        time.sleep(sample_s)
+    measured = {}
+    for pid in sorted(first):
+        st1, m1 = first[pid]
+        st2 = read_stat(pid)
+        info = read_status(pid)
+        m2 = time.monotonic()
+        if st2 is None or info is None or st2["start"] != st1["start"] or m2 <= m1:
+            continue
+        cpu = 100.0 * ((st2["ticks"] - st1["ticks"]) / clk) / (m2 - m1)
+        measured[pid] = (cpu, info[0], info[1])
+    lines = []
+    for p in patterns:
+        pids = [pid for pid in found[p] if pid in measured]
+        if not pids:
+            lines.append("%s ABSENT" % p)
+        for pid in pids:
+            cpu, rss, nthr = measured[pid]
+            lines.append("%s pid %d cpu_pct_of_one_core %.1f rss_mb %.1f nthreads %d"
+                         % (p, pid, cpu, rss, nthr))
+    return lines
+
+
+def loadavg_line():
+    try:
+        with open("/proc/loadavg", "rb") as fh:
+            return "loadavg_1m %s" % fh.read().decode("utf-8", "replace").split()[0]
+    except (OSError, IOError, IndexError):
+        return "loadavg_1m NA"
+
+
+def memavail_line():
+    try:
+        with open("/proc/meminfo", "rb") as fh:
+            for raw in fh.read().decode("utf-8", "replace").split("\n"):
+                if raw.startswith("MemAvailable:"):
+                    return "MemAvailable_mb %.1f" % (int(raw.split()[1]) / 1024.0)
+    except (OSError, IOError, ValueError, IndexError):
+        pass
+    return "MemAvailable_mb NA"
+
+
+# -------------------------------------------------------------------- the main
+def _positive(text):
+    value = float(text)
+    if not value > 0:
+        raise argparse.ArgumentTypeError("must be > 0")
+    return value
