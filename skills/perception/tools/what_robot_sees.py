@@ -240,3 +240,14 @@ class WhatRobotSees(Node):
         with open(meta['record'] + '.meta.json', 'w') as f:
             json.dump(meta, f, indent=1)
 
+    def _open_record(self, path):
+        size = (self._win_w, self._win_h)
+        self._writer, codec = self._make_writer(path, size)
+        self._times = open(path + '.times.csv', 'w')
+        self._times.write('frame,wall_s\n')
+        self._meta = {'record': os.path.abspath(path), 'codec': codec,
+                      'fps': self._fps, 'size': list(size),
+                      'no_cloud': self._no_cloud, 'kind': 'eyes',
+                      'start_wall': time.time(), 'frames': 0}
+        self._write_meta()
+
