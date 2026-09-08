@@ -266,3 +266,42 @@ class WhatRobotSees(Node):
         if self._meta is not None:
             self._write_meta_dict(self._meta)
 
+    def close_record(self):
+        """Flush and close the recordings (idempotent)."""
+        if self._writer is not None:
+            self._writer.release()
+            self._writer = None
+        if self._times is not None:
+            self._times.close()
+            self._times = None
+        if self._meta is not None:
+            self._meta['end_wall'] = time.time()
+            self._meta['frames'] = self._frames
+            self._write_meta()
+            # print, not ROS log: rclpy is gone by SIGINT
+            print('recording closed: %d frames -> %s' %
+                  (self._frames, self._meta['record']), file=sys.stderr)
+            self._meta = None
+        if self._mwriter is not None:
+            self._mwriter.release()
+            self._mwriter = None
+        if self._mtimes is not None:
+            self._mtimes.close()
+            self._mtimes = None
+        if self._mmeta is not None:
+            self._mmeta['end_wall'] = time.time()
+            self._mmeta['frames'] = self._mframes
+            self._write_meta_dict(self._mmeta)
+            print('map recording closed: %d frames -> %s' %
+                  (self._mframes, self._mmeta['record']), file=sys.stderr)
+            self._mmeta = None
+        if self._odom_csv is not None:
+            self._odom_csv.close()
+            self._odom_csv = None
+            if self._pose is not None:
+                png = os.path.join(self._snap_dir, 'odom_path.png')
+                cv2.imwrite(png, self._render_map())
+                print('odometry path -> %s (%d trail points)' %
+                      (png, len(self._trail)), file=sys.stderr)
+
+    # ── the odometry map ─────────────────────────────────────────────────
