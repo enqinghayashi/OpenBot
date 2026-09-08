@@ -235,3 +235,8 @@ class WhatRobotSees(Node):
             w.release()
         raise RuntimeError('cannot open a video writer for %s' % path)
 
+    @staticmethod
+    def _write_meta_dict(meta):
+        with open(meta['record'] + '.meta.json', 'w') as f:
+            json.dump(meta, f, indent=1)
+
