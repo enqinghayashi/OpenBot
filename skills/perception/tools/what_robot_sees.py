@@ -226,3 +226,12 @@ class WhatRobotSees(Node):
                if opts.record else ''))
 
     # ── recording it ─────────────────────────────────────────────────────
+    def _make_writer(self, path, size):
+        for codec in ('avc1', 'mp4v'):
+            w = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*codec),
+                                self._fps, size)
+            if w.isOpened():
+                return w, codec
+            w.release()
+        raise RuntimeError('cannot open a video writer for %s' % path)
+
