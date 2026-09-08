@@ -140,3 +140,4 @@ def _clock_text(t):
     return time.strftime('%H:%M:%S', time.localtime(t)) + '.%d' % int((t - int(t)) * 10)
 
 
+class WhatRobotSees(Node):
