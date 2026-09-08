@@ -305,3 +305,22 @@ class WhatRobotSees(Node):
                       (png, len(self._trail)), file=sys.stderr)
 
     # ── the odometry map ─────────────────────────────────────────────────
+    def _on_odom(self, msg):
+        p = msg.pose.pose.position
+        q = msg.pose.pose.orientation
+        # yaw from quat, same as walk_node._on_odom
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        now = time.time()
+        self._pose = (p.x, p.y, yaw, now)
+        last = self._trail[-1] if self._trail else None
+        if (last is None or now - last[0] >= 0.5
+                or math.hypot(p.x - last[1], p.y - last[2]) >= 0.01
+                or abs(_wrap_angle(yaw - last[3])) >= math.radians(1.0)):
+            self._trail.append((now, p.x, p.y, yaw, self._walk_state))
+            if len(self._trail) > 30000:
+                del self._trail[:5000]
+            if self._odom_csv is not None:
+                self._odom_csv.write('%.3f,%.4f,%.4f,%.4f,%s\n' %
+                                     (now, p.x, p.y, yaw, self._walk_state))
+
