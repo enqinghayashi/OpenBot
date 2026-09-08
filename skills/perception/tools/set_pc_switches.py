@@ -65,3 +65,95 @@ HEADER = ("    # \u2500\u2500 batch 3b point-cloud consumer switches (all defaul
 
 class Refusal(Exception):
     """A check failed before anything was written."""
+
+
+class WriteError(Exception):
+    """An OS error while writing; the config was not replaced."""
+
+
+def read_switches(env):
+    """{key: bool} from PC_SHADOW / PC_HOLD_CHECK / PC_PLACE_RIM, each exactly true or false."""
+    want = {}
+    for key, name in ENV_NAMES:
+        value = env.get(name)
+        if value is None:
+            raise Refusal("%s is not set (it must be exactly true or false)" % name)
+        if value not in ("true", "false"):
+            raise Refusal("%s=%r is not exactly true or false" % (name, value))
+        want[key] = value == "true"
+    return want
+
+
+def _blank_or_comment(line):
+    stripped = line.strip()
+    return stripped == b"" or stripped.startswith(b"#")
+
+
+def find_envelope(lines):
+    """(start, end): index of "  envelope:" under the one top-level "embodiment:" and the
+    index just past the envelope block; None when either header is absent or not unique."""
+    tops = [i for i, line in enumerate(lines) if re.match(rb"embodiment:(?:[ \t]|$)", line)]
+    if len(tops) != 1:
+        return None
+    end_top = len(lines)
+    for j in range(tops[0] + 1, len(lines)):
+        if not _blank_or_comment(lines[j]) and not lines[j][:1].isspace():
+            end_top = j
+            break
+    envs = [j for j in range(tops[0] + 1, end_top)
+            if re.match(rb"  envelope:(?:[ \t]|$)", lines[j])]
+    if len(envs) != 1:
+        return None
+    end = end_top
+    for j in range(envs[0] + 1, end_top):
+        if not _blank_or_comment(lines[j]) and len(lines[j]) - len(lines[j].lstrip(b" ")) <= 2:
+            end = j
+            break
+    return envs[0], end
+
+
+def plan_text(data, want):
+    """(new bytes, path) for the config bytes `data`; path is "insert" or "update"."""
+    if b"\r" in data:
+        raise Refusal("the config has CR characters (CRLF line ends); only LF files are edited")
+    lines = data.split(b"\n")
+    present = {}
+    for key in KEYS:
+        rx = re.compile(rb"[ \t]*" + key.encode("ascii") + rb"[ \t]*:")
+        present[key] = [i for i, line in enumerate(lines) if rx.match(line)]
+        if len(present[key]) > 1:
+            raise Refusal("%s is present %d times (lines %s)" % (
+                key, len(present[key]), ", ".join(str(i + 1) for i in present[key])))
+    have = [key for key in KEYS if present[key]]
+    if len(have) not in (0, len(KEYS)):
+        raise Refusal("only %s of the three keys are present (%s); all or none are expected"
+                      % (len(have), ", ".join(have)))
+    block = find_envelope(lines)
+    if block is None:
+        raise Refusal("the embodiment: -> envelope: block was not found exactly once")
+    start, end = block
+
+    if not have:
+        anchors = [i for i, line in enumerate(lines) if line.startswith(ANCHOR)]
+        if len(anchors) != 1:
+            raise Refusal("the insertion anchor (the low-workspace descent lane comment) was "
+                          "found %d times (expected exactly 1)" % len(anchors))
+        ai = anchors[0]
+        if not start < ai < end:
+            raise Refusal("the insertion anchor (line %d) is outside the envelope block" % (ai + 1))
+        block_lines = [HEADER] + [
+            ("    %s: %s" % (key, "true" if want[key] else "false")).encode("ascii")
+            for key in KEYS]
+        new_lines = lines[:ai] + block_lines + lines[ai:]
+        return b"\n".join(new_lines), "insert"
+
+    new_lines = list(lines)
+    for key in KEYS:
+        i = present[key][0]
+        rx = re.compile(rb"(    " + key.encode("ascii") + rb":[ ]+)(true|false)((?:[ ]+#.*)?[ ]*)")
+        m = rx.fullmatch(lines[i])
+        if not start < i < end or m is None:
+            raise Refusal("line %d (%s) is not a plain '    %s: true|false' line inside the "
+                          "envelope block" % (i + 1, key, key))
+        new_lines[i] = m.group(1) + (b"true" if want[key] else b"false") + m.group(3)
+    return b"\n".join(new_lines), "update"
