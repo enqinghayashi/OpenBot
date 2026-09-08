@@ -141,3 +141,88 @@ def _clock_text(t):
 
 
 class WhatRobotSees(Node):
+    def __init__(self, opts=None):
+        super().__init__('what_robot_sees')
+        if opts is None:
+            opts = _parse_args([])[0]
+        self._no_cloud = bool(opts.no_cloud)
+        self._no_window = bool(opts.no_window)
+        self._fps = max(1.0, min(30.0, float(opts.fps)))
+        self._win_w = PANEL_W if self._no_cloud else PANEL_W * 2
+        self._win_h = PANEL_H + INFO_H
+        self._snap_dir = (opts.out_dir or
+                          (os.path.dirname(os.path.abspath(opts.record))
+                           if opts.record else SNAP_DIR))
+        os.makedirs(self._snap_dir, exist_ok=True)
+        # --record: writer, per-frame stamp, meta sidecar
+        self._writer = None
+        self._times = None
+        self._frames = 0
+        self._meta = None
+        if opts.record:
+            self._open_record(opts.record)
+        self._frame = None          # newest frame
+        self._detections = []       # newest detections
+        self._det_time = 0.0
+        self._body = []             # body detections
+        self._body_time = 0.0
+        self._cloud_pts = np.zeros((0, 3))
+        self._cloud_ids = np.zeros(0, dtype=np.int64)
+        self._cloud_time = 0.0
+
+        # best-effort read, but binds reliable writers too:
+        # no QoS mismatch can silence a topic
+        qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
+                         history=HistoryPolicy.KEEP_LAST, depth=10)
+        self.create_subscription(Image, '/camera/color/image_raw',
+                                 self._on_frame, qos)
+        self.create_subscription(String, '/detections',
+                                 self._on_detections, qos)
+        self.create_subscription(String, '/object_detections_body',
+                                 self._on_body, qos)
+        if not self._no_cloud:
+            self.create_subscription(PointCloud2, '/object_pointcloud',
+                                     self._on_cloud, qos)
+        # --odom: pane state
+        self._odom_on = bool(getattr(opts, 'odom', False))
+        self._odom_topic = getattr(opts, 'odom_topic', ODOM_TOPIC_DEFAULT)
+        self._pose = None             # (x, y, yaw, wall)
+        self._trail = []              # (wall, x, y, yaw, state)
+        self._walk_state, self._walk_label = 'IDLE', None
+        self._home_goal = None        # (x, y) world, from RETURNING
+        self._markers = []            # x, y, text, colour
+        self._odom_csv = None
+        self._mwriter = self._mtimes = self._mmeta = None
+        self._mframes = 0
+        if self._odom_on:
+            from nav_msgs.msg import Odometry   # only used here
+            self.create_subscription(Odometry, self._odom_topic, self._on_odom, qos)
+            self.create_subscription(String, '/walk_status', self._on_walk_status, qos)
+            self.create_subscription(String, '/skill_verdict', self._on_verdict, qos)
+            self._odom_csv = open(os.path.join(self._snap_dir, 'odom.csv'), 'w')
+            self._odom_csv.write('wall_s,x,y,yaw,state\n')
+            if opts.record:
+                self._open_map_record(os.path.join(
+                    os.path.dirname(os.path.abspath(opts.record)), 'map.mp4'))
+        self.create_timer(1.0 / self._fps, self._render)
+
+        # self-check 5 s in: DDS env + topics we can see
+        # _diag_done keeps it to one report
+        self.create_timer(5.0, self._diagnose)
+        self._diag_done = False
+
+        # 3D view state
+        self._yaw = 0.7
+        self._pitch = 0.35
+        self._auto_rotate = False
+        self._drag = None
+        self._last_saved = 0.0
+
+        self.get_logger().info(
+            'what_robot_sees live viewer ready — waiting for pipeline topics. '
+            'Keys: s=save  r=auto-rotate  q=quit'
+            + ('  [no-cloud]' if self._no_cloud else '')
+            + ('  [recording %s @ %g fps]' % (opts.record, self._fps)
+               if opts.record else ''))
+
+    # ── recording it ─────────────────────────────────────────────────────
