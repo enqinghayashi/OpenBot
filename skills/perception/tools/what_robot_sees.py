@@ -344,3 +344,14 @@ class WhatRobotSees(Node):
             self._add_marker(state.lower() + (' ' + str(label) if label else ''),
                              WALK_COLORS.get(state, (200, 200, 200)))
 
+    def _add_marker(self, text, col):
+        """A marker at the current pose; one that lands within 5 cm of the
+        previous marker joins its label (REACHED and the verdict that follows
+        it are at the same spot)."""
+        x, y = self._pose[0], self._pose[1]
+        if self._markers and math.hypot(x - self._markers[-1][0], y - self._markers[-1][1]) < 0.05:
+            px, py, ptext, pcol = self._markers[-1]
+            self._markers[-1] = (px, py, ptext + ', ' + text, pcol)
+            return
+        self._markers.append((x, y, text, col))
+
