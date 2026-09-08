@@ -300,3 +300,55 @@ def _positive(text):
     if not value > 0:
         raise argparse.ArgumentTypeError("must be > 0")
     return value
+
+
+def _finite_positive(text):
+    value = _positive(text)
+    if math.isinf(value):
+        raise argparse.ArgumentTypeError("must be finite")
+    return value
+
+
+def build_parser():
+    ap = argparse.ArgumentParser(prog="load_probe.py", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--writer-log", default=DEFAULT_WRITER_LOG)
+    ap.add_argument("--window-s", type=_positive, default=60.0)
+    ap.add_argument("--sample-s", type=_finite_positive, default=5.0)
+    ap.add_argument("--procs", default=DEFAULT_PROCS,
+                    help="comma-separated command-line fragments")
+    return ap
+
+
+def _section(name, fn):
+    try:
+        return fn()
+    except Exception as exc:  # noqa: BLE001 - the meter reports a broken section, it never raises
+        return ["WARN %s section failed: %s: %s" % (name, type(exc).__name__, exc)]
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    patterns = [p.strip() for p in args.procs.split(",") if p.strip()]
+    out = []
+    out.extend(_section("writer", lambda: writer_report(args.writer_log, args.window_s)))
+    out.extend(_section("loadavg", lambda: [loadavg_line()]))
+    out.extend(_section("process", lambda: process_report(patterns, args.sample_s)))
+    out.extend(_section("memory", lambda: [memavail_line()]))
+    text = "\n".join(out) + "\n"
+    try:
+        try:
+            sys.stdout.write(text)
+        except UnicodeEncodeError:
+            sys.stdout.write(text.encode("ascii", "replace").decode("ascii"))
+        sys.stdout.flush()
+    except (OSError, IOError):
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)
