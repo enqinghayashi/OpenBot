@@ -324,3 +324,23 @@ class WhatRobotSees(Node):
                 self._odom_csv.write('%.3f,%.4f,%.4f,%.4f,%s\n' %
                                      (now, p.x, p.y, yaw, self._walk_state))
 
+    def _on_walk_status(self, msg):
+        try:
+            d = json.loads(msg.data)
+        except ValueError:
+            return
+        state = str(d.get('state', 'IDLE'))
+        label = d.get('label')
+        detail = d.get('detail') if isinstance(d.get('detail'), dict) else {}
+        changed = state != self._walk_state
+        self._walk_state, self._walk_label = state, label
+        goal = detail.get('goal')
+        if state == 'RETURNING' and isinstance(goal, list) and len(goal) == 2:
+            try:
+                self._home_goal = (float(goal[0]), float(goal[1]))
+            except (TypeError, ValueError):
+                pass
+        if changed and self._pose is not None and state in ('REACHED', 'NOT_FOUND'):
+            self._add_marker(state.lower() + (' ' + str(label) if label else ''),
+                             WALK_COLORS.get(state, (200, 200, 200)))
+
