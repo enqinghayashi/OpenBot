@@ -138,3 +138,5 @@ def _clock_text(t):
     """HH:MM:SS.d of wall time ``t`` — the sync mark for a camera that films
     the laptop screen for a second at the start of a take."""
     return time.strftime('%H:%M:%S', time.localtime(t)) + '.%d' % int((t - int(t)) * 10)
+
+
