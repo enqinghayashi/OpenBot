@@ -171,3 +171,70 @@ def writer_report(path, window_s):
         lines.append("writer_newest_t %s" % repr(win[-1][0]))
         lines.append("writer_counter_resets %d" % window_stats(win)["resets"])
     return lines
+
+
+# ------------------------------------------------------------------- /proc bits
+def read_stat(pid):
+    """{"ticks", "ppid", "start"} from /proc/<pid>/stat, or None (gone / unreadable)."""
+    try:
+        with open("/proc/%d/stat" % pid, "rb") as fh:
+            data = fh.read().decode("utf-8", "replace")
+        rest = data[data.rindex(")") + 2:].split()
+        return {"ticks": int(rest[11]) + int(rest[12]), "ppid": int(rest[1]),
+                "start": rest[19]}
+    except (OSError, IOError, ValueError, IndexError):
+        return None
+
+
+def read_status(pid):
+    """(rss_mb, nthreads) from /proc/<pid>/status, or None."""
+    rss_kb = threads = None
+    try:
+        with open("/proc/%d/status" % pid, "rb") as fh:
+            for raw in fh.read().decode("utf-8", "replace").split("\n"):
+                if raw.startswith("VmRSS:"):
+                    rss_kb = int(raw.split()[1])
+                elif raw.startswith("Threads:"):
+                    threads = int(raw.split()[1])
+    except (OSError, IOError, ValueError, IndexError):
+        return None
+    if rss_kb is None or threads is None:
+        return None
+    return rss_kb / 1024.0, threads
+
+
+def own_pids():
+    """This process and its ancestors (a wrapper such as timeout carries our arguments)."""
+    seen = set([os.getpid()])
+    cur = os.getpid()
+    for _ in range(128):
+        st = read_stat(cur)
+        if st is None or st["ppid"] <= 0 or st["ppid"] in seen:
+            break
+        cur = st["ppid"]
+        seen.add(cur)
+    return seen
+
+
+def scan_procs(patterns, exclude):
+    """{pattern: [pid, ...]}: pids whose /proc/<pid>/cmdline contains the pattern."""
+    found = dict((p, []) for p in patterns)
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return found
+    for name in sorted(names, key=lambda s: (len(s), s)):
+        if not name.isdigit() or int(name) in exclude:
+            continue
+        try:
+            with open("/proc/%s/cmdline" % name, "rb") as fh:
+                raw = fh.read(65536)
+        except (OSError, IOError):
+            continue
+        if not raw:
+            continue
+        cmd = raw.replace(b"\0", b" ").decode("utf-8", "replace")
+        for p in patterns:
+            if p in cmd:
+                found[p].append(int(name))
+    return found
