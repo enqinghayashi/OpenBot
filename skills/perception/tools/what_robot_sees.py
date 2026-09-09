@@ -569,3 +569,16 @@ class WhatRobotSees(Node):
             cv2.line(img, (cx, cy - 7), (cx, cy + 7), col, 1)
         return img
 
+    def _project(self, pts3, scale, cx, cy):
+        """yaw/pitch rotate (torso frame) then orthographic projection."""
+        yaw, pitch = self._yaw, self._pitch
+        cyy, syy = np.cos(yaw), np.sin(yaw)
+        cpp, spp = np.cos(pitch), np.sin(pitch)
+        Rz = np.array([[cyy, -syy, 0], [syy, cyy, 0], [0, 0, 1]])
+        Rx = np.array([[1, 0, 0], [0, cpp, -spp], [0, spp, cpp]])
+        R = Rz @ Rx
+        rot = pts3 @ R.T
+        sx = cx + rot[:, 0] * scale
+        sy = cy - rot[:, 1] * scale
+        return sx, sy, rot[:, 2]
+
