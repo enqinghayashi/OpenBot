@@ -755,3 +755,31 @@ class WhatRobotSees(Node):
         self.get_logger().info(f'snapshot saved -> {self._snap_dir}/snap_{ts}_*')
 
 
+def _parse_args(argv):
+    """(opts, remaining argv for rclpy).  Unknown args (e.g. --ros-args) pass
+    through to rclpy.init."""
+    p = argparse.ArgumentParser(
+        prog='what_robot_sees.py',
+        description='live viewer / recorder of the pick-walk perception stack '
+                    '(run on the laptop; see the module docstring)')
+    p.add_argument('--no-cloud', action='store_true',
+                   help='do not subscribe to /object_pointcloud (keeps the '
+                        'projector from building the cloud for this viewer) '
+                        'and drop the 3D panel')
+    p.add_argument('--record', metavar='OUT.mp4', default=None,
+                   help='write the rendered canvas to OUT.mp4 (+ .times.csv, '
+                        '.meta.json)')
+    p.add_argument('--fps', type=float, default=10.0,
+                   help='render/record rate, 1-30 (default 10)')
+    p.add_argument('--no-window', action='store_true',
+                   help='headless: no X window (use with --record)')
+    p.add_argument('--out-dir', default=None,
+                   help='snapshot + detections.log directory (default: the '
+                        '--record directory, else ./vision_snapshots)')
+    p.add_argument('--odom', action='store_true',
+                   help='add the top-down odometry map pane (recorded as '
+                        'map.mp4 beside --record; trail to odom.csv; final '
+                        'map to odom_path.png)')
+    p.add_argument('--odom-topic', default=ODOM_TOPIC_DEFAULT,
+                   help='nav_msgs/Odometry topic (default %(default)s)')
+    return p.parse_known_args(argv)
