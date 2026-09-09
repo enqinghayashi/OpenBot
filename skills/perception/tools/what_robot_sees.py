@@ -492,3 +492,6 @@ class WhatRobotSees(Node):
                 f'DIAG topic {"VISIBLE" if t in names else "MISSING  "}: {t}')
         self.get_logger().info(
             f'DIAG total topics visible: {len(names)}')
+    def _on_frame(self, msg):
+        self._frame = msg
+
