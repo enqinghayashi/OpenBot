@@ -472,3 +472,23 @@ class WhatRobotSees(Node):
         return panel
 
     # ── incoming messages ────────────────────────────────────────────────
+    def _diagnose(self):
+        if self._diag_done:
+            return
+        self._diag_done = True
+        self.get_logger().info(
+            'DIAG env: '
+            f'ROS_DOMAIN_ID={os.environ.get("ROS_DOMAIN_ID", "(unset=0)")} '
+            f'ROS_LOCALHOST_ONLY={os.environ.get("ROS_LOCALHOST_ONLY", "(unset)")} '
+            f'CYCLONEDDS_URI={os.environ.get("CYCLONEDDS_URI", "(unset)")}')
+        try:
+            names = set(n for n, _ in self.get_topic_names_and_types())
+        except Exception as e:
+            self.get_logger().error(f'DIAG topic scan failed: {e}')
+            return
+        for t in ('/camera/color/image_raw', '/detections',
+                  '/object_detections_body', '/object_pointcloud'):
+            self.get_logger().info(
+                f'DIAG topic {"VISIBLE" if t in names else "MISSING  "}: {t}')
+        self.get_logger().info(
+            f'DIAG total topics visible: {len(names)}')
