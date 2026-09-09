@@ -683,3 +683,58 @@ class WhatRobotSees(Node):
                         label_color(label), 1, cv2.LINE_AA)
             y += 20
 
+    def _render(self):
+        if self._auto_rotate:
+            self._yaw += 0.02
+
+        left = self._render_2d()
+        right = None if self._no_cloud else self._render_3d()
+        canvas = left if right is None else np.hstack([left, right])
+
+        bar = np.zeros((INFO_H, self._win_w, 3), dtype=np.uint8)
+        self._render_info(bar)
+        canvas = np.vstack([canvas, bar])
+
+        stamp = time.time()
+        footer = ('recording, no window' if self._no_window else
+                  's=save  r=auto-rotate  drag=rotate 3D  q=quit')
+        cv2.putText(canvas, footer, (8, self._win_h - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (140, 140, 140), 1,
+                    cv2.LINE_AA)
+        # wall clock, bottom right: camera sync
+        cv2.putText(canvas, _clock_text(stamp), (self._win_w - 118, self._win_h - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1,
+                    cv2.LINE_AA)
+        if self._writer is not None:
+            self._writer.write(canvas)
+            self._times.write('%d,%.3f\n' % (self._frames, stamp))
+            self._frames += 1
+            if self._frames % 50 == 0:
+                self._times.flush()
+                self._meta['frames'] = self._frames
+                self._write_meta()
+        if self._odom_on:
+            mp = self._render_map()
+            if self._mwriter is not None:
+                self._mwriter.write(mp)
+                self._mtimes.write('%d,%.3f\n' % (self._mframes, stamp))
+                self._mframes += 1
+                if self._mframes % 50 == 0:
+                    self._mtimes.flush()
+                    self._odom_csv.flush()
+                    self._mmeta['frames'] = self._mframes
+                    self._write_meta_dict(self._mmeta)
+            if not self._no_window:
+                cv2.imshow('odometry map', mp)
+        if self._no_window:
+            return
+        cv2.imshow('what robot sees', canvas)
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('s'):
+            self._save(canvas, left, right)
+        elif key == ord('r'):
+            self._auto_rotate = not self._auto_rotate
+        elif key == ord('q'):
+            self.get_logger().info('quit requested')
+            raise KeyboardInterrupt
+
