@@ -534,3 +534,38 @@ class WhatRobotSees(Node):
             pass
 
     # ── drawing ──────────────────────────────────────────────────────────
+    def _render_2d(self):
+        """Color frame + seg mask overlay."""
+        img = np.zeros((PANEL_H, PANEL_W, 3), dtype=np.uint8)
+        if self._frame is None:
+            cv2.putText(img, 'waiting for /camera/color/image_raw ...',
+                        (20, PANEL_H // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                        (200, 200, 200), 1, cv2.LINE_AA)
+            return img
+        raw = np.frombuffer(bytes(self._frame.data), dtype=np.uint8).reshape(
+            COLOR_H, COLOR_W, 3)
+        img = cv2.resize(raw, (PANEL_W, PANEL_H), interpolation=cv2.INTER_NEAREST)
+
+        # see-through mask fill per label
+        for det in self._detections:
+            label = det.get('label', '?')
+            col = label_color(label)
+            mask = det.get('mask')
+            if mask and len(mask) >= 3:
+                poly = np.array([(int(x) * UPSCALE, int(y) * UPSCALE)
+                                 for x, y in mask], dtype=np.int32)
+                overlay = img.copy()
+                cv2.fillPoly(overlay, [poly], col)
+                cv2.addWeighted(overlay, 0.45, img, 0.55, 0, img)
+                cv2.polylines(img, [poly], True, col, 1, cv2.LINE_AA)
+            cx, cy = int(det.get('cx', 0)) * UPSCALE, int(det.get('cy', 0)) * UPSCALE
+            conf = det.get('conf', 0.0)
+            orient = det.get('orientation', '')
+            txt = f'{label} {conf:.2f}' + (f' {orient}' if orient else '')
+            cv2.putText(img, txt, (cx + 8, max(16, cy - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1, cv2.LINE_AA)
+            cv2.circle(img, (cx, cy), 3, col, -1)
+            cv2.line(img, (cx - 7, cy), (cx + 7, cy), col, 1)
+            cv2.line(img, (cx, cy - 7), (cx, cy + 7), col, 1)
+        return img
+
