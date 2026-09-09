@@ -495,3 +495,12 @@ class WhatRobotSees(Node):
     def _on_frame(self, msg):
         self._frame = msg
 
+    def _on_detections(self, msg):
+        try:
+            d = json.loads(msg.data)
+            if isinstance(d, list):
+                self._detections = d
+                self._det_time = time.time()
+        except Exception:
+            pass
+
