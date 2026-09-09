@@ -738,3 +738,18 @@ class WhatRobotSees(Node):
             self.get_logger().info('quit requested')
             raise KeyboardInterrupt
 
+    def _save(self, canvas, left, right):
+        ts = time.strftime('%Y%m%d_%H%M%S')
+        panels = [('canvas', canvas), ('2d', left)]
+        if right is not None:
+            panels.append(('3d', right))
+        for name, img in panels:
+            cv2.imwrite(os.path.join(self._snap_dir, f'snap_{ts}_{name}.png'), img)
+        if self._frame is not None:
+            raw = np.frombuffer(bytes(self._frame.data), dtype=np.uint8).reshape(
+                COLOR_H, COLOR_W, 3)
+            cv2.imwrite(os.path.join(self._snap_dir, f'snap_{ts}_raw.png'), raw)
+        with open(os.path.join(self._snap_dir, f'snap_{ts}_detections.json'), 'w') as f:
+            json.dump({'detections': self._detections,
+                       'body': self._body}, f, indent=1)
+        self.get_logger().info(f'snapshot saved -> {self._snap_dir}/snap_{ts}_*')
