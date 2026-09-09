@@ -655,3 +655,31 @@ class WhatRobotSees(Node):
                     cv2.LINE_AA)
         return panel
 
+    def _render_info(self, bar):
+        bar[:] = (30, 30, 30)
+        if not self._body:
+            cv2.putText(bar, 'no body detections yet  '
+                        f'(/detections {len(self._detections)} objs '
+                        f'{time.time() - self._det_time:.0f}s ago)',
+                        (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200),
+                        1, cv2.LINE_AA)
+            return
+        y = 18
+        for det in self._body:
+            label = det.get('label', '?')
+            conf = det.get('conf', 0)
+            line = (f'{label} {conf:.2f} | x={det.get("x"):+.3f} '
+                    f'y={det.get("y"):+.3f} z={det.get("z"):+.3f} '
+                    f'({det.get("orientation", "")})')
+            if 'height_m' in det:
+                line += (f' | h={det["height_m"]:.3f} w={det.get("width_m", 0):.3f} '
+                         f'd={det.get("depth_m", 0):.3f}')
+            if 'x_off' in det:
+                line += (f' | x_off={det["x_off"]:.3f} r={det["object_radius"]:.3f} '
+                         f'q={det["quality"]:.2f} {det.get("primitive_type", "")}')
+            if det.get('nx') is not None:
+                line += f' | n=({det["nx"]:+.2f},{det["ny"]:+.2f},{det["nz"]:+.2f})'
+            cv2.putText(bar, line, (8, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                        label_color(label), 1, cv2.LINE_AA)
+            y += 20
+
