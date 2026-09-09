@@ -516,3 +516,21 @@ class WhatRobotSees(Node):
         except Exception:
             pass
 
+    def _on_cloud(self, msg):
+        try:
+            pts = []
+            ids = []
+            off = 0
+            step = msg.point_step
+            for _ in range(msg.width):
+                x, y, z, oid = struct.unpack_from('<fffI', bytes(msg.data), off)
+                pts.append((x, y, z))
+                ids.append(oid)
+                off += step
+            self._cloud_pts = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
+            self._cloud_ids = np.asarray(ids, dtype=np.int64)
+            self._cloud_time = time.time()
+        except Exception:
+            pass
+
+    # ── drawing ──────────────────────────────────────────────────────────
