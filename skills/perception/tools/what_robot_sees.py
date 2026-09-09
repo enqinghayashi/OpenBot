@@ -504,3 +504,15 @@ class WhatRobotSees(Node):
         except Exception:
             pass
 
+    def _on_body(self, msg):
+        try:
+            d = json.loads(msg.data)
+            if isinstance(d, list):
+                self._body = d
+                self._body_time = time.time()
+                with open(os.path.join(self._snap_dir, 'detections.log'), 'a') as f:
+                    f.write('%s %s\n' % (time.strftime('%Y-%m-%d %H:%M:%S'),
+                                         msg.data))
+        except Exception:
+            pass
+
