@@ -355,3 +355,12 @@ class WhatRobotSees(Node):
             return
         self._markers.append((x, y, text, col))
 
+    def _on_verdict(self, msg):
+        text = msg.data
+        if not text.startswith('VERDICT:success') or self._pose is None:
+            return
+        low = text.lower()
+        what = ('released' if 'release' in low else
+                'picked' if ('lift' in low or 'held' in low or 'grasp' in low) else 'verdict ok')
+        self._add_marker(what, (90, 220, 90))
+
