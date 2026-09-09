@@ -582,3 +582,76 @@ class WhatRobotSees(Node):
         sy = cy - rot[:, 1] * scale
         return sx, sy, rot[:, 2]
 
+    def _render_3d(self):
+        """Object cloud + axes + centroids/normals in torso frame."""
+        panel = np.zeros((PANEL_H, PANEL_W, 3), dtype=np.uint8)
+        cx3, cy3 = PANEL_W // 2, PANEL_H // 2
+
+        if len(self._cloud_pts) == 0:
+            cv2.putText(panel, 'waiting for /object_pointcloud ...',
+                        (20, PANEL_H // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                        (200, 200, 200), 1, cv2.LINE_AA)
+            cv2.putText(panel, 'torso frame: x=right y=forward z=up',
+                        (20, PANEL_H // 2 + 24), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5, (160, 160, 160), 1, cv2.LINE_AA)
+            return panel
+
+        # view extent (0.5 m if the cloud is degenerate)
+        pts = self._cloud_pts
+        ext = max(0.25, float(np.abs(pts).max()))
+        scale = min(PANEL_W, PANEL_H) * 0.42 / ext
+
+        # painter order: far first (small rotated z)
+        order = np.argsort(-(pts @ np.array([
+            np.cos(self._pitch) * np.cos(self._yaw),
+            np.cos(self._pitch) * np.sin(self._yaw),
+            -np.sin(self._pitch)])))  # view depth
+
+        sx, sy, _ = self._project(pts, scale, cx3, cy3)
+        for i in order:
+            oid = int(self._cloud_ids[i])
+            col = label_color(f'obj{oid}')
+            cv2.circle(panel, (int(sx[i]), int(sy[i])), 1, col, -1)
+
+        # torso axes, 0.15 m
+        for axis, col in AXIS_COLORS.items():
+            vec = {'X': (1, 0, 0), 'Y': (0, 1, 0), 'Z': (0, 0, 1)}[axis]
+            ax, ay, _ = self._project(
+                np.array([[0.0, 0, 0], [vec[0] * 0.15, vec[1] * 0.15, vec[2] * 0.15]]),
+                scale, cx3, cy3)
+            cv2.line(panel, (int(ax[0]), int(ay[0])), (int(ax[1]), int(ay[1])),
+                     col, 2, cv2.LINE_AA)
+            cv2.putText(panel, axis, (int(ax[1]) + 3, int(ay[1]) - 3),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, col, 1, cv2.LINE_AA)
+
+        # camera (yellow)
+        openbot = np.array([T_CAM_IN_TORSO])
+        cxv, cyv, _ = self._project(openbot, scale, cx3, cy3)
+        cv2.circle(panel, (int(cxv[0]), int(cyv[0])), 4, (0, 255, 255), -1)
+        cv2.putText(panel, 'openbot', (int(cxv[0]) + 6, int(cyv[0]) - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1, cv2.LINE_AA)
+
+        # centroid + normal arrow per object
+        for det in self._body:
+            if not all(k in det for k in ('x', 'y', 'z')):
+                continue
+            p = np.array([det['x'], det['y'], det['z']])
+            px, py, _ = self._project(p.reshape(1, 3), scale, cx3, cy3)
+            cv2.circle(panel, (int(px[0]), int(py[0])), 4,
+                       label_color(det.get('label', '?')), -1)
+            n = np.array([det.get('nx', 0) or 0, det.get('ny', 0) or 0,
+                          det.get('nz', 0) or 0])
+            nlen = np.linalg.norm(n)
+            if nlen > 1e-3:
+                n = n / nlen * 0.12
+                qx, qy, _ = self._project((p + n).reshape(1, 3), scale, cx3, cy3)
+                cv2.arrowedLine(panel, (int(px[0]), int(py[0])),
+                                (int(qx[0]), int(qy[0])), (255, 255, 255), 1,
+                                cv2.LINE_AA, tipLength=0.3)
+
+        cv2.putText(panel, f'cloud: {len(pts)} pts   '
+                    f'~{(time.time() - self._cloud_time):.1f}s ago',
+                    (8, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (220, 220, 220), 1,
+                    cv2.LINE_AA)
+        return panel
+
