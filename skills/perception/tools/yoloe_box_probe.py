@@ -85,3 +85,12 @@ REQUIRED_KEYS = ('probe_version', 'interpreter', 'args', 'out_dir', 'provenance'
 _REAL_STDOUT_FD = None
 
 
+def _guard_stdout():
+    global _REAL_STDOUT_FD
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
+    _REAL_STDOUT_FD = os.dup(1)
+    os.dup2(2, 1)
+    sys.stdout = sys.stderr
