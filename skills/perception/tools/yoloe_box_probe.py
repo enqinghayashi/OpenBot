@@ -107,3 +107,6 @@ def _emit_line(line):
 def _log(msg):
     sys.stderr.write('[probe] %s\n' % (msg,))
     sys.stderr.flush()
+
+
+# ---------------------------------------------------------- small helpers
