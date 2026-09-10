@@ -104,3 +104,6 @@ def _emit_line(line):
         data = data[n:]
 
 
+def _log(msg):
+    sys.stderr.write('[probe] %s\n' % (msg,))
+    sys.stderr.flush()
