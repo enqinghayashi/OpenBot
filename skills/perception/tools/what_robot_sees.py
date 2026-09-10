@@ -789,3 +789,36 @@ def _interrupt(signum, frame):
     raise KeyboardInterrupt
 
 
+def main(args=None):
+    opts, ros_args = _parse_args(sys.argv[1:] if args is None else list(args))
+    # one shutdown path for Ctrl-C, -INT and -TERM (demo sends TERM):
+    # handler raises KeyboardInterrupt, spin returns, recording closes.
+    # rclpy's own handlers are off -- a second signal would cut the close.
+    try:
+        from rclpy.signals import SignalHandlerOptions
+        rclpy.init(args=ros_args, signal_handler_options=SignalHandlerOptions.NO)
+    except (ImportError, TypeError):
+        rclpy.init(args=ros_args)
+    signal.signal(signal.SIGINT, _interrupt)
+    signal.signal(signal.SIGTERM, _interrupt)
+    node = WhatRobotSees(opts)
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    except Exception as exc:  # Humble: ExternalShutdownException on SIGINT
+        if type(exc).__name__ != 'ExternalShutdownException':
+            raise
+    finally:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)    # nothing interrupts
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)   # the close
+        node.close_record()         # close recording first
+        cv2.destroyAllWindows()     # before anything fails
+        try:
+            node.destroy_node()
+        except Exception:
+            pass
+        try:
+            rclpy.shutdown()
+        except Exception:
+            pass
