@@ -96,3 +96,9 @@ def _guard_stdout():
     sys.stdout = sys.stderr
 
 
+def _emit_line(line):
+    data = (line + '\n').encode('utf-8')
+    fd = _REAL_STDOUT_FD if _REAL_STDOUT_FD is not None else 1
+    while data:
+        n = os.write(fd, data)
+        data = data[n:]
