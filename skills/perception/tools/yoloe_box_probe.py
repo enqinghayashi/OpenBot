@@ -102,3 +102,5 @@ def _emit_line(line):
     while data:
         n = os.write(fd, data)
         data = data[n:]
+
+
