@@ -94,3 +94,5 @@ def _guard_stdout():
     _REAL_STDOUT_FD = os.dup(1)
     os.dup2(2, 1)
     sys.stdout = sys.stderr
+
+
