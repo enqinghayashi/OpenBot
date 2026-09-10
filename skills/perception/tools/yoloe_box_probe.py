@@ -110,3 +110,9 @@ def _log(msg):
 
 
 # ---------------------------------------------------------- small helpers
+def md5_file(path):
+    h = hashlib.md5()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1 << 20), b''):
+            h.update(chunk)
+    return h.hexdigest()
