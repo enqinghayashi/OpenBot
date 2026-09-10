@@ -118,3 +118,5 @@ def md5_file(path):
     return h.hexdigest()
 
 
+def _exc(e):
+    return '%s: %s' % (type(e).__name__, e)
