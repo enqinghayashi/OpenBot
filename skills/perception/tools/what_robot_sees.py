@@ -785,3 +785,5 @@ def _parse_args(argv):
     return p.parse_known_args(argv)
 
 
+def _interrupt(signum, frame):
+    raise KeyboardInterrupt
