@@ -152,3 +152,8 @@ def _cpu_s():
     return r.ru_utime + r.ru_stime
 
 
+def _pct(sorted_vals, q):
+    if not sorted_vals:
+        return None
+    i = min(len(sorted_vals) - 1, int(q * len(sorted_vals)))
+    return round(sorted_vals[i], 2)
