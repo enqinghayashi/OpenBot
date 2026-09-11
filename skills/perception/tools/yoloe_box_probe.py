@@ -238,3 +238,14 @@ def _try_import(name):
         return None, _exc(e)
 
 
+def _meminfo():
+    out = {}
+    try:
+        with open('/proc/meminfo') as f:
+            for line in f:
+                k, v = line.split(':', 1)
+                if k in ('MemTotal', 'MemFree', 'MemAvailable', 'SwapFree'):
+                    out[k + '_mb'] = round(int(v.split()[0]) / 1024.0, 1)
+    except Exception as e:
+        out['error'] = _exc(e)
+    return out
