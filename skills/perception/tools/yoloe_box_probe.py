@@ -164,3 +164,16 @@ def _parse_list(s, cast=str):
 
 
 # ---------------------------------------------------------- 0. provenance check
+def _find_base_src(explicit, name, want_md5, probe_dir):
+    cands = []
+    if explicit:
+        cands.append(explicit)
+    cands.append(os.path.join(probe_dir, 'base', name))
+    cands.append(os.path.join(os.path.dirname(probe_dir), name))
+    for c in cands:
+        try:
+            if os.path.isfile(c) and md5_file(c) == want_md5:
+                return c
+        except Exception:
+            pass
+    return None
