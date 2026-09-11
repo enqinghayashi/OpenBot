@@ -159,3 +159,5 @@ def _pct(sorted_vals, q):
     return round(sorted_vals[i], 2)
 
 
+def _parse_list(s, cast=str):
+    return [cast(x.strip()) for x in str(s).split(',') if x.strip()]
