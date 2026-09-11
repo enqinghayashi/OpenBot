@@ -364,3 +364,155 @@ class WhatRobotSees(Node):
                 'picked' if ('lift' in low or 'held' in low or 'grasp' in low) else 'verdict ok')
         self._add_marker(what, (90, 220, 90))
 
+    def _render_map(self):
+        """Top-down odometry map: forward (odom x) is UP, left (odom y) is LEFT."""
+        panel = np.full((MAP_SIZE, MAP_SIZE, 3), (28, 28, 32), dtype=np.uint8)
+        now = time.time()
+        if self._pose is None:
+            cv2.putText(panel, 'waiting for odometry ...', (20, MAP_SIZE // 2),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1, cv2.LINE_AA)
+            cv2.putText(panel, self._odom_topic, (20, MAP_SIZE // 2 + 26),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (160, 160, 160), 1, cv2.LINE_AA)
+            return panel
+        px, py, pyaw, pt = self._pose
+        pose = (px, py, pyaw)
+        pts = [(x, y) for _, x, y, _, _ in self._trail] + [(px, py)]
+        if self._home_goal is not None:
+            pts.append(self._home_goal)
+        pts.extend((m[0], m[1]) for m in self._markers)
+        dets = []
+        for det in self._body:
+            try:
+                bx, by = float(det.get('x')), float(det.get('y'))
+            except (TypeError, ValueError):
+                continue
+            if not (math.isfinite(bx) and math.isfinite(by)):
+                continue
+            wx, wy = _body_to_world(pose, bx, by)
+            dets.append((wx, wy, str(det.get('label', '?'))))
+            pts.append((wx, wy))
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+        span = max(MAP_MIN_SPAN_M, max(xs) - min(xs) + 1.0, max(ys) - min(ys) + 1.0)
+        scale = (MAP_SIZE - 2 * MAP_MARGIN) / span
+
+        def S(wx, wy):
+            return (int(round(MAP_SIZE / 2.0 - (wy - cy) * scale)),
+                    int(round(MAP_SIZE / 2.0 - (wx - cx) * scale)))
+
+        # grid: 0.5 m cells, brighter per metre
+        step = 0.5 if span <= 6.0 else 1.0
+        g0 = math.floor((cx - span / 2.0) / step) * step
+        g = g0
+        while g <= cx + span / 2.0 + step:
+            col = (62, 62, 70) if abs(g - round(g)) < 1e-6 else (44, 44, 50)
+            cv2.line(panel, S(g, cy - span), S(g, cy + span), col, 1)
+            g += step
+        g = math.floor((cy - span / 2.0) / step) * step
+        while g <= cy + span / 2.0 + step:
+            col = (62, 62, 70) if abs(g - round(g)) < 1e-6 else (44, 44, 50)
+            cv2.line(panel, S(cx - span, g), S(cx + span, g), col, 1)
+            g += step
+        # camera wedge
+        half = math.radians(CAM_FOV_DEG / 2.0)
+        wedge = [S(px, py)] + [S(px + CAM_RANGE_M * math.cos(pyaw + a),
+                                 py + CAM_RANGE_M * math.sin(pyaw + a))
+                               for a in np.linspace(-half, half, 12)]
+        overlay = panel.copy()
+        cv2.fillPoly(overlay, [np.array(wedge, dtype=np.int32)], (70, 60, 40))
+        cv2.addWeighted(overlay, 0.6, panel, 0.4, 0, panel)
+        # trail by state
+        prev = None
+        for _, x, y, _, state in self._trail:
+            cur = S(x, y)
+            if prev is not None:
+                cv2.line(panel, prev, cur, WALK_COLORS.get(state, (150, 150, 150)), 2, cv2.LINE_AA)
+            prev = cur
+        # home, markers, detections
+        if self._home_goal is not None:
+            hx, hy = S(*self._home_goal)
+            cv2.rectangle(panel, (hx - 6, hy - 6), (hx + 6, hy + 6), (255, 170, 120), 2)
+            cv2.putText(panel, 'home', (hx + 9, hy + 5), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.45, (255, 170, 120), 1, cv2.LINE_AA)
+        for mx, my, text, col in self._markers[-40:]:
+            sx, sy = S(mx, my)
+            cv2.circle(panel, (sx, sy), 4, col, -1)
+            cv2.putText(panel, text, (sx + 7, sy - 4), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.42, col, 1, cv2.LINE_AA)
+        for wx, wy, label in dets:
+            sx, sy = S(wx, wy)
+            col = label_color(label)
+            cv2.circle(panel, (sx, sy), 5, col, 2)
+            cv2.putText(panel, label, (sx + 8, sy + 4), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.45, col, 1, cv2.LINE_AA)
+        # robot, aimed by yaw
+        tip = S(px + 0.14 * math.cos(pyaw), py + 0.14 * math.sin(pyaw))
+        bl = S(px + 0.09 * math.cos(pyaw + 2.4), py + 0.09 * math.sin(pyaw + 2.4))
+        br = S(px + 0.09 * math.cos(pyaw - 2.4), py + 0.09 * math.sin(pyaw - 2.4))
+        cv2.fillPoly(panel, [np.array([tip, bl, br], dtype=np.int32)], (255, 255, 255))
+        # header, scale bar, clock
+        age = now - pt
+        cv2.rectangle(panel, (0, 0), (MAP_SIZE, 40), (36, 36, 44), -1)
+        cv2.putText(panel, 'odometry  x=%+.2f y=%+.2f yaw=%+.0f deg  age %.1fs' %
+                    (px, py, math.degrees(pyaw), age), (8, 16),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (220, 220, 220), 1, cv2.LINE_AA)
+        cv2.putText(panel, 'walk: %s%s   trail %d pts' %
+                    (self._walk_state, (' ' + str(self._walk_label)) if self._walk_label else '',
+                     len(self._trail)), (8, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                    WALK_COLORS.get(self._walk_state, (200, 200, 200)), 1, cv2.LINE_AA)
+        bar = int(round(1.0 * scale))
+        cv2.line(panel, (12, MAP_SIZE - 14), (12 + bar, MAP_SIZE - 14), (220, 220, 220), 2)
+        cv2.putText(panel, '1 m', (12, MAP_SIZE - 20), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.42, (220, 220, 220), 1, cv2.LINE_AA)
+        cv2.putText(panel, 'forward = up', (MAP_SIZE - 118, MAP_SIZE - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (160, 160, 160), 1, cv2.LINE_AA)
+        cv2.putText(panel, _clock_text(now), (MAP_SIZE - 112, MAP_SIZE - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
+        return panel
+
+    # ── incoming messages ────────────────────────────────────────────────
+    def _diagnose(self):
+        if self._diag_done:
+            return
+        self._diag_done = True
+        self.get_logger().info(
+            'DIAG env: '
+            f'ROS_DOMAIN_ID={os.environ.get("ROS_DOMAIN_ID", "(unset=0)")} '
+            f'ROS_LOCALHOST_ONLY={os.environ.get("ROS_LOCALHOST_ONLY", "(unset)")} '
+            f'CYCLONEDDS_URI={os.environ.get("CYCLONEDDS_URI", "(unset)")}')
+        try:
+            names = set(n for n, _ in self.get_topic_names_and_types())
+        except Exception as e:
+            self.get_logger().error(f'DIAG topic scan failed: {e}')
+            return
+        for t in ('/camera/color/image_raw', '/detections',
+                  '/object_detections_body', '/object_pointcloud'):
+            self.get_logger().info(
+                f'DIAG topic {"VISIBLE" if t in names else "MISSING  "}: {t}')
+        self.get_logger().info(
+            f'DIAG total topics visible: {len(names)}')
+    def _on_frame(self, msg):
+        self._frame = msg
+
+    def _on_detections(self, msg):
+        try:
+            d = json.loads(msg.data)
+            if isinstance(d, list):
+                self._detections = d
+                self._det_time = time.time()
+        except Exception:
+            pass
+
+    def _on_body(self, msg):
+        try:
+            d = json.loads(msg.data)
+            if isinstance(d, list):
+                self._body = d
+                self._body_time = time.time()
+                with open(os.path.join(self._snap_dir, 'detections.log'), 'a') as f:
+                    f.write('%s %s\n' % (time.strftime('%Y-%m-%d %H:%M:%S'),
+                                         msg.data))
+        except Exception:
+            pass
+
