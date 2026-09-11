@@ -227,3 +227,6 @@ def provenance(args, out_dir, errors):
                 errors.append('provenance.%s.diff: %s' % (key, _exc(e)))
         prov[key] = ent
     return prov, match
+
+
+# --------------------------------------------------------- 1. env report
