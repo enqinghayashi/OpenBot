@@ -516,3 +516,170 @@ class WhatRobotSees(Node):
         except Exception:
             pass
 
+    def _on_cloud(self, msg):
+        try:
+            pts = []
+            ids = []
+            off = 0
+            step = msg.point_step
+            for _ in range(msg.width):
+                x, y, z, oid = struct.unpack_from('<fffI', bytes(msg.data), off)
+                pts.append((x, y, z))
+                ids.append(oid)
+                off += step
+            self._cloud_pts = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
+            self._cloud_ids = np.asarray(ids, dtype=np.int64)
+            self._cloud_time = time.time()
+        except Exception:
+            pass
+
+    # ── drawing ──────────────────────────────────────────────────────────
+    def _render_2d(self):
+        """Color frame + seg mask overlay."""
+        img = np.zeros((PANEL_H, PANEL_W, 3), dtype=np.uint8)
+        if self._frame is None:
+            cv2.putText(img, 'waiting for /camera/color/image_raw ...',
+                        (20, PANEL_H // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                        (200, 200, 200), 1, cv2.LINE_AA)
+            return img
+        raw = np.frombuffer(bytes(self._frame.data), dtype=np.uint8).reshape(
+            COLOR_H, COLOR_W, 3)
+        img = cv2.resize(raw, (PANEL_W, PANEL_H), interpolation=cv2.INTER_NEAREST)
+
+        # see-through mask fill per label
+        for det in self._detections:
+            label = det.get('label', '?')
+            col = label_color(label)
+            mask = det.get('mask')
+            if mask and len(mask) >= 3:
+                poly = np.array([(int(x) * UPSCALE, int(y) * UPSCALE)
+                                 for x, y in mask], dtype=np.int32)
+                overlay = img.copy()
+                cv2.fillPoly(overlay, [poly], col)
+                cv2.addWeighted(overlay, 0.45, img, 0.55, 0, img)
+                cv2.polylines(img, [poly], True, col, 1, cv2.LINE_AA)
+            cx, cy = int(det.get('cx', 0)) * UPSCALE, int(det.get('cy', 0)) * UPSCALE
+            conf = det.get('conf', 0.0)
+            orient = det.get('orientation', '')
+            txt = f'{label} {conf:.2f}' + (f' {orient}' if orient else '')
+            cv2.putText(img, txt, (cx + 8, max(16, cy - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1, cv2.LINE_AA)
+            cv2.circle(img, (cx, cy), 3, col, -1)
+            cv2.line(img, (cx - 7, cy), (cx + 7, cy), col, 1)
+            cv2.line(img, (cx, cy - 7), (cx, cy + 7), col, 1)
+        return img
+
+    def _project(self, pts3, scale, cx, cy):
+        """yaw/pitch rotate (torso frame) then orthographic projection."""
+        yaw, pitch = self._yaw, self._pitch
+        cyy, syy = np.cos(yaw), np.sin(yaw)
+        cpp, spp = np.cos(pitch), np.sin(pitch)
+        Rz = np.array([[cyy, -syy, 0], [syy, cyy, 0], [0, 0, 1]])
+        Rx = np.array([[1, 0, 0], [0, cpp, -spp], [0, spp, cpp]])
+        R = Rz @ Rx
+        rot = pts3 @ R.T
+        sx = cx + rot[:, 0] * scale
+        sy = cy - rot[:, 1] * scale
+        return sx, sy, rot[:, 2]
+
+    def _render_3d(self):
+        """Object cloud + axes + centroids/normals in torso frame."""
+        panel = np.zeros((PANEL_H, PANEL_W, 3), dtype=np.uint8)
+        cx3, cy3 = PANEL_W // 2, PANEL_H // 2
+
+        if len(self._cloud_pts) == 0:
+            cv2.putText(panel, 'waiting for /object_pointcloud ...',
+                        (20, PANEL_H // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                        (200, 200, 200), 1, cv2.LINE_AA)
+            cv2.putText(panel, 'torso frame: x=right y=forward z=up',
+                        (20, PANEL_H // 2 + 24), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5, (160, 160, 160), 1, cv2.LINE_AA)
+            return panel
+
+        # view extent (0.5 m if the cloud is degenerate)
+        pts = self._cloud_pts
+        ext = max(0.25, float(np.abs(pts).max()))
+        scale = min(PANEL_W, PANEL_H) * 0.42 / ext
+
+        # painter order: far first (small rotated z)
+        order = np.argsort(-(pts @ np.array([
+            np.cos(self._pitch) * np.cos(self._yaw),
+            np.cos(self._pitch) * np.sin(self._yaw),
+            -np.sin(self._pitch)])))  # view depth
+
+        sx, sy, _ = self._project(pts, scale, cx3, cy3)
+        for i in order:
+            oid = int(self._cloud_ids[i])
+            col = label_color(f'obj{oid}')
+            cv2.circle(panel, (int(sx[i]), int(sy[i])), 1, col, -1)
+
+        # torso axes, 0.15 m
+        for axis, col in AXIS_COLORS.items():
+            vec = {'X': (1, 0, 0), 'Y': (0, 1, 0), 'Z': (0, 0, 1)}[axis]
+            ax, ay, _ = self._project(
+                np.array([[0.0, 0, 0], [vec[0] * 0.15, vec[1] * 0.15, vec[2] * 0.15]]),
+                scale, cx3, cy3)
+            cv2.line(panel, (int(ax[0]), int(ay[0])), (int(ax[1]), int(ay[1])),
+                     col, 2, cv2.LINE_AA)
+            cv2.putText(panel, axis, (int(ax[1]) + 3, int(ay[1]) - 3),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, col, 1, cv2.LINE_AA)
+
+        # camera (yellow)
+        openbot = np.array([T_CAM_IN_TORSO])
+        cxv, cyv, _ = self._project(openbot, scale, cx3, cy3)
+        cv2.circle(panel, (int(cxv[0]), int(cyv[0])), 4, (0, 255, 255), -1)
+        cv2.putText(panel, 'openbot', (int(cxv[0]) + 6, int(cyv[0]) - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1, cv2.LINE_AA)
+
+        # centroid + normal arrow per object
+        for det in self._body:
+            if not all(k in det for k in ('x', 'y', 'z')):
+                continue
+            p = np.array([det['x'], det['y'], det['z']])
+            px, py, _ = self._project(p.reshape(1, 3), scale, cx3, cy3)
+            cv2.circle(panel, (int(px[0]), int(py[0])), 4,
+                       label_color(det.get('label', '?')), -1)
+            n = np.array([det.get('nx', 0) or 0, det.get('ny', 0) or 0,
+                          det.get('nz', 0) or 0])
+            nlen = np.linalg.norm(n)
+            if nlen > 1e-3:
+                n = n / nlen * 0.12
+                qx, qy, _ = self._project((p + n).reshape(1, 3), scale, cx3, cy3)
+                cv2.arrowedLine(panel, (int(px[0]), int(py[0])),
+                                (int(qx[0]), int(qy[0])), (255, 255, 255), 1,
+                                cv2.LINE_AA, tipLength=0.3)
+
+        cv2.putText(panel, f'cloud: {len(pts)} pts   '
+                    f'~{(time.time() - self._cloud_time):.1f}s ago',
+                    (8, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (220, 220, 220), 1,
+                    cv2.LINE_AA)
+        return panel
+
+    def _render_info(self, bar):
+        bar[:] = (30, 30, 30)
+        if not self._body:
+            cv2.putText(bar, 'no body detections yet  '
+                        f'(/detections {len(self._detections)} objs '
+                        f'{time.time() - self._det_time:.0f}s ago)',
+                        (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200),
+                        1, cv2.LINE_AA)
+            return
+        y = 18
+        for det in self._body:
+            label = det.get('label', '?')
+            conf = det.get('conf', 0)
+            line = (f'{label} {conf:.2f} | x={det.get("x"):+.3f} '
+                    f'y={det.get("y"):+.3f} z={det.get("z"):+.3f} '
+                    f'({det.get("orientation", "")})')
+            if 'height_m' in det:
+                line += (f' | h={det["height_m"]:.3f} w={det.get("width_m", 0):.3f} '
+                         f'd={det.get("depth_m", 0):.3f}')
+            if 'x_off' in det:
+                line += (f' | x_off={det["x_off"]:.3f} r={det["object_radius"]:.3f} '
+                         f'q={det["quality"]:.2f} {det.get("primitive_type", "")}')
+            if det.get('nx') is not None:
+                line += f' | n=({det["nx"]:+.2f},{det["ny"]:+.2f},{det["nz"]:+.2f})'
+            cv2.putText(bar, line, (8, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                        label_color(label), 1, cv2.LINE_AA)
+            y += 20
+
