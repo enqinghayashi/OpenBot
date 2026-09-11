@@ -145,3 +145,5 @@ def _maxrss_mb():
     except Exception:
         pass
     return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 1)
+
+
