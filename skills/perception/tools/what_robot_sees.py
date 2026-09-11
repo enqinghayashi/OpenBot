@@ -305,3 +305,62 @@ class WhatRobotSees(Node):
                       (png, len(self._trail)), file=sys.stderr)
 
     # ── the odometry map ─────────────────────────────────────────────────
+    def _on_odom(self, msg):
+        p = msg.pose.pose.position
+        q = msg.pose.pose.orientation
+        # yaw from quat, same as walk_node._on_odom
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        now = time.time()
+        self._pose = (p.x, p.y, yaw, now)
+        last = self._trail[-1] if self._trail else None
+        if (last is None or now - last[0] >= 0.5
+                or math.hypot(p.x - last[1], p.y - last[2]) >= 0.01
+                or abs(_wrap_angle(yaw - last[3])) >= math.radians(1.0)):
+            self._trail.append((now, p.x, p.y, yaw, self._walk_state))
+            if len(self._trail) > 30000:
+                del self._trail[:5000]
+            if self._odom_csv is not None:
+                self._odom_csv.write('%.3f,%.4f,%.4f,%.4f,%s\n' %
+                                     (now, p.x, p.y, yaw, self._walk_state))
+
+    def _on_walk_status(self, msg):
+        try:
+            d = json.loads(msg.data)
+        except ValueError:
+            return
+        state = str(d.get('state', 'IDLE'))
+        label = d.get('label')
+        detail = d.get('detail') if isinstance(d.get('detail'), dict) else {}
+        changed = state != self._walk_state
+        self._walk_state, self._walk_label = state, label
+        goal = detail.get('goal')
+        if state == 'RETURNING' and isinstance(goal, list) and len(goal) == 2:
+            try:
+                self._home_goal = (float(goal[0]), float(goal[1]))
+            except (TypeError, ValueError):
+                pass
+        if changed and self._pose is not None and state in ('REACHED', 'NOT_FOUND'):
+            self._add_marker(state.lower() + (' ' + str(label) if label else ''),
+                             WALK_COLORS.get(state, (200, 200, 200)))
+
+    def _add_marker(self, text, col):
+        """A marker at the current pose; one that lands within 5 cm of the
+        previous marker joins its label (REACHED and the verdict that follows
+        it are at the same spot)."""
+        x, y = self._pose[0], self._pose[1]
+        if self._markers and math.hypot(x - self._markers[-1][0], y - self._markers[-1][1]) < 0.05:
+            px, py, ptext, pcol = self._markers[-1]
+            self._markers[-1] = (px, py, ptext + ', ' + text, pcol)
+            return
+        self._markers.append((x, y, text, col))
+
+    def _on_verdict(self, msg):
+        text = msg.data
+        if not text.startswith('VERDICT:success') or self._pose is None:
+            return
+        low = text.lower()
+        what = ('released' if 'release' in low else
+                'picked' if ('lift' in low or 'held' in low or 'grasp' in low) else 'verdict ok')
+        self._add_marker(what, (90, 220, 90))
+
