@@ -251,3 +251,51 @@ def _meminfo():
     return out
 
 
+def environment(args):
+    env = {'python': sys.version.split()[0], 'executable': sys.executable,
+           'prefix': sys.prefix, 'base_prefix': getattr(sys, 'base_prefix', None),
+           'sys_path': list(sys.path), 'nproc': os.cpu_count()}
+    try:
+        env['loadavg_1min'] = os.getloadavg()[0]
+    except Exception as e:
+        env['loadavg_1min'] = None
+        env['loadavg_error'] = _exc(e)
+    env['mem'] = _meminfo()
+    # import deps
+    # (WHEELS.txt 'NEEDED' rows)
+    for name in ('numpy', 'cv2', 'torch', 'torchvision', 'ultralytics', 'tensorrt', 'clip', 'rclpy',
+                 'matplotlib', 'yaml', 'PIL', 'filelock', 'requests'):
+        mod, err = _try_import(name)
+        env[name] = {'importable': mod is not None,
+                     'version': getattr(mod, '__version__', None) if mod is not None else None,
+                     'file': getattr(mod, '__file__', None) if mod is not None else None,
+                     'error': err}
+    env['clip_importable'] = env['clip']['importable']
+    torch = sys.modules.get('torch')
+    if torch is not None:
+        try:
+            env['torch']['cuda_available'] = bool(torch.cuda.is_available())
+            env['torch']['cuda_device'] = (torch.cuda.get_device_name(0)
+                                           if env['torch']['cuda_available'] else None)
+            env['torch']['default_threads'] = torch.get_num_threads()
+        except Exception as e:
+            env['torch']['cuda_error'] = _exc(e)
+    ul = sys.modules.get('ultralytics')
+    env['yoloe_class'] = bool(ul is not None and hasattr(ul, 'YOLOE'))
+    env['load_prompt_embeddings'] = bool(env['yoloe_class'] and
+                                         hasattr(ul.YOLOE, 'load_prompt_embeddings'))
+    env['files'] = {
+        'engine': {'path': args.engine, 'exists': os.path.isfile(args.engine)},
+        'OPENBOT_YOLOE_WEIGHTS': {'path': os.environ.get('OPENBOT_YOLOE_WEIGHTS'),
+                                  'exists': bool(os.environ.get('OPENBOT_YOLOE_WEIGHTS')) and
+                                  os.path.isfile(os.environ['OPENBOT_YOLOE_WEIGHTS'])},
+        'OPENBOT_YOLOE_BANK': {'path': os.environ.get('OPENBOT_YOLOE_BANK'),
+                               'exists': bool(os.environ.get('OPENBOT_YOLOE_BANK')) and
+                               os.path.isfile(os.environ['OPENBOT_YOLOE_BANK'])},
+        'assets_dir': {'path': args.assets_dir, 'exists': os.path.isdir(args.assets_dir)},
+    }
+    env['env_vars'] = dict((k, os.environ.get(k)) for k in (
+        'LEON_DIR', 'PYTHONPATH', 'OPENBOT_YOLOE', 'OPENBOT_YOLOE_WEIGHTS', 'OPENBOT_YOLOE_BANK',
+        'OPENBOT_YOLOE_THREADS', 'OPENBOT_YOLOE_EXTRA_CONF', 'OPENBOT_YOLO_CLASSES',
+        'OPENBOT_INSTANCE_IDS', 'ROS_DISTRO', 'CUDA_VISIBLE_DEVICES'))
+    return env
