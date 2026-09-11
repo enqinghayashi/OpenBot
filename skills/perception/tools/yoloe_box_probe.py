@@ -230,3 +230,9 @@ def provenance(args, out_dir, errors):
 
 
 # --------------------------------------------------------- 1. env report
+def _try_import(name):
+    try:
+        mod = __import__(name)
+        return mod, None
+    except Exception as e:  # noqa: BLE001 - every failure to import is data
+        return None, _exc(e)
