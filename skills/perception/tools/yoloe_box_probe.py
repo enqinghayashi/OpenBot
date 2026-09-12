@@ -301,3 +301,21 @@ def environment(args):
     return env
 
 
+def discover_pts(args):
+    pts = []
+    if args.pt:
+        for p in args.pt:
+            pts.append(p if os.path.isabs(p) or os.path.exists(p)
+                       else os.path.join(args.assets_dir, p))
+    else:
+        w = os.environ.get('OPENBOT_YOLOE_WEIGHTS')
+        if w:
+            pts.append(w)
+        pts.extend(sorted(glob.glob(os.path.join(args.assets_dir, '*.pt'))))
+    seen, out = set(), []
+    for p in pts:
+        ap = os.path.abspath(p)
+        if ap not in seen:
+            seen.add(ap)
+            out.append(ap)
+    return out
