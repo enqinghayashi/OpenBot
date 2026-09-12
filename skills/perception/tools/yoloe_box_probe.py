@@ -414,3 +414,16 @@ def bank_path_for(pt, args):
     return None
 
 
+def load_bank(path):
+    import numpy as np
+    with np.load(path, allow_pickle=False) as d:
+        prompts = [str(x) for x in d['prompts'].tolist()]
+        embeds = np.asarray(d['embeds'], dtype=np.float32)
+        model = str(d['model'].item()) if 'model' in d.files else None
+        ver = str(d['ultralytics'].item()) if 'ultralytics' in d.files else None
+        built = str(d['built'].item()) if 'built' in d.files else None
+    if embeds.ndim != 2 or embeds.shape[0] != len(prompts):
+        raise ValueError('bank shape %r does not match %d prompts' % (embeds.shape, len(prompts)))
+    return {'path': path, 'prompts': prompts, 'embeds': embeds, 'model': model,
+            'ultralytics': ver, 'built': built,
+            'index': dict((p, i) for i, p in enumerate(prompts))}
