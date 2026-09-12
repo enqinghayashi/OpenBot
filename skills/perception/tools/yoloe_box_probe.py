@@ -373,3 +373,12 @@ BANK_REJECTED = {}
 BANK_USED = set()
 
 
+def bank_rejected_rows():
+    """'<path> (for <stem>): <reason>' for every named bank no checkpoint used."""
+    rows = []
+    for path in sorted(BANK_REJECTED):
+        if path in BANK_USED:
+            continue
+        for stem in sorted(BANK_REJECTED[path]):
+            rows.append('%s (for %s): %s' % (path, stem, BANK_REJECTED[path][stem]))
+    return rows
