@@ -321,3 +321,41 @@ def discover_pts(args):
     return out
 
 
+def torch_load_report(pts):
+    rep = {}
+    torch = sys.modules.get('torch')
+    for p in pts:
+        ent = {'path': p, 'exists': os.path.isfile(p), 'ok': False}
+        if not ent['exists']:
+            ent['error'] = 'file missing'
+            rep[os.path.basename(p)] = ent
+            continue
+        if torch is None:
+            ent['error'] = 'torch not importable'
+            rep[os.path.basename(p)] = ent
+            continue
+        try:
+            try:
+                ck = torch.load(p, map_location='cpu', weights_only=False)
+                ent['weights_only_kwarg'] = True
+            except TypeError as e:          # torch <1.13: no weights_only
+                if 'weights_only' not in str(e):
+                    raise
+                ck = torch.load(p, map_location='cpu')
+                ent['weights_only_kwarg'] = False
+            ent['ok'] = True
+            if isinstance(ck, dict):
+                ent['keys'] = sorted(str(k) for k in ck.keys())[:20]
+                m = ck.get('model') or ck.get('ema')
+                ent['model_class'] = type(m).__name__ if m is not None else None
+                ent['ckpt_version'] = ck.get('version')
+            del ck
+        except Exception as e:  # which class is missing
+            ent['error'] = _exc(e)
+            if isinstance(e, ModuleNotFoundError):
+                ent['missing_module'] = getattr(e, 'name', None)
+            elif isinstance(e, AttributeError):
+                mm = re.search(r"attribute '([^']+)'", str(e))
+                ent['missing_attr'] = mm.group(1) if mm else None
+        rep[os.path.basename(p)] = ent
+    return rep
