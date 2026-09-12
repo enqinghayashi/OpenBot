@@ -359,3 +359,17 @@ def torch_load_report(pts):
                 ent['missing_attr'] = mm.group(1) if mm else None
         rep[os.path.basename(p)] = ent
     return rep
+
+
+# -------------------------------------------------------- bank handling
+# unused banks
+# (--bank / OPENBOT_YOLOE_BANK)
+# abspath -> {stem: reason}
+# flag only if no checkpoint used it
+# (BANK_USED); healthy multi-bank
+# tries other model first (:385)
+# not a veto; not just vocab
+BANK_REJECTED = {}
+BANK_USED = set()
+
+
