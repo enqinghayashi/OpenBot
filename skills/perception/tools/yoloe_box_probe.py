@@ -384,3 +384,31 @@ def bank_rejected_rows():
     return rows
 
 
+def bank_path_for(pt, args):
+    stem = os.path.splitext(os.path.basename(pt))[0]
+    explicit = []
+    if args.bank:
+        explicit.extend(args.bank)
+    env_b = os.environ.get('OPENBOT_YOLOE_BANK')
+    if env_b:
+        explicit.append(env_b)
+    cands = explicit + [os.path.join(os.path.dirname(pt), 'vocab_bank_%s.npz' % stem),
+                        os.path.join(args.assets_dir, 'vocab_bank_%s.npz' % stem)]
+    for i, c in enumerate(cands):
+        why = None
+        if not os.path.isfile(c):
+            why = 'missing'
+        else:
+            try:
+                b = load_bank(c)
+                if b['model'] == stem:
+                    BANK_USED.add(os.path.abspath(c))
+                    return c
+                why = 'model mismatch: bank %r vs %r' % (b['model'], stem)
+            except Exception as e:
+                why = 'load error: %s' % _exc(e)
+        # YOLOE text only
+        # -pf: no bank
+        if i < len(explicit) and stem.startswith('yoloe') and not stem.endswith('-pf'):
+            BANK_REJECTED.setdefault(os.path.abspath(c), {})[stem] = why
+    return None
