@@ -429,3 +429,25 @@ def load_bank(path):
             'index': dict((p, i) for i, p in enumerate(prompts))}
 
 
+def bank_report(pts, args):
+    rep = {}
+    paths = set()
+    for p in pts:
+        bp = bank_path_for(p, args)
+        if bp:
+            paths.add(bp)
+    paths.update(glob.glob(os.path.join(args.assets_dir, 'vocab_bank_*.npz')))
+    for bp in sorted(paths):
+        ent = {'path': bp}
+        try:
+            b = load_bank(bp)
+            ent.update({'model': b['model'], 'n_prompts': len(b['prompts']),
+                        'dim': int(b['embeds'].shape[1]), 'ultralytics': b['ultralytics'],
+                        'built': b['built'],
+                        'base20_present': all(x in b['index'] for x in BASE_20),
+                        'missing_base': [x for x in BASE_20 if x not in b['index']],
+                        'md5': md5_file(bp)})
+        except Exception as e:
+            ent['error'] = _exc(e)
+        rep[os.path.basename(bp)] = ent
+    return rep
