@@ -427,3 +427,5 @@ def load_bank(path):
     return {'path': path, 'prompts': prompts, 'embeds': embeds, 'model': model,
             'ultralytics': ver, 'built': built,
             'index': dict((p, i) for i, p in enumerate(prompts))}
+
+
