@@ -459,3 +459,5 @@ def _vocab_tensor(bank, prompts, device):
     rows = [bank['index'][p] for p in prompts]
     arr = np.ascontiguousarray(bank['embeds'][rows][None, :, :], dtype=np.float32)
     return torch.from_numpy(arr).to(device)
+
+
