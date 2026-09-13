@@ -461,3 +461,6 @@ def _vocab_tensor(bank, prompts, device):
     return torch.from_numpy(arr).to(device)
 
 
+def set_bank_vocab(model, bank, prompts, device):
+    """ONLY the two-argument form: set_classes(names, embeddings). Never the encoder."""
+    model.set_classes(list(prompts), _vocab_tensor(bank, prompts, device))
