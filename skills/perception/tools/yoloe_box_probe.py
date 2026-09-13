@@ -561,3 +561,5 @@ def _time_infer(model, img, device, n, warmup, imgsz):
     return {'median_ms': round(statistics.median(ts), 2), 'p90_ms': _pct(ts, 0.9),
             'min_ms': round(ts[0], 2), 'n': n, 'warmup': warmup,
             'cpu_pct': round(100.0 * (c1 - c0) / max(1e-6, (w1 - w0)), 1)}
+
+
