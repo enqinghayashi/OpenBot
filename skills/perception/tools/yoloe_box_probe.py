@@ -483,3 +483,5 @@ def load_frame(path):
             _log('frame %s unusable (%s) - synthetic frame' % (path, _exc(e)))
     rng = np.random.RandomState(0)
     return rng.randint(0, 255, size=(FRAME_H, FRAME_W, 3)).astype(np.uint8), True
+
+
