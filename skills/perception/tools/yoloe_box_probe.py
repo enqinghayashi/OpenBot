@@ -527,3 +527,6 @@ def image_msg_to_array(msg):
     elif ch == 1:
         arr = np.repeat(arr, 3, axis=2)
     return np.ascontiguousarray(arr), enc
+
+
+# ------------------------------------------------------------ 2. bench run
