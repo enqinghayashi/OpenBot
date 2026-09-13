@@ -538,3 +538,26 @@ def _make_model(kind, path):
     return YOLO(path, task='segment')
 
 
+def _time_infer(model, img, device, n, warmup, imgsz):
+    import torch
+    kw = {'conf': GATE_CONF, 'iou': IOU, 'verbose': False, 'device': device}
+    if imgsz:
+        kw['imgsz'] = imgsz
+    for _ in range(warmup):
+        model(img, **kw)
+    cuda = str(device).startswith('cuda')
+    ts = []
+    c0, w0 = _cpu_s(), time.time()
+    for _ in range(n):
+        if cuda:
+            torch.cuda.synchronize()
+        t = time.perf_counter()
+        model(img, **kw)
+        if cuda:
+            torch.cuda.synchronize()
+        ts.append((time.perf_counter() - t) * 1000.0)
+    c1, w1 = _cpu_s(), time.time()
+    ts.sort()
+    return {'median_ms': round(statistics.median(ts), 2), 'p90_ms': _pct(ts, 0.9),
+            'min_ms': round(ts[0], 2), 'n': n, 'warmup': warmup,
+            'cpu_pct': round(100.0 * (c1 - c0) / max(1e-6, (w1 - w0)), 1)}
