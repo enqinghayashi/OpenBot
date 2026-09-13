@@ -512,3 +512,18 @@ def write_png(path, arr):
     return 'zlib'
 
 
+def image_msg_to_array(msg):
+    """sensor_msgs/Image -> HxWx3 uint8 exactly as yolo_node_seg.py:281 sees it
+    (raw bytes reshaped, no colour conversion), honouring row padding."""
+    import numpy as np
+    h, w = int(msg.height), int(msg.width)
+    enc = str(getattr(msg, 'encoding', '') or '')
+    ch = {'rgb8': 3, 'bgr8': 3, 'rgba8': 4, 'bgra8': 4, 'mono8': 1}.get(enc, 3)
+    step = int(getattr(msg, 'step', 0) or w * ch)
+    buf = np.frombuffer(bytes(msg.data), dtype=np.uint8)
+    arr = buf[:h * step].reshape(h, step)[:, :w * ch].reshape(h, w, ch)
+    if ch == 4:
+        arr = arr[:, :, :3]
+    elif ch == 1:
+        arr = np.repeat(arr, 3, axis=2)
+    return np.ascontiguousarray(arr), enc
