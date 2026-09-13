@@ -453,3 +453,9 @@ def bank_report(pts, args):
     return rep
 
 
+def _vocab_tensor(bank, prompts, device):
+    import numpy as np
+    import torch
+    rows = [bank['index'][p] for p in prompts]
+    arr = np.ascontiguousarray(bank['embeds'][rows][None, :, :], dtype=np.float32)
+    return torch.from_numpy(arr).to(device)
