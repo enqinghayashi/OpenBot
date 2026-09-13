@@ -536,3 +536,5 @@ def _make_model(kind, path):
         from ultralytics import YOLOE
         return YOLOE(path)
     return YOLO(path, task='segment')
+
+
