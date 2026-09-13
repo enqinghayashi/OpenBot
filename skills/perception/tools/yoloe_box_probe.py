@@ -530,3 +530,9 @@ def image_msg_to_array(msg):
 
 
 # ------------------------------------------------------------ 2. bench run
+def _make_model(kind, path):
+    from ultralytics import YOLO
+    if kind == 'yoloe':
+        from ultralytics import YOLOE
+        return YOLOE(path)
+    return YOLO(path, task='segment')
