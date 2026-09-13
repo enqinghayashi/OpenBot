@@ -485,3 +485,28 @@ def load_frame(path):
     return rng.randint(0, 255, size=(FRAME_H, FRAME_W, 3)).astype(np.uint8), True
 
 
+def write_png(path, arr):
+    """Save an HxWx3 uint8 array so that cv2.imread(path) returns it byte-exact.
+
+    cv2 when available; else a stdlib (zlib) PNG writer storing channels reversed
+    (cv2 decodes PNG RGB into BGR order)."""
+    if os.environ.get('OPENBOT_PROBE_NO_CV2') != '1':
+        try:
+            import cv2
+            if cv2.imwrite(path, arr):
+                return 'cv2'
+        except Exception:
+            pass
+    h, w = arr.shape[0], arr.shape[1]
+    rgb = arr[:, :, ::-1]
+    raw = b''.join(b'\x00' + rgb[y].tobytes() for y in range(h))
+
+    def chunk(tag, data):
+        return (struct.pack('>I', len(data)) + tag + data +
+                struct.pack('>I', zlib.crc32(tag + data) & 0xffffffff))
+    png = (b'\x89PNG\r\n\x1a\n' +
+           chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)) +
+           chunk(b'IDAT', zlib.compress(raw, 6)) + chunk(b'IEND', b''))
+    with open(path, 'wb') as f:
+        f.write(png)
+    return 'zlib'
