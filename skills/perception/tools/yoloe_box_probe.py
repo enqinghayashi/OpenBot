@@ -563,3 +563,15 @@ def _time_infer(model, img, device, n, warmup, imgsz):
             'cpu_pct': round(100.0 * (c1 - c0) / max(1e-6, (w1 - w0)), 1)}
 
 
+def _bank_swap(model, bank, device, reps):
+    base = list(BASE_20)
+    extras = [p for p in bank['prompts'] if p not in BASE_20][:4]
+    add, restore, first = [], [], None
+    for _ in range(reps):
+        t = time.perf_counter()
+        set_bank_vocab(model, bank, base + extras, device)
+        add.append(round((time.perf_counter() - t) * 1000.0, 3))
+        t = time.perf_counter()
+        set_bank_vocab(model, bank, base, device)
+        restore.append(round((time.perf_counter() - t) * 1000.0, 3))
+    return {'add_extras': add, 'restore_base': restore, 'extras_used': extras}
