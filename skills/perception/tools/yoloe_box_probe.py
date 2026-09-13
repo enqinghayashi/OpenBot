@@ -467,3 +467,19 @@ def set_bank_vocab(model, bank, prompts, device):
 
 
 # --------------------------------------------------------- image helpers
+def load_frame(path):
+    """BGR uint8 HxWx3 at 424x240 (cv2), or a synthetic frame (flagged)."""
+    import numpy as np
+    if path:
+        try:
+            import cv2
+            img = cv2.imread(path)
+            if img is None:
+                raise IOError('cv2.imread returned None for %s' % path)
+            if img.shape[1] != FRAME_W or img.shape[0] != FRAME_H:
+                img = cv2.resize(img, (FRAME_W, FRAME_H))
+            return img, False
+        except Exception as e:
+            _log('frame %s unusable (%s) - synthetic frame' % (path, _exc(e)))
+    rng = np.random.RandomState(0)
+    return rng.randint(0, 255, size=(FRAME_H, FRAME_W, 3)).astype(np.uint8), True
