@@ -510,3 +510,5 @@ def write_png(path, arr):
     with open(path, 'wb') as f:
         f.write(png)
     return 'zlib'
+
+
