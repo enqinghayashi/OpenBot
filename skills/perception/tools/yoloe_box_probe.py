@@ -107,3 +107,28 @@ def _emit_line(line):
 def _log(msg):
     sys.stderr.write('[probe] %s\n' % (msg,))
     sys.stderr.flush()
+
+
+# ---------------------------------------------------------- small helpers
+def md5_file(path):
+    h = hashlib.md5()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1 << 20), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _exc(e):
+    return '%s: %s' % (type(e).__name__, e)
+
+
+def _rss_mb():
+    """Current RSS (VmRSS) in MB; falls back to peak ru_maxrss."""
+    try:
+        with open('/proc/self/status') as f:
+            for line in f:
+                if line.startswith('VmRSS:'):
+                    return round(int(line.split()[1]) / 1024.0, 1)
+    except Exception:
+        pass
+    return None
