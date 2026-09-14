@@ -164,3 +164,88 @@ def _parse_list(s, cast=str):
 
 
 # ---------------------------------------------------------- 0. provenance check
+def _find_base_src(explicit, name, want_md5, probe_dir):
+    cands = []
+    if explicit:
+        cands.append(explicit)
+    cands.append(os.path.join(probe_dir, 'base', name))
+    cands.append(os.path.join(os.path.dirname(probe_dir), name))
+    for c in cands:
+        try:
+            if os.path.isfile(c) and md5_file(c) == want_md5:
+                return c
+        except Exception:
+            pass
+    return None
+
+
+def provenance(args, out_dir, errors):
+    probe_dir = os.path.dirname(os.path.abspath(__file__))
+    prov, match = {}, {}
+    for key, deployed, want, base_src, name in (
+            ('node', args.deployed_node, args.base_node_md5, args.base_node_src, BASE_NODE_NAME),
+            ('projector', args.deployed_projector, args.base_projector_md5,
+             args.base_projector_src, BASE_PROJECTOR_NAME)):
+        ent = {'deployed_path': deployed, 'expected_md5': want, 'deployed_md5': None,
+               'match': False, 'diff_file': None, 'base_src': None}
+        try:
+            if os.path.isfile(deployed):
+                ent['deployed_md5'] = md5_file(deployed)
+                ent['match'] = ent['deployed_md5'] == want
+            else:
+                ent['error'] = 'deployed file missing'
+        except Exception as e:
+            ent['error'] = _exc(e)
+            errors.append('provenance.%s: %s' % (key, _exc(e)))
+        match[key] = bool(ent['match'])
+        if not ent['match']:
+            diff_path = os.path.join(out_dir, 'deployed_vs_base_%s.diff'
+                                     % os.path.basename(deployed or key))
+            src = _find_base_src(base_src, name, want, probe_dir)
+            ent['base_src'] = src
+            try:
+                if src is None:
+                    body = ('# base source with md5 %s not found (pass --base-%s-src <file>);\n'
+                            '# deployed md5 = %s\n' % (want, key, ent['deployed_md5']))
+                elif not os.path.isfile(deployed):
+                    body = '# deployed file missing: %s\n' % (deployed,)
+                else:
+                    with open(src, 'r', errors='replace') as f:
+                        a = f.readlines()
+                    with open(deployed, 'r', errors='replace') as f:
+                        b = f.readlines()
+                    body = ''.join(difflib.unified_diff(
+                        a, b, fromfile='base/%s (%s)' % (name, want),
+                        tofile='deployed/%s (%s)' % (os.path.basename(deployed),
+                                                     ent['deployed_md5'])))
+                    if not body:
+                        body = '# no textual difference (md5 differs: line endings/bytes)\n'
+                with open(diff_path, 'w') as f:
+                    f.write(body)
+                ent['diff_file'] = diff_path
+            except Exception as e:
+                errors.append('provenance.%s.diff: %s' % (key, _exc(e)))
+        prov[key] = ent
+    return prov, match
+
+
+# --------------------------------------------------------- 1. env report
+def _try_import(name):
+    try:
+        mod = __import__(name)
+        return mod, None
+    except Exception as e:  # noqa: BLE001 - every failure to import is data
+        return None, _exc(e)
+
+
+def _meminfo():
+    out = {}
+    try:
+        with open('/proc/meminfo') as f:
+            for line in f:
+                k, v = line.split(':', 1)
+                if k in ('MemTotal', 'MemFree', 'MemAvailable', 'SwapFree'):
+                    out[k + '_mb'] = round(int(v.split()[0]) / 1024.0, 1)
+    except Exception as e:
+        out['error'] = _exc(e)
+    return out
