@@ -132,3 +132,35 @@ def _rss_mb():
     except Exception:
         pass
     return None
+
+
+def _maxrss_mb():
+    """This process's own peak (VmHWM).  ru_maxrss is inherited across execve on Linux
+    (it can report the launching shell's/parent's peak), so it is only the fallback."""
+    try:
+        with open('/proc/self/status') as f:
+            for line in f:
+                if line.startswith('VmHWM:'):
+                    return round(int(line.split()[1]) / 1024.0, 1)
+    except Exception:
+        pass
+    return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 1)
+
+
+def _cpu_s():
+    r = resource.getrusage(resource.RUSAGE_SELF)
+    return r.ru_utime + r.ru_stime
+
+
+def _pct(sorted_vals, q):
+    if not sorted_vals:
+        return None
+    i = min(len(sorted_vals) - 1, int(q * len(sorted_vals)))
+    return round(sorted_vals[i], 2)
+
+
+def _parse_list(s, cast=str):
+    return [cast(x.strip()) for x in str(s).split(',') if x.strip()]
+
+
+# ---------------------------------------------------------- 0. provenance check
