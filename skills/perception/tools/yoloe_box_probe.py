@@ -659,3 +659,6 @@ def bench(args, pts, frame_img, synthetic, errors):
                 except Exception:
                     pass
     return out
+
+
+# --------------------------------------------------------- 3a. record frames
