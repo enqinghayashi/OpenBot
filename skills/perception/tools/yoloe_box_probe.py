@@ -788,3 +788,5 @@ def tier_compare(base_boxes, ye_boxes, allowed, min_conf):
     return {'baseline': sorted(a), 'yoloe': sorted(b),
             'agree': set(x[0] for x in a) == set(x[0] for x in b),
             'dconf': _dconf(a, b), 'extra_rows': extra}
+
+
