@@ -728,3 +728,12 @@ def record(args, out_dir, errors):
 
 
 # ------------------------------------------------------ 3b. agreement check
+def _rows(result, allowed, min_conf):
+    names = result.names
+    out = []
+    for b in result.boxes:
+        c = float(b.conf)
+        lab = names[int(b.cls)]
+        if c >= min_conf and lab in allowed:
+            out.append((lab, round(c, 3)))
+    return out
