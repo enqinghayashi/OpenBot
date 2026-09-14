@@ -725,3 +725,6 @@ def record(args, out_dir, errors):
     rec['saved'] = state['n']
     rec['timed_out'] = state['n'] < args.record
     return rec
+
+
+# ------------------------------------------------------ 3b. agreement check
