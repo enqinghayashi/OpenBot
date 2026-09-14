@@ -739,3 +739,19 @@ def _rows(result, allowed, min_conf):
     return out
 
 
+def _boxes(result):
+    """EVERY box the predictor returned (any label, conf >= the predictor's conf), as
+    {'label', 'conf' (unrounded), 'xyxy'} -- the agree_frames.json per-detector list."""
+    names = result.names
+    out = []
+    for b in result.boxes:
+        xy = b.xyxy
+        try:
+            xy = xy.tolist()
+        except AttributeError:
+            xy = list(xy)
+        if xy and isinstance(xy[0], (list, tuple)):
+            xy = xy[0]
+        out.append({'label': names[int(b.cls)], 'conf': float(b.conf),
+                    'xyxy': [round(float(v), 1) for v in xy]})
+    return out
