@@ -794,3 +794,126 @@ def _median3(vals):
     return round(statistics.median(vals), 3) if vals else None
 
 
+def agree(args, pts, errors, out_dir=None):
+    import cv2
+    tier_conf = float(getattr(args, 'tier_conf', PICK_TIER_CONF))
+    ag = {'dir': args.agree, 'frames': [], 'min_conf_extra': args.min_conf,
+          'raw_conf': GATE_CONF, 'tier_conf': tier_conf,
+          'note': 'per-frame raw rows (no 1 s confirm): conservative for G-FP; '
+                  'tiers: raw = conf >= GATE_CONF (reported), pick = conf >= tier_conf '
+                  '(G-AGREE gate, section 17 M7); base_extra_rows_pick = YOLOE base-class '
+                  'rows >= tier_conf in excess of the baseline count of that label'}
+    pngs = sorted(glob.glob(os.path.join(args.agree, '*.png')))
+    ag['n_frames'] = len(pngs)
+    if not pngs:
+        ag['error'] = 'no PNGs in %s' % args.agree
+        return ag
+    dev = args.agree_device
+    # baseline: engine
+    # else --baseline-pt
+    # (laptop)
+    if os.path.isfile(args.engine):
+        base_path, base_kind = args.engine, 'engine'
+    elif args.baseline_pt and os.path.isfile(args.baseline_pt):
+        base_path, base_kind = args.baseline_pt, 'pt'
+    else:
+        ag['error'] = 'no baseline: engine missing and --baseline-pt not found'
+        return ag
+    ye_path = args.agree_model or next((p for p in pts if os.path.basename(p).startswith('yoloe')
+                                        and not p.endswith('-pf.pt') and bank_path_for(p, args)),
+                                       None)
+    if not ye_path or not os.path.isfile(ye_path):
+        ag['error'] = 'no YOLOE .pt with a bank'
+        return ag
+    bp = bank_path_for(ye_path, args)
+    if not bp:
+        ag['error'] = 'no bank for %s' % ye_path
+        return ag
+    ag.update({'baseline': base_path, 'baseline_kind': base_kind, 'yoloe': ye_path, 'bank': bp,
+               'device': dev})
+    base_m = _make_model('yolo', base_path)
+    ye = _make_model('yoloe', ye_path)
+    bank = load_bank(bp)
+    seeded = [p for p in bank['prompts'] if p not in BASE_20]
+    ag['n_seeded_prompts'] = len(seeded)
+    per_prompt = dict((p, 0) for p in seeded)
+    agree_n, all_d = 0, []
+    imgs = []
+    for p in pngs:
+        img = cv2.imread(p)
+        if img is None:
+            errors.append('agree.imread: %s' % p)
+            continue
+        imgs.append((p, img))
+    base_set = set(BASE_20)
+    set_bank_vocab(ye, bank, BASE_20, dev)
+    pick_n, pick_d, extra_pick_total, extra_pick_frames = 0, [], 0, 0
+    frames_dump = []
+    for p, img in imgs:
+        kw = {'conf': GATE_CONF, 'iou': IOU, 'verbose': False, 'device': dev}
+        ba = _boxes(base_m(img, **kw)[0])
+        bb = _boxes(ye(img, **kw)[0])
+        raw = tier_compare(ba, bb, base_set, GATE_CONF)
+        pick = tier_compare(ba, bb, base_set, tier_conf)
+        same, d = raw['agree'], raw['dconf']
+        all_d.extend(d)
+        agree_n += int(same)
+        pick_n += int(pick['agree'])
+        pick_d.extend(pick['dconf'])
+        extra_pick_total += pick['extra_rows']
+        extra_pick_frames += int(pick['extra_rows'] > 0)
+        ag['frames'].append({'file': os.path.basename(p), 'baseline': raw['baseline'],
+                             'yoloe': raw['yoloe'],
+                             'label_set_agree': same,
+                             'dconf_median': _median3(d),
+                             'extra_rows': 0,
+                             'label_set_agree_raw': same,
+                             'label_set_agree_pick': pick['agree'],
+                             'baseline_pick': pick['baseline'], 'yoloe_pick': pick['yoloe'],
+                             'dconf_median_pick': _median3(pick['dconf']),
+                             'base_extra_rows_pick': pick['extra_rows']})
+        frames_dump.append({'file': os.path.basename(p), 'baseline': ba, 'yoloe': bb})
+    n = len(ag['frames'])
+    ag.update({'label_set_agree_raw': agree_n, 'label_set_agree_pick': pick_n,
+               'label_set_agree_fraction_raw': round(agree_n / float(n), 3) if n else None,
+               'label_set_agree_fraction_pick': round(pick_n / float(n), 3) if n else None,
+               'dconf_median_raw': _median3(all_d), 'dconf_median_pick': _median3(pick_d),
+               'base_extra_rows_pick': extra_pick_total,
+               'base_extra_rows_pick_frames': extra_pick_frames,
+               'base_extra_frames_fraction_pick':
+                   round(extra_pick_frames / float(n), 3) if n else None,
+               'frames_file': None})
+    _log('agree %s vs %s: raw %d/%d  pick(>=%.2f) %d/%d  extra-pick frames %d/%d'
+         % (os.path.basename(base_path), os.path.basename(ye_path), agree_n, n, tier_conf,
+            pick_n, n, extra_pick_frames, n))
+    if out_dir:
+        fpath = os.path.join(out_dir, AGREE_FRAMES_FILE)
+        try:
+            with open(fpath, 'w') as f:
+                json.dump({'baseline': base_path, 'baseline_kind': base_kind, 'yoloe': ye_path,
+                           'bank': bp, 'device': dev, 'raw_conf': GATE_CONF,
+                           'tier_conf': tier_conf, 'base20': list(BASE_20),
+                           'frames': frames_dump}, f, sort_keys=True)
+                f.write('\n')
+            ag['frames_file'] = fpath
+        except Exception as e:
+            errors.append('agree.frames_file: %s' % _exc(e))
+    # + 16 seeds/chunk
+    # rows >= min_conf
+    for i in range(0, len(seeded), EXTRAS_PER_CHUNK):
+        chunk = seeded[i:i + EXTRAS_PER_CHUNK]
+        set_bank_vocab(ye, bank, list(BASE_20) + chunk, dev)
+        cset = set(chunk)
+        for fi, (p, img) in enumerate(imgs):
+            rows = _rows(ye(img, conf=GATE_CONF, iou=IOU, verbose=False, device=dev)[0],
+                         cset, args.min_conf)
+            for lab, _c in rows:
+                per_prompt[lab] += 1
+            ag['frames'][fi]['extra_rows'] += len(rows)
+    set_bank_vocab(ye, bank, BASE_20, dev)
+    ag['label_set_agree_fraction'] = round(agree_n / float(n), 3) if n else None
+    ag['dconf_median'] = round(statistics.median(all_d), 3) if all_d else None
+    ag['extra_rows_per_prompt'] = per_prompt
+    ag['prompts_fired'] = sorted(k for k, v in per_prompt.items() if v > 0)
+    ag['extra_rows_total'] = sum(per_prompt.values())
+    return ag
