@@ -773,3 +773,18 @@ def _dconf(a_rows, b_rows):
     return diffs
 
 
+def tier_compare(base_boxes, ye_boxes, allowed, min_conf):
+    """One agreement tier on one frame (section 17 M7).
+
+    agree       label SET equality of the two detectors' rows with conf >= min_conf
+    dconf       |dconf| of matched labels (per label, confs paired high-to-low)
+    extra_rows  YOLOE rows >= min_conf in EXCESS of the baseline's count of the same
+                label at the same tier (an extra base-class row the baseline lacks)."""
+    a = _rows_from(base_boxes, allowed, min_conf)
+    b = _rows_from(ye_boxes, allowed, min_conf)
+    extra = 0
+    for lab in set(x[0] for x in b):
+        extra += max(0, sum(1 for x in b if x[0] == lab) - sum(1 for x in a if x[0] == lab))
+    return {'baseline': sorted(a), 'yoloe': sorted(b),
+            'agree': set(x[0] for x in a) == set(x[0] for x in b),
+            'dconf': _dconf(a, b), 'extra_rows': extra}
