@@ -771,3 +771,5 @@ def _dconf(a_rows, b_rows):
         for x, y in zip(ca, cb):
             diffs.append(abs(x - y))
     return diffs
+
+
