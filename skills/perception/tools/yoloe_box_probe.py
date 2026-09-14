@@ -662,3 +662,66 @@ def bench(args, pts, frame_img, synthetic, errors):
 
 
 # --------------------------------------------------------- 3a. record frames
+def record(args, out_dir, errors):
+    rec = {'requested': args.record, 'topic': args.record_topic, 'saved': 0, 'files': [],
+           'frames_dir': None}
+    frames_dir = os.path.join(out_dir, 'frames')
+    try:
+        import rclpy
+        from sensor_msgs.msg import Image
+    except Exception as e:
+        rec['error'] = 'rclpy/sensor_msgs not importable: %s' % _exc(e)
+        return rec
+    os.makedirs(frames_dir, exist_ok=True)
+    rec['frames_dir'] = frames_dir
+    state = {'last': 0.0, 'n': 0}
+    try:
+        import cv2  # noqa: F401
+        have_cv2 = os.environ.get('OPENBOT_PROBE_NO_CV2') != '1'
+    except Exception:
+        have_cv2 = False
+
+    def on_image(msg):
+        if state['n'] >= args.record:
+            return
+        now = time.time()
+        if now - state['last'] < args.record_interval:
+            return
+        try:
+            arr, enc = image_msg_to_array(msg)
+            resized = False
+            if (arr.shape[1], arr.shape[0]) != (FRAME_W, FRAME_H) and have_cv2:
+                import cv2
+                arr = cv2.resize(arr, (FRAME_W, FRAME_H))
+                resized = True
+            path = os.path.join(frames_dir, 'frame_%03d.png' % state['n'])
+            how = write_png(path, arr)
+            state['n'] += 1
+            state['last'] = now
+            rec['files'].append({'file': os.path.basename(path), 'encoding': enc,
+                                 'src_wh': [int(msg.width), int(msg.height)],
+                                 'resized': resized, 'writer': how})
+        except Exception as e:
+            errors.append('record.frame: %s' % _exc(e))
+
+    node = None
+    t_end = time.time() + args.record_timeout
+    try:
+        rclpy.init()
+        node = rclpy.create_node('yoloe_box_probe_recorder')
+        node.create_subscription(Image, args.record_topic, on_image, 10)  # subscribe only
+        while state['n'] < args.record and time.time() < t_end:
+            rclpy.spin_once(node, timeout_sec=0.1)
+    except Exception as e:
+        rec['error'] = _exc(e)
+        errors.append('record: %s' % _exc(e))
+    finally:
+        try:
+            if node is not None:
+                node.destroy_node()
+            rclpy.shutdown()
+        except Exception:
+            pass
+    rec['saved'] = state['n']
+    rec['timed_out'] = state['n'] < args.record
+    return rec
