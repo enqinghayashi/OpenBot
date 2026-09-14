@@ -763,3 +763,11 @@ def _rows_from(boxes, allowed, min_conf):
             if x['conf'] >= min_conf and x['label'] in allowed]
 
 
+def _dconf(a_rows, b_rows):
+    diffs = []
+    for lab in set(x[0] for x in a_rows) & set(x[0] for x in b_rows):
+        ca = sorted((c for l_, c in a_rows if l_ == lab), reverse=True)
+        cb = sorted((c for l_, c in b_rows if l_ == lab), reverse=True)
+        for x, y in zip(ca, cb):
+            diffs.append(abs(x - y))
+    return diffs
