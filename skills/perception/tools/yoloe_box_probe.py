@@ -917,3 +917,6 @@ def agree(args, pts, errors, out_dir=None):
     ag['prompts_fired'] = sorted(k for k, v in per_prompt.items() if v > 0)
     ag['extra_rows_total'] = sum(per_prompt.values())
     return ag
+
+
+# ------------------------------------------------------- the main flow
