@@ -575,3 +575,5 @@ def _bank_swap(model, bank, device, reps):
         set_bank_vocab(model, bank, base, device)
         restore.append(round((time.perf_counter() - t) * 1000.0, 3))
     return {'add_extras': add, 'restore_base': restore, 'extras_used': extras}
+
+
