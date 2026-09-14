@@ -755,3 +755,5 @@ def _boxes(result):
         out.append({'label': names[int(b.cls)], 'conf': float(b.conf),
                     'xyxy': [round(float(v), 1) for v in xy]})
     return out
+
+
