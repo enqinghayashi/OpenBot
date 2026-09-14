@@ -757,3 +757,7 @@ def _boxes(result):
     return out
 
 
+def _rows_from(boxes, allowed, min_conf):
+    """_rows() on a _boxes() list: same filter, same (label, round(conf, 3)) rows."""
+    return [(x['label'], round(x['conf'], 3)) for x in boxes
+            if x['conf'] >= min_conf and x['label'] in allowed]
