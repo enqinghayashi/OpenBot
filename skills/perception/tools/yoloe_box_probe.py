@@ -373,3 +373,89 @@ BANK_REJECTED = {}
 BANK_USED = set()
 
 
+def bank_rejected_rows():
+    """'<path> (for <stem>): <reason>' for every named bank no checkpoint used."""
+    rows = []
+    for path in sorted(BANK_REJECTED):
+        if path in BANK_USED:
+            continue
+        for stem in sorted(BANK_REJECTED[path]):
+            rows.append('%s (for %s): %s' % (path, stem, BANK_REJECTED[path][stem]))
+    return rows
+
+
+def bank_path_for(pt, args):
+    stem = os.path.splitext(os.path.basename(pt))[0]
+    explicit = []
+    if args.bank:
+        explicit.extend(args.bank)
+    env_b = os.environ.get('OPENBOT_YOLOE_BANK')
+    if env_b:
+        explicit.append(env_b)
+    cands = explicit + [os.path.join(os.path.dirname(pt), 'vocab_bank_%s.npz' % stem),
+                        os.path.join(args.assets_dir, 'vocab_bank_%s.npz' % stem)]
+    for i, c in enumerate(cands):
+        why = None
+        if not os.path.isfile(c):
+            why = 'missing'
+        else:
+            try:
+                b = load_bank(c)
+                if b['model'] == stem:
+                    BANK_USED.add(os.path.abspath(c))
+                    return c
+                why = 'model mismatch: bank %r vs %r' % (b['model'], stem)
+            except Exception as e:
+                why = 'load error: %s' % _exc(e)
+        # YOLOE text only
+        # -pf: no bank
+        if i < len(explicit) and stem.startswith('yoloe') and not stem.endswith('-pf'):
+            BANK_REJECTED.setdefault(os.path.abspath(c), {})[stem] = why
+    return None
+
+
+def load_bank(path):
+    import numpy as np
+    with np.load(path, allow_pickle=False) as d:
+        prompts = [str(x) for x in d['prompts'].tolist()]
+        embeds = np.asarray(d['embeds'], dtype=np.float32)
+        model = str(d['model'].item()) if 'model' in d.files else None
+        ver = str(d['ultralytics'].item()) if 'ultralytics' in d.files else None
+        built = str(d['built'].item()) if 'built' in d.files else None
+    if embeds.ndim != 2 or embeds.shape[0] != len(prompts):
+        raise ValueError('bank shape %r does not match %d prompts' % (embeds.shape, len(prompts)))
+    return {'path': path, 'prompts': prompts, 'embeds': embeds, 'model': model,
+            'ultralytics': ver, 'built': built,
+            'index': dict((p, i) for i, p in enumerate(prompts))}
+
+
+def bank_report(pts, args):
+    rep = {}
+    paths = set()
+    for p in pts:
+        bp = bank_path_for(p, args)
+        if bp:
+            paths.add(bp)
+    paths.update(glob.glob(os.path.join(args.assets_dir, 'vocab_bank_*.npz')))
+    for bp in sorted(paths):
+        ent = {'path': bp}
+        try:
+            b = load_bank(bp)
+            ent.update({'model': b['model'], 'n_prompts': len(b['prompts']),
+                        'dim': int(b['embeds'].shape[1]), 'ultralytics': b['ultralytics'],
+                        'built': b['built'],
+                        'base20_present': all(x in b['index'] for x in BASE_20),
+                        'missing_base': [x for x in BASE_20 if x not in b['index']],
+                        'md5': md5_file(bp)})
+        except Exception as e:
+            ent['error'] = _exc(e)
+        rep[os.path.basename(bp)] = ent
+    return rep
+
+
+def _vocab_tensor(bank, prompts, device):
+    import numpy as np
+    import torch
+    rows = [bank['index'][p] for p in prompts]
+    arr = np.ascontiguousarray(bank['embeds'][rows][None, :, :], dtype=np.float32)
+    return torch.from_numpy(arr).to(device)
