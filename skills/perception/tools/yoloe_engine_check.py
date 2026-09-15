@@ -49,3 +49,6 @@ def _node_helpers(node_path):
     return ns
 
 
+def _dets(r):
+    return [(r.names[int(c)], float(s), [float(v) for v in b.tolist()])
+            for c, s, b in zip(r.boxes.cls, r.boxes.conf, r.boxes.xyxy)]
