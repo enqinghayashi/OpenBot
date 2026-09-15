@@ -959,3 +959,86 @@ def build_parser():
     return ap
 
 
+def main(argv=None):
+    t0 = time.time()
+    _guard_stdout()
+    res = dict((k, None) for k in REQUIRED_KEYS)
+    errors = []
+    res.update({'probe_version': PROBE_VERSION, 'errors': errors})
+    out_path = None
+    try:
+        args = build_parser().parse_args(argv)
+        out_dir = os.path.abspath(args.out_dir or ('yoloe_probe_out_%d' % int(time.time())))
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = os.path.abspath(args.out or os.path.join(out_dir, 'probe.json'))
+        # all writes stay in out_dir:
+        # offline + ultralytics settings
+        os.environ['YOLO_CONFIG_DIR'] = os.path.join(out_dir, 'ultralytics_cfg')
+        os.environ['YOLO_OFFLINE'] = '1'
+        # $HOME writes
+        # ~/.config/matplotlib, ~/.cache/matplotlib,
+        # ~/.nv/ComputeCache (MEASURED)
+        os.environ['MPLCONFIGDIR'] = os.path.join(out_dir, 'cache', 'matplotlib')
+        os.environ['XDG_CACHE_HOME'] = os.path.join(out_dir, 'cache')
+        os.environ['XDG_CONFIG_HOME'] = os.path.join(out_dir, 'cache', 'config')
+        os.environ['CUDA_CACHE_PATH'] = os.path.join(out_dir, 'cache', 'nv')
+        os.environ['TORCH_HOME'] = os.path.join(out_dir, 'cache', 'torch')
+        os.environ.setdefault('YOLO_VERBOSE', 'False')
+        res['out_dir'] = out_dir
+        res['args'] = vars(args)
+        res['interpreter'] = {'tag': args.tag, 'executable': sys.executable,
+                              'python': sys.version.split()[0]}
+        try:
+            prov, match = provenance(args, out_dir, errors)
+            res['provenance'], res['match_staging_base'] = prov, match
+        except Exception as e:
+            errors.append('provenance: %s' % _exc(e))
+        try:
+            res['env'] = environment(args)
+        except Exception as e:
+            errors.append('env: %s' % _exc(e))
+        pts = discover_pts(args)
+        if not args.no_torch_load:
+            try:
+                res['torch_load'] = torch_load_report(pts)
+            except Exception as e:
+                errors.append('torch_load: %s' % _exc(e))
+        try:
+            res['banks'] = bank_report(pts, args)
+        except Exception as e:
+            errors.append('banks: %s' % _exc(e))
+        if args.bench:
+            try:
+                img, syn = load_frame(args.frame)
+                res['bench'] = bench(args, pts, img, syn, errors)
+            except Exception as e:
+                errors.append('bench: %s' % _exc(e))
+                res['bench'] = {'error': _exc(e), 'traceback': traceback.format_exc()[-2000:]}
+        if args.record:
+            try:
+                res['record'] = record(args, out_dir, errors)
+            except Exception as e:
+                errors.append('record: %s' % _exc(e))
+        if args.agree:
+            try:
+                res['agree'] = agree(args, pts, errors, out_dir)
+            except Exception as e:
+                errors.append('agree: %s' % _exc(e))
+                res['agree'] = {'error': _exc(e), 'traceback': traceback.format_exc()[-2000:]}
+    except SystemExit as e:  # one JSON line
+        errors.append('args: SystemExit %s' % (e.code,))
+    except Exception as e:
+        errors.append('fatal: %s' % _exc(e))
+        res['traceback'] = traceback.format_exc()[-4000:]
+    for row in bank_rejected_rows():
+        errors.append('bank.rejected: %s' % (row,))
+    res['elapsed_s'] = round(time.time() - t0, 2)
+    line = json.dumps(res, sort_keys=True, default=str)
+    if out_path:
+        try:
+            with open(out_path, 'w') as f:
+                f.write(line + '\n')
+        except Exception as e:
+            _log('could not write %s: %s' % (out_path, _exc(e)))
+    _emit_line(line)
+    return 0
