@@ -133,3 +133,7 @@ def main(argv=None):
     print('BACKEND_INFER dets=%d %s' % (len(r.boxes), [(r.names[int(k)], round(float(s), 3))
                                                        for k, s in zip(r.boxes.cls, r.boxes.conf)][:8]))
     return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
