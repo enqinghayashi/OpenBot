@@ -54,3 +54,6 @@ def _dets(r):
             for c, s, b in zip(r.boxes.cls, r.boxes.conf, r.boxes.xyxy)]
 
 
+def _pct(vals, q):
+    s = sorted(vals)
+    return s[min(len(s) - 1, int(len(s) * q))] if s else None
