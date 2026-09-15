@@ -37,3 +37,10 @@ def compute_md5(filepath):
     return md5.hexdigest()
 
 
+def count_lines(filepath):
+    """Count lines in a text file; return 0 for binary."""
+    try:
+        with open(filepath, 'r') as f:
+            return sum(1 for _ in f)
+    except (UnicodeDecodeError, OSError):
+        return 0
