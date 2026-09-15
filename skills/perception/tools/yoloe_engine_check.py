@@ -215,3 +215,7 @@ def main(argv=None):
         json.dump(out, fh, indent=1, sort_keys=True)
     print('WROTE %s' % a.out)
     return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
