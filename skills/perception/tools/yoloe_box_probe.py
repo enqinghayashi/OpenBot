@@ -1042,3 +1042,10 @@ def main(argv=None):
             _log('could not write %s: %s' % (out_path, _exc(e)))
     _emit_line(line)
     return 0
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    finally:
+        os._exit(0)  # always exit 0; skips CUDA/TensorRT teardown
