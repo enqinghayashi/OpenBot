@@ -35,3 +35,5 @@ def compute_md5(filepath):
         for chunk in iter(lambda: f.read(8192), b''):
             md5.update(chunk)
     return md5.hexdigest()
+
+
