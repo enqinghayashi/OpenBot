@@ -190,3 +190,7 @@ def main():
     json_lines = count_lines(result['json_path'])
     print(f"ONNX_LINES: {onnx_lines}")
     print(f"JSON_LINES: {json_lines}")
+
+
+if __name__ == '__main__':
+    main()
