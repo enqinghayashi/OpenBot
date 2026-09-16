@@ -148,3 +148,5 @@ def export_fixed_vocabulary(pt_path, bank_path, vocab_names, output_onnx, imgsz=
         'vocab_names': vocab_names,
         'num_classes': len(vocab_names),
     }
+
+
