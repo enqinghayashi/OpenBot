@@ -130,3 +130,11 @@ def validate(msg, base_names=()):
     return req, None
 
 
+def parse(text, base_names=()):
+    """Decode a std_msgs/String payload and validate it (never raises)."""
+    try:
+        msg = json.loads(text)
+    except Exception:  # noqa: BLE001 -- any decode blow-up just means a bad request
+        req, _ = validate(None, base_names)
+        return req, 'bad_request:json'
+    return validate(msg, base_names)
