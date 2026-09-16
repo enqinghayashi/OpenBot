@@ -54,3 +54,8 @@ def _is_num(x):
             and math.isfinite(float(x)))
 
 
+def _key(label):
+    """A printable dict key for a rejected entry (never raises)."""
+    if isinstance(label, str):
+        return label[:48]
+    return repr(label)[:48]
