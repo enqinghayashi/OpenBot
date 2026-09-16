@@ -920,3 +920,132 @@ def agree(args, pts, errors, out_dir=None):
 
 
 # ------------------------------------------------------- the main flow
+def build_parser():
+    leon = os.environ.get('LEON_DIR', DEFAULT_LEON_DIR)
+    ap = argparse.ArgumentParser(description='READ-ONLY YOLOE S1 box probe (exit 0 always).')
+    ap.add_argument('--out-dir', default=None, help='the ONLY directory written to')
+    ap.add_argument('--out', default=None, help='JSON file (default <out-dir>/probe.json)')
+    ap.add_argument('--tag', default='', help='interpreter tag recorded in the JSON')
+    ap.add_argument('--deployed-node', default=os.path.join(leon, 'yolo_node.py'))
+    ap.add_argument('--deployed-projector', default=os.path.join(leon, 'depth_projector_node.py'))
+    ap.add_argument('--base-node-md5', default=BASE_NODE_MD5)
+    ap.add_argument('--base-projector-md5', default=BASE_PROJECTOR_MD5)
+    ap.add_argument('--base-node-src', default=None, help='base copy of the node (for the diff)')
+    ap.add_argument('--base-projector-src', default=None)
+    ap.add_argument('--engine', default=DEFAULT_ENGINE)
+    ap.add_argument('--assets-dir', default=os.environ.get('OPENBOT_YOLOE_DIR', DEFAULT_ASSETS_DIR))
+    ap.add_argument('--pt', action='append', default=None, help='checkpoint (repeatable)')
+    ap.add_argument('--bank', action='append', default=None, help='bank NPZ (repeatable)')
+    ap.add_argument('--no-torch-load', action='store_true')
+    ap.add_argument('--bench', action='store_true')
+    ap.add_argument('--frame', default=None, help='PNG for --bench (else synthetic)')
+    ap.add_argument('--device', default='auto', help='cpu,cuda:0 | auto')
+    ap.add_argument('--threads', default='1,2,4')
+    ap.add_argument('--n', type=int, default=40)
+    ap.add_argument('--warmup', type=int, default=5)
+    ap.add_argument('--imgsz', type=int, default=None, help='default: as the node (unset)')
+    ap.add_argument('--swap-reps', type=int, default=5)
+    ap.add_argument('--record', type=int, default=0, help='save N frames from the camera')
+    ap.add_argument('--record-topic', default=IMAGE_TOPIC)
+    ap.add_argument('--record-interval', type=float, default=0.5, help='s between saved frames')
+    ap.add_argument('--record-timeout', type=float, default=60.0)
+    ap.add_argument('--agree', default=None, help='dir of PNGs (e.g. <out-dir>/frames)')
+    ap.add_argument('--agree-model', default=None)
+    ap.add_argument('--agree-device', default='cpu')
+    ap.add_argument('--baseline-pt', default=None, help='baseline .pt when the engine is absent')
+    ap.add_argument('--min-conf', type=float, default=EXTRA_MIN_CONF)
+    ap.add_argument('--tier-conf', type=float, default=PICK_TIER_CONF,
+                    help='--agree pick-tier conf floor (G-AGREE gate tier)')
+    return ap
+
+
+def main(argv=None):
+    t0 = time.time()
+    _guard_stdout()
+    res = dict((k, None) for k in REQUIRED_KEYS)
+    errors = []
+    res.update({'probe_version': PROBE_VERSION, 'errors': errors})
+    out_path = None
+    try:
+        args = build_parser().parse_args(argv)
+        out_dir = os.path.abspath(args.out_dir or ('yoloe_probe_out_%d' % int(time.time())))
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = os.path.abspath(args.out or os.path.join(out_dir, 'probe.json'))
+        # all writes stay in out_dir:
+        # offline + ultralytics settings
+        os.environ['YOLO_CONFIG_DIR'] = os.path.join(out_dir, 'ultralytics_cfg')
+        os.environ['YOLO_OFFLINE'] = '1'
+        # $HOME writes
+        # ~/.config/matplotlib, ~/.cache/matplotlib,
+        # ~/.nv/ComputeCache (MEASURED)
+        os.environ['MPLCONFIGDIR'] = os.path.join(out_dir, 'cache', 'matplotlib')
+        os.environ['XDG_CACHE_HOME'] = os.path.join(out_dir, 'cache')
+        os.environ['XDG_CONFIG_HOME'] = os.path.join(out_dir, 'cache', 'config')
+        os.environ['CUDA_CACHE_PATH'] = os.path.join(out_dir, 'cache', 'nv')
+        os.environ['TORCH_HOME'] = os.path.join(out_dir, 'cache', 'torch')
+        os.environ.setdefault('YOLO_VERBOSE', 'False')
+        res['out_dir'] = out_dir
+        res['args'] = vars(args)
+        res['interpreter'] = {'tag': args.tag, 'executable': sys.executable,
+                              'python': sys.version.split()[0]}
+        try:
+            prov, match = provenance(args, out_dir, errors)
+            res['provenance'], res['match_staging_base'] = prov, match
+        except Exception as e:
+            errors.append('provenance: %s' % _exc(e))
+        try:
+            res['env'] = environment(args)
+        except Exception as e:
+            errors.append('env: %s' % _exc(e))
+        pts = discover_pts(args)
+        if not args.no_torch_load:
+            try:
+                res['torch_load'] = torch_load_report(pts)
+            except Exception as e:
+                errors.append('torch_load: %s' % _exc(e))
+        try:
+            res['banks'] = bank_report(pts, args)
+        except Exception as e:
+            errors.append('banks: %s' % _exc(e))
+        if args.bench:
+            try:
+                img, syn = load_frame(args.frame)
+                res['bench'] = bench(args, pts, img, syn, errors)
+            except Exception as e:
+                errors.append('bench: %s' % _exc(e))
+                res['bench'] = {'error': _exc(e), 'traceback': traceback.format_exc()[-2000:]}
+        if args.record:
+            try:
+                res['record'] = record(args, out_dir, errors)
+            except Exception as e:
+                errors.append('record: %s' % _exc(e))
+        if args.agree:
+            try:
+                res['agree'] = agree(args, pts, errors, out_dir)
+            except Exception as e:
+                errors.append('agree: %s' % _exc(e))
+                res['agree'] = {'error': _exc(e), 'traceback': traceback.format_exc()[-2000:]}
+    except SystemExit as e:  # one JSON line
+        errors.append('args: SystemExit %s' % (e.code,))
+    except Exception as e:
+        errors.append('fatal: %s' % _exc(e))
+        res['traceback'] = traceback.format_exc()[-4000:]
+    for row in bank_rejected_rows():
+        errors.append('bank.rejected: %s' % (row,))
+    res['elapsed_s'] = round(time.time() - t0, 2)
+    line = json.dumps(res, sort_keys=True, default=str)
+    if out_path:
+        try:
+            with open(out_path, 'w') as f:
+                f.write(line + '\n')
+        except Exception as e:
+            _log('could not write %s: %s' % (out_path, _exc(e)))
+    _emit_line(line)
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    finally:
+        os._exit(0)  # always exit 0; skips CUDA/TensorRT teardown
