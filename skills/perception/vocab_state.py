@@ -128,3 +128,5 @@ def validate(msg, base_names=()):
         seen.add(label)
         req['classes'].append((label, prompt))
     return req, None
+
+
