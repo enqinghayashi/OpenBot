@@ -52,3 +52,5 @@ def _is_int(x):
 def _is_num(x):
     return (isinstance(x, (int, float)) and not isinstance(x, bool)
             and math.isfinite(float(x)))
+
+
