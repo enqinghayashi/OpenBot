@@ -49,3 +49,6 @@ def _is_int(x):
     return isinstance(x, int) and not isinstance(x, bool)
 
 
+def _is_num(x):
+    return (isinstance(x, (int, float)) and not isinstance(x, bool)
+            and math.isfinite(float(x)))
