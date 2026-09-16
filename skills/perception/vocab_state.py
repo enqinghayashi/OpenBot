@@ -45,3 +45,5 @@ STATE_KEYS = ('v', 'epoch', 'seq', 'dup', 'backend', 'model', 'base',
 FIXED_BACKEND_ERROR = 'vocabulary is fixed on this backend'
 
 
+def _is_int(x):
+    return isinstance(x, int) and not isinstance(x, bool)
