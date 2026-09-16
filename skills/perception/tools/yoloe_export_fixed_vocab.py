@@ -150,3 +150,43 @@ def export_fixed_vocabulary(pt_path, bank_path, vocab_names, output_onnx, imgsz=
     }
 
 
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--pt', required=True, help='Path to YOLOE .pt weights')
+    parser.add_argument('--bank', required=True, help='Path to vocabulary bank NPZ')
+    parser.add_argument('--vocab', nargs='+', required=True, help='Class names in order')
+    parser.add_argument('--output', required=True, help='Path to save ONNX model')
+    parser.add_argument('--imgsz', type=int, nargs=2, default=[384, 640], help='Image size [height width]')
+    args = parser.parse_args()
+
+    # inputs first
+    if not os.path.isfile(args.pt):
+        print(f"ERROR: {args.pt} not found", file=sys.stderr)
+        sys.exit(1)
+    if not os.path.isfile(args.bank):
+        print(f"ERROR: {args.bank} not found", file=sys.stderr)
+        sys.exit(1)
+
+    # mkdir -p the output dir
+    output_dir = Path(args.output).parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        result = export_fixed_vocabulary(
+            args.pt, args.bank, args.vocab, args.output, args.imgsz
+        )
+    except Exception as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # evidence
+    print(f"ONNX_PATH: {result['onnx_path']}")
+    print(f"ONNX_MD5: {result['onnx_md5']}")
+    print(f"JSON_PATH: {result['json_path']}")
+    print(f"NUM_CLASSES: {result['num_classes']}")
+
+    # file stats
+    onnx_lines = count_lines(result['onnx_path'])
+    json_lines = count_lines(result['json_path'])
+    print(f"ONNX_LINES: {onnx_lines}")
+    print(f"JSON_LINES: {json_lines}")
