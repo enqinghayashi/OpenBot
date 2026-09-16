@@ -459,3 +459,74 @@ def _vocab_tensor(bank, prompts, device):
     rows = [bank['index'][p] for p in prompts]
     arr = np.ascontiguousarray(bank['embeds'][rows][None, :, :], dtype=np.float32)
     return torch.from_numpy(arr).to(device)
+
+
+def set_bank_vocab(model, bank, prompts, device):
+    """ONLY the two-argument form: set_classes(names, embeddings). Never the encoder."""
+    model.set_classes(list(prompts), _vocab_tensor(bank, prompts, device))
+
+
+# --------------------------------------------------------- image helpers
+def load_frame(path):
+    """BGR uint8 HxWx3 at 424x240 (cv2), or a synthetic frame (flagged)."""
+    import numpy as np
+    if path:
+        try:
+            import cv2
+            img = cv2.imread(path)
+            if img is None:
+                raise IOError('cv2.imread returned None for %s' % path)
+            if img.shape[1] != FRAME_W or img.shape[0] != FRAME_H:
+                img = cv2.resize(img, (FRAME_W, FRAME_H))
+            return img, False
+        except Exception as e:
+            _log('frame %s unusable (%s) - synthetic frame' % (path, _exc(e)))
+    rng = np.random.RandomState(0)
+    return rng.randint(0, 255, size=(FRAME_H, FRAME_W, 3)).astype(np.uint8), True
+
+
+def write_png(path, arr):
+    """Save an HxWx3 uint8 array so that cv2.imread(path) returns it byte-exact.
+
+    cv2 when available; else a stdlib (zlib) PNG writer storing channels reversed
+    (cv2 decodes PNG RGB into BGR order)."""
+    if os.environ.get('OPENBOT_PROBE_NO_CV2') != '1':
+        try:
+            import cv2
+            if cv2.imwrite(path, arr):
+                return 'cv2'
+        except Exception:
+            pass
+    h, w = arr.shape[0], arr.shape[1]
+    rgb = arr[:, :, ::-1]
+    raw = b''.join(b'\x00' + rgb[y].tobytes() for y in range(h))
+
+    def chunk(tag, data):
+        return (struct.pack('>I', len(data)) + tag + data +
+                struct.pack('>I', zlib.crc32(tag + data) & 0xffffffff))
+    png = (b'\x89PNG\r\n\x1a\n' +
+           chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)) +
+           chunk(b'IDAT', zlib.compress(raw, 6)) + chunk(b'IEND', b''))
+    with open(path, 'wb') as f:
+        f.write(png)
+    return 'zlib'
+
+
+def image_msg_to_array(msg):
+    """sensor_msgs/Image -> HxWx3 uint8 exactly as yolo_node_seg.py:281 sees it
+    (raw bytes reshaped, no colour conversion), honouring row padding."""
+    import numpy as np
+    h, w = int(msg.height), int(msg.width)
+    enc = str(getattr(msg, 'encoding', '') or '')
+    ch = {'rgb8': 3, 'bgr8': 3, 'rgba8': 4, 'bgra8': 4, 'mono8': 1}.get(enc, 3)
+    step = int(getattr(msg, 'step', 0) or w * ch)
+    buf = np.frombuffer(bytes(msg.data), dtype=np.uint8)
+    arr = buf[:h * step].reshape(h, step)[:, :w * ch].reshape(h, w, ch)
+    if ch == 4:
+        arr = arr[:, :, :3]
+    elif ch == 1:
+        arr = np.repeat(arr, 3, axis=2)
+    return np.ascontiguousarray(arr), enc
+
+
+# ------------------------------------------------------------ 2. bench run
