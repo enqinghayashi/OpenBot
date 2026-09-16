@@ -44,3 +44,5 @@ def count_lines(filepath):
             return sum(1 for _ in f)
     except (UnicodeDecodeError, OSError):
         return 0
+
+
