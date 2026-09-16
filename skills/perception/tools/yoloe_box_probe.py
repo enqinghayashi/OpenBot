@@ -530,3 +530,135 @@ def image_msg_to_array(msg):
 
 
 # ------------------------------------------------------------ 2. bench run
+def _make_model(kind, path):
+    from ultralytics import YOLO
+    if kind == 'yoloe':
+        from ultralytics import YOLOE
+        return YOLOE(path)
+    return YOLO(path, task='segment')
+
+
+def _time_infer(model, img, device, n, warmup, imgsz):
+    import torch
+    kw = {'conf': GATE_CONF, 'iou': IOU, 'verbose': False, 'device': device}
+    if imgsz:
+        kw['imgsz'] = imgsz
+    for _ in range(warmup):
+        model(img, **kw)
+    cuda = str(device).startswith('cuda')
+    ts = []
+    c0, w0 = _cpu_s(), time.time()
+    for _ in range(n):
+        if cuda:
+            torch.cuda.synchronize()
+        t = time.perf_counter()
+        model(img, **kw)
+        if cuda:
+            torch.cuda.synchronize()
+        ts.append((time.perf_counter() - t) * 1000.0)
+    c1, w1 = _cpu_s(), time.time()
+    ts.sort()
+    return {'median_ms': round(statistics.median(ts), 2), 'p90_ms': _pct(ts, 0.9),
+            'min_ms': round(ts[0], 2), 'n': n, 'warmup': warmup,
+            'cpu_pct': round(100.0 * (c1 - c0) / max(1e-6, (w1 - w0)), 1)}
+
+
+def _bank_swap(model, bank, device, reps):
+    base = list(BASE_20)
+    extras = [p for p in bank['prompts'] if p not in BASE_20][:4]
+    add, restore, first = [], [], None
+    for _ in range(reps):
+        t = time.perf_counter()
+        set_bank_vocab(model, bank, base + extras, device)
+        add.append(round((time.perf_counter() - t) * 1000.0, 3))
+        t = time.perf_counter()
+        set_bank_vocab(model, bank, base, device)
+        restore.append(round((time.perf_counter() - t) * 1000.0, 3))
+    return {'add_extras': add, 'restore_base': restore, 'extras_used': extras}
+
+
+def bench(args, pts, frame_img, synthetic, errors):
+    import torch
+    devices = _parse_list(args.device)
+    if 'auto' in devices:
+        devices = ['cpu'] + (['cuda:0'] if torch.cuda.is_available() else [])
+    threads = _parse_list(args.threads, int)
+    out = {'frame': args.frame, 'synthetic': synthetic, 'frame_shape': list(frame_img.shape),
+           'devices': devices, 'threads': threads, 'imgsz': args.imgsz or 'default (as node)',
+           'conf': GATE_CONF, 'iou': IOU, 'models': {}}
+    specs = []
+    if os.path.isfile(args.engine):
+        specs.append(('engine', 'yolo', args.engine))
+        out['engine'] = 'present'
+    else:
+        out['engine'] = 'missing'
+    for p in pts:
+        if os.path.isfile(p):
+            kind = 'yoloe' if os.path.basename(p).startswith('yoloe') else 'yolo'
+            specs.append((os.path.basename(p), kind, p))
+    for name, kind, path in specs:
+        ment = {'path': path, 'kind': kind, 'per_device': {}}
+        out['models'][name] = ment
+        for dev in devices:
+            dent = {}
+            ment['per_device'][dev] = dent
+            if dev.startswith('cuda') and not torch.cuda.is_available():
+                dent['skipped'] = 'cuda not available'
+                continue
+            if name == 'engine' and not dev.startswith('cuda'):
+                dent['skipped'] = 'TensorRT engine is GPU-only'
+                continue
+            try:
+                rss0 = _rss_mb()
+                t0 = time.perf_counter()
+                model = _make_model(kind, path)
+                dent['load_ms'] = round((time.perf_counter() - t0) * 1000.0, 1)
+                bank = None
+                if kind == 'yoloe' and not os.path.basename(path).endswith('-pf.pt'):
+                    bp = bank_path_for(path, args)
+                    if bp:
+                        bank = load_bank(bp)
+                        missing = [x for x in BASE_20 if x not in bank['index']]
+                        if missing:
+                            raise ValueError('bank %s lacks base prompts %r' % (bp, missing))
+                        set_bank_vocab(model, bank, BASE_20, dev)
+                        dent['vocab'] = 'bank base-20 (%s)' % os.path.basename(bp)
+                    else:
+                        dent['vocab'] = 'checkpoint default (no bank found)'
+                dent['rss_mb_before'] = rss0
+                # select_device resets threads
+                # predictor first
+                # under sentinel
+                # then set counts
+                torch.set_num_threads(1)
+                model(frame_img, conf=GATE_CONF, iou=IOU, verbose=False, device=dev)
+                dent['torch_threads_after_predictor_setup'] = torch.get_num_threads()
+                dent['threads'] = {}
+                for th in threads:
+                    torch.set_num_threads(th)
+                    r = _time_infer(model, frame_img, dev, args.n, args.warmup, args.imgsz)
+                    r['threads_effective'] = torch.get_num_threads()
+                    dent['threads'][str(th)] = r
+                dent['rss_mb_after'] = _rss_mb()
+                dent['maxrss_mb'] = _maxrss_mb()
+                if bank is not None:
+                    dent['bank_swap_ms'] = _bank_swap(model, bank, dev, args.swap_reps)
+                    t = time.perf_counter()
+                    model(frame_img, conf=GATE_CONF, iou=IOU, verbose=False, device=dev)
+                    dent['first_infer_after_swap_ms'] = round((time.perf_counter() - t) * 1000.0, 2)
+                elif kind == 'yoloe':
+                    dent['bank_swap_ms'] = None
+                del model
+            except Exception as e:
+                dent['error'] = _exc(e)
+                errors.append('bench.%s.%s: %s' % (name, dev, _exc(e)))
+            finally:
+                try:
+                    if dev.startswith('cuda'):
+                        torch.cuda.empty_cache()
+                except Exception:
+                    pass
+    return out
+
+
+# --------------------------------------------------------- 3a. record frames
