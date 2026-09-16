@@ -61,3 +61,70 @@ def _key(label):
     return repr(label)[:48]
 
 
+def validate(msg, base_names=()):
+    """Validate one decoded /yolo/classes request.
+
+    Returns ``(request, error)``.  ``error`` is None or a string
+    (``'bad_version'`` / ``'bad_request:<why>'``); on error ``request`` still
+    carries whatever ``epoch``/``seq`` could be read (ints or None) so a state
+    can echo them.  ``request`` keys: v, epoch, seq, op, classes (list of
+    (label, prompt) tuples, base/bad entries removed), rejected
+    ({label: reason}), min_conf (float or None), origin.
+    """
+    req = {'v': None, 'epoch': None, 'seq': None, 'op': None,
+           'classes': [], 'rejected': {}, 'min_conf': None, 'origin': None}
+    if not isinstance(msg, dict):
+        return req, 'bad_request:not_object'
+    epoch = msg.get('epoch')
+    seq = msg.get('seq')
+    if _is_int(epoch):
+        req['epoch'] = epoch
+    if _is_int(seq):
+        req['seq'] = seq
+    req['v'] = msg.get('v')
+    origin = msg.get('origin')
+    req['origin'] = origin if isinstance(origin, str) else None
+    if msg.get('v') != PROTOCOL_VERSION or isinstance(msg.get('v'), bool):
+        return req, 'bad_version'
+    if not _is_int(epoch) or epoch < 0:
+        return req, 'bad_request:epoch'
+    if not _is_int(seq) or seq < 0:
+        return req, 'bad_request:seq'
+    op = msg.get('op')
+    if op not in OPS:
+        return req, 'bad_request:op'
+    req['op'] = op
+    if 'min_conf' in msg and msg.get('min_conf') is not None:
+        mc = msg.get('min_conf')
+        if not _is_num(mc) or not (MIN_CONF_LO <= float(mc) <= MIN_CONF_HI):
+            return req, 'bad_request:min_conf'
+        req['min_conf'] = float(mc)
+    if op != 'set':
+        return req, None
+    classes = msg.get('classes')
+    if not isinstance(classes, list):
+        return req, 'bad_request:classes'
+    if len(classes) > MAX_EXTRAS:
+        return req, 'bad_request:too_many_classes'
+    base = frozenset(base_names)
+    seen = set()
+    for entry in classes:
+        if not isinstance(entry, dict):
+            req['rejected'][_key(entry)] = 'bad_entry'
+            continue
+        label = entry.get('label')
+        prompt = entry.get('prompt')
+        if isinstance(label, str) and label in base:
+            req['rejected'][label] = 'base'
+            continue
+        if not isinstance(label, str) or not LABEL_RE.match(label):
+            req['rejected'][_key(label)] = 'bad_label'
+            continue
+        if not isinstance(prompt, str) or not PROMPT_RE.match(prompt):
+            req['rejected'][label] = 'bad_prompt'
+            continue
+        if label in seen:
+            continue                       # dup: first wins
+        seen.add(label)
+        req['classes'].append((label, prompt))
+    return req, None
