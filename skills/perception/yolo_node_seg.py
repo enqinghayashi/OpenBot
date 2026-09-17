@@ -178,3 +178,9 @@ def _colour_label(color_name, class_name):
             instance_labels, 'HUE_BAND_BY_NAME', ()):
         return '%s %s' % (color_name, class_name)
     return class_name
+
+
+# ── Colour leg ──────────────────────────
+COLOR_MAX_SAMPLE_PX = 4096  # strided sample cap
+
+
