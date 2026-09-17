@@ -157,3 +157,128 @@ def _mask_to_polygon(mask_xy_i):
 
 
 # ── Identity + colour label ─────────────
+def _instance_key(class_name, cx, cy, grid_px=INSTANCE_GRID_PX):
+    """Stable per-object identity key: f'{class_name}|{col},{row}' where
+    (col, row) is the centroid's cell in a 30 px grid over the colour frame.
+    class_name is part of the key so two DIFFERENT classes sharing a cell never
+    merge; same-class objects separated by >= grid_px in x or y get distinct
+    keys, so 3 cups at 3 positions map to 3 keys and each confirms on its own."""
+    return '%s|%d,%d' % (class_name,
+                         int(float(cx) // grid_px),
+                         int(float(cy) // grid_px))
+
+
+def _colour_label(color_name, class_name):
+    """Published detection label: f'{color_name} {class_name}' ('red cup') when
+    color_name is a REAL instance_labels HUE_BANDS band name, else the bare
+    class_name ('cup').  A colour is NEVER faked: unknown/unmeasured colour
+    falls back to the bare class.  The bare COCO class is always carried
+    separately in the row's 'class_name' field for the pick chain."""
+    if color_name and color_name in getattr(
+            instance_labels, 'HUE_BAND_BY_NAME', ()):
+        return '%s %s' % (color_name, class_name)
+    return class_name
+
+
+# ── Colour leg ──────────────────────────
+COLOR_MAX_SAMPLE_PX = 4096  # strided sample cap
+
+
+def _mask_rows_hsv(img_bgr, poly, max_px=COLOR_MAX_SAMPLE_PX):
+    """Sample the CURRENT bgr frame inside mask polygon ``poly``, strided to
+    <= max_px pixels, and return rows as float HSV with hue scaled to the
+    plan's 0-360 degrees and S/V as 0-1 fractions
+    (cv2.cvtColor -> H *= 2.0, S = S/255, V = V/255).  Returns None when cv2
+    is unavailable, the polygon is unusable, or the mask rasterizes empty."""
+    if cv2 is None or poly is None:
+        return None
+    try:
+        h, w = img_bgr.shape[0], img_bgr.shape[1]
+        pts = np.array(poly, dtype=np.int32).reshape((-1, 1, 2))
+        raster = np.zeros((h, w), dtype=np.uint8)
+        cv2.fillPoly(raster, [pts], 1)
+        ys, xs = np.where(raster > 0)
+        n = ys.size
+        if n == 0:
+            return None
+        if n > max_px:
+            step = int(math.ceil(math.sqrt(float(n) / float(max_px))))
+            ys = ys[::step]
+            xs = xs[::step]
+        rows_bgr = img_bgr[ys, xs]  # cvtColor rejects CV_64F
+        hsv = cv2.cvtColor(
+            rows_bgr.reshape(1, -1, 3), cv2.COLOR_BGR2HSV)
+        hsv = hsv.reshape(-1, 3).astype(np.float64)
+        # cv2 hue 0-180 -> degrees 0-360
+        hsv[:, 0] = hsv[:, 0] * 2.0
+        hsv[:, 1] = hsv[:, 1] / 255.0
+        hsv[:, 2] = hsv[:, 2] / 255.0
+        return hsv
+    except Exception as e:  # noqa: BLE001  — no crash
+        print('[yolo] colour rasterize failed: %s' % (e,), file=sys.stderr)
+        return None
+
+
+class YoloNode(Node):
+    def __init__(self):
+        super().__init__('yolo_node')
+
+        # ── YOLOE state (inert) ─────────────────
+        self._yoloe_on = _env_on('OPENBOT_YOLOE')
+        self._classes_on = _env_on('OPENBOT_YOLO_CLASSES')
+        self._backend = None            # backend once live
+        self._backend_name = 'yolo'
+        self._fallback_reason = None
+        self._fallback_due = False
+        self._fallback_thread = None
+        self._fatal = None              # worker sets; re-raised
+        self._consec_errors = 0
+        self._base_order = sorted(TRACKED_CLASSES)
+        self._extras = {}               # extra -> prompt
+        self._extra_conf_default = YOLOE_DEFAULT_EXTRA_CONF
+        self._extra_conf = YOLOE_DEFAULT_EXTRA_CONF
+        self._pending_vocab = None      # None unless OPENBOT_YOLO_CLASSES is ON
+        self._vocab_mod = None
+        self._vocab_dedupe = None
+        self._classes_sub = None
+        self._state_pub = None
+        self._tracker = None            # InstanceTracker when ids on
+        if _env_on('OPENBOT_INSTANCE_IDS'):
+            self._init_instance_tracker()
+
+        if self._yoloe_on:
+            self._init_yoloe()
+        else:
+            # ── Load COCO-gate SEG model ────────────
+            try:
+                self._gate_model = YOLO(ENGINE_PATH)
+                self.get_logger().info(
+                    'COCO-gate SEG model loaded (yolo11n-seg.pt, 80 classes).')
+            except Exception as e:
+                self.get_logger().error(f'Gate model failed to load: {e}')
+                raise
+
+        self._tracked_classes = TRACKED_CLASSES
+        # TRACKED_CLASSES unless vocab adds extras
+        self._runtime_allow = TRACKED_CLASSES
+        self.get_logger().info(
+            f'Class allowlist CURATED: {len(self._tracked_classes)} '
+            f'daily-life COCO classes admitted.')
+
+        self._latest_frame = None
+        self._lock = threading.Lock()
+        self._busy = False
+
+        # key -> {first_seen, last_seen, ...}
+        self._candidates = {}
+
+        self.sub = self.create_subscription(
+            Image, '/camera/color/image_raw', self._on_image, 10)
+        self.pub = self.create_publisher(String, '/detections', 10)
+        self.create_timer(0.1, self._run_inference)
+        if self._classes_on:
+            self._init_classes_topic()
+        self.get_logger().info(
+            f'COCO-gate SEG node ready (AR orientation). '
+            f'gate_conf>{GATE_CONF}, confirm>{CONFIRM_SECONDS}s')
+
