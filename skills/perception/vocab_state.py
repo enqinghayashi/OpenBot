@@ -140,3 +140,7 @@ def parse(text, base_names=()):
     return validate(msg, base_names)
 
 
+class Dedupe(object):
+    """(epoch, seq) duplicate filter.  ``is_dup`` never mutates; the caller
+    ``commit``s only what it actually processed."""
+
