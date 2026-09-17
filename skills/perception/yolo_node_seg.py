@@ -184,3 +184,36 @@ def _colour_label(color_name, class_name):
 COLOR_MAX_SAMPLE_PX = 4096  # strided sample cap
 
 
+def _mask_rows_hsv(img_bgr, poly, max_px=COLOR_MAX_SAMPLE_PX):
+    """Sample the CURRENT bgr frame inside mask polygon ``poly``, strided to
+    <= max_px pixels, and return rows as float HSV with hue scaled to the
+    plan's 0-360 degrees and S/V as 0-1 fractions
+    (cv2.cvtColor -> H *= 2.0, S = S/255, V = V/255).  Returns None when cv2
+    is unavailable, the polygon is unusable, or the mask rasterizes empty."""
+    if cv2 is None or poly is None:
+        return None
+    try:
+        h, w = img_bgr.shape[0], img_bgr.shape[1]
+        pts = np.array(poly, dtype=np.int32).reshape((-1, 1, 2))
+        raster = np.zeros((h, w), dtype=np.uint8)
+        cv2.fillPoly(raster, [pts], 1)
+        ys, xs = np.where(raster > 0)
+        n = ys.size
+        if n == 0:
+            return None
+        if n > max_px:
+            step = int(math.ceil(math.sqrt(float(n) / float(max_px))))
+            ys = ys[::step]
+            xs = xs[::step]
+        rows_bgr = img_bgr[ys, xs]  # cvtColor rejects CV_64F
+        hsv = cv2.cvtColor(
+            rows_bgr.reshape(1, -1, 3), cv2.COLOR_BGR2HSV)
+        hsv = hsv.reshape(-1, 3).astype(np.float64)
+        # cv2 hue 0-180 -> degrees 0-360
+        hsv[:, 0] = hsv[:, 0] * 2.0
+        hsv[:, 1] = hsv[:, 1] / 255.0
+        hsv[:, 2] = hsv[:, 2] / 255.0
+        return hsv
+    except Exception as e:  # noqa: BLE001  — no crash
+        print('[yolo] colour rasterize failed: %s' % (e,), file=sys.stderr)
+        return None
