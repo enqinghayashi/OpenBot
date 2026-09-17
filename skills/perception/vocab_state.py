@@ -234,3 +234,11 @@ def validate_strict(msg, base_names=()):
     return req, None
 
 
+def parse_strict(text, base_names=()):
+    """Decode a /yolo/strict payload and validate it (never raises)."""
+    try:
+        msg = json.loads(text)
+    except Exception:  # noqa: BLE001 -- any decode blow-up just means a bad request
+        req, _ = validate_strict(None, base_names)
+        return req, 'bad_request:json'
+    return validate_strict(msg, base_names)
