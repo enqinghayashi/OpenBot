@@ -168,3 +168,13 @@ def _instance_key(class_name, cx, cy, grid_px=INSTANCE_GRID_PX):
                          int(float(cy) // grid_px))
 
 
+def _colour_label(color_name, class_name):
+    """Published detection label: f'{color_name} {class_name}' ('red cup') when
+    color_name is a REAL instance_labels HUE_BANDS band name, else the bare
+    class_name ('cup').  A colour is NEVER faked: unknown/unmeasured colour
+    falls back to the bare class.  The bare COCO class is always carried
+    separately in the row's 'class_name' field for the pick chain."""
+    if color_name and color_name in getattr(
+            instance_labels, 'HUE_BAND_BY_NAME', ()):
+        return '%s %s' % (color_name, class_name)
+    return class_name
