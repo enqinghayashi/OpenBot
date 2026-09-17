@@ -157,3 +157,5 @@ class Dedupe(object):
         if epoch != self.last_epoch:
             self.last_epoch = epoch
         self.last_seq = seq
+
+
