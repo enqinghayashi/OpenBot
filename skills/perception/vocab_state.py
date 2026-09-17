@@ -148,3 +148,8 @@ class Dedupe(object):
         self.last_epoch = None
         self.last_seq = None
 
+    def is_dup(self, epoch, seq):
+        if self.last_epoch is None or epoch != self.last_epoch:
+            return False
+        return seq <= self.last_seq
+
