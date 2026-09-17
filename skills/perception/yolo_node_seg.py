@@ -154,3 +154,6 @@ def _mask_to_polygon(mask_xy_i):
         return poly if len(poly) >= 3 else None
     except Exception:
         return None
+
+
+# ── Identity + colour label ─────────────
