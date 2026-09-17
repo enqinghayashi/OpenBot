@@ -144,3 +144,7 @@ class Dedupe(object):
     """(epoch, seq) duplicate filter.  ``is_dup`` never mutates; the caller
     ``commit``s only what it actually processed."""
 
+    def __init__(self):
+        self.last_epoch = None
+        self.last_seq = None
+
