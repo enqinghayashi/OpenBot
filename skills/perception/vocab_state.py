@@ -159,3 +159,10 @@ class Dedupe(object):
         self.last_seq = seq
 
 
+def build_state(epoch, seq, dup, backend, model, base, extras, resolved,
+                rejected, min_conf, swap_ms, stamp, error):
+    """One /yolo/classes_state dict with the section-3.4 key order."""
+    vals = (PROTOCOL_VERSION, epoch, seq, bool(dup), backend, model,
+            list(base), list(extras), dict(resolved), dict(rejected),
+            min_conf, swap_ms, stamp, error)
+    return dict(zip(STATE_KEYS, vals))
