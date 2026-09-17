@@ -142,3 +142,15 @@ def classify_orientation(aspect_ratio):
     return 'upright'  # ambiguous: approach behind
 
 
+def _mask_to_polygon(mask_xy_i):
+    """Convert one ultralytics mask polygon (numpy (N,2)) to a JSON-ready list
+    of [x, y] int pairs in color-pixel coords.  Returns None if absent or
+    degenerate (< 3 points)."""
+    if mask_xy_i is None:
+        return None
+    try:
+        poly = [[int(round(float(p[0]))), int(round(float(p[1])))]
+                for p in mask_xy_i]
+        return poly if len(poly) >= 3 else None
+    except Exception:
+        return None
