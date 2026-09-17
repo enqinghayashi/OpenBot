@@ -153,3 +153,7 @@ class Dedupe(object):
             return False
         return seq <= self.last_seq
 
+    def commit(self, epoch, seq):
+        if epoch != self.last_epoch:
+            self.last_epoch = epoch
+        self.last_seq = seq
