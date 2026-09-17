@@ -217,3 +217,5 @@ def _mask_rows_hsv(img_bgr, poly, max_px=COLOR_MAX_SAMPLE_PX):
     except Exception as e:  # noqa: BLE001  — no crash
         print('[yolo] colour rasterize failed: %s' % (e,), file=sys.stderr)
         return None
+
+
