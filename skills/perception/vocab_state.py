@@ -138,3 +138,22 @@ def parse(text, base_names=()):
         req, _ = validate(None, base_names)
         return req, 'bad_request:json'
     return validate(msg, base_names)
+
+
+class Dedupe(object):
+    """(epoch, seq) duplicate filter.  ``is_dup`` never mutates; the caller
+    ``commit``s only what it actually processed."""
+
+    def __init__(self):
+        self.last_epoch = None
+        self.last_seq = None
+
+    def is_dup(self, epoch, seq):
+        if self.last_epoch is None or epoch != self.last_epoch:
+            return False
+        return seq <= self.last_seq
+
+    def commit(self, epoch, seq):
+        if epoch != self.last_epoch:
+            self.last_epoch = epoch
+        self.last_seq = seq
