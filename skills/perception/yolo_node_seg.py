@@ -157,3 +157,12 @@ def _mask_to_polygon(mask_xy_i):
 
 
 # ── Identity + colour label ─────────────
+def _instance_key(class_name, cx, cy, grid_px=INSTANCE_GRID_PX):
+    """Stable per-object identity key: f'{class_name}|{col},{row}' where
+    (col, row) is the centroid's cell in a 30 px grid over the colour frame.
+    class_name is part of the key so two DIFFERENT classes sharing a cell never
+    merge; same-class objects separated by >= grid_px in x or y get distinct
+    keys, so 3 cups at 3 positions map to 3 keys and each confirms on its own."""
+    return '%s|%d,%d' % (class_name,
+                         int(float(cx) // grid_px),
+                         int(float(cy) // grid_px))
