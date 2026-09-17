@@ -166,3 +166,5 @@ def _instance_key(class_name, cx, cy, grid_px=INSTANCE_GRID_PX):
     return '%s|%d,%d' % (class_name,
                          int(float(cx) // grid_px),
                          int(float(cy) // grid_px))
+
+
