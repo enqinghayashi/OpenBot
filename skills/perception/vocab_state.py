@@ -166,3 +166,19 @@ def build_state(epoch, seq, dup, backend, model, base, extras, resolved,
             list(base), list(extras), dict(resolved), dict(rejected),
             min_conf, swap_ms, stamp, error)
     return dict(zip(STATE_KEYS, vals))
+
+
+# ── /yolo/strict: gateway leases ──────
+# one std_msgs/String JSON per message:
+#   narrow:  {"v": 1, "epoch": .., "seq": .., "op": "narrow",
+#             "labels": ["bin"], "lease_s": 4.0, "origin": "gateway"}
+#   release: {"v": 1, "epoch": .., "seq": .., "op": "release"}
+# narrow: only those labels till the lease dies (gateway re-sends
+# every second); release or a dead lease restores the full set.
+# base names keep their spaces.
+STRICT_OPS = ('narrow', 'release')
+STRICT_LEASE_LO = 0.5
+STRICT_LEASE_HI = 30.0
+STRICT_MAX_LABELS = 8
+
+
