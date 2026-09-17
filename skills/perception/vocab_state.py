@@ -182,3 +182,53 @@ STRICT_LEASE_HI = 30.0
 STRICT_MAX_LABELS = 8
 
 
+def validate_strict(msg, base_names=()):
+    """Validate one decoded /yolo/strict request -> ``(request, error)``.
+
+    ``request`` keys: v, epoch, seq, op, labels (list, order kept, duplicates
+    dropped), lease_s (float or None), origin.  ``error`` is None or
+    'bad_version' / 'bad_request:<why>'; nothing is applied on an error.
+    """
+    req = {'v': None, 'epoch': None, 'seq': None, 'op': None,
+           'labels': [], 'lease_s': None, 'origin': None}
+    if not isinstance(msg, dict):
+        return req, 'bad_request:not_object'
+    epoch = msg.get('epoch')
+    seq = msg.get('seq')
+    if _is_int(epoch):
+        req['epoch'] = epoch
+    if _is_int(seq):
+        req['seq'] = seq
+    req['v'] = msg.get('v')
+    origin = msg.get('origin')
+    req['origin'] = origin if isinstance(origin, str) else None
+    if msg.get('v') != PROTOCOL_VERSION or isinstance(msg.get('v'), bool):
+        return req, 'bad_version'
+    if not _is_int(epoch) or epoch < 0:
+        return req, 'bad_request:epoch'
+    if not _is_int(seq) or seq < 0:
+        return req, 'bad_request:seq'
+    op = msg.get('op')
+    if op not in STRICT_OPS:
+        return req, 'bad_request:op'
+    req['op'] = op
+    if op == 'release':
+        return req, None
+    labels = msg.get('labels')
+    if (not isinstance(labels, list) or not labels
+            or len(labels) > STRICT_MAX_LABELS):
+        return req, 'bad_request:labels'
+    base = frozenset(base_names)
+    out = []
+    for lab in labels:
+        if not isinstance(lab, str) or not (lab in base or LABEL_RE.match(lab)):
+            return req, 'bad_request:label'
+        if lab not in out:
+            out.append(lab)
+    lease = msg.get('lease_s')
+    if not _is_num(lease) or not (STRICT_LEASE_LO <= float(lease)
+                                  <= STRICT_LEASE_HI):
+        return req, 'bad_request:lease_s'
+    req['labels'] = out
+    req['lease_s'] = float(lease)
+    return req, None
