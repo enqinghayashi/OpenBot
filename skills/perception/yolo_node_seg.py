@@ -509,3 +509,32 @@ class YoloNode(Node):
             self.get_logger().error('[yoloe] FATAL no backend: %s' % e)
             raise
 
+    def _init_yoloe(self):
+        weights, bank, threads, extra_conf, problems = _yoloe_env()
+        for p in problems:
+            self.get_logger().error('[yoloe] %s' % p)
+        self._extra_conf_default = extra_conf
+        self._extra_conf = extra_conf
+        try:
+            mod = _import_sibling('yoloe_backend')
+            backend = mod.YoloeBackend(
+                weights, bank, threads=threads,
+                log=lambda s: self.get_logger().info(s),
+                base=self._base_order)
+            backend.load()
+        except Exception as e:
+            self._fallback_reason = str(e)
+            self.get_logger().error(
+                '[yoloe] FALLBACK to yolo11n-seg.engine: %s' % e)
+            self._gate_model = self._load_engine()
+            self._backend = None
+            self._backend_name = 'yolo'
+            return
+        self._backend = backend
+        self._gate_model = None
+        self._backend_name = 'yoloe'
+        self.get_logger().info(
+            '[yoloe] backend yoloe: weights=%s bank=%s threads=%d '
+            'extra_conf=%.2f' % (weights, bank, threads, extra_conf))
+
+    # ── /yolo/classes (OPENBOT_YOLO_CLASSES) ─
