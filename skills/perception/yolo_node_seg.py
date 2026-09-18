@@ -572,3 +572,11 @@ class YoloNode(Node):
             self._publish_vocab_state(None, None,
                                       error=self._fallback_reason)
 
+    def _on_classes(self, msg):
+        # parse + validate + store; swap next tick
+        with self._lock:
+            req, err = self._vocab_mod.parse(msg.data, TRACKED_CLASSES)
+            if self._pending_vocab is None:
+                self._pending_vocab = []
+            self._pending_vocab.append((req, err))
+
