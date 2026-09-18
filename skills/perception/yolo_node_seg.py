@@ -814,3 +814,74 @@ TOPIC_CLASSES_STATE = '/yolo/classes_state'
 ENGINE_MODEL_NAME = 'yolo11n-seg'
 
 
+def _env_on(name, environ=None):
+    env = os.environ if environ is None else environ
+    return env.get(name) == '1'
+
+
+def _yoloe_env(environ=None):
+    """(weights, bank, threads, extra_conf, problems) from the environment.
+    A malformed value falls back to its default and is REPORTED."""
+    env = os.environ if environ is None else environ
+    problems = []
+    weights = env.get('OPENBOT_YOLOE_WEIGHTS') or YOLOE_DEFAULT_WEIGHTS
+    bank = env.get('OPENBOT_YOLOE_BANK')
+    if not bank:
+        stem = os.path.basename(weights)
+        if stem.endswith('.pt'):
+            stem = stem[:-3]
+        bank = os.path.join(os.path.dirname(weights),
+                            'vocab_bank_%s.npz' % stem)
+    threads = YOLOE_DEFAULT_THREADS
+    raw = env.get('OPENBOT_YOLOE_THREADS')
+    if raw:
+        try:
+            threads = int(raw)
+            if threads < 1:
+                raise ValueError('must be >= 1')
+        except ValueError as e:
+            problems.append('OPENBOT_YOLOE_THREADS=%r ignored (%s)' % (raw, e))
+            threads = YOLOE_DEFAULT_THREADS
+    extra_conf = YOLOE_DEFAULT_EXTRA_CONF
+    raw = env.get('OPENBOT_YOLOE_EXTRA_CONF')
+    if raw:
+        try:
+            extra_conf = float(raw)
+            if not (GATE_CONF <= extra_conf <= 0.90):
+                raise ValueError('outside [%.2f, 0.90]' % GATE_CONF)
+        except ValueError as e:
+            problems.append('OPENBOT_YOLOE_EXTRA_CONF=%r ignored (%s)'
+                            % (raw, e))
+            extra_conf = YOLOE_DEFAULT_EXTRA_CONF
+    return weights, bank, threads, extra_conf, problems
+
+
+def _import_sibling(name):
+    """Import a stdlib module shipped co-located with this node (box flat
+    layout) -- same search order as the instance_labels import above."""
+    import importlib
+    try:
+        return importlib.import_module(name)
+    except ImportError as first:
+        here = os.path.dirname(os.path.abspath(__file__))
+        for cand in (here, os.path.dirname(here),
+                     os.path.dirname(os.path.dirname(here))):
+            if cand not in sys.path:
+                sys.path.insert(0, cand)
+            try:
+                return importlib.import_module(name)
+            except ImportError:
+                continue
+        raise first
+
+
+def _name_at(names, idx):
+    """results.names lookup (dict or list); None when out of range."""
+    try:
+        if isinstance(names, dict):
+            return names.get(idx)
+        if 0 <= idx < len(names):
+            return names[idx]
+    except Exception:  # noqa: BLE001
+        return None
+    return None
