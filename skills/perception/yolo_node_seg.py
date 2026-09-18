@@ -885,3 +885,48 @@ def _name_at(names, idx):
     except Exception:  # noqa: BLE001
         return None
     return None
+
+
+def _iou_xyxy(a, b):
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    if inter <= 0.0:
+        return 0.0
+    ua = ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1])
+          - inter)
+    return inter / ua if ua > 0.0 else 0.0
+
+
+def cross_class_suppressed(items, base=TRACKED_CLASSES,
+                           iou_min=CROSS_CLASS_DEDUPE_IOU):
+    """items: [(index, class_name, conf, xyxy)].  Two boxes of DIFFERENT
+    classes at IoU >= iou_min collapse to one, preferring the base class,
+    ties -> higher conf, then input order.  Returns the suppressed indices
+    (same-class overlaps are left to the model's NMS, as today)."""
+    order = sorted(items, key=lambda t: (0 if t[1] in base else 1,
+                                         -t[2], t[0]))
+    kept, suppressed = [], set()
+    for it in order:
+        if any(k[1] != it[1] and _iou_xyxy(k[3], it[3]) >= iou_min
+               for k in kept):
+            suppressed.add(it[0])
+        else:
+            kept.append(it)
+    return suppressed
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = YoloNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
