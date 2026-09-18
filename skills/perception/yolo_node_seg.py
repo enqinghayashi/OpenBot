@@ -538,3 +538,37 @@ class YoloNode(Node):
             'extra_conf=%.2f' % (weights, bank, threads, extra_conf))
 
     # ── /yolo/classes (OPENBOT_YOLO_CLASSES) ─
+    def _init_classes_topic(self):
+        try:
+            self._vocab_mod = _import_sibling('vocab_state')
+        except Exception as e:
+            self.get_logger().error(
+                '[yoloe] OPENBOT_YOLO_CLASSES disabled: vocab_state not '
+                'importable (%s)' % e)
+            return
+        import rclpy.qos as _rq
+        QoSProfile = _rq.QoSProfile
+        # short enum names (Foxy+), long QoS* aliases
+        # fallback -> either spelling works
+        DurabilityPolicy = getattr(_rq, 'DurabilityPolicy', None) or \
+            getattr(_rq, 'QoSDurabilityPolicy')
+        ReliabilityPolicy = getattr(_rq, 'ReliabilityPolicy', None) or \
+            getattr(_rq, 'QoSReliabilityPolicy')
+        HistoryPolicy = getattr(_rq, 'HistoryPolicy', None) or \
+            getattr(_rq, 'QoSHistoryPolicy')
+        qos = QoSProfile(depth=1, history=HistoryPolicy.KEEP_LAST,
+                         reliability=ReliabilityPolicy.RELIABLE,
+                         durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self._vocab_dedupe = self._vocab_mod.Dedupe()
+        self._classes_sub = self.create_subscription(
+            String, TOPIC_CLASSES, self._on_classes, qos)
+        self._state_pub = self.create_publisher(
+            String, TOPIC_CLASSES_STATE, qos)
+        self.get_logger().info('[yoloe] %s subscribed, %s published '
+                               '(backend %s)' % (TOPIC_CLASSES,
+                                                 TOPIC_CLASSES_STATE,
+                                                 self._backend_name))
+        if self._fallback_reason is not None:
+            self._publish_vocab_state(None, None,
+                                      error=self._fallback_reason)
+
