@@ -735,3 +735,32 @@ class YoloNode(Node):
                                         self._tracker.dup_iou,
                                         self._tracker.evict_s))
 
+    def _track_frame(self, gate_results, names, suppressed, now):
+        """{box index: (instance_id, majority class, track_age_s)} over the
+        boxes that pass EXACTLY the main loop's admit filters; a box fused
+        into a duplicate has no entry."""
+        items = []
+        for i, box in enumerate(gate_results.boxes):
+            conf = float(box.conf)
+            if conf < GATE_CONF:
+                continue
+            class_id = int(box.cls)
+            if names is None:
+                class_name = COCO_NAMES[class_id]
+            else:
+                class_name = _name_at(names, class_id)
+                if i in suppressed:
+                    continue
+            if class_name not in self._runtime_allow:
+                continue
+            if (names is not None and class_name not in TRACKED_CLASSES
+                    and conf < self._extra_conf):
+                continue
+            items.append((i, (class_name, box.xyxy[0].tolist(), conf)))
+        res = self._tracker.update_indexed([b for _, b in items], now)
+        out = {}
+        for k, iid, cls, _xyxy, _conf, _carried in res:
+            age = self._tracker.age(iid)
+            out[items[k][0]] = (iid, cls, round(age, 3))
+        return out
+
