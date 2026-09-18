@@ -764,3 +764,22 @@ class YoloNode(Node):
             out[items[k][0]] = (iid, cls, round(age, 3))
         return out
 
+    def _yoloe_suppressed(self, gate_results, names):
+        """Indices removed by the cross-class IoU>=0.7 dedupe (YOLOE only),
+        over the boxes that pass the same admit filters as the main loop."""
+        items = []
+        for i, box in enumerate(gate_results.boxes):
+            conf = float(box.conf)
+            if conf < GATE_CONF:
+                continue
+            class_name = _name_at(names, int(box.cls))
+            if class_name not in self._runtime_allow:
+                continue
+            # mirrors the main-loop admit set
+            # redundant given base-first / conf order:
+            # a below-floor extra only precedes
+            # below-floor extras
+            if class_name not in TRACKED_CLASSES and conf < self._extra_conf:
+                continue
+            items.append((i, class_name, conf, box.xyxy[0].tolist()))
+        return cross_class_suppressed(items)
