@@ -572,3 +572,135 @@ class YoloNode(Node):
             self._publish_vocab_state(None, None,
                                       error=self._fallback_reason)
 
+    def _on_classes(self, msg):
+        # parse + validate + store; swap next tick
+        with self._lock:
+            req, err = self._vocab_mod.parse(msg.data, TRACKED_CLASSES)
+            if self._pending_vocab is None:
+                self._pending_vocab = []
+            self._pending_vocab.append((req, err))
+
+    def _publish_vocab_state(self, epoch, seq, dup=False, rejected=None,
+                             swap_ms=None, error=None, extras=None,
+                             model=None):
+        if self._state_pub is None or self._vocab_mod is None:
+            return None
+        if extras is None:
+            extras = list(self._extras)
+        if model is None:
+            model = (self._backend.model_name if self._backend is not None
+                     else ENGINE_MODEL_NAME)
+        state = self._vocab_mod.build_state(
+            epoch, seq, dup, self._backend_name, model, self._base_order,
+            extras, dict((lab, 'bank') for lab in extras),
+            rejected or {}, self._extra_conf, swap_ms, time.time(), error)
+        out = String()
+        out.data = json.dumps(state)
+        self._state_pub.publish(out)
+        return state
+
+    def _apply_pending_vocab(self):
+        with self._lock:
+            pending = self._pending_vocab
+            self._pending_vocab = None
+        for req, err in pending or ():
+            try:
+                self._handle_vocab_request(req, err)
+            except Exception as e:  # noqa: BLE001 -- never kill tick
+                self.get_logger().error(
+                    '[yoloe] vocabulary request failed: %s' % e)
+
+    def _handle_vocab_request(self, req, err):
+        epoch, seq = req.get('epoch'), req.get('seq')
+        if err is not None:
+            self.get_logger().error('[yoloe] /yolo/classes rejected: %s'
+                                    % err)
+            self._publish_vocab_state(epoch, seq,
+                                      rejected=req.get('rejected'),
+                                      error=err)
+            return
+        if self._vocab_dedupe.is_dup(epoch, seq):
+            self._publish_vocab_state(epoch, seq, dup=True, swap_ms=0.0)
+            return
+        op = req['op']
+        if op == 'query':
+            self._vocab_dedupe.commit(epoch, seq)
+            self._publish_vocab_state(epoch, seq, swap_ms=0.0)
+            return
+        wanted = list(req['classes']) if op == 'set' else []
+        rejected = dict(req['rejected'])
+        if self._backend is None:
+            for label, _ in wanted:
+                rejected[label] = 'backend_fixed'
+            self._vocab_dedupe.commit(epoch, seq)
+            self._publish_vocab_state(
+                epoch, seq, rejected=rejected, swap_ms=0.0,
+                error=self._vocab_mod.FIXED_BACKEND_ERROR)
+            return
+        entries = [(b, b) for b in self._base_order] + wanted
+        try:
+            res = self._backend.set_vocab(entries)
+        except Exception as e:  # noqa: BLE001 -- old vocab stays
+            self.get_logger().error('[yoloe] swap failed: %s' % e)
+            self._publish_vocab_state(epoch, seq, rejected=rejected,
+                                      error='%s' % (e,))
+            return
+        rejected.update(res.rejected)
+        new_extras = {}
+        for label, prompt in wanted:
+            if label in res.resolved and label not in TRACKED_CLASSES:
+                new_extras[label] = prompt
+        with self._lock:
+            self._extras = new_extras
+            self._runtime_allow = frozenset(res.names)
+            # drop candidates whose class left
+            # base-class ones untouched
+            gone = [k for k, c in self._candidates.items()
+                    if c['class_name'] not in self._runtime_allow]
+            for k in gone:
+                del self._candidates[k]
+            if self._tracker is not None:
+                # ids survive the swap; departed drop
+                self._tracker.drop_classes(self._runtime_allow)
+            mc = req.get('min_conf')
+            self._extra_conf = (mc if mc is not None
+                                else self._extra_conf_default)
+        self._vocab_dedupe.commit(epoch, seq)
+        self._publish_vocab_state(epoch, seq, rejected=rejected,
+                                  swap_ms=res.swap_ms)
+        self.get_logger().info(
+            '[yoloe] vocabulary seq=%s extras=%s rejected=%s swap_ms=%.1f '
+            'dropped=%d' % (seq, ','.join(new_extras) or '-', rejected,
+                            res.swap_ms, len(gone)))
+
+    # ── Runtime fallback (10 errors) ────────
+    def _start_engine_fallback(self):
+        self._fallback_due = False
+        self._busy = True               # ticks skipped until done
+        self._backend_name = 'yolo'
+        # (1) state FIRST: gateway cache sees
+        # extras gone before any row. Model
+        # pinned here; _backend clears in worker.
+        self._publish_vocab_state(
+            None, None, extras=[], model=ENGINE_MODEL_NAME,
+            error='fallback after %d consecutive inference errors'
+            % YOLOE_FALLBACK_AFTER)
+        with self._lock:
+            self._extras = {}
+            self._runtime_allow = TRACKED_CLASSES
+            gone = [k for k, c in self._candidates.items()
+                    if c['class_name'] not in TRACKED_CLASSES]
+            for k in gone:
+                del self._candidates[k]
+            if self._tracker is not None:
+                self._tracker.drop_classes(TRACKED_CLASSES)
+        self.get_logger().error(
+            '[yoloe] FALLBACK after %d consecutive inference errors; '
+            'reloading %s on a worker thread' % (YOLOE_FALLBACK_AFTER,
+                                                 ENGINE_PATH))
+        # (2) slow reload never runs on the spin thread
+        t = threading.Thread(target=self._reload_engine_worker,
+                             name='yoloe-fallback', daemon=True)
+        self._fallback_thread = t
+        t.start()
+
