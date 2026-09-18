@@ -783,3 +783,34 @@ class YoloNode(Node):
                 continue
             items.append((i, class_name, conf, box.xyxy[0].tolist()))
         return cross_class_suppressed(items)
+
+
+# ════════════════════════════════════════════════════════════════════════
+# module-level helpers, parked after the class
+ENGINE_PATH = '/home/unitree/yolo11n-seg.engine'
+
+# ── Switches (env, read once) ───────────
+# Missing or not '1' = OFF. All off = plain node:
+# engine above, COCO_NAMES, TRACKED_CLASSES,
+# one sub / one pub / one timer
+# (the plain node is the reference;
+# tests/test_yolo_node_switch_off.py)
+#   OPENBOT_YOLOE=1            .pt + bank (yoloe_backend.py)
+#   OPENBOT_YOLOE_WEIGHTS      where the .pt lives
+#   OPENBOT_YOLOE_BANK         bank NPZ (default: beside .pt)
+#   OPENBOT_YOLOE_THREADS      torch.set_num_threads (default 2)
+#   OPENBOT_YOLOE_EXTRA_CONF   admit floor for extras (0.35);
+#                              base classes still use GATE_CONF
+#   OPENBOT_YOLO_CLASSES=1     /yolo/classes sub + state pub
+#   OPENBOT_INSTANCE_IDS=1     instance_tracker.py replaces grid key;
+#                              rows also get instance_id + track_age_s
+YOLOE_DEFAULT_WEIGHTS = '/home/unitree/leon/yoloe/yoloe-26n-seg.pt'
+YOLOE_DEFAULT_THREADS = 2
+YOLOE_DEFAULT_EXTRA_CONF = 0.35       # matches config.yaml det_conf_floor
+YOLOE_FALLBACK_AFTER = 10             # errors in a row (~1 s)
+CROSS_CLASS_DEDUPE_IOU = 0.7
+TOPIC_CLASSES = '/yolo/classes'
+TOPIC_CLASSES_STATE = '/yolo/classes_state'
+ENGINE_MODEL_NAME = 'yolo11n-seg'
+
+
