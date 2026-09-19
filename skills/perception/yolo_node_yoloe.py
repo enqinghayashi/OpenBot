@@ -121,3 +121,10 @@ TRACKED_CLASSES = frozenset({
 })
 
 
+def classify_orientation(aspect_ratio):
+    """Return 'upright' or 'horizontal' from bbox aspect ratio."""
+    if aspect_ratio > 1.5:
+        return 'horizontal'
+    elif aspect_ratio < 0.7:
+        return 'upright'
+    return 'upright'  # can't tell: safer behind
