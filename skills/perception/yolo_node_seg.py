@@ -916,3 +916,13 @@ def cross_class_suppressed(items, base=TRACKED_CLASSES,
     return suppressed
 
 
+def main(args=None):
+    rclpy.init(args=args)
+    node = YoloNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
