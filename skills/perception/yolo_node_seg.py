@@ -875,3 +875,13 @@ def _import_sibling(name):
         raise first
 
 
+def _name_at(names, idx):
+    """results.names lookup (dict or list); None when out of range."""
+    try:
+        if isinstance(names, dict):
+            return names.get(idx)
+        if 0 <= idx < len(names):
+            return names[idx]
+    except Exception:  # noqa: BLE001
+        return None
+    return None
