@@ -898,3 +898,19 @@ def _iou_xyxy(a, b):
     return inter / ua if ua > 0.0 else 0.0
 
 
+def cross_class_suppressed(items, base=TRACKED_CLASSES,
+                           iou_min=CROSS_CLASS_DEDUPE_IOU):
+    """items: [(index, class_name, conf, xyxy)].  Two boxes of DIFFERENT
+    classes at IoU >= iou_min collapse to one, preferring the base class,
+    ties -> higher conf, then input order.  Returns the suppressed indices
+    (same-class overlaps are left to the model's NMS, as today)."""
+    order = sorted(items, key=lambda t: (0 if t[1] in base else 1,
+                                         -t[2], t[0]))
+    kept, suppressed = [], set()
+    for it in order:
+        if any(k[1] != it[1] and _iou_xyxy(k[3], it[3]) >= iou_min
+               for k in kept):
+            suppressed.add(it[0])
+        else:
+            kept.append(it)
+    return suppressed
