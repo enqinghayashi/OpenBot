@@ -128,3 +128,5 @@ def classify_orientation(aspect_ratio):
     elif aspect_ratio < 0.7:
         return 'upright'
     return 'upright'  # can't tell: safer behind
+
+
