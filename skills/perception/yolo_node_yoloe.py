@@ -183,3 +183,4 @@ def _mask_rows_hsv(img_bgr, poly, max_px=COLOR_MAX_SAMPLE_PX):
         return None
 
 
+class YoloNode(Node):
