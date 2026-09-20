@@ -655,3 +655,11 @@ class YoloNode(Node):
     # nothing here edits _extras /
     # _extra_conf: release or lease expiry
     # restores the operator's vocabulary
+    def _on_strict(self, msg):
+        # applied next tick
+        with self._lock:
+            req, err = self._vocab_mod.parse_strict(msg.data, TRACKED_CLASSES)
+            if self._pending_strict is None:
+                self._pending_strict = []
+            self._pending_strict.append((req, err))
+
