@@ -575,3 +575,14 @@ class YoloNode(Node):
         self._state_pub.publish(out)
         return state
 
+    def _apply_pending_vocab(self):
+        with self._lock:
+            pending = self._pending_vocab
+            self._pending_vocab = None
+        for req, err in pending or ():
+            try:
+                self._handle_vocab_request(req, err)
+            except Exception as e:  # noqa: BLE001
+                self.get_logger().error(
+                    '[yoloe] vocabulary request failed: %s' % e)
+
