@@ -707,3 +707,18 @@ class YoloNode(Node):
         if self._strict is not None and time.time() > self._strict['until']:
             self._strict_restore('lease_expired', None, None)
 
+    def _strict_apply(self, entries):
+        """Swap the backend to ``entries``; drop the candidates and tracks
+        whose class left.  Returns (swap_ms, number of candidates dropped)."""
+        res = self._backend.set_vocab(entries)
+        with self._lock:
+            allow = frozenset(res.names)
+            self._runtime_allow = allow
+            left = [k for k, c in self._candidates.items()
+                    if c['class_name'] not in allow]
+            for k in left:
+                del self._candidates[k]
+            if self._tracker is not None:
+                self._tracker.drop_classes(allow)
+        return res.swap_ms, len(left)
+
