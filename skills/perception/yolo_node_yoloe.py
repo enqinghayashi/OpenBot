@@ -668,3 +668,22 @@ class YoloNode(Node):
         return ([(b, b) for b in self._base_order]
                 + list(self._extras.items()))
 
+    def _publish_strict_state(self, epoch, seq, dup=False, rejected=None,
+                              swap_ms=None, error=None):
+        """A /yolo/classes_state for a strict request; carries 'strict' (the
+        narrowed labels) only while the detector is narrowed."""
+        if self._state_pub is None or self._vocab_mod is None:
+            return None
+        model = (self._backend.model_name if self._backend is not None
+                 else ENGINE_MODEL_NAME)
+        state = self._vocab_mod.build_state(
+            epoch, seq, dup, self._backend_name, model, self._base_order,
+            list(self._extras), dict((lab, 'bank') for lab in self._extras),
+            rejected or {}, self._extra_conf, swap_ms, time.time(), error)
+        if self._strict is not None:
+            state['strict'] = list(self._strict['labels'])
+        out = String()
+        out.data = json.dumps(state)
+        self._state_pub.publish(out)
+        return state
+
