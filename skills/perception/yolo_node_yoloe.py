@@ -663,3 +663,8 @@ class YoloNode(Node):
                 self._pending_strict = []
             self._pending_strict.append((req, err))
 
+    def _wide_entries(self):
+        """The full vocabulary, exactly as the last /yolo/classes swap built it."""
+        return ([(b, b) for b in self._base_order]
+                + list(self._extras.items()))
+
