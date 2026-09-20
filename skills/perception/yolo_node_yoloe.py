@@ -687,3 +687,23 @@ class YoloNode(Node):
         self._state_pub.publish(out)
         return state
 
+    def _strict_step(self):
+        """Every tick, BEFORE the frame: requests, wide changes, the lease."""
+        with self._lock:
+            pending = self._pending_strict
+            self._pending_strict = None
+        for req, err in pending or ():
+            try:
+                self._handle_strict_request(req, err)
+            except Exception as e:  # noqa: BLE001
+                self.get_logger().error('[strict] request failed: %s' % e)
+        if self._strict is None:
+            return
+        if self._backend is None or self._backend_name != 'yoloe':
+            self._strict = None          # fixed engine has no strict set
+            return
+        if self._runtime_allow != frozenset(self._strict['labels']):
+            self._strict_reapply('wide_changed')   # a /yolo/classes swap ran since
+        if self._strict is not None and time.time() > self._strict['until']:
+            self._strict_restore('lease_expired', None, None)
+
