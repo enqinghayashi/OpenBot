@@ -499,3 +499,52 @@ class YoloNode(Node):
             'extra_conf=%.2f' % (weights, bank, threads, extra_conf))
 
     # ── /yolo/classes (CLASSES=1) ────────
+    def _init_classes_topic(self):
+        try:
+            self._vocab_mod = _import_sibling('vocab_state')
+        except Exception as e:
+            self.get_logger().error(
+                '[yoloe] OPENBOT_YOLO_CLASSES disabled: vocab_state not '
+                'importable (%s)' % e)
+            return
+        import rclpy.qos as _rq
+        QoSProfile = _rq.QoSProfile
+        # Foxy+ names, else
+        # the long QoS* aliases
+        DurabilityPolicy = getattr(_rq, 'DurabilityPolicy', None) or \
+            getattr(_rq, 'QoSDurabilityPolicy')
+        ReliabilityPolicy = getattr(_rq, 'ReliabilityPolicy', None) or \
+            getattr(_rq, 'QoSReliabilityPolicy')
+        HistoryPolicy = getattr(_rq, 'HistoryPolicy', None) or \
+            getattr(_rq, 'QoSHistoryPolicy')
+        qos = QoSProfile(depth=1, history=HistoryPolicy.KEEP_LAST,
+                         reliability=ReliabilityPolicy.RELIABLE,
+                         durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self._vocab_dedupe = self._vocab_mod.Dedupe()
+        self._classes_sub = self.create_subscription(
+            String, TOPIC_CLASSES, self._on_classes, qos)
+        self._state_pub = self.create_publisher(
+            String, TOPIC_CLASSES_STATE, qos)
+        # VOLATILE: no replay on restart
+        # gateway re-sends every 1 s
+        self._strict = None             # {'labels', 'until'} while narrowed
+        self._pending_strict = None
+        self._strict_sub = None
+        if callable(getattr(self._vocab_mod, 'parse_strict', None)):
+            strict_qos = QoSProfile(depth=10, history=HistoryPolicy.KEEP_LAST,
+                                    reliability=ReliabilityPolicy.RELIABLE,
+                                    durability=DurabilityPolicy.VOLATILE)
+            self._strict_dedupe = self._vocab_mod.Dedupe()
+            self._strict_sub = self.create_subscription(
+                String, '/yolo/strict', self._on_strict, strict_qos)
+        else:
+            self.get_logger().error('[strict] /yolo/strict disabled: '
+                                    'vocab_state.py has no parse_strict')
+        self.get_logger().info('[yoloe] %s subscribed, %s published '
+                               '(backend %s)' % (TOPIC_CLASSES,
+                                                 TOPIC_CLASSES_STATE,
+                                                 self._backend_name))
+        if self._fallback_reason is not None:
+            self._publish_vocab_state(None, None,
+                                      error=self._fallback_reason)
+
