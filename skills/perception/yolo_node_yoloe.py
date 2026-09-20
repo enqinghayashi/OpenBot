@@ -556,3 +556,22 @@ class YoloNode(Node):
                 self._pending_vocab = []
             self._pending_vocab.append((req, err))
 
+    def _publish_vocab_state(self, epoch, seq, dup=False, rejected=None,
+                             swap_ms=None, error=None, extras=None,
+                             model=None):
+        if self._state_pub is None or self._vocab_mod is None:
+            return None
+        if extras is None:
+            extras = list(self._extras)
+        if model is None:
+            model = (self._backend.model_name if self._backend is not None
+                     else ENGINE_MODEL_NAME)
+        state = self._vocab_mod.build_state(
+            epoch, seq, dup, self._backend_name, model, self._base_order,
+            extras, dict((lab, 'bank') for lab in extras),
+            rejected or {}, self._extra_conf, swap_ms, time.time(), error)
+        out = String()
+        out.data = json.dumps(state)
+        self._state_pub.publish(out)
+        return state
+
