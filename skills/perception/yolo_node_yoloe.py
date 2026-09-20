@@ -250,3 +250,7 @@ class YoloNode(Node):
             f'COCO-gate SEG node ready (AR orientation). '
             f'gate_conf>{GATE_CONF}, confirm>{CONFIRM_SECONDS}s')
 
+    def _on_image(self, msg):
+        with self._lock:
+            self._latest_frame = msg
+
