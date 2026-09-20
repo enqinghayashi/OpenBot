@@ -457,3 +457,16 @@ class YoloNode(Node):
             self._start_engine_fallback()
 
     # ── picking the backend (YOLOE=1) ────
+    def _load_engine(self):
+        """Load today's engine for a FALLBACK.  A missing engine is FATAL
+        (logged, re-raised) -- never a silent node publishing nothing."""
+        if not os.path.isfile(ENGINE_PATH):
+            err = FileNotFoundError('engine missing: %s' % ENGINE_PATH)
+            self.get_logger().error('[yoloe] FATAL no backend: %s' % err)
+            raise err
+        try:
+            return YOLO(ENGINE_PATH)
+        except Exception as e:
+            self.get_logger().error('[yoloe] FATAL no backend: %s' % e)
+            raise
+
