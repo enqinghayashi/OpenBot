@@ -184,3 +184,69 @@ def _mask_rows_hsv(img_bgr, poly, max_px=COLOR_MAX_SAMPLE_PX):
 
 
 class YoloNode(Node):
+    def __init__(self):
+        super().__init__('yolo_node')
+
+        # ── optional-lane state (inert) ──────
+        self._yoloe_on = _env_on('OPENBOT_YOLOE')
+        self._classes_on = _env_on('OPENBOT_YOLO_CLASSES')
+        self._backend = None            # YoloeBackend live
+        self._backend_name = 'yolo'
+        self._fallback_reason = None
+        self._fallback_due = False
+        self._fallback_thread = None
+        self._fatal = None              # worker sets it
+        self._consec_errors = 0
+        self._base_order = sorted(TRACKED_CLASSES)
+        self._extras = {}               # label -> prompt
+        self._extra_conf_default = YOLOE_DEFAULT_EXTRA_CONF
+        self._extra_conf = YOLOE_DEFAULT_EXTRA_CONF
+        self._pending_vocab = None      # None unless CLASSES=1
+        self._vocab_mod = None
+        self._vocab_dedupe = None
+        self._classes_sub = None
+        self._state_pub = None
+        self._tracker = None            # only with IDS=1
+        if _env_on('OPENBOT_INSTANCE_IDS'):
+            self._init_instance_tracker()
+
+        if self._yoloe_on:
+            self._init_yoloe()
+        else:
+            # ── loading the gate model ────────────
+            try:
+                self._gate_model = YOLO(ENGINE_PATH)
+                self.get_logger().info(
+                    'COCO-gate SEG model loaded (yolo11n-seg.pt, 80 classes).')
+            except Exception as e:
+                self.get_logger().error(f'Gate model failed to load: {e}')
+                raise
+
+        # allowlist = the 32 above, not
+        # the names dict; filter below
+        self._tracked_classes = TRACKED_CLASSES
+        # TRACKED + extras
+        # the literal is fixed
+        self._runtime_allow = TRACKED_CLASSES
+        self.get_logger().info(
+            f'Class allowlist CURATED: {len(self._tracked_classes)} '
+            f'daily-life COCO classes admitted.')
+
+        self._latest_frame = None
+        self._lock = threading.Lock()
+        self._busy = False
+
+        # key -> {first_seen, last_seen, ...}
+        # class name or iid (IDS=1)
+        self._candidates = {}
+
+        self.sub = self.create_subscription(
+            Image, '/camera/color/image_raw', self._on_image, 10)
+        self.pub = self.create_publisher(String, '/detections', 10)
+        self.create_timer(0.1, self._run_inference)
+        if self._classes_on:
+            self._init_classes_topic()
+        self.get_logger().info(
+            f'COCO-gate SEG node ready (AR orientation). '
+            f'gate_conf>{GATE_CONF}, confirm>{CONFIRM_SECONDS}s')
+
