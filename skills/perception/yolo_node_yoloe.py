@@ -722,3 +722,48 @@ class YoloNode(Node):
                 self._tracker.drop_classes(allow)
         return res.swap_ms, len(left)
 
+    def _handle_strict_request(self, req, err):
+        epoch, seq = req.get('epoch'), req.get('seq')
+        if err is not None:
+            self.get_logger().error('[strict] /yolo/strict rejected: %s' % err)
+            self._publish_strict_state(epoch, seq, error=err)
+            return
+        if self._strict_dedupe.is_dup(epoch, seq):
+            self._publish_strict_state(epoch, seq, dup=True, swap_ms=0.0)
+            return
+        self._strict_dedupe.commit(epoch, seq)
+        if self._backend is None or self._backend_name != 'yoloe':
+            self._publish_strict_state(epoch, seq, swap_ms=0.0,
+                                       error=self._vocab_mod.FIXED_BACKEND_ERROR)
+            return
+        if req['op'] == 'release':
+            self._strict_restore('released', epoch, seq)
+            return
+        want = req['labels']
+        entries = [(l, p) for l, p in self._wide_entries() if l in want]
+        if not entries:
+            self._publish_strict_state(epoch, seq, swap_ms=0.0,
+                                       error='strict_no_label:%s' % ','.join(want))
+            return
+        labels = tuple(l for l, _ in entries)
+        missing = dict((l, 'not_in_vocabulary') for l in want if l not in labels)
+        until = time.time() + req['lease_s']
+        if self._strict is not None and self._strict['labels'] == labels:
+            self._strict['until'] = until          # renewal, no swap
+            self._publish_strict_state(epoch, seq, rejected=missing, swap_ms=0.0)
+            return
+        try:
+            swap_ms, n_left = self._strict_apply(entries)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error('[strict] swap failed: %s' % e)
+            self._publish_strict_state(epoch, seq,
+                                       error='strict swap failed: %s' % (e,))
+            return
+        self._strict = {'labels': labels, 'until': until}
+        self._publish_strict_state(epoch, seq, rejected=missing, swap_ms=swap_ms)
+        self.get_logger().info(
+            '[strict] vocabulary NARROWED seq=%s labels=%s missing=%s lease=%.1fs '
+            'swap_ms=%.1f dropped=%d' % (seq, ','.join(labels),
+                                         ','.join(missing) or '-',
+                                         req['lease_s'], swap_ms, n_left))
+
