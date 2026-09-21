@@ -586,3 +586,104 @@ class YoloNode(Node):
                 self.get_logger().error(
                     '[yoloe] vocabulary request failed: %s' % e)
 
+    def _handle_vocab_request(self, req, err):
+        epoch, seq = req.get('epoch'), req.get('seq')
+        if err is not None:
+            self.get_logger().error('[yoloe] /yolo/classes rejected: %s'
+                                    % err)
+            self._publish_vocab_state(epoch, seq,
+                                      rejected=req.get('rejected'),
+                                      error=err)
+            return
+        if self._vocab_dedupe.is_dup(epoch, seq):
+            self._publish_vocab_state(epoch, seq, dup=True, swap_ms=0.0)
+            return
+        op = req['op']
+        if op == 'query':
+            self._vocab_dedupe.commit(epoch, seq)
+            self._publish_vocab_state(epoch, seq, swap_ms=0.0)
+            return
+        wanted = list(req['classes']) if op == 'set' else []
+        rejected = dict(req['rejected'])
+        if self._backend is None:
+            for label, _ in wanted:
+                rejected[label] = 'backend_fixed'
+            self._vocab_dedupe.commit(epoch, seq)
+            self._publish_vocab_state(
+                epoch, seq, rejected=rejected, swap_ms=0.0,
+                error=self._vocab_mod.FIXED_BACKEND_ERROR)
+            return
+        entries = [(b, b) for b in self._base_order] + wanted
+        try:
+            res = self._backend.set_vocab(entries)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error('[yoloe] swap failed: %s' % e)
+            self._publish_vocab_state(epoch, seq, rejected=rejected,
+                                      error='%s' % (e,))
+            return
+        rejected.update(res.rejected)
+        new_extras = {}
+        for label, prompt in wanted:
+            if label in res.resolved and label not in TRACKED_CLASSES:
+                new_extras[label] = prompt
+        with self._lock:
+            self._extras = new_extras
+            self._runtime_allow = frozenset(res.names)
+            # left classes only
+            # base untouched
+            gone = [k for k, c in self._candidates.items()
+                    if c['class_name'] not in self._runtime_allow]
+            for k in gone:
+                del self._candidates[k]
+            if self._tracker is not None:
+                # ids survive the swap
+                self._tracker.drop_classes(self._runtime_allow)
+            mc = req.get('min_conf')
+            self._extra_conf = (mc if mc is not None
+                                else self._extra_conf_default)
+        self._vocab_dedupe.commit(epoch, seq)
+        self._publish_vocab_state(epoch, seq, rejected=rejected,
+                                  swap_ms=res.swap_ms)
+        self.get_logger().info(
+            '[yoloe] vocabulary seq=%s extras=%s rejected=%s swap_ms=%.1f '
+            'dropped=%d' % (seq, ','.join(new_extras) or '-', rejected,
+                            res.swap_ms, len(gone)))
+
+    # ── /yolo/strict (CLASSES=1) ─────────
+    # gateway narrows the WIDE vocab to a
+    # few labels for one bounded phase
+    # nothing here edits _extras /
+    # _extra_conf: release or lease expiry
+    # restores the operator's vocabulary
+    def _on_strict(self, msg):
+        # applied next tick
+        with self._lock:
+            req, err = self._vocab_mod.parse_strict(msg.data, TRACKED_CLASSES)
+            if self._pending_strict is None:
+                self._pending_strict = []
+            self._pending_strict.append((req, err))
+
+    def _wide_entries(self):
+        """The full vocabulary, exactly as the last /yolo/classes swap built it."""
+        return ([(b, b) for b in self._base_order]
+                + list(self._extras.items()))
+
+    def _publish_strict_state(self, epoch, seq, dup=False, rejected=None,
+                              swap_ms=None, error=None):
+        """A /yolo/classes_state for a strict request; carries 'strict' (the
+        narrowed labels) only while the detector is narrowed."""
+        if self._state_pub is None or self._vocab_mod is None:
+            return None
+        model = (self._backend.model_name if self._backend is not None
+                 else ENGINE_MODEL_NAME)
+        state = self._vocab_mod.build_state(
+            epoch, seq, dup, self._backend_name, model, self._base_order,
+            list(self._extras), dict((lab, 'bank') for lab in self._extras),
+            rejected or {}, self._extra_conf, swap_ms, time.time(), error)
+        if self._strict is not None:
+            state['strict'] = list(self._strict['labels'])
+        out = String()
+        out.data = json.dumps(state)
+        self._state_pub.publish(out)
+        return state
+
