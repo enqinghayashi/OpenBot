@@ -963,3 +963,38 @@ class YoloNode(Node):
                     % (i, cn, conf,
                        [round(v) for v in box.xyxy[0].tolist()], fate))
         return sup
+
+
+# ════════════════════════════════════════════════════════════════════════
+# helpers after the class, so
+# the code above stays byte-identical
+# (call-time resolution)
+ENGINE_PATH = '/home/unitree/yolo11n-seg.engine'
+
+# ── env switches (read once) ──────────
+# absent or any value but '1' = OFF
+# all off -> plain node: engine above,
+# COCO_NAMES names, TRACKED_CLASSES
+# allowlist, one sub + one pub + timer
+# (the plain node is the reference;
+# test_yolo_node_yoloe_off.py pins it)
+#   OPENBOT_YOLOE=1            YOLOE .pt + bank (yoloe_backend.py)
+#   OPENBOT_YOLOE_WEIGHTS      the .pt path
+#   OPENBOT_YOLOE_BANK         bank NPZ (default: beside the .pt)
+#   OPENBOT_YOLOE_THREADS      torch.set_num_threads (default 2)
+#   OPENBOT_YOLOE_EXTRA_CONF   EXTRA class floor (default 0.35);
+#                              base classes stick to GATE_CONF
+#   OPENBOT_YOLO_CLASSES=1     /yolo/classes + /yolo/classes_state
+#   OPENBOT_INSTANCE_IDS=1     instance_tracker.py owns the key
+#                              (one candidate per track); rows gain
+#                              instance_id + track_age_s
+YOLOE_DEFAULT_WEIGHTS = '/home/unitree/leon/yoloe/yoloe-26n-seg.pt'
+YOLOE_DEFAULT_THREADS = 2
+YOLOE_DEFAULT_EXTRA_CONF = 0.35       # same as config.yaml det_conf_floor
+YOLOE_FALLBACK_AFTER = 10             # errors, ~1 s
+CROSS_CLASS_DEDUPE_IOU = 0.7
+TOPIC_CLASSES = '/yolo/classes'
+TOPIC_CLASSES_STATE = '/yolo/classes_state'
+ENGINE_MODEL_NAME = 'yolo11n-seg'
+
+
