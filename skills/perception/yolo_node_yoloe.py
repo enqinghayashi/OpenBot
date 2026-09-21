@@ -813,3 +813,34 @@ class YoloNode(Node):
                             n_left))
 
     # ── runtime fallback (10 errors) ─────
+    def _start_engine_fallback(self):
+        self._fallback_due = False
+        self._busy = True
+        self._backend_name = 'yolo'
+        # (1) state FIRST - gateway cache and
+        # verifier see extras go before rows
+        # change. model pinned here, worker
+        # clears _backend later.
+        self._publish_vocab_state(
+            None, None, extras=[], model=ENGINE_MODEL_NAME,
+            error='fallback after %d consecutive inference errors'
+            % YOLOE_FALLBACK_AFTER)
+        with self._lock:
+            self._extras = {}
+            self._runtime_allow = TRACKED_CLASSES
+            gone = [k for k, c in self._candidates.items()
+                    if c['class_name'] not in TRACKED_CLASSES]
+            for k in gone:
+                del self._candidates[k]
+            if self._tracker is not None:
+                self._tracker.drop_classes(TRACKED_CLASSES)
+        self.get_logger().error(
+            '[yoloe] FALLBACK after %d consecutive inference errors; '
+            'reloading %s on a worker thread' % (YOLOE_FALLBACK_AFTER,
+                                                 ENGINE_PATH))
+        # off-thread reload
+        t = threading.Thread(target=self._reload_engine_worker,
+                             name='yoloe-fallback', daemon=True)
+        self._fallback_thread = t
+        t.start()
+
