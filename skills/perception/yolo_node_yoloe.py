@@ -1082,3 +1082,36 @@ def _iou_xyxy(a, b):
     return inter / ua if ua > 0.0 else 0.0
 
 
+def cross_class_suppressed(items, base=TRACKED_CLASSES,
+                           iou_min=CROSS_CLASS_DEDUPE_IOU,
+                           extra_floor=YOLOE_DEFAULT_EXTRA_CONF, drops=None):
+    """items: [(index, class_name, conf, xyxy)].  Two boxes of DIFFERENT
+    classes at IoU >= iou_min collapse to one.  Preference (B8h): an active
+    extra (not in ``base``) at or above ``extra_floor`` first, then the base
+    classes, then sub-floor extras; within a rank higher conf, then input
+    order.  Base against base and extra against extra order as before; an
+    extra below the floor still loses to a base class.  Returns the
+    suppressed indices (same-class overlaps are left to the model's NMS, as
+    today).  ``drops``, if a list, receives (dropped item, kept item, IoU,
+    dropped rank, kept rank) per suppressed box (score tap only)."""
+    def rank(t):
+        if t[1] in base:
+            return 1
+        return 0 if t[2] >= extra_floor else 2
+    order = sorted(items, key=lambda t: (rank(t), -t[2], t[0]))
+    kept, suppressed = [], set()
+    for it in order:
+        hit = None
+        for k in kept:
+            if k[1] != it[1]:
+                v = _iou_xyxy(k[3], it[3])
+                if v >= iou_min:
+                    hit = (k, v)
+                    break
+        if hit is not None:
+            suppressed.add(it[0])
+            if drops is not None:
+                drops.append((it, hit[0], hit[1], rank(it), rank(hit[0])))
+        else:
+            kept.append(it)
+    return suppressed
