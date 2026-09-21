@@ -909,3 +909,151 @@ class YoloNode(Node):
             out[items[k][0]] = (iid, cls, round(age, 3))
         return out
 
+    def _yoloe_suppressed(self, gate_results, names):
+        """Indices removed by the cross-class IoU>=0.7 dedupe (YOLOE only),
+        over the boxes that pass the same admit filters as the main loop."""
+        items = []
+        for i, box in enumerate(gate_results.boxes):
+            conf = float(box.conf)
+            if conf < GATE_CONF:
+                continue
+            class_name = _name_at(names, int(box.cls))
+            if class_name not in self._runtime_allow:
+                continue
+            # same admit set - redundant under
+            # base-first / conf-desc order; a
+            # sub-floor extra only beats other
+            # sub-floor extras
+            # (test_yolo_node_yoloe_mutations)
+            if class_name not in TRACKED_CLASSES and conf < self._extra_conf:
+                continue
+            items.append((i, class_name, conf, box.xyxy[0].tolist()))
+        if not _env_on('OPENBOT_YOLOE_SCORE_TAP'):
+            return cross_class_suppressed(items, extra_floor=self._extra_conf)
+        # SCORE_TAP=1: node LOG only, no topic
+        # every box >= 0.15 plus what the
+        # admit filters and dedupe did;
+        # engine runner logs top-3 raw
+        # scores per class - join top-1
+        drops = []
+        sup = cross_class_suppressed(items, extra_floor=self._extra_conf,
+                                     drops=drops)
+        why = dict((d[0][0], d) for d in drops)
+        lg = self.get_logger()
+        admitted = set(it[0] for it in items)
+        for i, box in enumerate(gate_results.boxes):
+            conf = float(box.conf)
+            if conf < 0.15:
+                continue
+            cn = _name_at(names, int(box.cls))
+            if i in why:
+                d = why[i]
+                fate = ('DROPPED by box %d %s conf=%.3f IoU=%.2f (rank %d '
+                        'vs %d)' % (d[1][0], d[1][1], d[1][2], d[2],
+                                    d[3], d[4]))
+            elif i in admitted:
+                fate = 'kept'
+            elif conf < GATE_CONF:
+                fate = 'below gate %.2f' % GATE_CONF
+            elif cn not in self._runtime_allow:
+                fate = 'not in allowlist'
+            else:
+                fate = 'below extra floor %.2f' % self._extra_conf
+            lg.info('[score_tap] box %d %s conf=%.3f xyxy=%s %s'
+                    % (i, cn, conf,
+                       [round(v) for v in box.xyxy[0].tolist()], fate))
+        return sup
+
+
+# ════════════════════════════════════════════════════════════════════════
+# helpers after the class, so
+# the code above stays byte-identical
+# (call-time resolution)
+ENGINE_PATH = '/home/unitree/yolo11n-seg.engine'
+
+# ── env switches (read once) ──────────
+# absent or any value but '1' = OFF
+# all off -> plain node: engine above,
+# COCO_NAMES names, TRACKED_CLASSES
+# allowlist, one sub + one pub + timer
+# (the plain node is the reference;
+# test_yolo_node_yoloe_off.py pins it)
+#   OPENBOT_YOLOE=1            YOLOE .pt + bank (yoloe_backend.py)
+#   OPENBOT_YOLOE_WEIGHTS      the .pt path
+#   OPENBOT_YOLOE_BANK         bank NPZ (default: beside the .pt)
+#   OPENBOT_YOLOE_THREADS      torch.set_num_threads (default 2)
+#   OPENBOT_YOLOE_EXTRA_CONF   EXTRA class floor (default 0.35);
+#                              base classes stick to GATE_CONF
+#   OPENBOT_YOLO_CLASSES=1     /yolo/classes + /yolo/classes_state
+#   OPENBOT_INSTANCE_IDS=1     instance_tracker.py owns the key
+#                              (one candidate per track); rows gain
+#                              instance_id + track_age_s
+YOLOE_DEFAULT_WEIGHTS = '/home/unitree/leon/yoloe/yoloe-26n-seg.pt'
+YOLOE_DEFAULT_THREADS = 2
+YOLOE_DEFAULT_EXTRA_CONF = 0.35       # same as config.yaml det_conf_floor
+YOLOE_FALLBACK_AFTER = 10             # errors, ~1 s
+CROSS_CLASS_DEDUPE_IOU = 0.7
+TOPIC_CLASSES = '/yolo/classes'
+TOPIC_CLASSES_STATE = '/yolo/classes_state'
+ENGINE_MODEL_NAME = 'yolo11n-seg'
+
+
+def _env_on(name, environ=None):
+    env = os.environ if environ is None else environ
+    return env.get(name) == '1'
+
+
+def _yoloe_env(environ=None):
+    """(weights, bank, threads, extra_conf, problems) from the environment.
+    A malformed value falls back to its default and is REPORTED."""
+    env = os.environ if environ is None else environ
+    problems = []
+    weights = env.get('OPENBOT_YOLOE_WEIGHTS') or YOLOE_DEFAULT_WEIGHTS
+    bank = env.get('OPENBOT_YOLOE_BANK')
+    if not bank:
+        stem = os.path.basename(weights)
+        if stem.endswith('.pt'):
+            stem = stem[:-3]
+        bank = os.path.join(os.path.dirname(weights),
+                            'vocab_bank_%s.npz' % stem)
+    threads = YOLOE_DEFAULT_THREADS
+    raw = env.get('OPENBOT_YOLOE_THREADS')
+    if raw:
+        try:
+            threads = int(raw)
+            if threads < 1:
+                raise ValueError('must be >= 1')
+        except ValueError as e:
+            problems.append('OPENBOT_YOLOE_THREADS=%r ignored (%s)' % (raw, e))
+            threads = YOLOE_DEFAULT_THREADS
+    extra_conf = YOLOE_DEFAULT_EXTRA_CONF
+    raw = env.get('OPENBOT_YOLOE_EXTRA_CONF')
+    if raw:
+        try:
+            extra_conf = float(raw)
+            if not (GATE_CONF <= extra_conf <= 0.90):
+                raise ValueError('outside [%.2f, 0.90]' % GATE_CONF)
+        except ValueError as e:
+            problems.append('OPENBOT_YOLOE_EXTRA_CONF=%r ignored (%s)'
+                            % (raw, e))
+            extra_conf = YOLOE_DEFAULT_EXTRA_CONF
+    return weights, bank, threads, extra_conf, problems
+
+
+def _import_sibling(name):
+    """Import a stdlib module shipped co-located with this node (box flat
+    layout) -- same search order as the instance_labels import above."""
+    import importlib
+    try:
+        return importlib.import_module(name)
+    except ImportError as first:
+        here = os.path.dirname(os.path.abspath(__file__))
+        for cand in (here, os.path.dirname(here),
+                     os.path.dirname(os.path.dirname(here))):
+            if cand not in sys.path:
+                sys.path.insert(0, cand)
+            try:
+                return importlib.import_module(name)
+            except ImportError:
+                continue
+        raise first
