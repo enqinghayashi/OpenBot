@@ -1038,3 +1038,5 @@ def _yoloe_env(environ=None):
                             % (raw, e))
             extra_conf = YOLOE_DEFAULT_EXTRA_CONF
     return weights, bank, threads, extra_conf, problems
+
+
