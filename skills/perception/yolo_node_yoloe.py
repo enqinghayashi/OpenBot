@@ -499,3 +499,90 @@ class YoloNode(Node):
             'extra_conf=%.2f' % (weights, bank, threads, extra_conf))
 
     # ── /yolo/classes (CLASSES=1) ────────
+    def _init_classes_topic(self):
+        try:
+            self._vocab_mod = _import_sibling('vocab_state')
+        except Exception as e:
+            self.get_logger().error(
+                '[yoloe] OPENBOT_YOLO_CLASSES disabled: vocab_state not '
+                'importable (%s)' % e)
+            return
+        import rclpy.qos as _rq
+        QoSProfile = _rq.QoSProfile
+        # Foxy+ names, else
+        # the long QoS* aliases
+        DurabilityPolicy = getattr(_rq, 'DurabilityPolicy', None) or \
+            getattr(_rq, 'QoSDurabilityPolicy')
+        ReliabilityPolicy = getattr(_rq, 'ReliabilityPolicy', None) or \
+            getattr(_rq, 'QoSReliabilityPolicy')
+        HistoryPolicy = getattr(_rq, 'HistoryPolicy', None) or \
+            getattr(_rq, 'QoSHistoryPolicy')
+        qos = QoSProfile(depth=1, history=HistoryPolicy.KEEP_LAST,
+                         reliability=ReliabilityPolicy.RELIABLE,
+                         durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self._vocab_dedupe = self._vocab_mod.Dedupe()
+        self._classes_sub = self.create_subscription(
+            String, TOPIC_CLASSES, self._on_classes, qos)
+        self._state_pub = self.create_publisher(
+            String, TOPIC_CLASSES_STATE, qos)
+        # VOLATILE: no replay on restart
+        # gateway re-sends every 1 s
+        self._strict = None             # {'labels', 'until'} while narrowed
+        self._pending_strict = None
+        self._strict_sub = None
+        if callable(getattr(self._vocab_mod, 'parse_strict', None)):
+            strict_qos = QoSProfile(depth=10, history=HistoryPolicy.KEEP_LAST,
+                                    reliability=ReliabilityPolicy.RELIABLE,
+                                    durability=DurabilityPolicy.VOLATILE)
+            self._strict_dedupe = self._vocab_mod.Dedupe()
+            self._strict_sub = self.create_subscription(
+                String, '/yolo/strict', self._on_strict, strict_qos)
+        else:
+            self.get_logger().error('[strict] /yolo/strict disabled: '
+                                    'vocab_state.py has no parse_strict')
+        self.get_logger().info('[yoloe] %s subscribed, %s published '
+                               '(backend %s)' % (TOPIC_CLASSES,
+                                                 TOPIC_CLASSES_STATE,
+                                                 self._backend_name))
+        if self._fallback_reason is not None:
+            self._publish_vocab_state(None, None,
+                                      error=self._fallback_reason)
+
+    def _on_classes(self, msg):
+        # swap next tick
+        with self._lock:
+            req, err = self._vocab_mod.parse(msg.data, TRACKED_CLASSES)
+            if self._pending_vocab is None:
+                self._pending_vocab = []
+            self._pending_vocab.append((req, err))
+
+    def _publish_vocab_state(self, epoch, seq, dup=False, rejected=None,
+                             swap_ms=None, error=None, extras=None,
+                             model=None):
+        if self._state_pub is None or self._vocab_mod is None:
+            return None
+        if extras is None:
+            extras = list(self._extras)
+        if model is None:
+            model = (self._backend.model_name if self._backend is not None
+                     else ENGINE_MODEL_NAME)
+        state = self._vocab_mod.build_state(
+            epoch, seq, dup, self._backend_name, model, self._base_order,
+            extras, dict((lab, 'bank') for lab in extras),
+            rejected or {}, self._extra_conf, swap_ms, time.time(), error)
+        out = String()
+        out.data = json.dumps(state)
+        self._state_pub.publish(out)
+        return state
+
+    def _apply_pending_vocab(self):
+        with self._lock:
+            pending = self._pending_vocab
+            self._pending_vocab = None
+        for req, err in pending or ():
+            try:
+                self._handle_vocab_request(req, err)
+            except Exception as e:  # noqa: BLE001
+                self.get_logger().error(
+                    '[yoloe] vocabulary request failed: %s' % e)
+
