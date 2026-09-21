@@ -844,3 +844,18 @@ class YoloNode(Node):
         self._fallback_thread = t
         t.start()
 
+    def _reload_engine_worker(self):
+        try:
+            model = self._load_engine()
+        except Exception as e:  # noqa: BLE001
+            self._fatal = e
+            return
+        with self._lock:
+            self._gate_model = model
+            self._backend = None
+        self._busy = False
+        self.get_logger().error('[yoloe] engine reloaded; vocabulary fixed '
+                                'to the %d base classes'
+                                % len(TRACKED_CLASSES))
+
+    # ── stable instance ids (IDS=1) ──────
