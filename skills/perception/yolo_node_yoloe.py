@@ -909,3 +909,57 @@ class YoloNode(Node):
             out[items[k][0]] = (iid, cls, round(age, 3))
         return out
 
+    def _yoloe_suppressed(self, gate_results, names):
+        """Indices removed by the cross-class IoU>=0.7 dedupe (YOLOE only),
+        over the boxes that pass the same admit filters as the main loop."""
+        items = []
+        for i, box in enumerate(gate_results.boxes):
+            conf = float(box.conf)
+            if conf < GATE_CONF:
+                continue
+            class_name = _name_at(names, int(box.cls))
+            if class_name not in self._runtime_allow:
+                continue
+            # same admit set - redundant under
+            # base-first / conf-desc order; a
+            # sub-floor extra only beats other
+            # sub-floor extras
+            # (test_yolo_node_yoloe_mutations)
+            if class_name not in TRACKED_CLASSES and conf < self._extra_conf:
+                continue
+            items.append((i, class_name, conf, box.xyxy[0].tolist()))
+        if not _env_on('OPENBOT_YOLOE_SCORE_TAP'):
+            return cross_class_suppressed(items, extra_floor=self._extra_conf)
+        # SCORE_TAP=1: node LOG only, no topic
+        # every box >= 0.15 plus what the
+        # admit filters and dedupe did;
+        # engine runner logs top-3 raw
+        # scores per class - join top-1
+        drops = []
+        sup = cross_class_suppressed(items, extra_floor=self._extra_conf,
+                                     drops=drops)
+        why = dict((d[0][0], d) for d in drops)
+        lg = self.get_logger()
+        admitted = set(it[0] for it in items)
+        for i, box in enumerate(gate_results.boxes):
+            conf = float(box.conf)
+            if conf < 0.15:
+                continue
+            cn = _name_at(names, int(box.cls))
+            if i in why:
+                d = why[i]
+                fate = ('DROPPED by box %d %s conf=%.3f IoU=%.2f (rank %d '
+                        'vs %d)' % (d[1][0], d[1][1], d[1][2], d[2],
+                                    d[3], d[4]))
+            elif i in admitted:
+                fate = 'kept'
+            elif conf < GATE_CONF:
+                fate = 'below gate %.2f' % GATE_CONF
+            elif cn not in self._runtime_allow:
+                fate = 'not in allowlist'
+            else:
+                fate = 'below extra floor %.2f' % self._extra_conf
+            lg.info('[score_tap] box %d %s conf=%.3f xyxy=%s %s'
+                    % (i, cn, conf,
+                       [round(v) for v in box.xyxy[0].tolist()], fate))
+        return sup
