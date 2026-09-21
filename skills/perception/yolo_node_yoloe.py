@@ -767,3 +767,22 @@ class YoloNode(Node):
                                          ','.join(missing) or '-',
                                          req['lease_s'], swap_ms, n_left))
 
+    def _strict_restore(self, reason, epoch, seq):
+        if self._strict is None:
+            if epoch is not None:
+                self._publish_strict_state(epoch, seq, swap_ms=0.0)
+            return
+        try:
+            swap_ms, _n = self._strict_apply(self._wide_entries())
+        except Exception as e:  # noqa: BLE001
+            self._strict['until'] = time.time() + 1.0
+            self.get_logger().error('[strict] restore FAILED (%s): %s - retry '
+                                    'in 1 s' % (reason, e))
+            return
+        labels = self._strict['labels']
+        self._strict = None
+        self._publish_strict_state(epoch, seq, swap_ms=swap_ms)
+        self.get_logger().info(
+            '[strict] vocabulary RESTORED (%s) after %s extras=%s swap_ms=%.1f'
+            % (reason, ','.join(labels), ','.join(self._extras) or '-', swap_ms))
+
