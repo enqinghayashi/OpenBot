@@ -1040,3 +1040,20 @@ def _yoloe_env(environ=None):
     return weights, bank, threads, extra_conf, problems
 
 
+def _import_sibling(name):
+    """Import a stdlib module shipped co-located with this node (box flat
+    layout) -- same search order as the instance_labels import above."""
+    import importlib
+    try:
+        return importlib.import_module(name)
+    except ImportError as first:
+        here = os.path.dirname(os.path.abspath(__file__))
+        for cand in (here, os.path.dirname(here),
+                     os.path.dirname(os.path.dirname(here))):
+            if cand not in sys.path:
+                sys.path.insert(0, cand)
+            try:
+                return importlib.import_module(name)
+            except ImportError:
+                continue
+        raise first
