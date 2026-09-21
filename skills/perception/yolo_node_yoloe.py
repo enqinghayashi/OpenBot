@@ -687,3 +687,102 @@ class YoloNode(Node):
         self._state_pub.publish(out)
         return state
 
+    def _strict_step(self):
+        """Every tick, BEFORE the frame: requests, wide changes, the lease."""
+        with self._lock:
+            pending = self._pending_strict
+            self._pending_strict = None
+        for req, err in pending or ():
+            try:
+                self._handle_strict_request(req, err)
+            except Exception as e:  # noqa: BLE001
+                self.get_logger().error('[strict] request failed: %s' % e)
+        if self._strict is None:
+            return
+        if self._backend is None or self._backend_name != 'yoloe':
+            self._strict = None          # fixed engine has no strict set
+            return
+        if self._runtime_allow != frozenset(self._strict['labels']):
+            self._strict_reapply('wide_changed')   # a /yolo/classes swap ran since
+        if self._strict is not None and time.time() > self._strict['until']:
+            self._strict_restore('lease_expired', None, None)
+
+    def _strict_apply(self, entries):
+        """Swap the backend to ``entries``; drop the candidates and tracks
+        whose class left.  Returns (swap_ms, number of candidates dropped)."""
+        res = self._backend.set_vocab(entries)
+        with self._lock:
+            allow = frozenset(res.names)
+            self._runtime_allow = allow
+            left = [k for k, c in self._candidates.items()
+                    if c['class_name'] not in allow]
+            for k in left:
+                del self._candidates[k]
+            if self._tracker is not None:
+                self._tracker.drop_classes(allow)
+        return res.swap_ms, len(left)
+
+    def _handle_strict_request(self, req, err):
+        epoch, seq = req.get('epoch'), req.get('seq')
+        if err is not None:
+            self.get_logger().error('[strict] /yolo/strict rejected: %s' % err)
+            self._publish_strict_state(epoch, seq, error=err)
+            return
+        if self._strict_dedupe.is_dup(epoch, seq):
+            self._publish_strict_state(epoch, seq, dup=True, swap_ms=0.0)
+            return
+        self._strict_dedupe.commit(epoch, seq)
+        if self._backend is None or self._backend_name != 'yoloe':
+            self._publish_strict_state(epoch, seq, swap_ms=0.0,
+                                       error=self._vocab_mod.FIXED_BACKEND_ERROR)
+            return
+        if req['op'] == 'release':
+            self._strict_restore('released', epoch, seq)
+            return
+        want = req['labels']
+        entries = [(l, p) for l, p in self._wide_entries() if l in want]
+        if not entries:
+            self._publish_strict_state(epoch, seq, swap_ms=0.0,
+                                       error='strict_no_label:%s' % ','.join(want))
+            return
+        labels = tuple(l for l, _ in entries)
+        missing = dict((l, 'not_in_vocabulary') for l in want if l not in labels)
+        until = time.time() + req['lease_s']
+        if self._strict is not None and self._strict['labels'] == labels:
+            self._strict['until'] = until          # renewal, no swap
+            self._publish_strict_state(epoch, seq, rejected=missing, swap_ms=0.0)
+            return
+        try:
+            swap_ms, n_left = self._strict_apply(entries)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error('[strict] swap failed: %s' % e)
+            self._publish_strict_state(epoch, seq,
+                                       error='strict swap failed: %s' % (e,))
+            return
+        self._strict = {'labels': labels, 'until': until}
+        self._publish_strict_state(epoch, seq, rejected=missing, swap_ms=swap_ms)
+        self.get_logger().info(
+            '[strict] vocabulary NARROWED seq=%s labels=%s missing=%s lease=%.1fs '
+            'swap_ms=%.1f dropped=%d' % (seq, ','.join(labels),
+                                         ','.join(missing) or '-',
+                                         req['lease_s'], swap_ms, n_left))
+
+    def _strict_restore(self, reason, epoch, seq):
+        if self._strict is None:
+            if epoch is not None:
+                self._publish_strict_state(epoch, seq, swap_ms=0.0)
+            return
+        try:
+            swap_ms, _n = self._strict_apply(self._wide_entries())
+        except Exception as e:  # noqa: BLE001
+            self._strict['until'] = time.time() + 1.0
+            self.get_logger().error('[strict] restore FAILED (%s): %s - retry '
+                                    'in 1 s' % (reason, e))
+            return
+        labels = self._strict['labels']
+        self._strict = None
+        self._publish_strict_state(epoch, seq, swap_ms=swap_ms)
+        self.get_logger().info(
+            '[strict] vocabulary RESTORED (%s) after %s extras=%s swap_ms=%.1f'
+            % (reason, ','.join(labels), ','.join(self._extras) or '-', swap_ms))
+
