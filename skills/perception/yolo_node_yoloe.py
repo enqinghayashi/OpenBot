@@ -1003,3 +1003,38 @@ def _env_on(name, environ=None):
     return env.get(name) == '1'
 
 
+def _yoloe_env(environ=None):
+    """(weights, bank, threads, extra_conf, problems) from the environment.
+    A malformed value falls back to its default and is REPORTED."""
+    env = os.environ if environ is None else environ
+    problems = []
+    weights = env.get('OPENBOT_YOLOE_WEIGHTS') or YOLOE_DEFAULT_WEIGHTS
+    bank = env.get('OPENBOT_YOLOE_BANK')
+    if not bank:
+        stem = os.path.basename(weights)
+        if stem.endswith('.pt'):
+            stem = stem[:-3]
+        bank = os.path.join(os.path.dirname(weights),
+                            'vocab_bank_%s.npz' % stem)
+    threads = YOLOE_DEFAULT_THREADS
+    raw = env.get('OPENBOT_YOLOE_THREADS')
+    if raw:
+        try:
+            threads = int(raw)
+            if threads < 1:
+                raise ValueError('must be >= 1')
+        except ValueError as e:
+            problems.append('OPENBOT_YOLOE_THREADS=%r ignored (%s)' % (raw, e))
+            threads = YOLOE_DEFAULT_THREADS
+    extra_conf = YOLOE_DEFAULT_EXTRA_CONF
+    raw = env.get('OPENBOT_YOLOE_EXTRA_CONF')
+    if raw:
+        try:
+            extra_conf = float(raw)
+            if not (GATE_CONF <= extra_conf <= 0.90):
+                raise ValueError('outside [%.2f, 0.90]' % GATE_CONF)
+        except ValueError as e:
+            problems.append('OPENBOT_YOLOE_EXTRA_CONF=%r ignored (%s)'
+                            % (raw, e))
+            extra_conf = YOLOE_DEFAULT_EXTRA_CONF
+    return weights, bank, threads, extra_conf, problems
