@@ -786,3 +786,126 @@ class YoloNode(Node):
             '[strict] vocabulary RESTORED (%s) after %s extras=%s swap_ms=%.1f'
             % (reason, ','.join(labels), ','.join(self._extras) or '-', swap_ms))
 
+    def _strict_reapply(self, reason):
+        """A /yolo/classes swap ran while narrowed: narrow the NEW wide set."""
+        want = self._strict['labels']
+        entries = [(l, p) for l, p in self._wide_entries() if l in want]
+        if not entries:
+            self._strict = None
+            self._publish_strict_state(None, None, swap_ms=0.0)
+            self.get_logger().info('[strict] vocabulary RESTORED (%s): no strict '
+                                   'label left' % reason)
+            return
+        try:
+            swap_ms, n_left = self._strict_apply(entries)
+        except Exception as e:  # noqa: BLE001
+            self._strict = None
+            self._publish_strict_state(None, None,
+                                       error='strict re-narrow failed: %s' % (e,))
+            self.get_logger().error('[strict] re-narrow failed (%s): %s'
+                                    % (reason, e))
+            return
+        self._strict['labels'] = tuple(l for l, _ in entries)
+        self._publish_strict_state(None, None, swap_ms=swap_ms)
+        self.get_logger().info(
+            '[strict] vocabulary RE-NARROWED (%s) labels=%s swap_ms=%.1f '
+            'dropped=%d' % (reason, ','.join(self._strict['labels']), swap_ms,
+                            n_left))
+
+    # ── runtime fallback (10 errors) ─────
+    def _start_engine_fallback(self):
+        self._fallback_due = False
+        self._busy = True
+        self._backend_name = 'yolo'
+        # (1) state FIRST - gateway cache and
+        # verifier see extras go before rows
+        # change. model pinned here, worker
+        # clears _backend later.
+        self._publish_vocab_state(
+            None, None, extras=[], model=ENGINE_MODEL_NAME,
+            error='fallback after %d consecutive inference errors'
+            % YOLOE_FALLBACK_AFTER)
+        with self._lock:
+            self._extras = {}
+            self._runtime_allow = TRACKED_CLASSES
+            gone = [k for k, c in self._candidates.items()
+                    if c['class_name'] not in TRACKED_CLASSES]
+            for k in gone:
+                del self._candidates[k]
+            if self._tracker is not None:
+                self._tracker.drop_classes(TRACKED_CLASSES)
+        self.get_logger().error(
+            '[yoloe] FALLBACK after %d consecutive inference errors; '
+            'reloading %s on a worker thread' % (YOLOE_FALLBACK_AFTER,
+                                                 ENGINE_PATH))
+        # off-thread reload
+        t = threading.Thread(target=self._reload_engine_worker,
+                             name='yoloe-fallback', daemon=True)
+        self._fallback_thread = t
+        t.start()
+
+    def _reload_engine_worker(self):
+        try:
+            model = self._load_engine()
+        except Exception as e:  # noqa: BLE001
+            self._fatal = e
+            return
+        with self._lock:
+            self._gate_model = model
+            self._backend = None
+        self._busy = False
+        self.get_logger().error('[yoloe] engine reloaded; vocabulary fixed '
+                                'to the %d base classes'
+                                % len(TRACKED_CLASSES))
+
+    # ── stable instance ids (IDS=1) ──────
+    def _init_instance_tracker(self):
+        try:
+            mod = _import_sibling('instance_tracker')
+            self._tracker = mod.InstanceTracker(base=TRACKED_CLASSES)
+        except Exception as e:  # noqa: BLE001
+            self._tracker = None
+            self.get_logger().error(
+                '[ids] OPENBOT_INSTANCE_IDS disabled: instance_tracker not '
+                'importable (%s) - class keying kept' % e)
+            return
+        self.get_logger().info(
+            '[ids] instance ids ON: IoU>=%.2f class-agnostic, dup fusion '
+            'IoU>=%.2f, evict %.1fs' % (self._tracker.iou_min,
+                                        self._tracker.dup_iou,
+                                        self._tracker.evict_s))
+
+    def _track_frame(self, gate_results, names, suppressed, now):
+        """{box index: (instance_id, majority class, track_age_s)} over the
+        boxes that pass EXACTLY the main loop's admit filters; a box fused
+        into a duplicate has no entry."""
+        items = []
+        for i, box in enumerate(gate_results.boxes):
+            conf = float(box.conf)
+            if conf < GATE_CONF:
+                continue
+            class_id = int(box.cls)
+            if names is None:
+                class_name = COCO_NAMES[class_id]
+            else:
+                class_name = _name_at(names, class_id)
+                if i in suppressed:
+                    continue
+            if class_name not in self._runtime_allow:
+                continue
+            if (names is not None and class_name not in TRACKED_CLASSES
+                    and conf < self._extra_conf):
+                continue
+            items.append((i, (class_name, box.xyxy[0].tolist(), conf)))
+        # dup fusion uses the extra floor
+        # tap logs the drops
+        self._tracker.extra_floor = self._extra_conf
+        self._tracker.tap = ((lambda m: self.get_logger().info(m))
+                             if _env_on('OPENBOT_YOLOE_SCORE_TAP') else None)
+        res = self._tracker.update_indexed([b for _, b in items], now)
+        out = {}
+        for k, iid, cls, _xyxy, _conf, _carried in res:
+            age = self._tracker.age(iid)
+            out[items[k][0]] = (iid, cls, round(age, 3))
+        return out
+
