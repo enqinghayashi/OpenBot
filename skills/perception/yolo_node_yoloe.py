@@ -786,3 +786,30 @@ class YoloNode(Node):
             '[strict] vocabulary RESTORED (%s) after %s extras=%s swap_ms=%.1f'
             % (reason, ','.join(labels), ','.join(self._extras) or '-', swap_ms))
 
+    def _strict_reapply(self, reason):
+        """A /yolo/classes swap ran while narrowed: narrow the NEW wide set."""
+        want = self._strict['labels']
+        entries = [(l, p) for l, p in self._wide_entries() if l in want]
+        if not entries:
+            self._strict = None
+            self._publish_strict_state(None, None, swap_ms=0.0)
+            self.get_logger().info('[strict] vocabulary RESTORED (%s): no strict '
+                                   'label left' % reason)
+            return
+        try:
+            swap_ms, n_left = self._strict_apply(entries)
+        except Exception as e:  # noqa: BLE001
+            self._strict = None
+            self._publish_strict_state(None, None,
+                                       error='strict re-narrow failed: %s' % (e,))
+            self.get_logger().error('[strict] re-narrow failed (%s): %s'
+                                    % (reason, e))
+            return
+        self._strict['labels'] = tuple(l for l, _ in entries)
+        self._publish_strict_state(None, None, swap_ms=swap_ms)
+        self.get_logger().info(
+            '[strict] vocabulary RE-NARROWED (%s) labels=%s swap_ms=%.1f '
+            'dropped=%d' % (reason, ','.join(self._strict['labels']), swap_ms,
+                            n_left))
+
+    # ── runtime fallback (10 errors) ─────
