@@ -859,3 +859,19 @@ class YoloNode(Node):
                                 % len(TRACKED_CLASSES))
 
     # ── stable instance ids (IDS=1) ──────
+    def _init_instance_tracker(self):
+        try:
+            mod = _import_sibling('instance_tracker')
+            self._tracker = mod.InstanceTracker(base=TRACKED_CLASSES)
+        except Exception as e:  # noqa: BLE001
+            self._tracker = None
+            self.get_logger().error(
+                '[ids] OPENBOT_INSTANCE_IDS disabled: instance_tracker not '
+                'importable (%s) - class keying kept' % e)
+            return
+        self.get_logger().info(
+            '[ids] instance ids ON: IoU>=%.2f class-agnostic, dup fusion '
+            'IoU>=%.2f, evict %.1fs' % (self._tracker.iou_min,
+                                        self._tracker.dup_iou,
+                                        self._tracker.evict_s))
+
