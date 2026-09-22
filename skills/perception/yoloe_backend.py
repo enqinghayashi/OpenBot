@@ -216,3 +216,6 @@ class YoloeBackend(object):
         self._bank_model = model
 
     # ── vocab ────────────────────────────────────────────────────────────
+    def in_bank(self, prompt):
+        return prompt in self._bank_index
+
