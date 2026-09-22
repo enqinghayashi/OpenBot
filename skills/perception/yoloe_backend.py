@@ -262,3 +262,9 @@ class YoloeBackend(object):
         """Same call + result shape the node reads today (results[0])."""
         return self._model(img, conf=conf, iou=iou, verbose=False, device=self.device)[0]
 
+    @property
+    def names(self):
+        """prompt index -> label (TRACKED string verbatim for base,
+        canonical token for extras)."""
+        return list(self._names)
+
