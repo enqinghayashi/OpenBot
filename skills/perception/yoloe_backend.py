@@ -41,3 +41,9 @@ class VocabResult(object):
 
     __slots__ = ('names', 'resolved', 'rejected', 'swap_ms', 'changed')
 
+    def __init__(self, names, resolved, rejected, swap_ms, changed):
+        self.names = names            # prompt idx -> label
+        self.resolved = resolved      # {label: 'bank'}
+        self.rejected = rejected      # {label: reason}
+        self.swap_ms = swap_ms        # ms, 0.0 if unchanged
+        self.changed = changed        # did we touch the model?
