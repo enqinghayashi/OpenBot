@@ -49,3 +49,13 @@ class VocabResult(object):
         self.changed = changed        # did we touch the model?
 
 
+def _model_stem(name):
+    """'.../yoloe-26n-seg.pt' / '.../yoloe-26n-seg.engine' / 'yoloe-26n-seg' / 'yoloe-26n' -> 'yoloe-26n'."""
+    s = os.path.basename(str(name)).strip().lower()
+    if s.endswith('.pt'):
+        s = s[:-3]
+    elif s.endswith('.engine'):
+        s = s[:-7]
+    if s.endswith('-seg'):
+        s = s[:-4]
+    return s
