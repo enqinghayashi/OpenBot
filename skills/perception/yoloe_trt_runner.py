@@ -34,3 +34,7 @@ def _score_tap_on():
     return os.environ.get('OPENBOT_YOLOE_SCORE_TAP') == '1'     # same rule as the node's _env_on
 
 
+def _stderr_line(msg):
+    import sys
+    sys.stderr.write(msg + '\n')
+    sys.stderr.flush()
