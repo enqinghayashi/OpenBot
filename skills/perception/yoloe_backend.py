@@ -47,3 +47,5 @@ class VocabResult(object):
         self.rejected = rejected      # {label: reason}
         self.swap_ms = swap_ms        # ms, 0.0 if unchanged
         self.changed = changed        # did we touch the model?
+
+
