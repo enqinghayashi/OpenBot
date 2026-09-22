@@ -258,3 +258,7 @@ class YoloeBackend(object):
         return VocabResult(names, resolved, rejected, swap_ms, True)
 
     # ── inference ───────────────────────────────────────────────────────
+    def infer(self, img, conf, iou):
+        """Same call + result shape the node reads today (results[0])."""
+        return self._model(img, conf=conf, iou=iou, verbose=False, device=self.device)[0]
+
