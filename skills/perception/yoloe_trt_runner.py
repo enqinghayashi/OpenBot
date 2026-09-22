@@ -28,3 +28,7 @@ import json
 import os
 
 
+def _score_tap_on():
+    """OPENBOT_YOLOE_SCORE_TAP=1: log the raw per-class scores to the node log.
+    Default off: no extra work, no extra output."""
+    return os.environ.get('OPENBOT_YOLOE_SCORE_TAP') == '1'     # same rule as the node's _env_on
