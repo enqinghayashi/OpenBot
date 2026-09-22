@@ -96,3 +96,79 @@ class YoloeBackend(object):
         self.device = device
 
     # ── loading ─────────────────────────────────────────────────────────
+    def load(self):
+        """isfile checks FIRST, then bank, threads, constructor, base vocab.
+        Raises BackendUnavailable(reason) on any failure."""
+        if not os.path.isfile(self.weights):
+            raise BackendUnavailable('weights missing: %s' % self.weights)
+        if self.engine and not os.path.isfile(self.bank_path):
+            # bank: vocab_bank_<basename minus .pt>.npz;
+            # for '<stem>.engine' it's the .pt's own
+            # bank beside it: vocab_bank_<stem>.npz
+            alt = os.path.join(os.path.dirname(self.weights), 'vocab_bank_%s.npz'
+                               % os.path.basename(self.weights)[:-len('.engine')])
+            if os.path.isfile(alt):
+                self.bank_path = alt
+        if not os.path.isfile(self.bank_path):
+            raise BackendUnavailable('bank missing: %s' % self.bank_path)
+        self._load_bank()
+        missing = [b for b in self.base if b not in self._bank_index]
+        if missing:
+            raise BackendUnavailable(
+                'bank lacks base prompts: %s' % ', '.join(missing))
+        if self._bank_model is not None:
+            if _model_stem(self._bank_model) != _model_stem(self.weights):
+                raise BackendUnavailable(
+                    'bank built for %r, weights are %r (a bank is model-bound)'
+                    % (self._bank_model, os.path.basename(self.weights)))
+        else:
+            self.log('[yoloe] WARNING bank %s has no "model" key; cannot '
+                     'verify it matches %s' % (self.bank_path, self.weights))
+        torch = self._torch
+        if torch is None:
+            try:
+                import torch  # noqa: F811 -- imported lazily, it's a heavy box-side import
+            except Exception as e:  # noqa: BLE001
+                raise BackendUnavailable('torch not importable: %s' % (e,))
+            self._torch = torch
+        torch.set_num_threads(self.threads)
+        # cuda:* must really be there
+        if self.device.startswith('cuda:'):
+            cuda_mod = getattr(torch, 'cuda', None)
+            if cuda_mod is None or not cuda_mod.is_available():
+                raise BackendUnavailable(
+                    'CUDA not available; YOLOE is GPU-only (OPENBOT_YOLOE_DEVICE=cpu to override)')
+        if self.engine:
+            try:
+                ctor = self._engine_ctor or self._default_engine_ctor()
+            except Exception as e:  # noqa: BLE001
+                raise BackendUnavailable('TensorRT runner unavailable: %s' % (e,))
+        else:
+            ctor = self._yoloe_ctor
+        if ctor is None:
+            try:
+                from ultralytics import YOLOE as ctor  # noqa: N813
+            except Exception as e:  # noqa: BLE001
+                raise BackendUnavailable('ultralytics lacks YOLOE: %s' % (e,))
+            self._yoloe_ctor = ctor
+        try:
+            model = ctor(self.weights)
+        except Exception as e:  # noqa: BLE001
+            raise BackendUnavailable('YOLOE(%s) failed: %s' % (self.weights, e))
+        if not callable(getattr(model, 'set_classes', None)):
+            raise BackendUnavailable('model has no set_classes()')
+        # move model to device if it can
+        if hasattr(model, 'to'):
+            model.to(self.device)
+        self._model = model
+        res = self.set_vocab([(b, b) for b in self.base])
+        if res.rejected:
+            raise BackendUnavailable('base vocabulary rejected: %r'
+                                     % (res.rejected,))
+        self.log('[yoloe] backend ready: %s bank=%s (%d prompts) threads=%d '
+                 'base=%d swap_ms=%.1f device=%s runtime=%s'
+                 % (os.path.basename(self.weights),
+                    os.path.basename(self.bank_path), len(self._bank_index),
+                    self.threads, len(self._names), res.swap_ms, self.device,
+                    'tensorrt capacity=%d' % self._model.capacity if self.engine else 'pytorch'))
+
