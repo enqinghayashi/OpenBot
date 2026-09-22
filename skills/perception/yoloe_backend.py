@@ -172,3 +172,16 @@ class YoloeBackend(object):
                     self.threads, len(self._names), res.swap_ms, self.device,
                     'tensorrt capacity=%d' % self._model.capacity if self.engine else 'pytorch'))
 
+    def _default_engine_ctor(self):
+        """weights path -> YoloeEngineModel (raises; load() turns it into BackendUnavailable)."""
+        import sys
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import yoloe_trt_runner as R
+
+        def ctor(path):
+            runner = R.TrtRunner(path, device=self.device, torch_mod=self._torch, log=self.log).load()
+            return R.YoloeEngineModel(runner, self._torch, device=self.device)
+        return ctor
+
