@@ -36,3 +36,8 @@ class BackendUnavailable(Exception):
     """The YOLOE backend cannot run; the node falls back to the engine."""
 
 
+class VocabResult(object):
+    """Outcome of one ``set_vocab`` call."""
+
+    __slots__ = ('names', 'resolved', 'rejected', 'swap_ms', 'changed')
+
