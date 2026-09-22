@@ -216,3 +216,55 @@ class YoloeBackend(object):
         self._bank_model = model
 
     # ── vocab ────────────────────────────────────────────────────────────
+    def in_bank(self, prompt):
+        return prompt in self._bank_index
+
+    def set_vocab(self, entries):
+        """entries: [(label, prompt)] in prompt-index order.  Every prompt is
+        looked up in the bank; a miss is rejected ``not_in_bank``.  The same
+        resolved list as the active one -> no model call, swap_ms 0.0."""
+        if self._model is None:
+            raise BackendUnavailable('set_vocab before load')
+        resolved, rejected, keep = {}, {}, []
+        seen = set()
+        for label, prompt in entries:
+            if label in seen:
+                continue
+            if prompt not in self._bank_index:
+                rejected[label] = 'not_in_bank'
+                continue
+            seen.add(label)
+            keep.append((label, prompt))
+            resolved[label] = 'bank'
+        cap = getattr(self._model, 'capacity', None)
+        if cap is not None and len(keep) > cap:
+            for label, _p in keep[cap:]:
+                rejected[label] = 'capacity'
+                resolved.pop(label, None)
+            keep = keep[:cap]
+        keep = tuple(keep)
+        names = [lab for lab, _ in keep]
+        if keep == self._active:
+            return VocabResult(names, resolved, rejected, 0.0, False)
+        t0 = time.perf_counter()
+        rows = np.stack([self._bank_embeds[self._bank_index[p]]
+                         for _, p in keep]).astype(np.float32)
+        tensor = self._torch.from_numpy(rows)[None]      # shape [1, N, 512]
+        tensor = tensor.to(self.device)
+        self._model.set_classes(names, tensor)
+        swap_ms = round((time.perf_counter() - t0) * 1000.0, 3)
+        self._active = keep
+        self._names = names
+        return VocabResult(names, resolved, rejected, swap_ms, True)
+
+    # ── inference ───────────────────────────────────────────────────────
+    def infer(self, img, conf, iou):
+        """Same call + result shape the node reads today (results[0])."""
+        return self._model(img, conf=conf, iou=iou, verbose=False, device=self.device)[0]
+
+    @property
+    def names(self):
+        """prompt index -> label (TRACKED string verbatim for base,
+        canonical token for extras)."""
+        return list(self._names)
+
