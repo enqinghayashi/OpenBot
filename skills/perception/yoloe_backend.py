@@ -185,3 +185,34 @@ class YoloeBackend(object):
             return R.YoloeEngineModel(runner, self._torch, device=self.device)
         return ctor
 
+    def _load_bank(self):
+        try:
+            with np.load(self.bank_path, allow_pickle=False) as z:
+                files = set(z.files)
+                if 'prompts' not in files or 'embeds' not in files:
+                    raise BackendUnavailable(
+                        'bank %s lacks prompts/embeds keys (has %s)'
+                        % (self.bank_path, sorted(files)))
+                prompts = [str(p) for p in z['prompts'].tolist()]
+                embeds = np.asarray(z['embeds'], dtype=np.float32)
+                model = str(z['model']) if 'model' in files else None
+        except BackendUnavailable:
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise BackendUnavailable('bank unreadable %s: %s'
+                                     % (self.bank_path, e))
+        if embeds.ndim == 3 and embeds.shape[0] == 1:
+            embeds = embeds[0]
+        if embeds.ndim != 2 or embeds.shape[0] != len(prompts):
+            raise BackendUnavailable(
+                'bank shape mismatch: %d prompts vs embeds %s'
+                % (len(prompts), tuple(embeds.shape)))
+        index = {}
+        for i, p in enumerate(prompts):
+            if p not in index:
+                index[p] = i
+        self._bank_index = index
+        self._bank_embeds = embeds
+        self._bank_model = model
+
+    # ── vocab ────────────────────────────────────────────────────────────
