@@ -42,3 +42,110 @@ def _stderr_line(msg):
 
 class EngineUnavailable(Exception):
     """The engine cannot be loaded or run; the caller falls back."""
+
+
+def split_ultralytics_header(blob):
+    """(metadata dict | None, engine bytes).  A blob without a plausible header is returned whole."""
+    if len(blob) > 8:
+        n = int.from_bytes(blob[:4], byteorder='little')
+        if 2 <= n <= min(len(blob) - 4, 1 << 20):
+            head = blob[4:4 + n]
+            if head[:1] == b'{':
+                try:
+                    return json.loads(head.decode('utf-8')), blob[4 + n:]
+                except (UnicodeDecodeError, ValueError):
+                    pass
+    return None, blob
+
+
+class TrtRunner(object):
+    INPUTS = ('images', 'tpe')
+    OUTPUTS = ('output0', 'output1')
+
+    def __init__(self, engine_path, device='cuda:0', torch_mod=None, trt_mod=None, log=print):
+        self.engine_path = engine_path
+        self.device = device
+        self.log = log
+        self._torch = torch_mod
+        self._trt = trt_mod
+        self.meta = None
+        self.shapes = {}
+        self._buf = {}
+        self._legacy = None
+        self._ctx = None
+        self._engine = None
+        self._ptrs = None
+
+    def load(self):
+        if not os.path.isfile(self.engine_path):
+            raise EngineUnavailable('engine not found: %s' % self.engine_path)
+        torch = self._torch
+        if torch is None:
+            try:
+                import torch  # noqa: F811 -- a lazy, heavy import that only works on the box
+            except Exception as e:  # noqa: BLE001
+                raise EngineUnavailable('torch not importable: %s' % (e,))
+            self._torch = torch
+        cuda = getattr(torch, 'cuda', None)
+        if not str(self.device).startswith('cuda') or cuda is None or not cuda.is_available():
+            raise EngineUnavailable('a TensorRT engine runs on the GPU only (device %r, CUDA %s)'
+                                    % (self.device, 'unavailable' if cuda is None or not cuda.is_available()
+                                       else 'available'))
+        trt = self._trt
+        if trt is None:
+            try:
+                import tensorrt as trt  # noqa: F811
+            except Exception as e:  # noqa: BLE001
+                raise EngineUnavailable('tensorrt not importable: %s' % (e,))
+            self._trt = trt
+        with open(self.engine_path, 'rb') as f:
+            self.meta, blob = split_ultralytics_header(f.read())
+        logger = trt.Logger(trt.Logger.WARNING)
+        engine = trt.Runtime(logger).deserialize_cuda_engine(blob)
+        if engine is None:
+            raise EngineUnavailable('deserialize_cuda_engine returned None (built for another '
+                                    'TensorRT version or device?)')
+        ctx = engine.create_execution_context()
+        self._engine, self._ctx = engine, ctx
+        self._legacy = hasattr(engine, 'num_bindings')     # TensorRT < 10 (8.5 has both APIs)
+        names = []
+        if self._legacy:
+            for i in range(engine.num_bindings):
+                name = engine.get_binding_name(i)
+                names.append((i, name, tuple(engine.get_binding_shape(i)),
+                              trt.nptype(engine.get_binding_dtype(i)), engine.binding_is_input(i)))
+        else:
+            for i in range(engine.num_io_tensors):
+                name = engine.get_tensor_name(i)
+                names.append((i, name, tuple(engine.get_tensor_shape(name)),
+                              trt.nptype(engine.get_tensor_dtype(name)),
+                              engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT))
+        got = sorted(n for _, n, _, _, _ in names)
+        if got != sorted(self.INPUTS + self.OUTPUTS):
+            raise EngineUnavailable('engine I/O %r, expected %r' % (got, sorted(self.INPUTS + self.OUTPUTS)))
+        ptrs = [0] * len(names)
+        for i, name, shape, npdt, _is_in in names:
+            if any(int(d) < 1 for d in shape):
+                raise EngineUnavailable('dynamic shape %r for %s: build the engine with static shapes'
+                                        % (shape, name))
+            tdt = torch.float16 if str(npdt) in ('float16', "<class 'numpy.float16'>") else torch.float32
+            buf = torch.empty(tuple(int(d) for d in shape), dtype=tdt, device=self.device)
+            self._buf[name] = buf
+            self.shapes[name] = tuple(int(d) for d in shape)
+            ptrs[i] = int(buf.data_ptr())
+            if not self._legacy and ctx.set_tensor_address(name, int(buf.data_ptr())) is False:
+                raise EngineUnavailable('set_tensor_address refused %s' % name)
+        self._ptrs = ptrs
+        self.log('[yoloe] tensorrt engine %s: images %s tpe %s api=%s'
+                 % (os.path.basename(self.engine_path), self.shapes['images'], self.shapes['tpe'],
+                    'bindings' if self._legacy else 'tensors'))
+        return self
+
+    @property
+    def imgsz(self):
+        return self.shapes['images'][2], self.shapes['images'][3]
+
+    @property
+    def nmax(self):
+        return self.shapes['tpe'][1]
+
