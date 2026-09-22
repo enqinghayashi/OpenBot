@@ -268,3 +268,6 @@ class YoloeBackend(object):
         canonical token for extras)."""
         return list(self._names)
 
+    @property
+    def model_name(self):
+        return _model_stem(self.weights) + '-seg'
