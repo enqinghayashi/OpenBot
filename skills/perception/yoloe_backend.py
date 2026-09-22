@@ -62,3 +62,37 @@ def _model_stem(name):
 
 
 class YoloeBackend(object):
+    def __init__(self, weights, bank_path, threads=2, log=print,
+                 base=(), yoloe_ctor=None, torch_mod=None, device=None,
+                 engine_ctor=None):
+        self.weights = weights
+        self.bank_path = bank_path
+        self.threads = int(threads)
+        self.log = log
+        self.base = list(base)
+        self._yoloe_ctor = yoloe_ctor
+        self._engine_ctor = engine_ctor
+        self._torch = torch_mod
+        # TensorRT ``.engine``: built on the Orin
+        # from live-vocab ONNX. goes through
+        # yoloe_trt_runner.YoloeEngineModel, same
+        # set_classes/__call__ contract.
+        self.engine = str(weights).lower().endswith('.engine')
+        self._model = None
+        self._bank_index = {}
+        self._bank_embeds = None
+        self._bank_model = None
+        self._names = []
+        self._active = ()             # (label, prompt) live on model
+        # device: arg, else OPENBOT_YOLOE_DEVICE,
+        # else "cuda:0"
+        if device is None:
+            device = os.environ.get('OPENBOT_YOLOE_DEVICE', 'cuda:0')
+        device = str(device).strip().lower()
+        if device not in ('cpu',) and not device.startswith('cuda:'):
+            raise BackendUnavailable(
+                'invalid device %r: must be "cpu" or "cuda:N" (OPENBOT_YOLOE_DEVICE=%r)'
+                % (device, os.environ.get('OPENBOT_YOLOE_DEVICE', 'not set')))
+        self.device = device
+
+    # ── loading ─────────────────────────────────────────────────────────
