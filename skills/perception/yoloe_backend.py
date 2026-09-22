@@ -61,3 +61,4 @@ def _model_stem(name):
     return s
 
 
+class YoloeBackend(object):
