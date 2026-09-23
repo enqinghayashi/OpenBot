@@ -56,3 +56,5 @@ def split_ultralytics_header(blob):
                 except (UnicodeDecodeError, ValueError):
                     pass
     return None, blob
+
+
