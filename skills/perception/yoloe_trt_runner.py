@@ -235,3 +235,23 @@ class YoloeEngineModel(object):
 
     MAX_DET = 300
 
+    def topk_rows(self, raw, n, capacity, nm):
+        """raw [B, A, 4 + capacity + nm] -> end2end rows [B, k, 6 + nm] (box, conf, cls, coefs), as
+        ultralytics Detect.get_topk_index(agnostic) + Segment.postprocess; only the n ACTIVE class
+        columns are scored, so a spare slot can never win."""
+        torch = self._torch
+        boxes, scores, coef = raw.split([4, capacity, nm], dim=-1)
+        cls_scores = scores[..., :n]
+        scores, labels = cls_scores.max(dim=-1, keepdim=True)
+        k = min(self.MAX_DET, int(raw.shape[1]))
+        scores, idx = scores.topk(k, dim=1)
+        labels = labels.gather(1, idx).float()
+        boxes = boxes.gather(1, idx.expand(-1, -1, 4))
+        coef = coef.gather(1, idx.expand(-1, -1, nm))
+        if _score_tap_on():
+            self._tap_capture(cls_scores, idx, boxes, scores, n)
+        return torch.cat([boxes, scores, labels, coef], dim=-1)
+
+    TAP_MIN = 0.15
+    _tap_rows = None
+
