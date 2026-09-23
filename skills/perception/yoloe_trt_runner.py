@@ -62,3 +62,17 @@ class TrtRunner(object):
     INPUTS = ('images', 'tpe')
     OUTPUTS = ('output0', 'output1')
 
+    def __init__(self, engine_path, device='cuda:0', torch_mod=None, trt_mod=None, log=print):
+        self.engine_path = engine_path
+        self.device = device
+        self.log = log
+        self._torch = torch_mod
+        self._trt = trt_mod
+        self.meta = None
+        self.shapes = {}
+        self._buf = {}
+        self._legacy = None
+        self._ctx = None
+        self._engine = None
+        self._ptrs = None
+
