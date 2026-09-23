@@ -40,3 +40,5 @@ def _stderr_line(msg):
     sys.stderr.flush()
 
 
+class EngineUnavailable(Exception):
+    """The engine cannot be loaded or run; the caller falls back."""
