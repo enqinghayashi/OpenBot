@@ -44,3 +44,15 @@ class EngineUnavailable(Exception):
     """The engine cannot be loaded or run; the caller falls back."""
 
 
+def split_ultralytics_header(blob):
+    """(metadata dict | None, engine bytes).  A blob without a plausible header is returned whole."""
+    if len(blob) > 8:
+        n = int.from_bytes(blob[:4], byteorder='little')
+        if 2 <= n <= min(len(blob) - 4, 1 << 20):
+            head = blob[4:4 + n]
+            if head[:1] == b'{':
+                try:
+                    return json.loads(head.decode('utf-8')), blob[4 + n:]
+                except (UnicodeDecodeError, ValueError):
+                    pass
+    return None, blob
