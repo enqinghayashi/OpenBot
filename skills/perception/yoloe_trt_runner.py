@@ -141,3 +141,7 @@ class TrtRunner(object):
                     'bindings' if self._legacy else 'tensors'))
         return self
 
+    @property
+    def imgsz(self):
+        return self.shapes['images'][2], self.shapes['images'][3]
+
