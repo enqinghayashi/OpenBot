@@ -58,3 +58,7 @@ def split_ultralytics_header(blob):
     return None, blob
 
 
+class TrtRunner(object):
+    INPUTS = ('images', 'tpe')
+    OUTPUTS = ('output0', 'output1')
+
