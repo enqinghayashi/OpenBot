@@ -169,3 +169,22 @@ class TrtRunner(object):
         return tuple(self._buf[n].float().clone() for n in self.OUTPUTS)
 
 
+class YoloeEngineModel(object):
+    """Stands in for ultralytics' YOLOE model inside yoloe_backend.YoloeBackend when the weights are a
+    TensorRT ``.engine``: the same ``set_classes(names, embeddings)`` and
+    ``model(img, conf=, iou=, verbose=, device=)`` -> [Results] contract, so the backend's vocabulary,
+    fallback and device rules stay one code path.
+
+    Pre-processing is ultralytics' own for a static model (LetterBox to the engine size, auto=False,
+    BGR->RGB, CHW, /255); post-processing is ultralytics' own SegmentationPredictor.postprocess on the
+    end2end rows.
+
+    SPARE SLOTS ARE COPIES, NEVER ZEROS.  The head L2-normalises every vocabulary row; an all-zero row
+    is 0/(0+eps) and in FP16 the eps (1e-12) underflows to 0 -> NaN, and one NaN class score poisons the
+    per-box max: MEASURED on the Orin 2026-10-05, the FP16 engine returned NO detection on 60/60 frames
+    (FP32 was unaffected); reproduced on the laptop in torch FP16 (300/300 NaN rows; none with real
+    rows).  So slot j >= N holds a copy of row j % N, and a detection on slot j is relabelled j % N:
+    a copy scores exactly as its original, so the label is always the right one.  Laptop
+    proof: ONNX of the same graph vs YOLOE .pt, 60 robot frames x 4 vocabularies, box IoU 1.0000,
+    dconf 0.0001, mask IoU 1.0000 (.wf/b6/trt/t2live_opus/equiv_live.py)."""
+
