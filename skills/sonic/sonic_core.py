@@ -233,3 +233,42 @@ def quat_mul(a, b):
 
 def quat_conj(q):
     return np.array([q[0], -q[1], -q[2], -q[3]])
+
+
+def quat_normalize(q):
+    n = np.linalg.norm(q)
+    return q / n if n > 1e-12 else np.array([1.0, 0.0, 0.0, 0.0])
+
+
+def quat_to_mat(q):
+    """Rotation matrix R (world-from-body) for q=(w,x,y,z)."""
+    w, x, y, z = quat_normalize(np.asarray(q, dtype=np.float64))
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+        [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+        [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+    ])
+
+
+def quat_rotate_inverse(q_wxyz, v):
+    """Rotate v into the body frame: R(q)^T @ v."""
+    return quat_to_mat(q_wxyz).T @ np.asarray(v, dtype=np.float64)
+
+
+def quat_slerp(q0, q1, t):
+    q0 = quat_normalize(np.asarray(q0, dtype=np.float64))
+    q1 = quat_normalize(np.asarray(q1, dtype=np.float64))
+    d = float(np.dot(q0, q1))
+    if d < 0.0:
+        q1 = -q1
+        d = -d
+    if d > 0.9995:
+        return quat_normalize(q0 + t * (q1 - q0))
+    th = math.acos(max(-1.0, min(1.0, d)))
+    s = math.sin(th)
+    return quat_normalize((math.sin((1.0 - t) * th) / s) * q0 + (math.sin(t * th) / s) * q1)
+
+
+def tilt_deg(quat):
+    """Angle of the body z-axis from world vertical, degrees."""
+    return math.degrees(math.acos(max(-1.0, min(1.0, float(quat_to_mat(quat)[2, 2])))))
