@@ -167,3 +167,5 @@ class TrtRunner(object):
         if ok is False:
             raise EngineUnavailable('TensorRT execution failed')
         return tuple(self._buf[n].float().clone() for n in self.OUTPUTS)
+
+
