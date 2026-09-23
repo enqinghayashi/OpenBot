@@ -104,3 +104,100 @@ def bounded_target(q, eps):
         ceil_j = float(CLOSE_PRESETS[SIDE][jid])
         tgt[jid] = float(min(want, ceil_j) if cd > 0.0 else max(want, ceil_j))
     return tgt
+
+
+def within(a, b, tol=TARGET_TOL):
+    return all(abs(a[j] - b[j]) <= tol for j in DEX3_JOINTS)
+
+
+def show(q):
+    return {j: round(q.get(j, float('nan')), 3) for j in sorted(q)}
+
+
+def main():
+    c = GripClient(SIDE)
+    print(f'===== grip_calib_lead: {LABEL} =====')
+    print('hand-only. Every write is lead-bounded against a LIVE q_meas.')
+    print('The ARM will not move.\n')
+
+    print('reopening to establish the free-air reference')
+    c.open()
+    time.sleep(2.5)
+    q_open = q_meas(c)
+    pr = c.pressure(SIDE).get(SIDE, {})
+    base_p = float(pr.get('max') or 0.0)
+    print(f'  free air: ok={pr.get("ok")} max={base_p}')
+    print(f'  q_open  : {show(q_open)}\n')
+    sys.stdout.flush()
+
+    if LABEL == 'bottle':
+        input('>>> seat the BOTTLE in the open hand, then press Enter ')
+
+    print(f'{"eps":>6} {"presses":>8} {"how":>10} {"pressure":>12} {"delta":>10}  q_at_end')
+    results = []
+    for eps in EPS_LADDER:
+        written = None
+        presses = ceil_presses = 0
+        how = 'cap'
+        last = None
+        while presses < MAX_PRESSES:
+            q = q_meas(c)
+            if not q:
+                how = 'no_state'
+                break
+            tgt = bounded_target(q, eps)
+            if tgt is None:
+                how = 'incomplete'
+                break
+            at_ceil = all(abs(tgt[j] - float(CLOSE_PRESETS[SIDE][j])) <= CEIL_TOL
+                          for j in DEX3_JOINTS)
+            if not at_ceil and written is not None and within(tgt, written):
+                how = 'stopped'
+                break
+            if at_ceil and ceil_presses >= MAX_CEILING_PRESSES:
+                how = 'ceiling'
+                break
+            c.set(tgt, steps=1, dt=DT)
+            written = tgt
+            presses += 1
+            if at_ceil:
+                ceil_presses += 1
+            time.sleep(PRESS_SETTLE_S)
+            last = c.pressure(SIDE).get(SIDE, {})
+
+        pm = float(last.get('max') or 0.0) if last else None
+        qend = q_meas(c)
+        results.append((eps, presses, how, pm, dict(qend)))
+        d = (pm - base_p) if pm is not None else None
+        print(f'{eps:>6.2f} {presses:>8} {how:>10} {pm if pm is None else round(pm,1):>12} '
+              f'{d if d is None else round(d,1):>10}  {show(qend)}')
+        sys.stdout.flush()
+
+    print('\n--- CALIBRATION CURVE (lead -> pressure rise over free air) ---')
+    print(f'  free-air baseline: {base_p}')
+    for eps, presses, how, pm, _ in results:
+        d = (pm - base_p) if pm is not None else None
+        print(f'  lead {eps:.2f} rad -> delta {d if d is None else round(d, 1)}  ({how})')
+
+    print('\nreopening — leaving the hand OPEN')
+    c.open()
+    time.sleep(2.5)
+    q_re = q_meas(c)
+    pr = c.pressure(SIDE).get(SIDE, {})
+    stuck = [j for j in DEX3_JOINTS
+             if j in q_re and j in q_open and abs(q_re[j] - q_open[j]) > RETURN_TOL]
+    print(f'  q_reopen: {show(q_re)}')
+    print(f'  pressure: ok={pr.get("ok")} max={pr.get("max")}')
+    if stuck:
+        print(f'  *** JOINTS THAT DID NOT RETURN TO OPEN: {stuck}  '
+              f'-> LATCH. Power cycle required. ***')
+    else:
+        print('  all joints returned to the open preset — no latch.')
+
+    c.close_socket()
+    print('done — hand left OPEN')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
