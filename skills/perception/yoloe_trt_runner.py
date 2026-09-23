@@ -202,3 +202,103 @@ class YoloeEngineModel(object):
         self.device = device
         return self
 
+    def _post(self):
+        if self._predictor is None:
+            from types import SimpleNamespace
+            from ultralytics.data.augment import LetterBox
+            from ultralytics.models.yolo.segment.predict import SegmentationPredictor
+            h, w = self.runner.imgsz
+            self._letterbox = LetterBox((h, w), auto=False)
+            p = SegmentationPredictor(overrides=dict(task='segment', imgsz=[h, w], conf=0.25, iou=0.7,
+                                                     max_det=300, verbose=False, save=False,
+                                                     retina_masks=False))
+            p.model = SimpleNamespace(names={}, end2end=True)
+            p.batch = ([''],)
+            self._predictor = p
+        return self._predictor
+
+    def set_classes(self, names, embeddings):
+        torch = self._torch
+        n = len(names)
+        if n > self.capacity:
+            raise ValueError('%d classes > engine capacity %d' % (n, self.capacity))
+        e = embeddings.detach().float().cpu().numpy() if hasattr(embeddings, 'detach') else embeddings
+        import numpy as np
+        e = np.asarray(e, dtype=np.float32).reshape(-1, n, e.shape[-1])[0]
+        if n < 1:
+            raise ValueError('an empty vocabulary cannot be run')
+        tpe = np.empty((1, self.capacity, e.shape[-1]), np.float32)
+        for j in range(self.capacity):
+            tpe[0, j] = e[j % n]              # spare slots copy, never zero: FP16 NaN
+        self._tpe = torch.from_numpy(tpe)
+        self._names = list(names)
+
+    MAX_DET = 300
+
+    def topk_rows(self, raw, n, capacity, nm):
+        """raw [B, A, 4 + capacity + nm] -> end2end rows [B, k, 6 + nm] (box, conf, cls, coefs), as
+        ultralytics Detect.get_topk_index(agnostic) + Segment.postprocess; only the n ACTIVE class
+        columns are scored, so a spare slot can never win."""
+        torch = self._torch
+        boxes, scores, coef = raw.split([4, capacity, nm], dim=-1)
+        cls_scores = scores[..., :n]
+        scores, labels = cls_scores.max(dim=-1, keepdim=True)
+        k = min(self.MAX_DET, int(raw.shape[1]))
+        scores, idx = scores.topk(k, dim=1)
+        labels = labels.gather(1, idx).float()
+        boxes = boxes.gather(1, idx.expand(-1, -1, 4))
+        coef = coef.gather(1, idx.expand(-1, -1, nm))
+        if _score_tap_on():
+            self._tap_capture(cls_scores, idx, boxes, scores, n)
+        return torch.cat([boxes, scores, labels, coef], dim=-1)
+
+    TAP_MIN = 0.15
+    _tap_rows = None
+
+    def _tap_capture(self, cls_scores, idx, boxes, scores, n):
+        """OPENBOT_YOLOE_SCORE_TAP=1 only: remember, for every selected row
+        whose best class score is >= TAP_MIN, its top-3 class scores and box
+        (letterbox input px).  Pure read: the returned rows are unchanged."""
+        m = min(3, int(n))
+        sel = cls_scores.gather(1, idx.expand(-1, -1, int(n)))
+        top_v, top_i = sel.topk(m, dim=-1)
+        rows = []
+        for r in range(int(idx.shape[1])):
+            best = float(scores[0, r, 0])
+            if best < self.TAP_MIN:
+                continue
+            rows.append(([float(v) for v in boxes[0, r].tolist()],
+                         [(int(top_i[0, r, c]), float(top_v[0, r, c]))
+                          for c in range(m)]))
+        self._tap_rows = rows
+
+    def _tap_emit(self, img_shape):
+        """Write the captured rows (see _tap_capture) to the node log:
+        one line per box, class names with their raw scores, xyxy in IMAGE
+        px (inverse of the centred letterbox).  Never raises."""
+        rows, self._tap_rows = self._tap_rows, None
+        if not rows:
+            return
+        try:
+            log = getattr(self.runner, 'log', None)
+            if log is None or log is print:
+                log = _stderr_line
+            ih, iw = int(img_shape[0]), int(img_shape[1])
+            h, w = self.runner.imgsz
+            gain = min(float(h) / ih, float(w) / iw)
+            padx = (w - iw * gain) / 2.0
+            pady = (h - ih * gain) / 2.0
+            for xyxy, top in rows:
+                xi = [(xyxy[0] - padx) / gain, (xyxy[1] - pady) / gain,
+                      (xyxy[2] - padx) / gain, (xyxy[3] - pady) / gain]
+                names = ' '.join('%s=%.3f' % (
+                    self._names[c] if c < len(self._names) else str(c), v)
+                    for c, v in top)
+                log('[score_tap] raw top3 %s xyxy=%s'
+                    % (names, [int(round(v)) for v in xi]))
+        except Exception as e:  # noqa: BLE001 -- the tap must never break inference
+            try:
+                _stderr_line('[score_tap] emit failed: %s' % (e,))
+            except Exception:  # noqa: BLE001
+                pass
+
