@@ -202,3 +202,18 @@ class YoloeEngineModel(object):
         self.device = device
         return self
 
+    def _post(self):
+        if self._predictor is None:
+            from types import SimpleNamespace
+            from ultralytics.data.augment import LetterBox
+            from ultralytics.models.yolo.segment.predict import SegmentationPredictor
+            h, w = self.runner.imgsz
+            self._letterbox = LetterBox((h, w), auto=False)
+            p = SegmentationPredictor(overrides=dict(task='segment', imgsz=[h, w], conf=0.25, iou=0.7,
+                                                     max_det=300, verbose=False, save=False,
+                                                     retina_masks=False))
+            p.model = SimpleNamespace(names={}, end2end=True)
+            p.batch = ([''],)
+            self._predictor = p
+        return self._predictor
+
