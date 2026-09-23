@@ -198,3 +198,7 @@ class YoloeEngineModel(object):
         self._predictor = None
         self._letterbox = None
 
+    def to(self, device):
+        self.device = device
+        return self
+
