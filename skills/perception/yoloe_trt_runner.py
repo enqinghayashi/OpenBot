@@ -188,3 +188,13 @@ class YoloeEngineModel(object):
     proof: ONNX of the same graph vs YOLOE .pt, 60 robot frames x 4 vocabularies, box IoU 1.0000,
     dconf 0.0001, mask IoU 1.0000 (.wf/b6/trt/t2live_opus/equiv_live.py)."""
 
+    def __init__(self, runner, torch_mod, device='cuda:0'):
+        self.runner = runner
+        self._torch = torch_mod
+        self.device = device
+        self.capacity = runner.nmax
+        self._names = []
+        self._tpe = None
+        self._predictor = None
+        self._letterbox = None
+
