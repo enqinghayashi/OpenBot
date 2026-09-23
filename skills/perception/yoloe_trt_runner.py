@@ -272,3 +272,33 @@ class YoloeEngineModel(object):
                           for c in range(m)]))
         self._tap_rows = rows
 
+    def _tap_emit(self, img_shape):
+        """Write the captured rows (see _tap_capture) to the node log:
+        one line per box, class names with their raw scores, xyxy in IMAGE
+        px (inverse of the centred letterbox).  Never raises."""
+        rows, self._tap_rows = self._tap_rows, None
+        if not rows:
+            return
+        try:
+            log = getattr(self.runner, 'log', None)
+            if log is None or log is print:
+                log = _stderr_line
+            ih, iw = int(img_shape[0]), int(img_shape[1])
+            h, w = self.runner.imgsz
+            gain = min(float(h) / ih, float(w) / iw)
+            padx = (w - iw * gain) / 2.0
+            pady = (h - ih * gain) / 2.0
+            for xyxy, top in rows:
+                xi = [(xyxy[0] - padx) / gain, (xyxy[1] - pady) / gain,
+                      (xyxy[2] - padx) / gain, (xyxy[3] - pady) / gain]
+                names = ' '.join('%s=%.3f' % (
+                    self._names[c] if c < len(self._names) else str(c), v)
+                    for c, v in top)
+                log('[score_tap] raw top3 %s xyxy=%s'
+                    % (names, [int(round(v)) for v in xi]))
+        except Exception as e:  # noqa: BLE001 -- the tap must never break inference
+            try:
+                _stderr_line('[score_tap] emit failed: %s' % (e,))
+            except Exception:  # noqa: BLE001
+                pass
+
