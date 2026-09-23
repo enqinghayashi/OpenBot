@@ -149,3 +149,21 @@ class TrtRunner(object):
     def nmax(self):
         return self.shapes['tpe'][1]
 
+    def infer(self, images, tpe):
+        """images [1,3,H,W] and tpe [1,NMAX,512] (numpy float32 or torch); returns (output0, output1)
+        as float32 torch tensors on the runner's device.  Raises EngineUnavailable on a failed run."""
+        torch = self._torch
+        for name, arr in (('images', images), ('tpe', tpe)):
+            t = arr if hasattr(arr, 'data_ptr') else torch.from_numpy(arr)
+            if tuple(t.shape) != self.shapes[name]:
+                raise ValueError('%s shape %r, engine wants %r' % (name, tuple(t.shape), self.shapes[name]))
+            self._buf[name].copy_(t.to(self._buf[name].dtype))
+        if self._legacy:
+            ok = self._ctx.execute_v2(self._ptrs)
+        else:
+            stream = torch.cuda.current_stream(self.device)
+            ok = self._ctx.execute_async_v3(stream.cuda_stream)
+        torch.cuda.synchronize(self.device)
+        if ok is False:
+            raise EngineUnavailable('TensorRT execution failed')
+        return tuple(self._buf[n].float().clone() for n in self.OUTPUTS)
