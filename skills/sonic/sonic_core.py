@@ -148,3 +148,88 @@ _MOTOR_D = {
 }
 
 
+def _gain(tag):
+    return 2.0 * _MOTOR_K[tag[2:]][0] if tag.startswith("2*") else _MOTOR_K[tag][0]
+
+
+def _damp(tag):
+    return 2.0 * _MOTOR_D[tag[2:]] if tag.startswith("2*") else _MOTOR_D[tag]
+
+
+KP_MUJOCO = np.array([_gain(t) for t in _KP_TAGS], dtype=np.float32)
+KD_MUJOCO = np.array([_damp(t) for t in _KD_TAGS], dtype=np.float32)
+ACTION_SCALE_MUJOCO = np.array(
+    [0.25 * _MOTOR_K[t[2:] if t.startswith("2*") else t][1]
+     / _MOTOR_K[t[2:] if t.startswith("2*") else t][0] for t in _AS_TAGS],
+    dtype=np.float32)
+
+# g1: 6 tokens
+# (planner_models/observation_config.yaml)
+ALLOWED_PRED_NUM_TOKENS = np.array(
+    [[1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0]], dtype=np.int64)
+
+# encoder 1762, g1 offsets
+ENC_MODE_OFF = 0        # [0,4) mode_4 == 0 in g1
+ENC_JPOS_OFF = 4        # [4,294) 10x29, ISAACLAB order
+ENC_JVEL_OFF = 294      # [294,584) 10x29 jvel
+ENC_ANCHOR_OFF = 601    # [601,661) 10x6 anchor
+ENC_DIM = 1762
+
+# decoder obs 994
+DEC_TOKEN_OFF = 0       # [0,64)  the tokens
+DEC_GYRO_OFF = 64       # [64,94) 10x3 gyro, body
+DEC_JPOS_OFF = 94       # [94,384) 10x29 q - def
+DEC_JVEL_OFF = 384      # [384,674) 10x29 dq
+DEC_ACT_OFF = 674       # [674,964) prev actions
+DEC_GRAV_OFF = 964      # [964,994) 10x3 gravity
+DEC_DIM = 994
+
+ENC_STEP = 5            # frames 0,5,...,45
+HIST_LEN = 10           # SHARED: 2 jobs
+                        # decoder history, oldest first
+                        # encoder look-ahead 10 x ENC_STEP
+                        # change it, both move
+
+TILT_LIMIT_DEG = 45.0
+Z_FALL = 0.35
+
+# ---------------------------------------------------------------------------
+# NAMING TRAP: the two conversions are mirrored;
+# five call sites depend on the direction
+#
+# ISAC_TO_MUJOCO: MOTOR in, ISAACLAB out
+# MUJOCO_TO_ISAC: ISAACLAB in, MOTOR out
+#
+# names say the opposite of the use
+# right:
+#   q_isaaclab = q_motor[MUJOCO_TO_ISAC]
+# wrong (name-following trap):
+#   q_isaaclab = q_motor[ISAC_TO_MUJOCO]
+#   q_target_motor = default
+#     + action[MUJOCO_TO_ISAC]
+# standing can't tell them apart
+# (legs + defaults are symmetric)
+# walking does:
+#   action[ISAC_TO_MUJOCO] -> walks,
+#     tilt 10.3 deg, vx +1.462 m/s
+#   action[MUJOCO_TO_ISAC] -> falls,
+#     tilt 121.9 deg
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# all quats w,x,y,z
+# ---------------------------------------------------------------------------
+def quat_mul(a, b):
+    w1, x1, y1, z1 = a
+    w2, x2, y2, z2 = b
+    return np.array([
+        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+    ])
+
+
+def quat_conj(q):
+    return np.array([q[0], -q[1], -q[2], -q[3]])
