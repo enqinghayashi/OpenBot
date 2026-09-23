@@ -145,3 +145,7 @@ class TrtRunner(object):
     def imgsz(self):
         return self.shapes['images'][2], self.shapes['images'][3]
 
+    @property
+    def nmax(self):
+        return self.shapes['tpe'][1]
+
