@@ -217,3 +217,21 @@ class YoloeEngineModel(object):
             self._predictor = p
         return self._predictor
 
+    def set_classes(self, names, embeddings):
+        torch = self._torch
+        n = len(names)
+        if n > self.capacity:
+            raise ValueError('%d classes > engine capacity %d' % (n, self.capacity))
+        e = embeddings.detach().float().cpu().numpy() if hasattr(embeddings, 'detach') else embeddings
+        import numpy as np
+        e = np.asarray(e, dtype=np.float32).reshape(-1, n, e.shape[-1])[0]
+        if n < 1:
+            raise ValueError('an empty vocabulary cannot be run')
+        tpe = np.empty((1, self.capacity, e.shape[-1]), np.float32)
+        for j in range(self.capacity):
+            tpe[0, j] = e[j % n]              # spare slots copy, never zero: FP16 NaN
+        self._tpe = torch.from_numpy(tpe)
+        self._names = list(names)
+
+    MAX_DET = 300
+
