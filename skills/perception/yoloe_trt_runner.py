@@ -149,3 +149,56 @@ class TrtRunner(object):
     def nmax(self):
         return self.shapes['tpe'][1]
 
+    def infer(self, images, tpe):
+        """images [1,3,H,W] and tpe [1,NMAX,512] (numpy float32 or torch); returns (output0, output1)
+        as float32 torch tensors on the runner's device.  Raises EngineUnavailable on a failed run."""
+        torch = self._torch
+        for name, arr in (('images', images), ('tpe', tpe)):
+            t = arr if hasattr(arr, 'data_ptr') else torch.from_numpy(arr)
+            if tuple(t.shape) != self.shapes[name]:
+                raise ValueError('%s shape %r, engine wants %r' % (name, tuple(t.shape), self.shapes[name]))
+            self._buf[name].copy_(t.to(self._buf[name].dtype))
+        if self._legacy:
+            ok = self._ctx.execute_v2(self._ptrs)
+        else:
+            stream = torch.cuda.current_stream(self.device)
+            ok = self._ctx.execute_async_v3(stream.cuda_stream)
+        torch.cuda.synchronize(self.device)
+        if ok is False:
+            raise EngineUnavailable('TensorRT execution failed')
+        return tuple(self._buf[n].float().clone() for n in self.OUTPUTS)
+
+
+class YoloeEngineModel(object):
+    """Stands in for ultralytics' YOLOE model inside yoloe_backend.YoloeBackend when the weights are a
+    TensorRT ``.engine``: the same ``set_classes(names, embeddings)`` and
+    ``model(img, conf=, iou=, verbose=, device=)`` -> [Results] contract, so the backend's vocabulary,
+    fallback and device rules stay one code path.
+
+    Pre-processing is ultralytics' own for a static model (LetterBox to the engine size, auto=False,
+    BGR->RGB, CHW, /255); post-processing is ultralytics' own SegmentationPredictor.postprocess on the
+    end2end rows.
+
+    SPARE SLOTS ARE COPIES, NEVER ZEROS.  The head L2-normalises every vocabulary row; an all-zero row
+    is 0/(0+eps) and in FP16 the eps (1e-12) underflows to 0 -> NaN, and one NaN class score poisons the
+    per-box max: MEASURED on the Orin 2026-10-05, the FP16 engine returned NO detection on 60/60 frames
+    (FP32 was unaffected); reproduced on the laptop in torch FP16 (300/300 NaN rows; none with real
+    rows).  So slot j >= N holds a copy of row j % N, and a detection on slot j is relabelled j % N:
+    a copy scores exactly as its original, so the label is always the right one.  Laptop
+    proof: ONNX of the same graph vs YOLOE .pt, 60 robot frames x 4 vocabularies, box IoU 1.0000,
+    dconf 0.0001, mask IoU 1.0000 (.wf/b6/trt/t2live_opus/equiv_live.py)."""
+
+    def __init__(self, runner, torch_mod, device='cuda:0'):
+        self.runner = runner
+        self._torch = torch_mod
+        self.device = device
+        self.capacity = runner.nmax
+        self._names = []
+        self._tpe = None
+        self._predictor = None
+        self._letterbox = None
+
+    def to(self, device):
+        self.device = device
+        return self
+
