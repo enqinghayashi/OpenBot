@@ -255,3 +255,20 @@ class YoloeEngineModel(object):
     TAP_MIN = 0.15
     _tap_rows = None
 
+    def _tap_capture(self, cls_scores, idx, boxes, scores, n):
+        """OPENBOT_YOLOE_SCORE_TAP=1 only: remember, for every selected row
+        whose best class score is >= TAP_MIN, its top-3 class scores and box
+        (letterbox input px).  Pure read: the returned rows are unchanged."""
+        m = min(3, int(n))
+        sel = cls_scores.gather(1, idx.expand(-1, -1, int(n)))
+        top_v, top_i = sel.topk(m, dim=-1)
+        rows = []
+        for r in range(int(idx.shape[1])):
+            best = float(scores[0, r, 0])
+            if best < self.TAP_MIN:
+                continue
+            rows.append(([float(v) for v in boxes[0, r].tolist()],
+                         [(int(top_i[0, r, c]), float(top_v[0, r, c]))
+                          for c in range(m)]))
+        self._tap_rows = rows
+
