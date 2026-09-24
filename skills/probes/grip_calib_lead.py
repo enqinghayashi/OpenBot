@@ -197,3 +197,7 @@ def main():
     c.close_socket()
     print('done — hand left OPEN')
     return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
