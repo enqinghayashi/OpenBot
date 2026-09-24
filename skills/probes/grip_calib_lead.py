@@ -85,3 +85,22 @@ def q_meas(c):
     return {int(k): float(v) for k, v in (payload.get('actual') or {}).items()}
 
 
+def bounded_target(q, eps):
+    """`_bounded_lead_target` from pick_engine_v3.py:2361, in behaviour.
+
+    None on any joint we cannot see or that is non-finite — NEVER invents a
+    command (an inf q would clamp straight to the preset, which is the exact
+    full-rail command this exists to remove).
+    """
+    tgt = {}
+    for jid in DEX3_JOINTS:
+        if jid not in q or not math.isfinite(q[jid]):
+            return None
+        cd = close_dir(jid)
+        if cd == 0.0:
+            tgt[jid] = q[jid]        # pinned: no direction, no travel
+            continue
+        want = q[jid] + cd * float(eps)
+        ceil_j = float(CLOSE_PRESETS[SIDE][jid])
+        tgt[jid] = float(min(want, ceil_j) if cd > 0.0 else max(want, ceil_j))
+    return tgt
