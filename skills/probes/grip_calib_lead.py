@@ -106,3 +106,5 @@ def bounded_target(q, eps):
     return tgt
 
 
+def within(a, b, tol=TARGET_TOL):
+    return all(abs(a[j] - b[j]) <= tol for j in DEX3_JOINTS)
