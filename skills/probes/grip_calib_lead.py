@@ -75,3 +75,11 @@ def close_dir(jid):
     return 1.0 if d > 0.0 else (-1.0 if d < 0.0 else 0.0)
 
 
+def q_meas(c):
+    """Live per-joint q, INT-keyed.  {} if the state channel is unreadable."""
+    try:
+        payload = c.state(SIDE).get(SIDE, {})
+    except Exception as e:                                    # noqa: BLE001
+        print(f'  state read failed: {type(e).__name__}: {e}')
+        return {}
+    return {int(k): float(v) for k, v in (payload.get('actual') or {}).items()}
