@@ -69,3 +69,7 @@ RETURN_TOL = 0.05              # won't return this far == latched
 LABEL = 'bottle' if len(sys.argv) > 1 and sys.argv[1] == 'bottle' else 'empty'
 
 
+def close_dir(jid):
+    """+1/-1: the sign q moves when `jid` closes.  Derived from the presets."""
+    d = float(CLOSE_PRESETS[SIDE][jid]) - float(OPEN_PRESETS[SIDE][jid])
+    return 1.0 if d > 0.0 else (-1.0 if d < 0.0 else 0.0)
