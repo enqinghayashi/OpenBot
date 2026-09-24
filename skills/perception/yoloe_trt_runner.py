@@ -302,3 +302,23 @@ class YoloeEngineModel(object):
             except Exception:  # noqa: BLE001
                 pass
 
+    def __call__(self, img, conf=0.25, iou=0.7, verbose=False, device=None):
+        import numpy as np
+        torch = self._torch
+        p = self._post()
+        x = self._letterbox(image=img)[:, :, ::-1].transpose(2, 0, 1)[None]
+        x = torch.from_numpy(np.ascontiguousarray(x, dtype=np.float32) / 255.0)
+        o0, o1 = self.runner.infer(x, self._tpe)
+        o0 = o0.to(self.device)
+        o1 = o1.to(self.device)
+        nm = int(o1.shape[1])
+        if int(o0.shape[-1]) == 4 + self.capacity + nm:
+            o0 = self.topk_rows(o0, len(self._names), self.capacity, nm)
+            if self._tap_rows is not None:
+                self._tap_emit(img.shape)
+        else:
+            o0[..., 5] = torch.remainder(o0[..., 5], float(len(self._names)))   # slot j -> original j % N
+        p.args.conf = conf
+        p.args.iou = iou
+        p.model.names = {i: n for i, n in enumerate(self._names)}
+        return p.postprocess([o0, o1], x.to(self.device), [img])
