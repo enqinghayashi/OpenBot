@@ -272,3 +272,31 @@ def quat_slerp(q0, q1, t):
 def tilt_deg(quat):
     """Angle of the body z-axis from world vertical, degrees."""
     return math.degrees(math.acos(max(-1.0, min(1.0, float(quat_to_mat(quat)[2, 2])))))
+
+
+# ---------------------------------------------------------------------------
+# 50 Hz motion
+# ---------------------------------------------------------------------------
+class Motion:
+    """Planner motion resampled to 50 Hz. Joints are stored in ISAACLAB order
+    (that is what the encoder consumes); root pos/quat stay world/MuJoCo."""
+
+    def __init__(self, pos, quat, jpos_isaac, jvel_isaac):
+        self.pos = pos                # (T,3) positions
+        self.quat = quat              # (T,4) quat, wxyz
+        self.jpos = jpos_isaac        # (T,29) joints
+        self.jvel = jvel_isaac        # (T,29) jvel
+
+    @property
+    def n(self):
+        return self.pos.shape[0]
+
+
+def make_standing_motion(n=60):
+    """Constant standing reference: SONIC default_angles, identity root, z=0.75."""
+    pos = np.zeros((n, 3), dtype=np.float64)
+    pos[:, 2] = DEFAULT_HEIGHT
+    quat = np.tile(np.array([1.0, 0.0, 0.0, 0.0]), (n, 1))
+    jm = np.tile(DEFAULT_ANGLES_MUJOCO, (n, 1))
+    jisaac = jm[:, MUJOCO_TO_ISAC]
+    return Motion(pos, quat, np.ascontiguousarray(jisaac), np.zeros((n, 29)))
