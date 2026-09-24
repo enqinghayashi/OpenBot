@@ -405,3 +405,69 @@ class SonicStack:
         # slice is mandatory
         return np.asarray(qpos[0, :n30, :], dtype=np.float64), n30
 
+    def encode(self, obs1762):
+        return self.encoder.run(None, {"obs_dict": obs1762})[0]
+
+    def decode(self, obs994):
+        return self.decoder.run(None, {"obs_dict": obs994})[0]
+
+
+def build_planner_context(motion, gen_frame):
+    """4 frames at 30 Hz spacing from the current 50 Hz motion, starting at gen_frame.
+
+    reference: localmotion_kplanner.hpp:630-688.
+    """
+    ctx = np.zeros((4, QPOS_DIM), dtype=np.float64)
+    n = motion.n
+    gen_time = gen_frame / CONTROL_HZ
+    for k in range(4):
+        t = gen_time + k / PLANNER_HZ
+        f50 = t * CONTROL_HZ
+        f0 = min(int(math.floor(f50)), n - 1)
+        f1 = min(f0 + 1, n - 1)
+        w0 = 1.0 - (f50 - f0)
+        w1 = 1.0 - w0
+        ctx[k, 3:7] = quat_slerp(motion.quat[f0], motion.quat[f1], f50 - f0)
+        ctx[k, 0:3] = w0 * motion.pos[f0] + w1 * motion.pos[f1]
+        for i in range(NUM_MOTOR):
+            ctx[k, 7 + MUJOCO_TO_ISAC[i]] = (
+                w0 * motion.jpos[f0][i] + w1 * motion.jpos[f1][i])
+    return ctx
+
+
+def anchor_orientation_6d(base_quat, ref_root_rot):
+    """First two columns, row-wise: [R00,R01,R10,R11,R20,R21].
+
+    new_ref_root_rot = quat_mul(apply_delta_heading, ref_root_rot); apply_delta_heading
+    is identity for a fixed heading, so new_ref = ref.  base_to_ref =
+    quat_mul(quat_conjugate(base_quat), new_ref_root_rot); R = mat(base_to_ref).
+    """
+    new_ref = np.asarray(ref_root_rot, dtype=np.float64)
+    base_to_ref = quat_mul(quat_conj(base_quat), new_ref)
+    R = quat_to_mat(base_to_ref)
+    return R[:, :2].reshape(-1)
+
+
+def build_encoder_obs(motion, cur_frame, base_quat):
+    obs = np.zeros(ENC_DIM, dtype=np.float32)
+    n = motion.n
+    for k in range(HIST_LEN):
+        fi = min(cur_frame + ENC_STEP * k, n - 1)
+        obs[ENC_JPOS_OFF + k * NUM_MOTOR: ENC_JPOS_OFF + (k + 1) * NUM_MOTOR] = \
+            motion.jpos[fi]
+        obs[ENC_JVEL_OFF + k * NUM_MOTOR: ENC_JVEL_OFF + (k + 1) * NUM_MOTOR] = \
+            motion.jvel[fi]
+        obs[ENC_ANCHOR_OFF + k * 6: ENC_ANCHOR_OFF + (k + 1) * 6] = \
+            anchor_orientation_6d(base_quat, motion.quat[fi])
+    return obs
+
+
+def build_decoder_obs(tokens, hist):
+    obs = np.zeros(DEC_DIM, dtype=np.float32)
+    obs[DEC_TOKEN_OFF:DEC_TOKEN_OFF + 64] = np.asarray(tokens, dtype=np.float32).reshape(-1)
+    obs[DEC_GYRO_OFF:DEC_GYRO_OFF + 30] = hist["gyro"].reshape(-1)
+    obs[DEC_JPOS_OFF:DEC_JPOS_OFF + 290] = hist["jpos"].reshape(-1)
+    obs[DEC_JVEL_OFF:DEC_JVEL_OFF + 290] = hist["jvel"].reshape(-1)
+    obs[DEC_ACT_OFF:DEC_ACT_OFF + 290] = hist["act"].reshape(-1)
+    obs[DEC_GRAV_OFF:DEC_GRAV_OFF + 30] = hist["grav"].reshape(-1)
+    return obs
