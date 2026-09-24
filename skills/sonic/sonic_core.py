@@ -300,3 +300,108 @@ def make_standing_motion(n=60):
     jm = np.tile(DEFAULT_ANGLES_MUJOCO, (n, 1))
     jisaac = jm[:, MUJOCO_TO_ISAC]
     return Motion(pos, quat, np.ascontiguousarray(jisaac), np.zeros((n, 29)))
+
+
+def resample_30_to_50(q30, n30):
+    """Resample an (n30,36) planner window to 50 Hz.
+
+    Sampling scheme (verbatim with localmotion_kplanner.hpp:456-505):
+      t = f/50; f30 = t*30; f0 = floor(f30); f1 = min(f0+1, n30-1)
+      w0 = 1-(f30-f0); w1 = 1-w0   -> lerp pos/joints, slerp quat
+      joint velocities = forward difference of the 50 Hz joints * 50
+
+    Frame COUNT is NOT the C++ formula. This module uses
+        n50 = floor((n30 - 1) / 30 * 50)
+    (the TASK SPEC's convention), whereas the reference at
+    localmotion_kplanner.hpp:450-454 computes
+        timesteps = floor(timesteps_30hz / 30.0 * 50)   # == floor(n30 / 30 * 50)
+    i.e. the C++ divides the FULL 30 Hz frame count. This module therefore emits
+    1-2 fewer 50 Hz frames than the reference (n30=44 -> 71 vs 73; n30=36 -> 58 vs
+    60). The (n30-1) form is kept deliberately for parity with the harness that
+    produced the green A/B/C run; the shortfall is inert for the staged tests (only
+    the first few frames of each window are ever consumed) but is NOT exact C++
+    parity -- do not describe it as such. See the open question on the 30->50
+    replan splice in SONIC-LANE.md before relying on it for long walks.
+    """
+    n50 = int(math.floor((n30 - 1) / PLANNER_HZ * CONTROL_HZ))
+    if n50 <= 0:
+        return None
+    pos = np.zeros((n50, 3))
+    quat = np.zeros((n50, 4))
+    jm = np.zeros((n50, 29))       # mujoco order
+    for f50 in range(n50):
+        f30 = (f50 / CONTROL_HZ) * PLANNER_HZ
+        f0 = min(int(math.floor(f30)), n30 - 1)
+        f1 = min(f0 + 1, n30 - 1)
+        w0 = 1.0 - (f30 - f0)
+        w1 = 1.0 - w0
+        pos[f50] = w0 * q30[f0, 0:3] + w1 * q30[f1, 0:3]
+        quat[f50] = quat_slerp(q30[f0, 3:7], q30[f1, 3:7], f30 - f0)
+        jm[f50] = w0 * q30[f0, 7:36] + w1 * q30[f1, 7:36]
+    # ISAACLAB: x[MUJOCO_TO_ISAC]
+    jisaac = np.ascontiguousarray(jm[:, MUJOCO_TO_ISAC])
+    jvel = np.zeros((n50, 29))
+    for f in range(n50 - 1):
+        jvel[f] = (jisaac[f + 1] - jisaac[f]) * CONTROL_HZ
+    if n50 >= 2:
+        jvel[n50 - 1] = jvel[n50 - 2]
+    return Motion(pos, quat, jisaac, jvel)
+
+
+# ---------------------------------------------------------------------------
+# only onnxruntime, lazy
+# ---------------------------------------------------------------------------
+class SonicStack:
+    """Planner + encoder + decoder ONNX sessions.
+
+    Measured on the laptop (CPUExecutionProvider, onnxruntime 1.28.0):
+      planner_sonic.onnx   774.0 MB  load 3.85 s   inference 73.0 ms
+      model_encoder.onnx    50.1 MB  load 0.21 s
+      model_decoder.onnx    40.9 MB  load 0.07 s
+      all three resident: peak ~1.1 GB RSS.
+
+    The planner inference does NOT fit in a 250 Hz writer tick (73 ms >> 4 ms);
+    it belongs on the satellite's 10 Hz planner thread. The encoder+decoder pair
+    does fit a 50 Hz tick.
+    """
+
+    def __init__(self, models_dir):
+        import onnxruntime as ort
+        so = ort.SessionOptions()
+        so.log_severity_level = 3
+        self.planner = ort.InferenceSession(
+            os.path.join(models_dir, "planner_sonic.onnx"),
+            sess_options=so, providers=["CPUExecutionProvider"])
+        self.encoder = ort.InferenceSession(
+            os.path.join(models_dir, "model_encoder.onnx"),
+            sess_options=so, providers=["CPUExecutionProvider"])
+        self.decoder = ort.InferenceSession(
+            os.path.join(models_dir, "model_decoder.onnx"),
+            sess_options=so, providers=["CPUExecutionProvider"])
+        self.n_planner_inf = 0
+
+    def plan(self, ctx_qpos, mode, target_vel, movement_dir, facing_dir, height):
+        """Run the planner; return the (n30,36) MuJoCo window sliced to n."""
+        inp = {
+            "context_mujoco_qpos": np.ascontiguousarray(
+                np.asarray(ctx_qpos, dtype=np.float32).reshape(1, 4, QPOS_DIM)),
+            "target_vel": np.array([target_vel], dtype=np.float32),
+            "mode": np.array([mode], dtype=np.int64),
+            "movement_direction": np.asarray(movement_dir, dtype=np.float32).reshape(1, 3),
+            "facing_direction": np.asarray(facing_dir, dtype=np.float32).reshape(1, 3),
+            "random_seed": np.array([0], dtype=np.int64),
+            "has_specific_target": np.zeros((1, 1), dtype=np.int64),
+            "specific_target_positions": np.zeros((1, 4, 3), dtype=np.float32),
+            "specific_target_headings": np.zeros((1, 4), dtype=np.float32),
+            "allowed_pred_num_tokens": ALLOWED_PRED_NUM_TOKENS,
+            "height": np.array([height], dtype=np.float32),
+        }
+        qpos, n = self.planner.run(None, inp)
+        self.n_planner_inf += 1
+        n30 = int(np.asarray(n).reshape(-1)[0])
+        # num_pred_frames is INT32
+        # not int64 as docs claim
+        # qpos[0,n:64] is garbage
+        # slice is mandatory
+        return np.asarray(qpos[0, :n30, :], dtype=np.float64), n30
+
