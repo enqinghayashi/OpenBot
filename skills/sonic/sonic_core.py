@@ -255,3 +255,15 @@ def quat_rotate_inverse(q_wxyz, v):
     return quat_to_mat(q_wxyz).T @ np.asarray(v, dtype=np.float64)
 
 
+def quat_slerp(q0, q1, t):
+    q0 = quat_normalize(np.asarray(q0, dtype=np.float64))
+    q1 = quat_normalize(np.asarray(q1, dtype=np.float64))
+    d = float(np.dot(q0, q1))
+    if d < 0.0:
+        q1 = -q1
+        d = -d
+    if d > 0.9995:
+        return quat_normalize(q0 + t * (q1 - q0))
+    th = math.acos(max(-1.0, min(1.0, d)))
+    s = math.sin(th)
+    return quat_normalize((math.sin((1.0 - t) * th) / s) * q0 + (math.sin(t * th) / s) * q1)
