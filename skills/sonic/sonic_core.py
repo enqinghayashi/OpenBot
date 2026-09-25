@@ -238,3 +238,5 @@ def quat_conj(q):
 def quat_normalize(q):
     n = np.linalg.norm(q)
     return q / n if n > 1e-12 else np.array([1.0, 0.0, 0.0, 0.0])
+
+
