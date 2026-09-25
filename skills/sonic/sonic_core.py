@@ -290,3 +290,5 @@ class Motion:
     @property
     def n(self):
         return self.pos.shape[0]
+
+
