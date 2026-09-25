@@ -672,3 +672,152 @@ class MergedWriter:
     # can only suspend a squat, never abort it.
     # recovery returns to height_stand, not to zero.
 
+    def _init_height_state(self):
+        """Height-lane state + the POLICY-MEASURED standing-pose reference.
+
+        Every key is read with `.get(..., <safe default>)`, matching
+        obs_builder.py:38-39 — an older config that predates the lane must not
+        raise KeyError at construction (FINDING 6).  The band defaults to the
+        nominal height, i.e. a no-op band, so the lane can only ever hold
+        standing.
+        """
+        self.height_stand = float(self.cfg.get("height_cmd", 0.74))   # nominal height
+        self.height_min = float(self.cfg.get("height_cmd_min", self.height_stand))
+        self.height_max = float(self.cfg.get("height_cmd_max", self.height_stand))
+        if self.height_min > self.height_max:   # inverted ok
+            self.height_min, self.height_max = self.height_max, self.height_min
+        self.height_slew_rate = float(self.cfg.get("height_slew_rate", 0.15))
+        self.height_hold_s = float(self.cfg.get("height_hold_s", 5.0))
+        self.height_ascend_timeout = float(
+            self.cfg.get("height_ascend_timeout_s", 3.0))
+        self.height_ascend_tol = float(
+            self.cfg.get("height_ascend_tol_rad", 0.25))
+        self.height_rc_override = float(
+            self.cfg.get("height_rc_override_thresh", 0.1))
+        # hysteresis: suspend at the override threshold, resume at half.
+        self.height_rc_resume = float(
+            self.cfg.get("height_rc_resume_thresh",
+                         0.5 * self.height_rc_override))
+        self.height_stand_eps = 1e-3
+        self.height_ref = self.height_stand      # obs f[3] ref
+        self.height_target = self.height_stand   # clamped request
+        self.height_active = False               # latch + deadline
+        self.height_deadline = 0.0
+        # pause, not cancel: the target and the original deadline
+        # are stowed here.
+        self.height_suspended = False
+        self.height_suspend_target = self.height_stand
+        self.height_suspend_deadline = 0.0
+        self._height_log_t = 0.0
+        # reference standing q (0-11) from the policy's settled pose. The
+        # YAML default_angles miss that knee angle by 0.44 rad, past tol
+        # 0.25; policy_stand_q_legs overrides when present.
+        d = np.array(self.cfg["default_angles"], dtype=np.float32)
+        stand = d.copy()
+        measured = self.cfg.get("policy_stand_q_legs")
+        if measured is not None:
+            arr = np.array(measured, dtype=np.float32)
+            if arr.shape[0] >= 12:
+                stand[0:12] = arr[0:12]
+        self.height_stand_q = np.concatenate(
+            [stand, np.zeros(35 - stand.shape[0], dtype=np.float32)])
+
+    def _apply_height(self, parts):
+        """height parse+apply, shared by socket and console (the same lockstep
+        split that keeps cmd_set identical at both dispatch sites).  Returns an
+        error message or None on success:
+          height <m>                 clamp+set ref, hold height_hold_s
+          height <m> <duration_s>    clamp+set ref, hold duration
+          height off                 cancel now, return to standing
+        `height 0.74` (nominal standing) also returns to standing — reversible
+        at any time.  Values are clamped to [height_cmd_min, height_cmd_max] and
+        _tick rate-limits the reference (height_slew_rate), so nothing steps.
+        """
+        if len(parts) == 2 and parts[1] == "off":
+            self._return_to_standing("height off")
+            return None
+        if len(parts) not in (2, 3):
+            return "height off | height <m> [duration_s]"
+        try:
+            val = float(parts[1])
+        except ValueError:
+            return "height needs a float"
+        duration = self.height_hold_s
+        if len(parts) == 3:
+            try:
+                duration = float(parts[2])
+            except ValueError:
+                return "height duration must be a float"
+        if not np.isfinite(val) or not np.isfinite(duration):
+            return "height values must be finite"
+        if duration <= 0.0:
+            return "height duration must be > 0"
+        val = min(max(val, self.height_min), self.height_max)
+        if abs(val - self.height_stand) <= self.height_stand_eps:
+            self._return_to_standing("height standing")
+            return None
+        # new squat wins
+        self.height_suspended = False
+        self.height_target = val
+        self.height_active = True
+        self.height_deadline = time.monotonic() + duration
+        return None
+
+    def _return_to_standing(self, cause):
+        """Clear the height latch; _tick slews height_ref back up to
+        height_stand.  Used by `height off`, `height 0.74`, the watchdog, and
+        every shutdown path.  Also drops any SUSPENDED squat (a suspend is only
+        ever entered directly by the RC-override block in _tick, which stows its
+        target before clearing the latch)."""
+        if self.height_active:
+            self._height_log(f"{cause} -> standing")
+        self.height_active = False
+        self.height_target = self.height_stand
+        self.height_suspended = False
+
+    def _height_log(self, msg, force=False):
+        """Rate-limited (1 Hz) height-lane log — no assert, no exception.
+        `force` bypasses the rate limit for the rare state transitions that
+        must always be visible (RC suspend/resume, Finding 7)."""
+        now = time.monotonic()
+        if force or now - self._height_log_t >= 1.0:
+            self._height_log_t = now
+            print(f"[height] {msg}")
+
+    def _height_status(self):
+        """Inline status fragment, same shape as _cmd_auto_status."""
+        if self.height_suspended:
+            rem = max(self.height_suspend_deadline - time.monotonic(), 0.0)
+            return (f"height={self.height_ref:.2f} "
+                    f"SUSPENDED->{self.height_suspend_target:.2f} rem={rem:.1f}s")
+        if not self.height_active:
+            return f"height={self.height_ref:.2f}(stand {self.height_stand:.2f})"
+        rem = max(self.height_deadline - time.monotonic(), 0.0)
+        return (f"height={self.height_ref:.2f}->{self.height_target:.2f} "
+                f"active rem={rem:.1f}s")
+
+    # ---------------------------------------------------- additive stance lane
+    # hip-roll splay: no deadline, no watchdog, no thread, no height
+    # change. Sticky until `stance off` and never persisted; a stuck
+    # splay leaves the robot wide, not tipped.
+
+    def _init_stance_state(self):
+        """Stance-lane state.  SAFE BY DEFAULT: the band ships SHUT, so a config
+        that predates this lane cannot splay the legs and `stance <deg>` can
+        only ever return to 0.  Arming is a deliberate config edit.
+
+        Every key is read with `.get(..., <safe default>)` for the same reason
+        _init_height_state does — an older config must not raise KeyError at
+        construction."""
+        self.stance_deg_max = float(self.cfg.get("stance_deg_max", 0.0))
+        if not np.isfinite(self.stance_deg_max) or self.stance_deg_max < 0.0:
+            self.stance_deg_max = 0.0     # NaN/neg = shut
+        self.stance_ankle_ratio = float(
+            self.cfg.get("stance_ankle_ratio", STANCE_ANKLE_RATIO))
+        if not np.isfinite(self.stance_ankle_ratio):
+            self.stance_ankle_ratio = STANCE_ANKLE_RATIO
+        self.stance_deg = 0.0             # installed splay
+        self._stance_base_policy = None   # boot copies, run()
+        self._stance_base_obs = None
+        self._stance_log_t = 0.0
+
