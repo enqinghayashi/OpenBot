@@ -231,3 +231,5 @@ def quat_mul(a, b):
     ])
 
 
+def quat_conj(q):
+    return np.array([q[0], -q[1], -q[2], -q[3]])
