@@ -250,3 +250,6 @@ def quat_to_mat(q):
     ])
 
 
+def quat_rotate_inverse(q_wxyz, v):
+    """Rotate v into the body frame: R(q)^T @ v."""
+    return quat_to_mat(q_wxyz).T @ np.asarray(v, dtype=np.float64)
