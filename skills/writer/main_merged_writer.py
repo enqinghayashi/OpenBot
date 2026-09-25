@@ -212,3 +212,145 @@ class MergedWriter:
     _stance_base_policy = None
     _stance_base_obs = None
 
+    def __init__(self, args):
+        self.args = args
+        with open(args.config) as f:
+            self.cfg = yaml.safe_load(f)
+
+        if args.onnx_dir:
+            self.onnx_dir = args.onnx_dir
+        else:
+            self.onnx_dir = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                self.cfg["onnx_dir"])
+        self.onnx_dir = os.path.abspath(self.onnx_dir)
+
+        self.hz = int(self.cfg["control_hz"])
+        self.dt = 1.0 / self.hz
+        self.decimation = int(self.cfg["policy_decimation"])
+        self.ramp_s = float(self.cfg["coupling_ramp_s"])
+        self.mode_machine_cfg = int(self.cfg["mode_machine"])
+
+        self.policy_enabled = args.stage >= 1
+        self.rc_enabled = not args.no_rc
+        self.verbose = args.verbose
+        self.payload = False          # console: payload on/off
+        self.rc_hold = False          # pick interlock: sticks clamped
+        self.cmd_auto = np.zeros(3, dtype=np.float32)   # latched cmd
+        self.cmd_auto_active = False  # rc ignored
+        self.cmd_auto_deadline = 0.0  # expiry watchdog
+        self._dispatch_lock = threading.Lock()  # guards arm writes
+        self._init_height_state()     # height (inert by default)
+        self._init_sonic_state()      # SONIC (opt-in)
+        self._init_stance_state()     # stance (shut)
+        self._init_step_state()       # step (shut)
+
+        self.state = "INIT"
+        self._shutdown = False
+        self._shutting_down = False
+        self._shutdown_cause = "none"
+        self.t0 = None                # loop start
+        self.loop_count = 0
+        self.policy_ticks = 0
+        self.prev_tick = None         # for drop count
+        self._overruns = 0
+        self._dropped = 0
+        self.rc_cmd_zero = np.zeros(3, dtype=np.float32)
+
+        self.lowcmd = None
+        self.lowcmd_publisher = None
+        self.lowstate = None          # last lowstate
+        self.captured_q = None        # 35-D boot pose
+
+        self.policy = None
+        self.rc = None
+        self.arm = None
+        self.obs = None
+        self.leg_target = None        # policy target
+        self.policy_target = None     # SONIC blend input
+
+        # arm shutdown slew: 0.8 rad/s, faster than the 0.3 rad/s pose
+        # slew, with a 0.5 s minimum.
+        self.shutdown_slew_rate = float(self.cfg.get("arm_shutdown_slew_rate", 0.8))
+        self.shutdown_slew_min = float(self.cfg.get("arm_shutdown_slew_min_s", 0.5))
+
+        self._simulate_fatal = False   # test hook
+
+    # ------------------------------------------------------------ bring-up
+
+    def acquire_lock(self):
+        self.lock_fd = open(self.cfg["lockfile"], "w")
+        try:
+            fcntl.flock(self.lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise RuntimeError(f"lock held: {self.cfg['lockfile']} — "
+                               "another writer is running")
+        self.lock_fd.write(str(os.getpid()))
+        self.lock_fd.flush()
+
+    def release_mode(self):
+        """MotionSwitcher RELEASED (debug mode, name empty)."""
+        msc = MotionSwitcherClient()
+        msc.SetTimeout(5.0)
+        msc.Init()
+        status, result = msc.CheckMode()
+        while result["name"]:
+            print(f"[bring-up] mode '{result['name']}' active — ReleaseMode")
+            msc.ReleaseMode()
+            time.sleep(1.0)
+            status, result = msc.CheckMode()
+        print(f"[bring-up] MotionSwitcher released (name empty, status {status})")
+
+    def init_lowcmd(self):
+        self.lowcmd = unitree_hg_msg_dds__LowCmd_()
+        self.lowcmd.mode_machine = self.mode_machine_cfg
+        self.lowcmd.mode_pr = 0  # series control
+        self.lowcmd_publisher = ChannelPublisher("rt/lowcmd", LowCmd_)
+        self.lowcmd_publisher.Init()
+        for i in range(35):
+            self.lowcmd.motor_cmd[i].mode = MODE_ENABLE
+            self.lowcmd.motor_cmd[i].q = self.captured_q[i]
+            self.lowcmd.motor_cmd[i].dq = 0.0
+            self.lowcmd.motor_cmd[i].tau = 0.0
+        self.crc = CRC()
+
+    def fill_gains(self):
+        """Write the verified gain tables into motor_cmd 0..34 (once at boot)."""
+        leg_kp = np.array(self.cfg["leg_kp"], dtype=np.float32)
+        leg_kd = np.array(self.cfg["leg_kd"], dtype=np.float32)
+        if float(self.cfg.get("waist_pitch_kd_bias", 0.0)):
+            leg_kd = leg_kd.copy()
+            leg_kd[14] += float(self.cfg["waist_pitch_kd_bias"])  # waist_pitch
+        for i in range(15):
+            self.lowcmd.motor_cmd[i].kp = leg_kp[i]
+            self.lowcmd.motor_cmd[i].kd = leg_kd[i]
+        arm_kp = np.array(self.cfg["arm_kp"], dtype=np.float32)
+        arm_kd = np.array(self.cfg["arm_kd"], dtype=np.float32)
+        for j, i in enumerate(range(15, 29)):
+            self.lowcmd.motor_cmd[i].kp = arm_kp[j]
+            self.lowcmd.motor_cmd[i].kd = arm_kd[j]
+        self.lowcmd.motor_cmd[29].kp = float(self.cfg["gate_kp"])
+        self.lowcmd.motor_cmd[29].kd = float(self.cfg["gate_kd"])
+        for i in range(30, 35):
+            self.lowcmd.motor_cmd[i].kp = float(self.cfg["trailing_kp"])
+            self.lowcmd.motor_cmd[i].kd = float(self.cfg["trailing_kd"])
+        # SONIC boot gains, snapshotted after the waist bias override:
+        # blending b=0 restores them bit-exactly. Filled here because
+        # the motor commands already exist.
+        self.sonic_kp_boot = np.array(
+            [self.lowcmd.motor_cmd[i].kp for i in range(15)], dtype=np.float64)
+        self.sonic_kd_boot = np.array(
+            [self.lowcmd.motor_cmd[i].kd for i in range(15)], dtype=np.float64)
+
+    def gate_prompt(self):
+        print("\n=== GATE: gantry on? spotter ready? physical E-stop armed? ===")
+        if self.policy_enabled:
+            print("=== POLICY IS ACTIVE in this run (stage >= 1) ===")
+        if sys.stdin.isatty():
+            input("Press Enter to arm the writer and start the coupling ramp... ")
+        else:
+            # no tty: the launcher already gated, so arm immediately.
+            print("[gate] stdin not a tty (launcher-gated) — arming immediately")
+
+    # ------------------------------------------------------------ console
+
