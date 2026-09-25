@@ -287,3 +287,6 @@ class Motion:
         self.jpos = jpos_isaac        # (T,29) joints
         self.jvel = jvel_isaac        # (T,29) jvel
 
+    @property
+    def n(self):
+        return self.pos.shape[0]
