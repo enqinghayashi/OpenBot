@@ -997,3 +997,99 @@ class MergedWriter:
         self.step_log_t = 0.0
         self._step_last_key = None         # last pose
 
+    def _step_num(self, key, default, lo):
+        """Config float with a safe fallback: missing, non-finite or below
+        `lo` returns `default`.  A slew rate of 0 (or a negative one) would
+        freeze the trajectory forever, so `lo` is 1e-6 for the rates."""
+        try:
+            v = float(self.cfg.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        if not np.isfinite(v) or v < lo:
+            return default
+        return v
+
+    def _step_write(self):
+        """Install the current pose into both encodings — but ONLY when the
+        pose key changed.  This is the additive guarantee's second half: an
+        IDLE lane never reaches this call, and an arrived slew calls it once.
+        `_write_step` REBINDS both arrays from the boot snapshot, so a write is
+        atomic and can never compound (the A5/A6/A15 properties)."""
+        key = (round(self.step_c1, 12), round(self.step_c7, 12),
+               round(self.step_k, 12), self.step_leg)
+        if key == self._step_last_key:
+            return
+        self._step_last_key = key
+        self._write_step(self.step_c1, self.step_c7, self.step_k,
+                         self.step_leg if self.step_k > 0.0 else None)
+
+    def _write_step(self, d1_deg, d7_deg, k_deg=0.0, leg=None):
+        """Install the step offset into BOTH policy-side encodings.
+
+        THE MECHANISM, as MEASURED (the stance lane's probe, mj_stance_probe.py
+        mode shift-both): both encodings are re-derived from the BOOT snapshot
+        and shifted by the same delta d.  policy_runner:50 reads
+        `target_q = action*action_scale + defaults`; obs_builder:45-46 builds
+        `default_padded` (15 defaults + 14 zeros) and `f[13:42] = q -
+        default_padded`.  The policy INPUT therefore moves by -d while the
+        readout gains +d; the terms OPPOSE and the compliant policy absorbs
+        part of it (86% at 4 deg), so a COMMANDED shift is not an ACHIEVED one
+        and every log line prints both columns.
+
+        Sign law (§2.2, asymmetric — do not "fix" it):
+          d_pol[1] = +d1   L hip roll; +(idx 1) abducts the L leg
+          d_pol[7] = +d7   R hip roll; for the R leg it is -(idx 7) that
+                           abducts, so a SAME-SIGN pair +x translates the
+                           pelvis toward the robot's RIGHT and unloads the L
+                           foot.  `step shift +x` therefore always steps the L
+                           foot first.
+          d_pol[5] = ratio*d1, d_pol[11] = ratio*d7 — the flat-sole co-motion
+          (one source of truth: `stance_ankle_ratio`).  Getting one of these
+          backwards drives the sole tilt at ~1.0 deg per degree.
+
+        The lift triple (leg "l" -> 0/3/4, "r" -> 6/9/10) is the unique plane
+        law that raises the foot while holding its fore-aft position and its
+        sole attitude: d_hip_pitch = -0.472K, d_knee = +K, d_ankle_pitch =
+        -0.528K, dz = 0.2333 cm per degree of K.  DERIVED (sim + repo FK).
+        Waist (12-14) is never written; the arms (15-28) are NOT in this
+        channel — d_obs[15:] stays zero (mutation M9 pins that slot)."""
+        d2r = math.pi / 180.0
+        d_pol = np.zeros_like(self._stance_base_policy)
+        d_pol[1] = d1_deg * d2r
+        d_pol[7] = d7_deg * d2r
+        d_pol[5] = self.stance_ankle_ratio * d_pol[1]
+        d_pol[11] = self.stance_ankle_ratio * d_pol[7]
+        k = k_deg * d2r
+        if leg == "l":
+            d_pol[0] = STEP_LIFT_HIP_PITCH * k
+            d_pol[3] = k
+            d_pol[4] = STEP_LIFT_ANKLE_PITCH * k
+        elif leg == "r":
+            d_pol[6] = STEP_LIFT_HIP_PITCH * k
+            d_pol[9] = k
+            d_pol[10] = STEP_LIFT_ANKLE_PITCH * k
+        d_obs = np.zeros_like(self._stance_base_obs)
+        d_obs[0:15] = d_pol       # 15 legs+waist
+        self.policy.defaults = self._stance_base_policy + d_pol
+        self.obs.default_padded = self._stance_base_obs + d_obs
+        self.step_c1 = d1_deg
+        self.step_c7 = d7_deg
+        self.step_k = k_deg
+
+    def _step_cap_l(self):
+        """Max L hip-roll delta, deg — DERIVED: the L ankle's -15 deg stop with
+        the boot's +1.0 deg of headroom, (15 + 1 - margin)/|ratio| = +16.47 at
+        the shipped margin.  NOT interchangeable with the R cap (P4)."""
+        r = max(abs(self.stance_ankle_ratio), 1e-9)
+        return (STEP_ANKLE_STOP_DEG + STEP_ANKLE_BASE_DEG
+                - self.step_ankle_margin_deg) / r
+
+    def _step_cap_r(self):
+        """Min R hip-roll delta, deg — DERIVED: the R ankle's +15 deg stop,
+        which has only 14 deg of headroom because the boot base is +1.0 on
+        BOTH legs, -(15 - 1 - margin)/|ratio| = -14.12 at the shipped margin.
+        The L/R asymmetry is REAL and derived; symmetrising it is the bug."""
+        r = max(abs(self.stance_ankle_ratio), 1e-9)
+        return -(STEP_ANKLE_STOP_DEG - STEP_ANKLE_BASE_DEG
+                 - self.step_ankle_margin_deg) / r
+
