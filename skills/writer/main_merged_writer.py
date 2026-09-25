@@ -821,3 +821,179 @@ class MergedWriter:
         self._stance_base_obs = None
         self._stance_log_t = 0.0
 
+    def _capture_stance_base(self):
+        """Snapshot the boot `default_angles` encodings VERBATIM.  Every stance
+        write is re-derived from these and never compounded, which is what makes
+        the verb idempotent and makes `stance off` a BIT-EXACT restore."""
+        if self.policy is None or self.obs is None:
+            return
+        self._stance_base_policy = self.policy.defaults.copy()
+        self._stance_base_obs = self.obs.default_padded.copy()
+
+    def _apply_stance(self, parts):
+        """stance parse+apply, shared by socket and console (the same lockstep
+        split that keeps height/cmd_set identical at both dispatch sites).
+        Returns an error message or None on success:
+          stance <deg>    symmetric outward hip-roll splay, clamped to band
+          stance off      restore the boot stance (identical to `stance 0`)
+
+        The band is [-stance_deg_max, +stance_deg_max] and ships SHUT at 0.0,
+        so an unarmed writer refuses to splay.  Reversible at any time."""
+        if len(parts) == 2 and parts[1] == "off":
+            deg = 0.0
+        elif len(parts) == 2:
+            try:
+                deg = float(parts[1])
+            except ValueError:
+                return "stance needs a float"
+            if not np.isfinite(deg):
+                return "stance value must be finite"
+        else:
+            return "stance off | stance <deg>"
+        if self._stance_base_policy is None:
+            return "stance unavailable: no policy (stage 0)"
+        deg = min(max(deg, -self.stance_deg_max), self.stance_deg_max)
+        self._write_stance(deg)
+        return None
+
+    def _write_stance(self, deg):
+        """Install the stance offset into BOTH policy-side encodings.
+
+        THE MECHANISM, as MEASURED.  policy_runner:50 is
+        `target_q = action * action_scale + defaults`, and obs_builder:105 is
+        `f[13:42] = q - default_padded`; both read the SAME config key, but
+        through two INDEPENDENT np.array copies (policy_runner:19,
+        obs_builder:43-46).  Shift BOTH by the same delta d.
+
+        ~ An earlier version of this comment called the shift an exact
+        reparametrisation with a BIT-IDENTICAL observation, via
+        `(q + d) - (default + d)`.  THAT IS FALSE.  q is the MEASURED joint
+        angle and carries no `+d`, so the policy's INPUT moves by
+        `-d * dof_pos_scale` (= -d; dof_pos_scale is 1.0) while the readout
+        gains `+d`.  The dual shift is still the right build, because the two
+        terms OPPOSE and the policy is compliant -- it absorbs only part of
+        the input perturbation, so the loop settles short of d rather than
+        cancelling it.
+
+        Measured in the pinned scene with the real Balance ONNX and the real
+        PD (tools/mj_stance_probe.py, mode shift-both, deg=4): hip roll
+        L +1.26 -> +3.44 deg, R -1.21 -> -3.35 deg, ankle separation
+        +2.82 cm, and it HELD -- +0.13 cm of drift over the 3 s after the
+        mechanism was removed.  Shift ONE side alone instead and the same
+        probe's M5 row applies: a constant-torque chase with no fixed point.
+
+        So the splayed stance is a state the policy HOLDS, not a standing
+        error the PD pulls against.  (A hand-set splay survived a descend, a
+        pick and a retreat at kp=150, which a restoring hip-roll loop could
+        not have allowed.)
+
+        Two properties the pins assert, both load-bearing:
+          * IDEMPOTENT — always computed from the boot snapshot, so repeating a
+            value changes nothing and `stance off` restores the boot encoding.
+          * ATOMIC — whole arrays are REBOUND, never mutated in place, so the
+            250 Hz tick can only ever read one consistent encoding and never a
+            torn half-applied delta.
+        """
+        d2r = math.pi / 180.0
+        hip = deg * d2r
+        ank = self.stance_ankle_ratio * hip
+        # 1=L hip, 5=L ankle, 7=R hip, 11=R ankle. Each ankle keeps
+        # its hip's sign so the sole tilt holds flat; reversed signs
+        # tilt the sole 1 deg per degree.
+        d_pol = np.zeros_like(self._stance_base_policy)
+        d_pol[1] = +hip
+        d_pol[7] = -hip
+        d_pol[5] = +ank
+        d_pol[11] = -ank
+        d_obs = np.zeros_like(self._stance_base_obs)
+        d_obs[0:15] = d_pol       # 15 legs+waist
+        self.policy.defaults = self._stance_base_policy + d_pol
+        self.obs.default_padded = self._stance_base_obs + d_obs
+        self.stance_deg = deg
+        if deg == 0.0:
+            self._stance_log("off -> boot stance", force=True)
+        else:
+            self._stance_log(f"{deg:+.1f} deg splay "
+                             f"(ankle follows {self.stance_ankle_ratio:+.3f})",
+                             force=True)
+
+    def _stance_log(self, msg, force=False):
+        """Rate-limited (1 Hz) stance log — no assert, no exception, matching
+        the discipline every other lane in this file follows."""
+        now = time.monotonic()
+        if force or now - self._stance_log_t >= 1.0:
+            self._stance_log_t = now
+            print(f"[stance] {msg}")
+
+    def _stance_status(self):
+        """Inline status fragment, same shape as _cmd_auto_status."""
+        return f"stance={self.stance_deg:+.1f}(max {self.stance_deg_max:.1f})"
+
+    # ------------------------------------------------------- runtime step lane
+    # same-sign hip-roll shift, lift and place the unloaded foot, then
+    # closed-chain re-centre. Every constant is derived from the URDF
+    # forward kinematics, not measured.
+    # additive: own verb only, re-derived from boot, never compounded.
+    # shares stance_ankle_ratio.
+
+    def _init_step_state(self):
+        """Step-lane state.  SAFE BY DEFAULT TWICE OVER: BOTH bands ship SHUT
+        (`step_shift_deg_max` and `step_cm_max` default 0.0), and `step go`
+        REFUSES while either is shut — a clamp alone would still lift a leg
+        with no unload and no widening, because the clearance is not a band.
+        Arming is a deliberate config edit on the box.
+
+        Every key is read with `.get(..., <safe default>)` for the same reason
+        _init_stance_state does — an older config must not raise KeyError at
+        construction."""
+        self.step_shift_deg_max = float(self.cfg.get("step_shift_deg_max", 0.0))
+        if not np.isfinite(self.step_shift_deg_max) \
+                or self.step_shift_deg_max < 0.0:
+            self.step_shift_deg_max = 0.0     # NaN/neg = shut
+        self.step_cm_max = float(self.cfg.get("step_cm_max", 0.0))
+        if not np.isfinite(self.step_cm_max) or self.step_cm_max < 0.0:
+            self.step_cm_max = 0.0            # NaN/neg = shut
+        self.step_slew_deg_s = self._step_num("step_slew_deg_s", 8.0, 1e-6)
+        self.step_lift_slew_deg_s = self._step_num("step_lift_slew_deg_s",
+                                                   6.0, 1e-6)
+        self.step_clearance_cm = self._step_num("step_clearance_cm", 3.0, 0.0)
+        self.step_knee_max_deg = self._step_num("step_knee_max_deg", 20.0, 1e-6)
+        self.step_min_shift_deg = self._step_num("step_min_shift_deg", 0.0, 0.0)
+        self.step_unload_tau_x = self._step_num("step_unload_tau_x", 2.0, 0.0)
+        self.step_hold_s = self._step_num("step_hold_s", 2.0, 0.0)
+        self.step_tilt_deg = self._step_num("step_tilt_deg", 8.0, 1e-6)
+        self.step_ankle_margin_deg = float(
+            self.cfg.get("step_ankle_margin_deg", 2.0))
+        if not np.isfinite(self.step_ankle_margin_deg):
+            self.step_ankle_margin_deg = 2.0
+        # R ankle has 14 deg of headroom; a larger margin flips the sign.
+        self.step_ankle_margin_deg = min(
+            max(self.step_ankle_margin_deg, 0.0),
+            STEP_ANKLE_STOP_DEG - STEP_ANKLE_BASE_DEG)
+        self.step_shift_deg = 0.0          # installed shift
+        self.step_shift_target = 0.0       # commanded shift
+        self.step_c1 = 0.0                 # L hip delta, deg
+        self.step_c7 = 0.0                 # R hip delta, deg
+        self.step_c1_t = 0.0
+        self.step_c7_t = 0.0
+        self.step_splay_l = 0.0            # outward splay, deg
+        self.step_splay_r = 0.0
+        self.step_splay_l_t = 0.0
+        self.step_splay_r_t = 0.0
+        self.step_k = 0.0                  # lift gain K
+        self.step_k_t = 0.0
+        self.step_phase = "IDLE"           # IDLE|SHIFT|HOLD|LIFT|PLACE|
+                                           # RECENTRE|DONE|ABORT
+        self.step_leg = ""                 # swing leg l|r
+        self.step_cm_req = 0.0             # requested cm
+        self.step_cm_ach = 0.0             # achieved cm
+        self.step_w_m = 0.0                # widening, m
+        self.step_tau0 = None              # unload baseline
+        self.step_dtau = None
+        self.step_hold_t = None            # gate first held
+        self.step_go_pending = False
+        self.step_abort_reason = ""
+        self.step_tilt = None
+        self.step_log_t = 0.0
+        self._step_last_key = None         # last pose
+
