@@ -277,3 +277,7 @@ def tilt_deg(quat):
 # ---------------------------------------------------------------------------
 # 50 Hz motion
 # ---------------------------------------------------------------------------
+class Motion:
+    """Planner motion resampled to 50 Hz. Joints are stored in ISAACLAB order
+    (that is what the encoder consumes); root pos/quat stay world/MuJoCo."""
+
