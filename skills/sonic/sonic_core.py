@@ -292,3 +292,11 @@ class Motion:
         return self.pos.shape[0]
 
 
+def make_standing_motion(n=60):
+    """Constant standing reference: SONIC default_angles, identity root, z=0.75."""
+    pos = np.zeros((n, 3), dtype=np.float64)
+    pos[:, 2] = DEFAULT_HEIGHT
+    quat = np.tile(np.array([1.0, 0.0, 0.0, 0.0]), (n, 1))
+    jm = np.tile(DEFAULT_ANGLES_MUJOCO, (n, 1))
+    jisaac = jm[:, MUJOCO_TO_ISAC]
+    return Motion(pos, quat, np.ascontiguousarray(jisaac), np.zeros((n, 29)))
