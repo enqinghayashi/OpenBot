@@ -272,3 +272,8 @@ def quat_slerp(q0, q1, t):
 def tilt_deg(quat):
     """Angle of the body z-axis from world vertical, degrees."""
     return math.degrees(math.acos(max(-1.0, min(1.0, float(quat_to_mat(quat)[2, 2])))))
+
+
+# ---------------------------------------------------------------------------
+# 50 Hz motion
+# ---------------------------------------------------------------------------
