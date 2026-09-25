@@ -130,3 +130,44 @@ class ArmGuard:
         self._T = max(self.slew_min, maxd / self.slew_rate)
         self._t0 = t
 
+    def slew_to_vector(self, target14, t, duration=None):
+        """Start a cosine slew toward an arbitrary 14-D target (state RAW).
+
+        The v2b socket `arm` verb: the pick engine sends IK waypoints as
+        14 floats (left arm 15-21, right arm 22-28). Duration follows the
+        daemon's move_arm_smooth convention (max(slew_min, maxd/slew_rate))
+        unless explicitly given (engine passes it for profile alignment);
+        tick() handles RAW like any pose.
+        """
+        self.state = "RAW"
+        self.target = np.asarray(target14, dtype=np.float32)
+        self._start = self.current.copy()
+        maxd = float(np.max(np.abs(self.target - self._start)))
+        self._T = max(self.slew_min, duration if duration is not None
+                      else maxd / self.slew_rate)
+        self._t0 = t
+
+    def freeze(self, t):
+        """Contact-stop primitive: halt the slew at its current interpolated
+        position and hold it (state HOLD_RAW)."""
+        if self._T > 0.0:
+            r = min((t - self._t0) / self._T, 1.0)
+            s = 0.5 * (1.0 - math.cos(math.pi * r))
+            self.current = self._start + (self.target - self._start) * s
+            self.target = self.current.copy()
+            self._T = 0.0
+            self.state = "HOLD_RAW"
+
+    def tick(self, t):
+        """Advance the slew; returns current 14-D arm target q."""
+        if self._T > 0.0:
+            if t < self._t0 + self._T:
+                r = (t - self._t0) / self._T
+                s = 0.5 * (1.0 - math.cos(math.pi * min(r, 1.0)))
+                self.current = self._start + (self.target - self._start) * s
+            else:
+                self.current = self.target.copy()
+                self._T = 0.0
+        else:
+            self.current = self.target.copy()
+        return self.current
