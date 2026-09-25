@@ -1148,3 +1148,166 @@ class MergedWriter:
         h = w_m / (2.0 * STEP_SEP_LEVER_M)
         return math.degrees(math.asin(min(max(h, -1.0), 1.0)))
 
+    def _step_target_c1(self, w_m, c_deg):
+        """The d1 of the pose on the closed-chain curve whose COMMON MODE
+        (d1 + d7)/2 equals c_deg — the lane's canonical target for a shift.
+        With W == 0 the curve is d1 == d7, so the answer is exact; with W > 0
+        it is found by bisection (d7 rises with d1, so the relation is
+        monotone).  DERIVED."""
+        if abs(w_m) < 1e-12:
+            return c_deg
+        lo, hi = c_deg - 60.0, c_deg + 60.0
+        for _ in range(60):
+            mid = 0.5 * (lo + hi)
+            if 0.5 * (mid + self._step_curve_c7(mid, w_m)) < c_deg:
+                lo = mid
+            else:
+                hi = mid
+        return 0.5 * (lo + hi)
+
+    def _step_approach(self, cur, tgt, rate, dt):
+        """One slew step toward tgt; lands EXACTLY on tgt, which is what the
+        settled tests compare against.  Never raises, never asserts."""
+        d = tgt - cur
+        step = rate * dt
+        if abs(d) <= step:
+            return tgt
+        return cur + (step if d > 0.0 else -step)
+
+    def _step_r_budget(self):
+        """The §2.3 P6 derived number: how much OUTWARD splay the R leg can
+        still take after paying for the NEGATIVE shift that unloads it —
+        (15 - 1 - margin)/|ratio| - |shift|.  For a shift >= 0 the R leg is not
+        the swing leg and the number is 0.0 (the value the spec's own example
+        prints).  A budget <= 0 means: at the R ankle's stop there is no room
+        left to widen, so `step go r` is refused.  DERIVED, never measured."""
+        if self.step_c7_t >= 0.0:
+            return 0.0
+        return (-self._step_cap_r()) - abs(self.step_c7_t)
+
+    def _step_splay_target(self, leg, cm_m):
+        """Map a commanded widening <cm> to a hip-roll splay, then clamp it by
+        the PLANT caps (P4) — which are asymmetric for L and R and must NOT be
+        symmetrised.  Returns (clamped splay, raw splay, cap), degrees.
+
+        Lever law: the widening is 0.4955*(sin d1 - sin d7) m, so the swing
+        leg's target hip roll is asin(sin(held) +/- cm/0.4955) and the splay is
+        its difference from the held value.  (`held` is the TARGET of the
+        leg that stays planted, so a `go` issued before the shift has settled
+        is still planned against the settled shift.)  The spec's log template
+        also quotes this law as 86.5 cm; the two disagree by 1.746x and this
+        build uses the self-consistent 0.4955 m lever — see _step_detail."""
+        if leg == "l":
+            held = self.step_c7_t
+            want = math.degrees(math.asin(min(max(
+                math.sin(math.radians(held)) + cm_m / STEP_SEP_LEVER_M,
+                -1.0), 1.0)))
+            raw = want - held
+            cap = self._step_cap_l() - self.step_c1_t
+        else:
+            held = self.step_c1_t
+            want = math.degrees(math.asin(min(max(
+                math.sin(math.radians(held)) - cm_m / STEP_SEP_LEVER_M,
+                -1.0), 1.0)))
+            raw = held - want
+            cap = self.step_c7_t - self._step_cap_r()
+        return max(0.0, min(raw, cap)), raw, cap
+
+    def _apply_step(self, parts):
+        """step parse+apply, shared by socket and console (the same lockstep
+        split that keeps stance/height/cmd_set identical at both sites).
+        Returns an error message or None on success:
+          step shift <deg>    same-sign hip-roll weight shift; clamped to the
+                              operator band, SHIPPED SHUT (band 0.0)
+          step go <l|r> <cm>  lift + place that foot; DONE = STARTED
+                              (completion is polled via `step status`)
+          step off            abort anything in flight, restore the BOOT
+                              encoding bit-exactly (the `stance off` property)
+          step status         no-op here; the caller prints the fragment
+
+        Every refusal is FAIL-CLOSED and names its reason (§6.2): a refusal
+        never writes an array, so the measured column does not move."""
+        if len(parts) >= 2 and parts[1] == "status":
+            return None
+        if self._stance_base_policy is None:
+            return "step unavailable: no policy (stage 0)"
+        if len(parts) == 2 and parts[1] == "off":
+            self._step_reset(force=True)
+            return None
+        if len(parts) == 3 and parts[1] == "shift":
+            try:
+                deg = float(parts[2])
+            except ValueError:
+                return "step needs a float"
+            if not np.isfinite(deg):
+                return "step value must be finite"
+            if self.stance_deg != 0.0:
+                return "step shift needs stance idle"
+            if self.step_go_pending or self.step_phase not in (
+                    "IDLE", "DONE", "SHIFT", "ABORT"):
+                return "step busy: %s" % self.step_phase
+            deg = min(max(deg, -self.step_shift_deg_max),
+                      self.step_shift_deg_max)
+            lo, hi = self._step_shift_limits()
+            deg = min(max(deg, lo), hi)   # ankle stop clamp
+            if deg != self.step_shift_target:
+                self.step_tau0 = None     # fresh baseline
+            self.step_shift_target = deg
+            self.step_c1_t = self._step_target_c1(self.step_w_m, deg)
+            self.step_c7_t = self._step_curve_c7(self.step_c1_t, self.step_w_m)
+            self.step_leg = ""
+            self.step_hold_t = None
+            self.step_phase = "SHIFT"
+            self._step_write()
+            return None
+        if len(parts) == 4 and parts[1] == "go":
+            leg = parts[2].lower()
+            try:
+                cm = float(parts[3])
+            except ValueError:
+                return "step needs a float"
+            if not np.isfinite(cm):
+                return "step value must be finite"
+            if leg not in ("l", "r"):
+                return "step go needs l|r"
+            if self.step_go_pending or self.step_phase not in ("IDLE", "DONE"):
+                return "step busy: %s" % self.step_phase
+            if self.payload:
+                return "step go refuses with payload set"
+            if self.step_shift_deg_max <= 0.0 or self.step_cm_max <= 0.0:
+                return ("step go refuses: band shut (step_shift_deg_max=%.1f "
+                        "step_cm_max=%.1f) — arm both in the live config"
+                        % (self.step_shift_deg_max, self.step_cm_max))
+            sgn = 1.0 if leg == "l" else -1.0
+            if sgn * self.step_shift_target < self.step_min_shift_deg:
+                return ("step go needs an installed shift >= %.1f deg "
+                        "(have %+.1f for leg %s)"
+                        % (self.step_min_shift_deg, self.step_shift_target,
+                           leg))
+            self.step_leg = leg
+            self.step_cm_req = min(max(cm, 0.0), self.step_cm_max)
+            tgt, raw, cap = self._step_splay_target(leg,
+                                                    self.step_cm_req * 0.01)
+            self._step_go_log()
+            if cap <= 0.0:
+                self.step_leg = ""
+                return ("step go %s refuses: no outward ankle budget left "
+                        "(commanded %.1f deg splay, cap %.2f deg); hold at "
+                        "the current separation" % (leg, raw, cap))
+            if leg == "l":
+                self.step_splay_l_t = tgt
+                self.step_splay_r_t = 0.0
+            else:
+                self.step_splay_r_t = tgt
+                self.step_splay_l_t = 0.0
+            self.step_k_t = min(self.step_clearance_cm
+                                / STEP_LIFT_DZ_CM_PER_DEG,
+                                self.step_knee_max_deg)
+            self.step_tau0 = None       # fresh baseline
+            self.step_hold_t = None
+            self.step_go_pending = True
+            self.step_phase = "SHIFT"
+            self._step_write()
+            return None
+        return "step off | step shift <deg> | step go l|r <cm> | step status"
+
