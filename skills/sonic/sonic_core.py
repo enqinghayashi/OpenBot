@@ -152,3 +152,5 @@ def _gain(tag):
     return 2.0 * _MOTOR_K[tag[2:]][0] if tag.startswith("2*") else _MOTOR_K[tag][0]
 
 
+def _damp(tag):
+    return 2.0 * _MOTOR_D[tag[2:]] if tag.startswith("2*") else _MOTOR_D[tag]
