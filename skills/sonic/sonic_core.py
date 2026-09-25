@@ -267,3 +267,5 @@ def quat_slerp(q0, q1, t):
     th = math.acos(max(-1.0, min(1.0, d)))
     s = math.sin(th)
     return quat_normalize((math.sin((1.0 - t) * th) / s) * q0 + (math.sin(t * th) / s) * q1)
+
+
