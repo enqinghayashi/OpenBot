@@ -229,3 +229,5 @@ def quat_mul(a, b):
         w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
         w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
     ])
+
+
