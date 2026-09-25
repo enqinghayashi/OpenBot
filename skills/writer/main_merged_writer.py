@@ -1093,3 +1093,58 @@ class MergedWriter:
         return -(STEP_ANKLE_STOP_DEG - STEP_ANKLE_BASE_DEG
                  - self.step_ankle_margin_deg) / r
 
+    def _step_shift_cap(self):
+        """Max POSITIVE same-sign shift, deg: a positive shift drives BOTH
+        ankles toward their -15 deg stops and both have 16 deg of headroom from
+        the +1.0 deg boot base — the same number as _step_cap_l."""
+        return self._step_cap_l()
+
+    def _step_shift_limits(self):
+        """(lo, hi) for the shift, from the ankle stops.  With margin 0 these
+        are the spec's hard limits -16.47 / +18.82 deg — asymmetric, because
+        the boot base is +1.0 on both legs and the two directions spend it
+        differently."""
+        return self._step_cap_r(), self._step_shift_cap()
+
+    def _step_meas(self, st):
+        """Measured joint columns, degrees, or None when the state lacks them
+        (fail-closed: no measurement, no motion).  `st["q"]` is RADIANS."""
+        if st is None:
+            return None
+        try:
+            q = st["q"]
+            r2d = 180.0 / math.pi
+            return {"hip1": float(q[1]) * r2d, "hip7": float(q[7]) * r2d,
+                    "ank5": float(q[5]) * r2d, "ank11": float(q[11]) * r2d,
+                    "knee3": float(q[3]) * r2d, "knee9": float(q[9]) * r2d}
+        except (KeyError, IndexError, TypeError, ValueError):
+            return None
+
+    def _step_taus(self, st):
+        """(tau[3], tau[9]) — the knee torques the unload gate reads
+        (state_reader.py:108 `"tau": tau,`) — or (None, None)."""
+        if st is None:
+            return None, None
+        try:
+            tau = st["tau"]
+            return float(tau[3]), float(tau[9])
+        except (KeyError, IndexError, TypeError, ValueError):
+            return None, None
+
+    def _step_curve_c7(self, d1_deg, w_m):
+        """The closed-chain curve (§2.3 P5): with both feet planted the
+        widening W = 0.4955*(sin d1 - sin d7) is FIXED, so d7 is a function of
+        d1.  Only poses ON this curve keep both feet planted — any other pose
+        demands a foot SLIDE, which §3.1 proves is impossible (~20 N available
+        vs ~85-170 N needed).  DERIVED, and the most important safety rule in
+        the lane."""
+        s = math.sin(d1_deg * math.pi / 180.0) - w_m / STEP_SEP_LEVER_M
+        return math.degrees(math.asin(min(max(s, -1.0), 1.0)))
+
+    def _step_symmetric_d1(self, w_m):
+        """The d1 of the SYMMETRIC end pose (d1 = +h, d7 = -h), h =
+        asin(W/0.991): the CoM returns to the middle of the two feet.  This is
+        where the re-centre walks to, and it is a stable state, not a transient."""
+        h = w_m / (2.0 * STEP_SEP_LEVER_M)
+        return math.degrees(math.asin(min(max(h, -1.0), 1.0)))
+
