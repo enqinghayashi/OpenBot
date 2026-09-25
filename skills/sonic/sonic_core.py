@@ -281,3 +281,9 @@ class Motion:
     """Planner motion resampled to 50 Hz. Joints are stored in ISAACLAB order
     (that is what the encoder consumes); root pos/quat stay world/MuJoCo."""
 
+    def __init__(self, pos, quat, jpos_isaac, jvel_isaac):
+        self.pos = pos                # (T,3) positions
+        self.quat = quat              # (T,4) quat, wxyz
+        self.jpos = jpos_isaac        # (T,29) joints
+        self.jvel = jvel_isaac        # (T,29) jvel
+
