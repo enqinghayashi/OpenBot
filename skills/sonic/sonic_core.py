@@ -448,3 +448,15 @@ def anchor_orientation_6d(base_quat, ref_root_rot):
     return R[:, :2].reshape(-1)
 
 
+def build_encoder_obs(motion, cur_frame, base_quat):
+    obs = np.zeros(ENC_DIM, dtype=np.float32)
+    n = motion.n
+    for k in range(HIST_LEN):
+        fi = min(cur_frame + ENC_STEP * k, n - 1)
+        obs[ENC_JPOS_OFF + k * NUM_MOTOR: ENC_JPOS_OFF + (k + 1) * NUM_MOTOR] = \
+            motion.jpos[fi]
+        obs[ENC_JVEL_OFF + k * NUM_MOTOR: ENC_JVEL_OFF + (k + 1) * NUM_MOTOR] = \
+            motion.jvel[fi]
+        obs[ENC_ANCHOR_OFF + k * 6: ENC_ANCHOR_OFF + (k + 1) * 6] = \
+            anchor_orientation_6d(base_quat, motion.quat[fi])
+    return obs
