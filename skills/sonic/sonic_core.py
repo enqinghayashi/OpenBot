@@ -462,3 +462,12 @@ def build_encoder_obs(motion, cur_frame, base_quat):
     return obs
 
 
+def build_decoder_obs(tokens, hist):
+    obs = np.zeros(DEC_DIM, dtype=np.float32)
+    obs[DEC_TOKEN_OFF:DEC_TOKEN_OFF + 64] = np.asarray(tokens, dtype=np.float32).reshape(-1)
+    obs[DEC_GYRO_OFF:DEC_GYRO_OFF + 30] = hist["gyro"].reshape(-1)
+    obs[DEC_JPOS_OFF:DEC_JPOS_OFF + 290] = hist["jpos"].reshape(-1)
+    obs[DEC_JVEL_OFF:DEC_JVEL_OFF + 290] = hist["jvel"].reshape(-1)
+    obs[DEC_ACT_OFF:DEC_ACT_OFF + 290] = hist["act"].reshape(-1)
+    obs[DEC_GRAV_OFF:DEC_GRAV_OFF + 30] = hist["grav"].reshape(-1)
+    return obs
