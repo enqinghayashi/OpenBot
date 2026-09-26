@@ -302,3 +302,47 @@ def make_standing_motion(n=60):
     return Motion(pos, quat, np.ascontiguousarray(jisaac), np.zeros((n, 29)))
 
 
+def resample_30_to_50(q30, n30):
+    """Resample an (n30,36) planner window to 50 Hz.
+
+    Sampling scheme (verbatim with localmotion_kplanner.hpp:456-505):
+      t = f/50; f30 = t*30; f0 = floor(f30); f1 = min(f0+1, n30-1)
+      w0 = 1-(f30-f0); w1 = 1-w0   -> lerp pos/joints, slerp quat
+      joint velocities = forward difference of the 50 Hz joints * 50
+
+    Frame COUNT is NOT the C++ formula. This module uses
+        n50 = floor((n30 - 1) / 30 * 50)
+    (the TASK SPEC's convention), whereas the reference at
+    localmotion_kplanner.hpp:450-454 computes
+        timesteps = floor(timesteps_30hz / 30.0 * 50)   # == floor(n30 / 30 * 50)
+    i.e. the C++ divides the FULL 30 Hz frame count. This module therefore emits
+    1-2 fewer 50 Hz frames than the reference (n30=44 -> 71 vs 73; n30=36 -> 58 vs
+    60). The (n30-1) form is kept deliberately for parity with the harness that
+    produced the green A/B/C run; the shortfall is inert for the staged tests (only
+    the first few frames of each window are ever consumed) but is NOT exact C++
+    parity -- do not describe it as such. See the open question on the 30->50
+    replan splice in SONIC-LANE.md before relying on it for long walks.
+    """
+    n50 = int(math.floor((n30 - 1) / PLANNER_HZ * CONTROL_HZ))
+    if n50 <= 0:
+        return None
+    pos = np.zeros((n50, 3))
+    quat = np.zeros((n50, 4))
+    jm = np.zeros((n50, 29))       # mujoco order
+    for f50 in range(n50):
+        f30 = (f50 / CONTROL_HZ) * PLANNER_HZ
+        f0 = min(int(math.floor(f30)), n30 - 1)
+        f1 = min(f0 + 1, n30 - 1)
+        w0 = 1.0 - (f30 - f0)
+        w1 = 1.0 - w0
+        pos[f50] = w0 * q30[f0, 0:3] + w1 * q30[f1, 0:3]
+        quat[f50] = quat_slerp(q30[f0, 3:7], q30[f1, 3:7], f30 - f0)
+        jm[f50] = w0 * q30[f0, 7:36] + w1 * q30[f1, 7:36]
+    # ISAACLAB: x[MUJOCO_TO_ISAC]
+    jisaac = np.ascontiguousarray(jm[:, MUJOCO_TO_ISAC])
+    jvel = np.zeros((n50, 29))
+    for f in range(n50 - 1):
+        jvel[f] = (jisaac[f + 1] - jisaac[f]) * CONTROL_HZ
+    if n50 >= 2:
+        jvel[n50 - 1] = jvel[n50 - 2]
+    return Motion(pos, quat, jisaac, jvel)
