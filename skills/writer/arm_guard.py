@@ -86,3 +86,4 @@ ARM_POSES = {
 }
 
 
+class ArmGuard:
