@@ -107,3 +107,10 @@ class ArmGuard:
 
     # --- little pose helpers ---
 
+    @staticmethod
+    def pose_target(name):
+        p = ARM_POSES[name]
+        return np.concatenate([p["left"], p["right"]]).astype(np.float32)
+
+    # --- the state machine ---
+
