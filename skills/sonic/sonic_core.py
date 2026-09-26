@@ -380,3 +380,28 @@ class SonicStack:
             sess_options=so, providers=["CPUExecutionProvider"])
         self.n_planner_inf = 0
 
+    def plan(self, ctx_qpos, mode, target_vel, movement_dir, facing_dir, height):
+        """Run the planner; return the (n30,36) MuJoCo window sliced to n."""
+        inp = {
+            "context_mujoco_qpos": np.ascontiguousarray(
+                np.asarray(ctx_qpos, dtype=np.float32).reshape(1, 4, QPOS_DIM)),
+            "target_vel": np.array([target_vel], dtype=np.float32),
+            "mode": np.array([mode], dtype=np.int64),
+            "movement_direction": np.asarray(movement_dir, dtype=np.float32).reshape(1, 3),
+            "facing_direction": np.asarray(facing_dir, dtype=np.float32).reshape(1, 3),
+            "random_seed": np.array([0], dtype=np.int64),
+            "has_specific_target": np.zeros((1, 1), dtype=np.int64),
+            "specific_target_positions": np.zeros((1, 4, 3), dtype=np.float32),
+            "specific_target_headings": np.zeros((1, 4), dtype=np.float32),
+            "allowed_pred_num_tokens": ALLOWED_PRED_NUM_TOKENS,
+            "height": np.array([height], dtype=np.float32),
+        }
+        qpos, n = self.planner.run(None, inp)
+        self.n_planner_inf += 1
+        n30 = int(np.asarray(n).reshape(-1)[0])
+        # num_pred_frames is INT32
+        # not int64 as docs claim
+        # qpos[0,n:64] is garbage
+        # slice is mandatory
+        return np.asarray(qpos[0, :n30, :], dtype=np.float64), n30
+
