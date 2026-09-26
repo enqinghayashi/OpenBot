@@ -87,3 +87,23 @@ ARM_POSES = {
 
 
 class ArmGuard:
+    def __init__(self, cfg):
+        self.kp = np.array(cfg["arm_kp"], dtype=np.float32)
+        self.kd = np.array(cfg["arm_kd"], dtype=np.float32)
+        self.slew_rate = float(cfg["arm_slew_rate"])
+        self.slew_min = float(cfg["arm_slew_min_s"])
+        self.gate_q = float(cfg["gate_q"])           # our convention -- probe it on the robot
+        self.gate_kp = float(cfg["gate_kp"])
+        self.gate_kd = float(cfg["gate_kd"])
+        self.trail_kp = float(cfg["trailing_kp"])
+        self.trail_kd = float(cfg["trailing_kd"])
+
+        self.state = "HOLD_CAPTURED"
+        self.current = np.zeros(ARM_SPAN, dtype=np.float32)  # the slewed q
+        self.target = np.zeros(ARM_SPAN, dtype=np.float32)
+        self._start = np.zeros(ARM_SPAN, dtype=np.float32)
+        self._t0 = 0.0
+        self._T = 0.0
+
+    # --- little pose helpers ---
+
