@@ -365,3 +365,18 @@ class SonicStack:
     does fit a 50 Hz tick.
     """
 
+    def __init__(self, models_dir):
+        import onnxruntime as ort
+        so = ort.SessionOptions()
+        so.log_severity_level = 3
+        self.planner = ort.InferenceSession(
+            os.path.join(models_dir, "planner_sonic.onnx"),
+            sess_options=so, providers=["CPUExecutionProvider"])
+        self.encoder = ort.InferenceSession(
+            os.path.join(models_dir, "model_encoder.onnx"),
+            sess_options=so, providers=["CPUExecutionProvider"])
+        self.decoder = ort.InferenceSession(
+            os.path.join(models_dir, "model_decoder.onnx"),
+            sess_options=so, providers=["CPUExecutionProvider"])
+        self.n_planner_inf = 0
+
