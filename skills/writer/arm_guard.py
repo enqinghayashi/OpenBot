@@ -130,3 +130,20 @@ class ArmGuard:
         self._T = max(self.slew_min, maxd / self.slew_rate)
         self._t0 = t
 
+    def slew_to_vector(self, target14, t, duration=None):
+        """Start a cosine slew toward an arbitrary 14-D target (state RAW).
+
+        The v2b socket `arm` verb: the pick engine sends IK waypoints as
+        14 floats (left arm 15-21, right arm 22-28). Duration follows the
+        daemon's move_arm_smooth convention (max(slew_min, maxd/slew_rate))
+        unless explicitly given (engine passes it for profile alignment);
+        tick() handles RAW like any pose.
+        """
+        self.state = "RAW"
+        self.target = np.asarray(target14, dtype=np.float32)
+        self._start = self.current.copy()
+        maxd = float(np.max(np.abs(self.target - self._start)))
+        self._T = max(self.slew_min, duration if duration is not None
+                      else maxd / self.slew_rate)
+        self._t0 = t
+
