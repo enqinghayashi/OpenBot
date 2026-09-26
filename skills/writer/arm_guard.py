@@ -158,3 +158,16 @@ class ArmGuard:
             self._T = 0.0
             self.state = "HOLD_RAW"
 
+    def tick(self, t):
+        """Advance the slew; returns current 14-D arm target q."""
+        if self._T > 0.0:
+            if t < self._t0 + self._T:
+                r = (t - self._t0) / self._T
+                s = 0.5 * (1.0 - math.cos(math.pi * min(r, 1.0)))
+                self.current = self._start + (self.target - self._start) * s
+            else:
+                self.current = self.target.copy()
+                self._T = 0.0
+        else:
+            self.current = self.target.copy()
+        return self.current
