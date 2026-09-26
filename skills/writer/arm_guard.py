@@ -121,3 +121,12 @@ class ArmGuard:
         self.state = "HOLD_CAPTURED"
         self._T = 0.0
 
+    def slew_to(self, name, t):
+        """Start a cosine slew toward pose `name` from the current q."""
+        self.state = name
+        self.target = self.pose_target(name)
+        self._start = self.current.copy()
+        maxd = float(np.max(np.abs(self.target - self._start)))
+        self._T = max(self.slew_min, maxd / self.slew_rate)
+        self._t0 = t
+
