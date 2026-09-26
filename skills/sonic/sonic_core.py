@@ -460,3 +460,5 @@ def build_encoder_obs(motion, cur_frame, base_quat):
         obs[ENC_ANCHOR_OFF + k * 6: ENC_ANCHOR_OFF + (k + 1) * 6] = \
             anchor_orientation_6d(base_quat, motion.quat[fi])
     return obs
+
+
