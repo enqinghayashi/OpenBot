@@ -114,3 +114,10 @@ class ArmGuard:
 
     # --- the state machine ---
 
+    def capture(self, q, t):
+        """Boot: hold the captured arm pose until the first command."""
+        self.current = q[L_OFF:L_OFF + ARM_SPAN].copy()
+        self.target = self.current.copy()
+        self.state = "HOLD_CAPTURED"
+        self._T = 0.0
+
