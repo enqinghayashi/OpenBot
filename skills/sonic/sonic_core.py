@@ -405,3 +405,6 @@ class SonicStack:
         # slice is mandatory
         return np.asarray(qpos[0, :n30, :], dtype=np.float64), n30
 
+    def encode(self, obs1762):
+        return self.encoder.run(None, {"obs_dict": obs1762})[0]
+
