@@ -412,3 +412,24 @@ class SonicStack:
         return self.decoder.run(None, {"obs_dict": obs994})[0]
 
 
+def build_planner_context(motion, gen_frame):
+    """4 frames at 30 Hz spacing from the current 50 Hz motion, starting at gen_frame.
+
+    reference: localmotion_kplanner.hpp:630-688.
+    """
+    ctx = np.zeros((4, QPOS_DIM), dtype=np.float64)
+    n = motion.n
+    gen_time = gen_frame / CONTROL_HZ
+    for k in range(4):
+        t = gen_time + k / PLANNER_HZ
+        f50 = t * CONTROL_HZ
+        f0 = min(int(math.floor(f50)), n - 1)
+        f1 = min(f0 + 1, n - 1)
+        w0 = 1.0 - (f50 - f0)
+        w1 = 1.0 - w0
+        ctx[k, 3:7] = quat_slerp(motion.quat[f0], motion.quat[f1], f50 - f0)
+        ctx[k, 0:3] = w0 * motion.pos[f0] + w1 * motion.pos[f1]
+        for i in range(NUM_MOTOR):
+            ctx[k, 7 + MUJOCO_TO_ISAC[i]] = (
+                w0 * motion.jpos[f0][i] + w1 * motion.jpos[f1][i])
+    return ctx
