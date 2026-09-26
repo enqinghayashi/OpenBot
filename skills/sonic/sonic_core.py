@@ -408,3 +408,5 @@ class SonicStack:
     def encode(self, obs1762):
         return self.encoder.run(None, {"obs_dict": obs1762})[0]
 
+    def decode(self, obs994):
+        return self.decoder.run(None, {"obs_dict": obs994})[0]
