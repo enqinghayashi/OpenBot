@@ -446,3 +446,5 @@ def anchor_orientation_6d(base_quat, ref_root_rot):
     base_to_ref = quat_mul(quat_conj(base_quat), new_ref)
     R = quat_to_mat(base_to_ref)
     return R[:, :2].reshape(-1)
+
+
