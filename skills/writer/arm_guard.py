@@ -147,3 +147,14 @@ class ArmGuard:
                       else maxd / self.slew_rate)
         self._t0 = t
 
+    def freeze(self, t):
+        """Contact-stop primitive: halt the slew at its current interpolated
+        position and hold it (state HOLD_RAW)."""
+        if self._T > 0.0:
+            r = min((t - self._t0) / self._T, 1.0)
+            s = 0.5 * (1.0 - math.cos(math.pi * r))
+            self.current = self._start + (self.target - self._start) * s
+            self.target = self.current.copy()
+            self._T = 0.0
+            self.state = "HOLD_RAW"
+
