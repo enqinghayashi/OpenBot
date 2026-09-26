@@ -351,3 +351,17 @@ def resample_30_to_50(q30, n30):
 # ---------------------------------------------------------------------------
 # only onnxruntime, lazy
 # ---------------------------------------------------------------------------
+class SonicStack:
+    """Planner + encoder + decoder ONNX sessions.
+
+    Measured on the laptop (CPUExecutionProvider, onnxruntime 1.28.0):
+      planner_sonic.onnx   774.0 MB  load 3.85 s   inference 73.0 ms
+      model_encoder.onnx    50.1 MB  load 0.21 s
+      model_decoder.onnx    40.9 MB  load 0.07 s
+      all three resident: peak ~1.1 GB RSS.
+
+    The planner inference does NOT fit in a 250 Hz writer tick (73 ms >> 4 ms);
+    it belongs on the satellite's 10 Hz planner thread. The encoder+decoder pair
+    does fit a 50 Hz tick.
+    """
+
