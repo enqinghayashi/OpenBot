@@ -435,3 +435,14 @@ def build_planner_context(motion, gen_frame):
     return ctx
 
 
+def anchor_orientation_6d(base_quat, ref_root_rot):
+    """First two columns, row-wise: [R00,R01,R10,R11,R20,R21].
+
+    new_ref_root_rot = quat_mul(apply_delta_heading, ref_root_rot); apply_delta_heading
+    is identity for a fixed heading, so new_ref = ref.  base_to_ref =
+    quat_mul(quat_conjugate(base_quat), new_ref_root_rot); R = mat(base_to_ref).
+    """
+    new_ref = np.asarray(ref_root_rot, dtype=np.float64)
+    base_to_ref = quat_mul(quat_conj(base_quat), new_ref)
+    R = quat_to_mat(base_to_ref)
+    return R[:, :2].reshape(-1)
