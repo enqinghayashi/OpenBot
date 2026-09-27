@@ -124,3 +124,5 @@ def kb_safe_sleep(sec):
     except KeyboardInterrupt:
         print("[shutdown] KeyboardInterrupt swallowed — shutdown continues "
               "(ZeroCmd frame + lockfile removal + handoff complete)", flush=True)
+
+
