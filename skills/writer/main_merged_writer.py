@@ -784,3 +784,20 @@ class MergedWriter:
             self._height_log_t = now
             print(f"[height] {msg}")
 
+    def _height_status(self):
+        """Inline status fragment, same shape as _cmd_auto_status."""
+        if self.height_suspended:
+            rem = max(self.height_suspend_deadline - time.monotonic(), 0.0)
+            return (f"height={self.height_ref:.2f} "
+                    f"SUSPENDED->{self.height_suspend_target:.2f} rem={rem:.1f}s")
+        if not self.height_active:
+            return f"height={self.height_ref:.2f}(stand {self.height_stand:.2f})"
+        rem = max(self.height_deadline - time.monotonic(), 0.0)
+        return (f"height={self.height_ref:.2f}->{self.height_target:.2f} "
+                f"active rem={rem:.1f}s")
+
+    # ---------------------------------------------------- additive stance lane
+    # hip-roll splay: no deadline, no watchdog, no thread, no height
+    # change. Sticky until `stance off` and never persisted; a stuck
+    # splay leaves the robot wide, not tipped.
+
