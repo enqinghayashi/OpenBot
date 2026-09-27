@@ -369,3 +369,81 @@ class MergedWriter:
 
     # --------------------------------------------------- socket server
 
+    def start_socket_server(self):
+        """UNIX-socket request bridge with one-line replies (v2b).
+
+        Thread-per-connection (grip_server pattern, already validated on
+        Stuart): the pick engine polls `q` at 50 Hz while an `arm` slew is
+        still in flight on another connection. One line per request, one
+        reply line per request (DONE = slew STARTED; completion is observed
+        via `armstate` — the guarded insert monitors q mid-slew, so a
+        blocking DONE would serialize the monitor out):
+          arm <14 floats> [duration_s]   DONE / ERROR
+          freeze | q | armstate | hold_rc on|off
+          cmd_set off|vx vy omega [dur]  height <m> [dur] | height off
+          stance <deg> | stance off      DONE (symmetric hip-roll splay)
+          step shift <deg> | step go l|r <cm> | step off | step status
+          payload on|off rc0 status quit
+          sonic <seq> <age_ms> <q0..q14> SONIC:f <seq> / ERROR (18-token 50 Hz frame)
+          sonic on|off|status            SONIC:on <b> / SONIC:off / SONIC:status ...
+          sonic arm | sonic reset         ERROR:<verb> is console-only
+          estop                          DONE (SONIC lane force-released)
+        Dispatched through the same actions as console_command, so socket
+        and console stay in lockstep. A thread wakes only on a request —
+        not a DDS callback, so the GIL rule is untouched.
+
+        Log suppression (spec §2.3): the `[sock] <line>` echo is dropped ONLY
+        when the reply starts with `SONIC:f ` (the 50 Hz steady-state ack) or
+        is byte-identical to the previous reply on THIS connection (idempotent
+        re-ack).  Every ERROR: and every state-change reply still prints.
+        """
+        path = self.cfg.get("sock_path")
+        if not path:
+            print("[sock] no sock_path in config — bridge disabled")
+            return
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+        def handle(conn):
+            conn_file = conn.makefile("r", encoding="utf-8")
+            prev_reply = None       # per-conn reply
+            try:
+                for raw in conn_file:
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    try:
+                        reply = self.handle_socket_line(line, conn)
+                    except Exception as e:
+                        reply = f"ERROR:{e}"
+                    # suppress the SONIC:f ack and a byte-identical repeat;
+                    # an ERROR always prints.
+                    if not (reply.startswith("SONIC:f ") or reply == prev_reply):
+                        print(f"[sock] {line}")
+                    prev_reply = reply
+                    try:
+                        conn.sendall((reply + "\n").encode())
+                    except OSError:
+                        break
+            except OSError:
+                pass
+            finally:
+                conn_file.close()
+                conn.close()
+
+        def loop():
+            srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            srv.bind(path)
+            srv.listen(4)
+            print(f"[sock] listening on {path}")
+            while not self._shutdown:
+                try:
+                    conn, _ = srv.accept()
+                except OSError:
+                    break
+                threading.Thread(target=handle, args=(conn,), daemon=True).start()
+            srv.close()
+        threading.Thread(target=loop, daemon=True).start()
+
