@@ -126,3 +126,14 @@ def kb_safe_sleep(sec):
               "(ZeroCmd frame + lockfile removal + handoff complete)", flush=True)
 
 
+def parse_args():
+    p = argparse.ArgumentParser(description="C3 merged whole-body writer")
+    p.add_argument("--stage", type=int, default=1, choices=[0, 1, 2, 3, 4],
+                   help="0=hold-only ownership probe (no policy); >=1 policy active")
+    p.add_argument("--onnx-dir", default=os.environ.get("MERGE_ONNX_DIR"),
+                   help="override ONNX dir (default: <pkg>/policy)")
+    p.add_argument("--no-rc", action="store_true", help="disable rc (cmd stays zero)")
+    p.add_argument("--interface", default=None, help="DDS interface (default: eth0)")
+    p.add_argument("--config", default=CFG_PATH, help="config yaml path")
+    p.add_argument("--verbose", action="store_true")
+    return p.parse_args()
