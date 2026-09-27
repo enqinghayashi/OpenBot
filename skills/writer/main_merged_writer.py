@@ -656,3 +656,19 @@ class MergedWriter:
         self.cmd_auto_deadline = time.monotonic() + duration
         return None
 
+    def _cmd_auto_status(self):
+        """'auto=0' or 'auto=1 cmd=(vx,vy,om) rem=..s' — inline-field fragment
+        for the three status surfaces (console, _status_line, STATE:)."""
+        if not self.cmd_auto_active:
+            return "auto=0"
+        rem = max(self.cmd_auto_deadline - time.monotonic(), 0.0)
+        c = self.cmd_auto
+        return (f"auto=1 ({c[0]:+.2f},{c[1]:+.2f},{c[2]:+.2f}) "
+                f"rem={rem:.1f}s")
+
+    # ------------------------------------------------- runtime height lane
+    # drives the obs height reference (f[3]), not a velocity.
+    # not orthogonal to cmd: rc_hold forces rc_live False, so the stick
+    # can only suspend a squat, never abort it.
+    # recovery returns to height_stand, not to zero.
+
