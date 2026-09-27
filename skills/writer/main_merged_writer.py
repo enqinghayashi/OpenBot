@@ -139,3 +139,76 @@ def parse_args():
     return p.parse_args()
 
 
+class MergedWriter:
+    # ------------------------------------------------------------ SONIC lane
+    # lane defaults; keep in sync with _init_sonic_state. An object built
+    # with object.__new__ then reads the lane as off instead of raising
+    # AttributeError on the 250 Hz path.
+    sonic_lane_enabled = False
+    sonic_mode = 'off'
+    sonic_armed = False
+    sonic_b = 0.0
+    sonic_target = None
+    sonic_last_rx = 0.0
+    sonic_rx = 0
+    sonic_rej = 0
+    sonic_seq = -1
+    sonic_warm = 0
+    sonic_last_good_t = 0.0
+    sonic_faulted = False
+    sonic_fault_cause = "none"
+    sonic_prev_blend = 0.0
+    sonic_has_frame = False
+    sonic_log_t = 0.0
+    sonic_overrun_head = 0
+    sonic_overrun_base = 0
+    sonic_kp_boot = None
+    sonic_kd_boot = None
+    # gate probe: ''=off
+    sonic_gate_probe_dir = ""
+    sonic_gate_probe_max = 512
+    sonic_gate_probe_fh = None
+    sonic_gate_probe_path = None
+    sonic_gate_probe_n = 0
+    sonic_gate_dev = None
+    # STEP defaults; keep in sync with _init_step_state so an
+    # uninitialised object cannot crash a tick.
+    step_shift_deg_max = 0.0
+    step_cm_max = 0.0
+    step_slew_deg_s = 8.0
+    step_lift_slew_deg_s = 6.0
+    step_clearance_cm = 3.0
+    step_knee_max_deg = 20.0
+    step_ankle_margin_deg = 2.0
+    step_min_shift_deg = 0.0
+    step_unload_tau_x = 2.0
+    step_hold_s = 2.0
+    step_tilt_deg = 8.0
+    step_shift_deg = 0.0
+    step_shift_target = 0.0
+    step_c1 = 0.0
+    step_c7 = 0.0
+    step_c1_t = 0.0
+    step_c7_t = 0.0
+    step_splay_l = 0.0
+    step_splay_r = 0.0
+    step_splay_l_t = 0.0
+    step_splay_r_t = 0.0
+    step_k = 0.0
+    step_k_t = 0.0
+    step_phase = "IDLE"
+    step_leg = ""
+    step_cm_req = 0.0
+    step_cm_ach = 0.0
+    step_w_m = 0.0
+    step_tau0 = None
+    step_dtau = None
+    step_hold_t = None
+    step_go_pending = False
+    step_abort_reason = ""
+    step_tilt = None
+    step_log_t = 0.0
+    _step_last_key = None
+    _stance_base_policy = None
+    _stance_base_obs = None
+
