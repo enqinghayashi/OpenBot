@@ -288,3 +288,16 @@ class MergedWriter:
         self.lock_fd.write(str(os.getpid()))
         self.lock_fd.flush()
 
+    def release_mode(self):
+        """MotionSwitcher RELEASED (debug mode, name empty)."""
+        msc = MotionSwitcherClient()
+        msc.SetTimeout(5.0)
+        msc.Init()
+        status, result = msc.CheckMode()
+        while result["name"]:
+            print(f"[bring-up] mode '{result['name']}' active — ReleaseMode")
+            msc.ReleaseMode()
+            time.sleep(1.0)
+            status, result = msc.CheckMode()
+        print(f"[bring-up] MotionSwitcher released (name empty, status {status})")
+
