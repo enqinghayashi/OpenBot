@@ -672,3 +672,53 @@ class MergedWriter:
     # can only suspend a squat, never abort it.
     # recovery returns to height_stand, not to zero.
 
+    def _init_height_state(self):
+        """Height-lane state + the POLICY-MEASURED standing-pose reference.
+
+        Every key is read with `.get(..., <safe default>)`, matching
+        obs_builder.py:38-39 — an older config that predates the lane must not
+        raise KeyError at construction (FINDING 6).  The band defaults to the
+        nominal height, i.e. a no-op band, so the lane can only ever hold
+        standing.
+        """
+        self.height_stand = float(self.cfg.get("height_cmd", 0.74))   # nominal height
+        self.height_min = float(self.cfg.get("height_cmd_min", self.height_stand))
+        self.height_max = float(self.cfg.get("height_cmd_max", self.height_stand))
+        if self.height_min > self.height_max:   # inverted ok
+            self.height_min, self.height_max = self.height_max, self.height_min
+        self.height_slew_rate = float(self.cfg.get("height_slew_rate", 0.15))
+        self.height_hold_s = float(self.cfg.get("height_hold_s", 5.0))
+        self.height_ascend_timeout = float(
+            self.cfg.get("height_ascend_timeout_s", 3.0))
+        self.height_ascend_tol = float(
+            self.cfg.get("height_ascend_tol_rad", 0.25))
+        self.height_rc_override = float(
+            self.cfg.get("height_rc_override_thresh", 0.1))
+        # hysteresis: suspend at the override threshold, resume at half.
+        self.height_rc_resume = float(
+            self.cfg.get("height_rc_resume_thresh",
+                         0.5 * self.height_rc_override))
+        self.height_stand_eps = 1e-3
+        self.height_ref = self.height_stand      # obs f[3] ref
+        self.height_target = self.height_stand   # clamped request
+        self.height_active = False               # latch + deadline
+        self.height_deadline = 0.0
+        # pause, not cancel: the target and the original deadline
+        # are stowed here.
+        self.height_suspended = False
+        self.height_suspend_target = self.height_stand
+        self.height_suspend_deadline = 0.0
+        self._height_log_t = 0.0
+        # reference standing q (0-11) from the policy's settled pose. The
+        # YAML default_angles miss that knee angle by 0.44 rad, past tol
+        # 0.25; policy_stand_q_legs overrides when present.
+        d = np.array(self.cfg["default_angles"], dtype=np.float32)
+        stand = d.copy()
+        measured = self.cfg.get("policy_stand_q_legs")
+        if measured is not None:
+            arr = np.array(measured, dtype=np.float32)
+            if arr.shape[0] >= 12:
+                stand[0:12] = arr[0:12]
+        self.height_stand_q = np.concatenate(
+            [stand, np.zeros(35 - stand.shape[0], dtype=np.float32)])
+
