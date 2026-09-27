@@ -354,3 +354,18 @@ class MergedWriter:
 
     # ------------------------------------------------------------ console
 
+    def start_console(self):
+        def loop():
+            while not self._shutdown:
+                try:
+                    line = input("merge> ")
+                except (EOFError, OSError):
+                    break
+                try:
+                    self.console_command(line.strip())
+                except Exception as e:
+                    print(f"[console] {e}")
+        threading.Thread(target=loop, daemon=True).start()
+
+    # --------------------------------------------------- socket server
+
