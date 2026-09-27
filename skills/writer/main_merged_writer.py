@@ -212,3 +212,69 @@ class MergedWriter:
     _stance_base_policy = None
     _stance_base_obs = None
 
+    def __init__(self, args):
+        self.args = args
+        with open(args.config) as f:
+            self.cfg = yaml.safe_load(f)
+
+        if args.onnx_dir:
+            self.onnx_dir = args.onnx_dir
+        else:
+            self.onnx_dir = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                self.cfg["onnx_dir"])
+        self.onnx_dir = os.path.abspath(self.onnx_dir)
+
+        self.hz = int(self.cfg["control_hz"])
+        self.dt = 1.0 / self.hz
+        self.decimation = int(self.cfg["policy_decimation"])
+        self.ramp_s = float(self.cfg["coupling_ramp_s"])
+        self.mode_machine_cfg = int(self.cfg["mode_machine"])
+
+        self.policy_enabled = args.stage >= 1
+        self.rc_enabled = not args.no_rc
+        self.verbose = args.verbose
+        self.payload = False          # console: payload on/off
+        self.rc_hold = False          # pick interlock: sticks clamped
+        self.cmd_auto = np.zeros(3, dtype=np.float32)   # latched cmd
+        self.cmd_auto_active = False  # rc ignored
+        self.cmd_auto_deadline = 0.0  # expiry watchdog
+        self._dispatch_lock = threading.Lock()  # guards arm writes
+        self._init_height_state()     # height (inert by default)
+        self._init_sonic_state()      # SONIC (opt-in)
+        self._init_stance_state()     # stance (shut)
+        self._init_step_state()       # step (shut)
+
+        self.state = "INIT"
+        self._shutdown = False
+        self._shutting_down = False
+        self._shutdown_cause = "none"
+        self.t0 = None                # loop start
+        self.loop_count = 0
+        self.policy_ticks = 0
+        self.prev_tick = None         # for drop count
+        self._overruns = 0
+        self._dropped = 0
+        self.rc_cmd_zero = np.zeros(3, dtype=np.float32)
+
+        self.lowcmd = None
+        self.lowcmd_publisher = None
+        self.lowstate = None          # last lowstate
+        self.captured_q = None        # 35-D boot pose
+
+        self.policy = None
+        self.rc = None
+        self.arm = None
+        self.obs = None
+        self.leg_target = None        # policy target
+        self.policy_target = None     # SONIC blend input
+
+        # arm shutdown slew: 0.8 rad/s, faster than the 0.3 rad/s pose
+        # slew, with a 0.5 s minimum.
+        self.shutdown_slew_rate = float(self.cfg.get("arm_shutdown_slew_rate", 0.8))
+        self.shutdown_slew_min = float(self.cfg.get("arm_shutdown_slew_min_s", 0.5))
+
+        self._simulate_fatal = False   # test hook
+
+    # ------------------------------------------------------------ bring-up
+
