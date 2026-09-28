@@ -1023,3 +1023,56 @@ class MergedWriter:
         self._write_step(self.step_c1, self.step_c7, self.step_k,
                          self.step_leg if self.step_k > 0.0 else None)
 
+    def _write_step(self, d1_deg, d7_deg, k_deg=0.0, leg=None):
+        """Install the step offset into BOTH policy-side encodings.
+
+        THE MECHANISM, as MEASURED (the stance lane's probe, mj_stance_probe.py
+        mode shift-both): both encodings are re-derived from the BOOT snapshot
+        and shifted by the same delta d.  policy_runner:50 reads
+        `target_q = action*action_scale + defaults`; obs_builder:45-46 builds
+        `default_padded` (15 defaults + 14 zeros) and `f[13:42] = q -
+        default_padded`.  The policy INPUT therefore moves by -d while the
+        readout gains +d; the terms OPPOSE and the compliant policy absorbs
+        part of it (86% at 4 deg), so a COMMANDED shift is not an ACHIEVED one
+        and every log line prints both columns.
+
+        Sign law (§2.2, asymmetric — do not "fix" it):
+          d_pol[1] = +d1   L hip roll; +(idx 1) abducts the L leg
+          d_pol[7] = +d7   R hip roll; for the R leg it is -(idx 7) that
+                           abducts, so a SAME-SIGN pair +x translates the
+                           pelvis toward the robot's RIGHT and unloads the L
+                           foot.  `step shift +x` therefore always steps the L
+                           foot first.
+          d_pol[5] = ratio*d1, d_pol[11] = ratio*d7 — the flat-sole co-motion
+          (one source of truth: `stance_ankle_ratio`).  Getting one of these
+          backwards drives the sole tilt at ~1.0 deg per degree.
+
+        The lift triple (leg "l" -> 0/3/4, "r" -> 6/9/10) is the unique plane
+        law that raises the foot while holding its fore-aft position and its
+        sole attitude: d_hip_pitch = -0.472K, d_knee = +K, d_ankle_pitch =
+        -0.528K, dz = 0.2333 cm per degree of K.  DERIVED (sim + repo FK).
+        Waist (12-14) is never written; the arms (15-28) are NOT in this
+        channel — d_obs[15:] stays zero (mutation M9 pins that slot)."""
+        d2r = math.pi / 180.0
+        d_pol = np.zeros_like(self._stance_base_policy)
+        d_pol[1] = d1_deg * d2r
+        d_pol[7] = d7_deg * d2r
+        d_pol[5] = self.stance_ankle_ratio * d_pol[1]
+        d_pol[11] = self.stance_ankle_ratio * d_pol[7]
+        k = k_deg * d2r
+        if leg == "l":
+            d_pol[0] = STEP_LIFT_HIP_PITCH * k
+            d_pol[3] = k
+            d_pol[4] = STEP_LIFT_ANKLE_PITCH * k
+        elif leg == "r":
+            d_pol[6] = STEP_LIFT_HIP_PITCH * k
+            d_pol[9] = k
+            d_pol[10] = STEP_LIFT_ANKLE_PITCH * k
+        d_obs = np.zeros_like(self._stance_base_obs)
+        d_obs[0:15] = d_pol       # 15 legs+waist
+        self.policy.defaults = self._stance_base_policy + d_pol
+        self.obs.default_padded = self._stance_base_obs + d_obs
+        self.step_c1 = d1_deg
+        self.step_c7 = d7_deg
+        self.step_k = k_deg
+
