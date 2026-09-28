@@ -1009,3 +1009,17 @@ class MergedWriter:
             return default
         return v
 
+    def _step_write(self):
+        """Install the current pose into both encodings — but ONLY when the
+        pose key changed.  This is the additive guarantee's second half: an
+        IDLE lane never reaches this call, and an arrived slew calls it once.
+        `_write_step` REBINDS both arrays from the boot snapshot, so a write is
+        atomic and can never compound (the A5/A6/A15 properties)."""
+        key = (round(self.step_c1, 12), round(self.step_c7, 12),
+               round(self.step_k, 12), self.step_leg)
+        if key == self._step_last_key:
+            return
+        self._step_last_key = key
+        self._write_step(self.step_c1, self.step_c7, self.step_k,
+                         self.step_leg if self.step_k > 0.0 else None)
+
