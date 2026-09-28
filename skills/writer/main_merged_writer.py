@@ -856,3 +856,64 @@ class MergedWriter:
         self._write_stance(deg)
         return None
 
+    def _write_stance(self, deg):
+        """Install the stance offset into BOTH policy-side encodings.
+
+        THE MECHANISM, as MEASURED.  policy_runner:50 is
+        `target_q = action * action_scale + defaults`, and obs_builder:105 is
+        `f[13:42] = q - default_padded`; both read the SAME config key, but
+        through two INDEPENDENT np.array copies (policy_runner:19,
+        obs_builder:43-46).  Shift BOTH by the same delta d.
+
+        ~ An earlier version of this comment called the shift an exact
+        reparametrisation with a BIT-IDENTICAL observation, via
+        `(q + d) - (default + d)`.  THAT IS FALSE.  q is the MEASURED joint
+        angle and carries no `+d`, so the policy's INPUT moves by
+        `-d * dof_pos_scale` (= -d; dof_pos_scale is 1.0) while the readout
+        gains `+d`.  The dual shift is still the right build, because the two
+        terms OPPOSE and the policy is compliant -- it absorbs only part of
+        the input perturbation, so the loop settles short of d rather than
+        cancelling it.
+
+        Measured in the pinned scene with the real Balance ONNX and the real
+        PD (tools/mj_stance_probe.py, mode shift-both, deg=4): hip roll
+        L +1.26 -> +3.44 deg, R -1.21 -> -3.35 deg, ankle separation
+        +2.82 cm, and it HELD -- +0.13 cm of drift over the 3 s after the
+        mechanism was removed.  Shift ONE side alone instead and the same
+        probe's M5 row applies: a constant-torque chase with no fixed point.
+
+        So the splayed stance is a state the policy HOLDS, not a standing
+        error the PD pulls against.  (A hand-set splay survived a descend, a
+        pick and a retreat at kp=150, which a restoring hip-roll loop could
+        not have allowed.)
+
+        Two properties the pins assert, both load-bearing:
+          * IDEMPOTENT — always computed from the boot snapshot, so repeating a
+            value changes nothing and `stance off` restores the boot encoding.
+          * ATOMIC — whole arrays are REBOUND, never mutated in place, so the
+            250 Hz tick can only ever read one consistent encoding and never a
+            torn half-applied delta.
+        """
+        d2r = math.pi / 180.0
+        hip = deg * d2r
+        ank = self.stance_ankle_ratio * hip
+        # 1=L hip, 5=L ankle, 7=R hip, 11=R ankle. Each ankle keeps
+        # its hip's sign so the sole tilt holds flat; reversed signs
+        # tilt the sole 1 deg per degree.
+        d_pol = np.zeros_like(self._stance_base_policy)
+        d_pol[1] = +hip
+        d_pol[7] = -hip
+        d_pol[5] = +ank
+        d_pol[11] = -ank
+        d_obs = np.zeros_like(self._stance_base_obs)
+        d_obs[0:15] = d_pol       # 15 legs+waist
+        self.policy.defaults = self._stance_base_policy + d_pol
+        self.obs.default_padded = self._stance_base_obs + d_obs
+        self.stance_deg = deg
+        if deg == 0.0:
+            self._stance_log("off -> boot stance", force=True)
+        else:
+            self._stance_log(f"{deg:+.1f} deg splay "
+                             f"(ankle follows {self.stance_ankle_ratio:+.3f})",
+                             force=True)
+
