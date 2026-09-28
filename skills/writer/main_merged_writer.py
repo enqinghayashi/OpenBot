@@ -1084,3 +1084,12 @@ class MergedWriter:
         return (STEP_ANKLE_STOP_DEG + STEP_ANKLE_BASE_DEG
                 - self.step_ankle_margin_deg) / r
 
+    def _step_cap_r(self):
+        """Min R hip-roll delta, deg — DERIVED: the R ankle's +15 deg stop,
+        which has only 14 deg of headroom because the boot base is +1.0 on
+        BOTH legs, -(15 - 1 - margin)/|ratio| = -14.12 at the shipped margin.
+        The L/R asymmetry is REAL and derived; symmetrising it is the bug."""
+        r = max(abs(self.stance_ankle_ratio), 1e-9)
+        return -(STEP_ANKLE_STOP_DEG - STEP_ANKLE_BASE_DEG
+                 - self.step_ankle_margin_deg) / r
+
