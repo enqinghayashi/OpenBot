@@ -801,3 +801,23 @@ class MergedWriter:
     # change. Sticky until `stance off` and never persisted; a stuck
     # splay leaves the robot wide, not tipped.
 
+    def _init_stance_state(self):
+        """Stance-lane state.  SAFE BY DEFAULT: the band ships SHUT, so a config
+        that predates this lane cannot splay the legs and `stance <deg>` can
+        only ever return to 0.  Arming is a deliberate config edit.
+
+        Every key is read with `.get(..., <safe default>)` for the same reason
+        _init_height_state does — an older config must not raise KeyError at
+        construction."""
+        self.stance_deg_max = float(self.cfg.get("stance_deg_max", 0.0))
+        if not np.isfinite(self.stance_deg_max) or self.stance_deg_max < 0.0:
+            self.stance_deg_max = 0.0     # NaN/neg = shut
+        self.stance_ankle_ratio = float(
+            self.cfg.get("stance_ankle_ratio", STANCE_ANKLE_RATIO))
+        if not np.isfinite(self.stance_ankle_ratio):
+            self.stance_ankle_ratio = STANCE_ANKLE_RATIO
+        self.stance_deg = 0.0             # installed splay
+        self._stance_base_policy = None   # boot copies, run()
+        self._stance_base_obs = None
+        self._stance_log_t = 0.0
+
