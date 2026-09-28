@@ -1093,3 +1093,9 @@ class MergedWriter:
         return -(STEP_ANKLE_STOP_DEG - STEP_ANKLE_BASE_DEG
                  - self.step_ankle_margin_deg) / r
 
+    def _step_shift_cap(self):
+        """Max POSITIVE same-sign shift, deg: a positive shift drives BOTH
+        ankles toward their -15 deg stops and both have 16 deg of headroom from
+        the +1.0 deg boot base — the same number as _step_cap_l."""
+        return self._step_cap_l()
+
