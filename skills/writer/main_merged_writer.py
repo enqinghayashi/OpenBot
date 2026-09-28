@@ -917,3 +917,11 @@ class MergedWriter:
                              f"(ankle follows {self.stance_ankle_ratio:+.3f})",
                              force=True)
 
+    def _stance_log(self, msg, force=False):
+        """Rate-limited (1 Hz) stance log — no assert, no exception, matching
+        the discipline every other lane in this file follows."""
+        now = time.monotonic()
+        if force or now - self._stance_log_t >= 1.0:
+            self._stance_log_t = now
+            print(f"[stance] {msg}")
+
