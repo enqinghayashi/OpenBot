@@ -1106,3 +1106,17 @@ class MergedWriter:
         differently."""
         return self._step_cap_r(), self._step_shift_cap()
 
+    def _step_meas(self, st):
+        """Measured joint columns, degrees, or None when the state lacks them
+        (fail-closed: no measurement, no motion).  `st["q"]` is RADIANS."""
+        if st is None:
+            return None
+        try:
+            q = st["q"]
+            r2d = 180.0 / math.pi
+            return {"hip1": float(q[1]) * r2d, "hip7": float(q[7]) * r2d,
+                    "ank5": float(q[5]) * r2d, "ank11": float(q[11]) * r2d,
+                    "knee3": float(q[3]) * r2d, "knee9": float(q[9]) * r2d}
+        except (KeyError, IndexError, TypeError, ValueError):
+            return None
+
