@@ -1120,3 +1120,14 @@ class MergedWriter:
         except (KeyError, IndexError, TypeError, ValueError):
             return None
 
+    def _step_taus(self, st):
+        """(tau[3], tau[9]) — the knee torques the unload gate reads
+        (state_reader.py:108 `"tau": tau,`) — or (None, None)."""
+        if st is None:
+            return None, None
+        try:
+            tau = st["tau"]
+            return float(tau[3]), float(tau[9])
+        except (KeyError, IndexError, TypeError, ValueError):
+            return None, None
+
