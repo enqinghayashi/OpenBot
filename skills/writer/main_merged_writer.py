@@ -1099,3 +1099,10 @@ class MergedWriter:
         the +1.0 deg boot base — the same number as _step_cap_l."""
         return self._step_cap_l()
 
+    def _step_shift_limits(self):
+        """(lo, hi) for the shift, from the ankle stops.  With margin 0 these
+        are the spec's hard limits -16.47 / +18.82 deg — asymmetric, because
+        the boot base is +1.0 on both legs and the two directions spend it
+        differently."""
+        return self._step_cap_r(), self._step_shift_cap()
+
