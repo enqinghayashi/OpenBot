@@ -997,3 +997,15 @@ class MergedWriter:
         self.step_log_t = 0.0
         self._step_last_key = None         # last pose
 
+    def _step_num(self, key, default, lo):
+        """Config float with a safe fallback: missing, non-finite or below
+        `lo` returns `default`.  A slew rate of 0 (or a negative one) would
+        freeze the trajectory forever, so `lo` is 1e-6 for the rates."""
+        try:
+            v = float(self.cfg.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        if not np.isfinite(v) or v < lo:
+            return default
+        return v
+
