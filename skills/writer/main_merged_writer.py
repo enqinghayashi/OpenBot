@@ -936,3 +936,64 @@ class MergedWriter:
     # additive: own verb only, re-derived from boot, never compounded.
     # shares stance_ankle_ratio.
 
+    def _init_step_state(self):
+        """Step-lane state.  SAFE BY DEFAULT TWICE OVER: BOTH bands ship SHUT
+        (`step_shift_deg_max` and `step_cm_max` default 0.0), and `step go`
+        REFUSES while either is shut — a clamp alone would still lift a leg
+        with no unload and no widening, because the clearance is not a band.
+        Arming is a deliberate config edit on the box.
+
+        Every key is read with `.get(..., <safe default>)` for the same reason
+        _init_stance_state does — an older config must not raise KeyError at
+        construction."""
+        self.step_shift_deg_max = float(self.cfg.get("step_shift_deg_max", 0.0))
+        if not np.isfinite(self.step_shift_deg_max) \
+                or self.step_shift_deg_max < 0.0:
+            self.step_shift_deg_max = 0.0     # NaN/neg = shut
+        self.step_cm_max = float(self.cfg.get("step_cm_max", 0.0))
+        if not np.isfinite(self.step_cm_max) or self.step_cm_max < 0.0:
+            self.step_cm_max = 0.0            # NaN/neg = shut
+        self.step_slew_deg_s = self._step_num("step_slew_deg_s", 8.0, 1e-6)
+        self.step_lift_slew_deg_s = self._step_num("step_lift_slew_deg_s",
+                                                   6.0, 1e-6)
+        self.step_clearance_cm = self._step_num("step_clearance_cm", 3.0, 0.0)
+        self.step_knee_max_deg = self._step_num("step_knee_max_deg", 20.0, 1e-6)
+        self.step_min_shift_deg = self._step_num("step_min_shift_deg", 0.0, 0.0)
+        self.step_unload_tau_x = self._step_num("step_unload_tau_x", 2.0, 0.0)
+        self.step_hold_s = self._step_num("step_hold_s", 2.0, 0.0)
+        self.step_tilt_deg = self._step_num("step_tilt_deg", 8.0, 1e-6)
+        self.step_ankle_margin_deg = float(
+            self.cfg.get("step_ankle_margin_deg", 2.0))
+        if not np.isfinite(self.step_ankle_margin_deg):
+            self.step_ankle_margin_deg = 2.0
+        # R ankle has 14 deg of headroom; a larger margin flips the sign.
+        self.step_ankle_margin_deg = min(
+            max(self.step_ankle_margin_deg, 0.0),
+            STEP_ANKLE_STOP_DEG - STEP_ANKLE_BASE_DEG)
+        self.step_shift_deg = 0.0          # installed shift
+        self.step_shift_target = 0.0       # commanded shift
+        self.step_c1 = 0.0                 # L hip delta, deg
+        self.step_c7 = 0.0                 # R hip delta, deg
+        self.step_c1_t = 0.0
+        self.step_c7_t = 0.0
+        self.step_splay_l = 0.0            # outward splay, deg
+        self.step_splay_r = 0.0
+        self.step_splay_l_t = 0.0
+        self.step_splay_r_t = 0.0
+        self.step_k = 0.0                  # lift gain K
+        self.step_k_t = 0.0
+        self.step_phase = "IDLE"           # IDLE|SHIFT|HOLD|LIFT|PLACE|
+                                           # RECENTRE|DONE|ABORT
+        self.step_leg = ""                 # swing leg l|r
+        self.step_cm_req = 0.0             # requested cm
+        self.step_cm_ach = 0.0             # achieved cm
+        self.step_w_m = 0.0                # widening, m
+        self.step_tau0 = None              # unload baseline
+        self.step_dtau = None
+        self.step_hold_t = None            # gate first held
+        self.step_go_pending = False
+        self.step_abort_reason = ""
+        self.step_tilt = None
+        self.step_log_t = 0.0
+        self._step_last_key = None         # last pose
+
