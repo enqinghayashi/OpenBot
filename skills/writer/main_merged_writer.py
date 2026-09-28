@@ -1076,3 +1076,11 @@ class MergedWriter:
         self.step_c7 = d7_deg
         self.step_k = k_deg
 
+    def _step_cap_l(self):
+        """Max L hip-roll delta, deg — DERIVED: the L ankle's -15 deg stop with
+        the boot's +1.0 deg of headroom, (15 + 1 - margin)/|ratio| = +16.47 at
+        the shipped margin.  NOT interchangeable with the R cap (P4)."""
+        r = max(abs(self.stance_ankle_ratio), 1e-9)
+        return (STEP_ANKLE_STOP_DEG + STEP_ANKLE_BASE_DEG
+                - self.step_ankle_margin_deg) / r
+
