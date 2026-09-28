@@ -925,3 +925,14 @@ class MergedWriter:
             self._stance_log_t = now
             print(f"[stance] {msg}")
 
+    def _stance_status(self):
+        """Inline status fragment, same shape as _cmd_auto_status."""
+        return f"stance={self.stance_deg:+.1f}(max {self.stance_deg_max:.1f})"
+
+    # ------------------------------------------------------- runtime step lane
+    # same-sign hip-roll shift, lift and place the unloaded foot, then
+    # closed-chain re-centre. Every constant is derived from the URDF
+    # forward kinematics, not measured.
+    # additive: own verb only, re-derived from boot, never compounded.
+    # shares stance_ankle_ratio.
+
