@@ -1311,3 +1311,89 @@ class MergedWriter:
             return None
         return "step off | step shift <deg> | step go l|r <cm> | step status"
 
+    def _step_reset(self, force=False):
+        """Return the lane to IDLE and the encodings to BOOT.  Used by
+        `step off`, by the tilt abort and by shutdown.  The relax is a SNAP,
+        exactly like `stance off` (`_write_stance(0.0)`), so the two verbs
+        behave alike and the P7 property (array_equal(defaults, boot)) holds
+        bit-exactly.  `force` prints the P7 line; a shutdown must not.
+
+        PHYSICS NOTE: after a COMPLETED step the feet are wider on the floor,
+        so a snap to boot asks the legs to close a separation the feet cannot
+        slide; the policy holds what it can and the live run measures it.  The
+        snap is what the spec pins (A15), not a measured claim."""
+        self.step_phase = "IDLE"
+        self.step_leg = ""
+        self.step_shift_deg = 0.0
+        self.step_shift_target = 0.0
+        self.step_c1 = 0.0
+        self.step_c7 = 0.0
+        self.step_c1_t = 0.0
+        self.step_c7_t = 0.0
+        self.step_splay_l = 0.0
+        self.step_splay_r = 0.0
+        self.step_splay_l_t = 0.0
+        self.step_splay_r_t = 0.0
+        self.step_k = 0.0
+        self.step_k_t = 0.0
+        self.step_w_m = 0.0
+        self.step_cm_req = 0.0
+        self.step_cm_ach = 0.0
+        self.step_go_pending = False
+        self.step_tau0 = None
+        self.step_dtau = None
+        self.step_hold_t = None
+        self.step_tilt = None
+        self._step_write()
+        if force:
+            self._step_log("off -> boot encoding restored (bit-exact)",
+                           force=True)
+
+    def _abort_step(self, reason):
+        """Self-abort (a tilt, or a shutdown while in flight): the trajectory
+        stops, the encoding returns to BOOT, and the mandated line prints the
+        phase and shift it stopped in."""
+        phase = self.step_phase
+        shift = self.step_shift_deg
+        self._step_reset(force=False)
+        self.step_phase = "ABORT"
+        self.step_abort_reason = reason
+        self._step_log("ABORT %s phase=%s shift=%+.1f — relaxing to boot "
+                       "encoding" % (reason, phase, shift), force=True)
+
+    def _step_gate_ok(self):
+        """The §7 unload predicate: |dtau| >= step_unload_tau_x * |dtau0|.
+        A DEGENERATE baseline (|dtau0| == 0, or a zero bar) CLOSES the gate:
+        with bar == 0 the comparison is vacuously true, and a gate that cannot
+        hold is not a gate.  Fail-closed — the trajectory holds and logs."""
+        if self.step_tau0 is None or self.step_dtau is None:
+            return False
+        bar = self.step_unload_tau_x * abs(self.step_tau0)
+        if bar <= 0.0:
+            return False
+        return abs(self.step_dtau) >= bar
+
+    def _step_n_swing(self, tau_l, tau_r):
+        """|tau_swing|/0.109 as an upper bound on the swing foot's load (§4);
+        nan when the leg or the taus are unknown — a 0.0 would read as a
+        perfect unload."""
+        nan = float("nan")
+        n_l = abs(tau_l) / STEP_KNEE_LEVER_M if tau_l is not None else nan
+        n_r = abs(tau_r) / STEP_KNEE_LEVER_M if tau_r is not None else nan
+        if self.step_leg == "l":
+            return n_l
+        if self.step_leg == "r":
+            return n_r
+        return min(n_l, n_r)
+
+    def _step_log(self, msg, force=False):
+        """Rate-limited (1 Hz) step log.  Every [step] body-state line goes
+        through here so the honesty suffix is appended in EXACTLY one place,
+        and exactly once per line (A12).  No assert, no exception."""
+        now = time.monotonic()
+        if force or now - self.step_log_t >= 1.0:
+            self.step_log_t = now
+            if not msg.endswith(STEP_HONESTY_SUFFIX):
+                msg = "%s %s" % (msg, STEP_HONESTY_SUFFIX)
+            print("[step] %s" % msg)
+
