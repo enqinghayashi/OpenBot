@@ -1148,3 +1148,20 @@ class MergedWriter:
         h = w_m / (2.0 * STEP_SEP_LEVER_M)
         return math.degrees(math.asin(min(max(h, -1.0), 1.0)))
 
+    def _step_target_c1(self, w_m, c_deg):
+        """The d1 of the pose on the closed-chain curve whose COMMON MODE
+        (d1 + d7)/2 equals c_deg — the lane's canonical target for a shift.
+        With W == 0 the curve is d1 == d7, so the answer is exact; with W > 0
+        it is found by bisection (d7 rises with d1, so the relation is
+        monotone).  DERIVED."""
+        if abs(w_m) < 1e-12:
+            return c_deg
+        lo, hi = c_deg - 60.0, c_deg + 60.0
+        for _ in range(60):
+            mid = 0.5 * (lo + hi)
+            if 0.5 * (mid + self._step_curve_c7(mid, w_m)) < c_deg:
+                lo = mid
+            else:
+                hi = mid
+        return 0.5 * (lo + hi)
+
