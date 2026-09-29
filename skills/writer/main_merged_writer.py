@@ -1361,3 +1361,15 @@ class MergedWriter:
         self._step_log("ABORT %s phase=%s shift=%+.1f — relaxing to boot "
                        "encoding" % (reason, phase, shift), force=True)
 
+    def _step_gate_ok(self):
+        """The §7 unload predicate: |dtau| >= step_unload_tau_x * |dtau0|.
+        A DEGENERATE baseline (|dtau0| == 0, or a zero bar) CLOSES the gate:
+        with bar == 0 the comparison is vacuously true, and a gate that cannot
+        hold is not a gate.  Fail-closed — the trajectory holds and logs."""
+        if self.step_tau0 is None or self.step_dtau is None:
+            return False
+        bar = self.step_unload_tau_x * abs(self.step_tau0)
+        if bar <= 0.0:
+            return False
+        return abs(self.step_dtau) >= bar
+
