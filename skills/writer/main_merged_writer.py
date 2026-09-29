@@ -2351,3 +2351,412 @@ class MergedWriter:
         if self._stance_base_policy is not None:
             self._write_stance(0.0)
 
+    def _status_line(self):
+        if self.loop_count % (self.hz * 1) != 0:
+            return
+        st = self.lowstate
+        if st is None:
+            return
+        key = self.policy.last_key if self.policy else "hold"
+        cmd = self.rc.cmd if self.rc else np.zeros(3)
+        print(f"[t={time.perf_counter()-self.t0:6.1f}] {key} "
+              f"cmd=({cmd[0]:+.2f},{cmd[1]:+.2f},{cmd[2]:+.2f}) "
+              f"arm={self.arm.state} mode={st['mode_machine']} "
+              f"Tmax={st['max_temp']:.0f}C "
+              f"poll_to={self.reader.timeout_count} "
+              f"overruns={self._overruns} drops={self._dropped} "
+              f"hold={int(self.rc_hold)} {self._cmd_auto_status()} "
+              f"{self._height_status()} {self._sonic_status()}")
+
+    def run(self):
+        print("=== C3 merged whole-body writer ===")
+        print(f"stage={self.args.stage} hz={self.hz} policy_dec={self.decimation} "
+              f"policy_enabled={self.policy_enabled} rc_enabled={self.rc_enabled}")
+        print("=== EXIT BEHAVIOR: ZeroCmd limp (mode 0x01, kp/kd=0, q=PosStopF) "
+              "then SelectMode(\"ai\") handoff — sport control restored, RC "
+              "ladder live (L1+B -> L2+UP -> R2+A). ===")
+
+        self.acquire_lock()
+        print(f"[lock] {self.cfg['lockfile']} held by pid {os.getpid()}")
+
+        if self.args.interface:
+            ChannelFactoryInitialize(0, self.args.interface)
+        else:
+            ChannelFactoryInitialize(0, self.cfg["interface"])
+        self.release_mode()
+
+        # state reader, first lowstate, capture pose
+        self.reader = StateReader(self.cfg)
+        self.lowstate = self.reader.wait_first(self.cfg["lowstate_wait_s"])
+        self.captured_q = self.lowstate["q"].copy()
+        print(f"[bring-up] first lowstate: tick={self.lowstate['tick']} "
+              f"mode_machine={self.lowstate['mode_machine']}")
+        print(f"[bring-up] captured q: legs {self.captured_q[0:6].round(3)} ... "
+              f"arms {self.captured_q[15:22].round(3)}")
+
+        self.init_lowcmd()
+        self.fill_gains()
+
+        # subsystems
+        self.arm = ArmGuard(self.cfg)
+        self.arm.capture(self.captured_q, 0.0)
+        self.arm_tau = np.zeros(14)   # arm gravity FF, set by socket verb
+        self.obs = ObsBuilder(self.cfg)
+        if self.policy_enabled:
+            self.policy = PolicyRunner(self.cfg, self.onnx_dir)
+            self.leg_target = self.policy.defaults.copy()
+            # policy_target feeds the SONIC seam; must exist first.
+            self.policy_target = self.leg_target.copy()
+            print(f"[policy] loaded {os.path.basename(self.onnx_dir)}")
+        else:
+            self.leg_target = self.captured_q[:15].copy()
+            self.policy_target = self.leg_target.copy()
+        # snapshot stance base after encodings exist,
+        # before any verb. No-op at stage 0.
+        self._capture_stance_base()
+        if self.rc_enabled:
+            self.rc = RCTarget(self.cfg)
+
+        # gate joint
+        self.gate_q = float(self.cfg["gate_q"])
+
+        self.gate_prompt()
+
+        # boot arm pose: slew to NEUTRAL, not hold capture.
+        # Same cosine slew, >= 1.5 s.
+        self.arm.slew_to("NEUTRAL", time.perf_counter())
+
+        # hand off to the loop; hook up signals
+        def _sig(signum, frame):
+            print(f"\n[signal] {signum} — shutdown")
+            self.request_shutdown(f"signal {signum}")
+        signal.signal(signal.SIGINT, _sig)
+        signal.signal(signal.SIGTERM, _sig)
+        self.start_console()
+        self.start_socket_server()
+
+        # write loop
+        self.state = "RUNNING"
+        self.t0 = time.perf_counter()
+        next_deadline = self.t0
+        try:
+            while not self._shutdown:
+                t = time.perf_counter()
+                self._tick(t)
+                next_deadline += self.dt
+                sleep = next_deadline - time.perf_counter()
+                if sleep > 0:
+                    time.sleep(sleep)
+                else:
+                    self._overruns += 1
+        except RuntimeError as e:
+            print(f"[fatal] {e}")
+            self.request_shutdown(f"runtime error: {e}")
+        finally:
+            self.shutdown()
+
+    def _tick(self, t):
+        # loop_count advances here, not in the main loop, because
+        # shutdown's Phase-1 calls _tick from its settle loop; a counter
+        # frozen there would strand the policy. Once per tick either way.
+        self.loop_count += 1
+        if self._simulate_fatal:
+            # one-shot: fires once then clears, so a latched flag cannot
+            # re-raise inside shutdown's settle loop.
+            self._simulate_fatal = False
+            raise RuntimeError("SIMULATED FATAL (test hook)")
+        st = self.reader.poll()
+        if st is not None:
+            self.lowstate = st
+            # dropped ticks (motor-service rate)
+            if self.prev_tick is not None:
+                gap = st["tick"] - self.prev_tick
+                if gap > 1:
+                    self._dropped += gap - 1
+            self.prev_tick = st["tick"]
+
+        if self.lowstate is None:
+            return  # not armed yet
+
+        st = self.lowstate
+        q, dq = st["q"], st["dq"]
+
+        # rc_hold (pick interlock) or shutdown zeroes every source, the
+        # pick stationary guarantee. Otherwise latched cmd_auto, else live
+        # RC ([vx, vy, omega]). cmd_auto expiry still stops a dead adapter.
+        if self.cmd_auto_active and time.monotonic() >= self.cmd_auto_deadline:
+            self.cmd_auto_active = False
+            self.cmd_auto[:] = 0.0
+        # height watchdog, same shape as cmd_auto's.
+        # Recovery is height_stand, never zero.
+        if self.height_active and time.monotonic() >= self.height_deadline:
+            self.height_active = False
+            self.height_target = self.height_stand
+            self._height_log("watchdog expiry -> standing")
+        if self._shutting_down or self.rc_hold:
+            cmd = self.rc_cmd_zero          # all sources dead
+            rc_live = False
+        elif self.cmd_auto_active:
+            cmd = self.cmd_auto             # RC skipped
+            rc_live = False
+        elif self.rc:
+            cmd = self.rc.update(st["wireless_remote"])
+            rc_live = True
+        else:
+            cmd = self.rc_cmd_zero
+            rc_live = False
+
+        # height rc override/suspend. rc_hold forces rc_live False, so the
+        # suspend cannot fire and a stick push cannot abort a squat. The
+        # pick engine owns rc_hold; a hard-killed engine leaves the clamp on
+        # and only `hold_rc off` clears it.
+        # suspend is a pause: target and original deadline return, resuming
+        # at half the override threshold; a deadline that expired while
+        # suspended stays dead.
+        if not (self._shutting_down or self._shutdown):
+            rc_norm = float(np.linalg.norm(cmd)) if rc_live else 0.0
+            if (self.height_active and rc_live
+                    and rc_norm >= self.height_rc_override):
+                self.height_suspended = True
+                self.height_suspend_target = self.height_target
+                self.height_suspend_deadline = self.height_deadline
+                self.height_active = False
+                self.height_target = self.height_stand
+                self._height_log(
+                    f"rc override (|rc|={rc_norm:.2f} >= "
+                    f"{self.height_rc_override:.2f}) — squat SUSPENDED, "
+                    f"reference -> standing {self.height_stand:.2f}; resumes "
+                    f"when the sticks are neutral before the hold deadline",
+                    force=True)
+            elif (self.height_suspended
+                  and (not rc_live or rc_norm <= self.height_rc_resume)):
+                if time.monotonic() < self.height_suspend_deadline:
+                    self.height_target = self.height_suspend_target
+                    self.height_deadline = self.height_suspend_deadline
+                    self.height_active = True
+                    self._height_log(
+                        f"sticks neutral — squat RESUMED -> "
+                        f"{self.height_target:.2f} "
+                        f"({max(self.height_deadline - time.monotonic(), 0.0):.1f}s "
+                        f"left in the hold)", force=True)
+                else:
+                    self._height_log(
+                        "sticks neutral — the hold deadline expired while "
+                        "suspended: squat CANCELLED (re-issue 'height <m>')",
+                        force=True)
+                self.height_suspended = False
+
+        # height: rate-limited so the reference can't step,
+        # then obs f[3]
+        hstep = self.height_slew_rate * self.dt
+        if self.height_ref < self.height_target:
+            self.height_ref = min(self.height_ref + hstep, self.height_target)
+        elif self.height_ref > self.height_target:
+            self.height_ref = max(self.height_ref - hstep, self.height_target)
+        if self.obs is not None:
+            self.obs.set_height(self.height_ref)
+            # step lane advances here, before infer, in the same frame.
+            # Writes policy.defaults / obs.default_padded.
+            self._step_advance(t, st)
+
+        # policy tick
+        if self.policy is not None and self.loop_count % self.decimation == 0:
+            obs = self.obs.push(q, dq, st["quat"], st["gyro"], cmd, self.policy.action)
+            self.policy_target = self.policy.infer(obs, cmd)
+            # SONIC seam: the only control-flow change. Off with b == 0
+            # returns the same object, unchanged.
+            rc_norm = float(np.linalg.norm(cmd)) if rc_live else 0.0
+            self._sonic_seam(t, st, cmd, rc_live, rc_norm)
+            self.policy_ticks += 1
+            if self.verbose and self.policy_ticks % 50 == 0:
+                print(f"[policy] {self.policy.last_key} "
+                      f"target {self.leg_target[0:3].round(3)}")
+
+        # coupling ramp: captured q -> target, 0.12 s
+        ramp_t = min((t - self.t0) / self.ramp_s, 1.0) if self.t0 else 1.0
+
+        # arms: 250 Hz cosine slew, independent of policy tick
+        arm_target = self.arm.tick(t)
+
+        # build motor_cmd
+        lc = self.lowcmd
+        lc.mode_machine = st["mode_machine"]          # echo it back
+        lc.mode_pr = 0
+        for i in range(15):
+            lc.motor_cmd[i].q = self.captured_q[i] + \
+                (self.leg_target[i] - self.captured_q[i]) * ramp_t
+            lc.motor_cmd[i].dq = 0.0
+            lc.motor_cmd[i].tau = 0.0
+        for j, i in enumerate(range(15, 29)):
+            lc.motor_cmd[i].q = arm_target[j]
+            lc.motor_cmd[i].dq = 0.0
+            lc.motor_cmd[i].tau = self.arm_tau[j]   # gravity FF
+        lc.motor_cmd[29].q = self.gate_q
+        lc.motor_cmd[29].dq = 0.0
+        lc.motor_cmd[29].tau = 0.0
+        for i in range(30, 35):
+            lc.motor_cmd[i].q = self.captured_q[i]    # hold captured q
+            lc.motor_cmd[i].dq = 0.0
+            lc.motor_cmd[i].tau = 0.0
+
+        lc.crc = self.crc.Crc(lc)
+        self.lowcmd_publisher.Write(lc)
+
+        self._status_line()
+
+    # ------------------------------------------------------------ shutdown
+
+    def shutdown(self):
+        print(f"\n=== SHUTDOWN (cause: {self._shutdown_cause}) ===")
+        if self.reader is not None:
+            # from here the crash threshold does not apply: a re-raise
+            # inside shutdown would kill the process mid-tail, with motors
+            # uncontrolled and a stale lockfile. Warn only.
+            self.reader.suppress_crash = True
+        if self.rc:
+            self.rc.zero()
+        self.cmd_auto_active = False   # belt and braces
+        self.cmd_auto[:] = 0.0
+        # height: force the reference to standing. Phase-1
+        # slews leg_target up while the ascend loop waits.
+        self.height_active = False
+        self.height_target = self.height_stand
+        self.height_suspended = False   # stashed squat never outlives shutdown
+        # Phase 1: normal loop, policy live, rc zeroed, arms
+        # to NEUTRAL unless payload. >= 1 s settle, 5 s cap.
+        shutdown_t0 = time.perf_counter()
+        if not self.payload:
+            self.arm.slew_to("NEUTRAL", time.perf_counter())
+        if self.arm._T > 0.0:
+            deadline = min(max(shutdown_t0 + 1.0, self.arm._t0 + self.arm._T),
+                           shutdown_t0 + 5.0)
+        else:
+            deadline = shutdown_t0 + 1.0
+        # ascend before release: a limp crouched robot collapses.
+        # Phase-2 pins the last target, Phase-3 sets kp/kd=0,
+        # so stretch Phase-1 to height_ascend_timeout_s
+        # (under 5 s). Bounded, so it never hangs the tail.
+        needs_ascend = (abs(self.height_ref - self.height_stand)
+                        > self.height_stand_eps
+                        or not self._legs_ascended(self.lowstate))
+        if needs_ascend:
+            deadline = max(deadline,
+                           min(shutdown_t0 + self.height_ascend_timeout,
+                               shutdown_t0 + 5.0))
+        while time.perf_counter() < deadline:
+            # try_poll, not poll: a persistent oversized gap must not abort
+            # shutdown, or ZeroCmd, the lockfile removal and the handoff
+            # are all skipped.
+            st = self.reader.try_poll()
+            if st is not None:
+                self.lowstate = st
+            try:
+                self._tick(time.perf_counter())
+            except Exception as e:
+                # a raise in Phase-1's _tick must never abort shutdown: the
+                # ascend depends on this loop, and a KeyError here would skip
+                # ZeroCmd.
+                print(f"[shutdown] Phase-1 tick raised ({e}) — continuing")
+            # leave once arms settled, legs near standing, height
+            # ref up, but never before the >= 1 s settle.
+            arm_done = (self.arm._T <= 0.0
+                        or time.perf_counter() >= self.arm._t0 + self.arm._T)
+            if (time.perf_counter() - shutdown_t0 >= 1.0
+                    and arm_done
+                    and self.height_ref >= self.height_stand
+                    - self.height_stand_eps
+                    and self._legs_ascended(self.lowstate)):
+                break
+            kb_safe_sleep(self.dt)
+        if self.payload:
+            print("[shutdown] PAYLOAD FLAG SET — arms NOT released (holding tuck)")
+
+        # legs hold 1 s at the last targets (post-ascend: standing)
+        t_end = time.perf_counter() + 1.0
+        while time.perf_counter() < t_end:
+            st = self.reader.try_poll()
+            if st is not None:
+                self.lowstate = st
+            self._shutdown_tick(time.perf_counter())
+            kb_safe_sleep(self.dt)
+
+        # ZeroCmd: weak motors, position/velocity stop sentinels
+        lc = self.lowcmd
+        for i in range(35):
+            lc.motor_cmd[i].mode = MODE_ENABLE
+            lc.motor_cmd[i].kp = 0.0
+            lc.motor_cmd[i].kd = 0.0
+            lc.motor_cmd[i].q = PosStopF
+            lc.motor_cmd[i].dq = VelStopF
+            lc.motor_cmd[i].tau = 0.0
+        for _ in range(5):
+            lc.crc = self.crc.Crc(lc)
+            self.lowcmd_publisher.Write(lc)
+            time.sleep(0.02)
+
+        try:
+            os.remove(self.cfg["lockfile"])
+        except OSError:
+            pass
+        print("=== SHUTDOWN COMPLETE — motor slots are limp (mode 0x01, kp/kd=0) ===")
+        # handoff: the RC ladder (L1+B -> L2+UP -> R2+A) stays inert while
+        # the switcher is released, so SelectMode must run first.
+        print("=== Handoff to sport control: SelectMode(\"ai\") ... ===")
+        for attempt in range(1, 4):
+            try:
+                msc = MotionSwitcherClient()
+                msc.SetTimeout(5.0)
+                msc.Init()
+                msc.SelectMode("ai")
+                status, result = msc.CheckMode()
+                name = result.get("name", "") if isinstance(result, dict) else result
+                print(f"[handoff] attempt {attempt}: CheckMode -> {result}")
+                if name == "ai":
+                    print("[handoff] sport control restored — RC ladder live "
+                          "(L1+B -> L2+UP -> R2+A)")
+                    break
+            except Exception as e:
+                print(f"[handoff] attempt {attempt} failed: {e}")
+            time.sleep(1.0)
+        else:
+            print("[handoff] WARN: sport mode not restored — run "
+                  "SelectMode('ai') manually")
+
+    def _shutdown_tick(self, t):
+        """Shutdown continuation: same as _tick but policy keeps last targets
+        (no infer), arms keep slewing."""
+        st = self.lowstate
+        if st is None:
+            return
+        q, dq = st["q"], st["dq"]
+        arm_target = self.arm.tick(t)
+        lc = self.lowcmd
+        lc.mode_machine = st["mode_machine"]
+        lc.mode_pr = 0
+        for i in range(15):
+            lc.motor_cmd[i].q = self.leg_target[i]     # no ramp
+            lc.motor_cmd[i].dq = 0.0
+            lc.motor_cmd[i].tau = 0.0
+        for j, i in enumerate(range(15, 29)):
+            lc.motor_cmd[i].q = arm_target[j]
+            lc.motor_cmd[i].dq = 0.0
+            lc.motor_cmd[i].tau = self.arm_tau[j]   # gravity FF
+        lc.motor_cmd[29].q = self.gate_q
+        lc.motor_cmd[29].dq = 0.0
+        lc.motor_cmd[29].tau = 0.0
+        for i in range(30, 35):
+            lc.motor_cmd[i].q = self.captured_q[i]
+            lc.motor_cmd[i].dq = 0.0
+            lc.motor_cmd[i].tau = 0.0
+        lc.crc = self.crc.Crc(lc)
+        self.lowcmd_publisher.Write(lc)
+
+
+def main():
+    args = parse_args()
+    w = MergedWriter(args)
+    try:
+        w.run()
+    except Exception as e:
+        print(f"[fatal] {e}")
+        sys.exit(1)
