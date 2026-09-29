@@ -1311,3 +1311,41 @@ class MergedWriter:
             return None
         return "step off | step shift <deg> | step go l|r <cm> | step status"
 
+    def _step_reset(self, force=False):
+        """Return the lane to IDLE and the encodings to BOOT.  Used by
+        `step off`, by the tilt abort and by shutdown.  The relax is a SNAP,
+        exactly like `stance off` (`_write_stance(0.0)`), so the two verbs
+        behave alike and the P7 property (array_equal(defaults, boot)) holds
+        bit-exactly.  `force` prints the P7 line; a shutdown must not.
+
+        PHYSICS NOTE: after a COMPLETED step the feet are wider on the floor,
+        so a snap to boot asks the legs to close a separation the feet cannot
+        slide; the policy holds what it can and the live run measures it.  The
+        snap is what the spec pins (A15), not a measured claim."""
+        self.step_phase = "IDLE"
+        self.step_leg = ""
+        self.step_shift_deg = 0.0
+        self.step_shift_target = 0.0
+        self.step_c1 = 0.0
+        self.step_c7 = 0.0
+        self.step_c1_t = 0.0
+        self.step_c7_t = 0.0
+        self.step_splay_l = 0.0
+        self.step_splay_r = 0.0
+        self.step_splay_l_t = 0.0
+        self.step_splay_r_t = 0.0
+        self.step_k = 0.0
+        self.step_k_t = 0.0
+        self.step_w_m = 0.0
+        self.step_cm_req = 0.0
+        self.step_cm_ach = 0.0
+        self.step_go_pending = False
+        self.step_tau0 = None
+        self.step_dtau = None
+        self.step_hold_t = None
+        self.step_tilt = None
+        self._step_write()
+        if force:
+            self._step_log("off -> boot encoding restored (bit-exact)",
+                           force=True)
+
