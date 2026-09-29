@@ -1141,3 +1141,10 @@ class MergedWriter:
         s = math.sin(d1_deg * math.pi / 180.0) - w_m / STEP_SEP_LEVER_M
         return math.degrees(math.asin(min(max(s, -1.0), 1.0)))
 
+    def _step_symmetric_d1(self, w_m):
+        """The d1 of the SYMMETRIC end pose (d1 = +h, d7 = -h), h =
+        asin(W/0.991): the CoM returns to the middle of the two feet.  This is
+        where the re-centre walks to, and it is a stable state, not a transient."""
+        h = w_m / (2.0 * STEP_SEP_LEVER_M)
+        return math.degrees(math.asin(min(max(h, -1.0), 1.0)))
+
