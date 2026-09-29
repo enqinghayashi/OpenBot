@@ -1373,3 +1373,16 @@ class MergedWriter:
             return False
         return abs(self.step_dtau) >= bar
 
+    def _step_n_swing(self, tau_l, tau_r):
+        """|tau_swing|/0.109 as an upper bound on the swing foot's load (§4);
+        nan when the leg or the taus are unknown — a 0.0 would read as a
+        perfect unload."""
+        nan = float("nan")
+        n_l = abs(tau_l) / STEP_KNEE_LEVER_M if tau_l is not None else nan
+        n_r = abs(tau_r) / STEP_KNEE_LEVER_M if tau_r is not None else nan
+        if self.step_leg == "l":
+            return n_l
+        if self.step_leg == "r":
+            return n_r
+        return min(n_l, n_r)
+
