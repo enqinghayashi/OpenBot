@@ -1165,3 +1165,12 @@ class MergedWriter:
                 hi = mid
         return 0.5 * (lo + hi)
 
+    def _step_approach(self, cur, tgt, rate, dt):
+        """One slew step toward tgt; lands EXACTLY on tgt, which is what the
+        settled tests compare against.  Never raises, never asserts."""
+        d = tgt - cur
+        step = rate * dt
+        if abs(d) <= step:
+            return tgt
+        return cur + (step if d > 0.0 else -step)
+
