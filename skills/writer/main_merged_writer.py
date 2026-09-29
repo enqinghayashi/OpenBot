@@ -1533,3 +1533,355 @@ class MergedWriter:
             frag = "step=%s" % ph
         return "%s %s" % (frag, STEP_HONESTY_SUFFIX)
 
+    def _step_advance(self, t, st):
+        """The step lane's tick hook (§1.3h) — called every 250 Hz tick from
+        `_tick`, immediately BEFORE the policy tick, so the encoding it writes
+        is the one the policy consumes in the SAME frame.
+
+        ADDITIVE: the first line returns unless a step verb has armed the lane
+        (phase IDLE/ABORT) or the boot snapshot is absent, so with the lane
+        untouched the byte path is the pre-step writer's.  Every exit is
+        fail-closed: no state, no motion, no exception."""
+        if self._stance_base_policy is None:
+            return
+        ph0 = self.step_phase
+        if ph0 in ("IDLE", "ABORT"):
+            return
+        meas = self._step_meas(st)
+        if meas is None:
+            return
+        # tilt abort: self-aborts to boot, never waits.
+        self.step_tilt = None
+        if SC is not None:
+            try:
+                self.step_tilt = float(SC.tilt_deg(st["quat"]))
+            except Exception:
+                self.step_tilt = None
+        if self.step_tilt is not None and self.step_tilt > self.step_tilt_deg:
+            self._abort_step("tilt %.1f" % self.step_tilt)
+            return
+        tau_l, tau_r = self._step_taus(st)
+        self.step_dtau = (tau_l - tau_r
+                          if (tau_l is not None and tau_r is not None)
+                          else None)
+        # baseline = the first tick, before any slew, so the unload gate
+        # compares against this run's own loading.
+        if self.step_tau0 is None:
+            if tau_l is not None and tau_r is not None:
+                self.step_tau0 = tau_l - tau_r
+                self.step_hold_t = None
+                self._step_log(
+                    "tau0 captured at P0: tauL=%+.3f tauR=%+.3f dtau0=%+.3f "
+                    "(the run's own baseline — the doc's 1.32 was under "
+                    "stance 4)" % (tau_l, tau_r, self.step_tau0), force=True)
+        dt = self.dt
+        if self.step_phase in ("SHIFT", "HOLD"):
+            # slew the shift in, hold until unload gate opens.
+            if self.step_w_m == 0.0:
+                self.step_c1 = self._step_approach(
+                    self.step_c1, self.step_c1_t, self.step_slew_deg_s, dt)
+                self.step_c7 = self._step_approach(
+                    self.step_c7, self.step_c7_t, self.step_slew_deg_s, dt)
+                settled = (self.step_c1 == self.step_c1_t
+                           and self.step_c7 == self.step_c7_t)
+            else:
+                self.step_c1 = self._step_approach(
+                    self.step_c1, self.step_c1_t, self.step_slew_deg_s, dt)
+                self.step_c7 = self._step_curve_c7(self.step_c1, self.step_w_m)
+                settled = (self.step_c1 == self.step_c1_t)
+            self.step_shift_deg = 0.5 * (self.step_c1 + self.step_c7)
+            if not self.step_go_pending:
+                if settled:
+                    self.step_phase = "IDLE"
+            else:
+                if settled:
+                    self.step_phase = "HOLD"
+                if self._step_gate_ok():
+                    if self.step_hold_t is None:
+                        self.step_hold_t = t
+                    if settled and (t - self.step_hold_t) >= self.step_hold_s:
+                        self.step_phase = "LIFT"
+                        self.step_k_t = min(
+                            self.step_clearance_cm / STEP_LIFT_DZ_CM_PER_DEG,
+                            self.step_knee_max_deg)
+                        self._step_log(
+                            "unload PROVEN: dtau=%+.3f (%.2fx)"
+                            % (self.step_dtau,
+                               abs(self.step_dtau) / abs(self.step_tau0)),
+                            force=True)
+                else:
+                    self.step_hold_t = None
+                    self._step_hold_log(tau_l, tau_r)
+        elif self.step_phase == "LIFT":
+            # lift the swing foot on the plane law.
+            # stance leg holds the shift
+            self.step_k = self._step_approach(
+                self.step_k, self.step_k_t, self.step_lift_slew_deg_s, dt)
+            self.step_splay_l = self._step_approach(
+                self.step_splay_l, self.step_splay_l_t, self.step_slew_deg_s,
+                dt)
+            self.step_splay_r = self._step_approach(
+                self.step_splay_r, self.step_splay_r_t, self.step_slew_deg_s,
+                dt)
+            if (self.step_k == self.step_k_t
+                    and self.step_splay_l == self.step_splay_l_t
+                    and self.step_splay_r == self.step_splay_r_t):
+                self.step_phase = "PLACE"
+                self.step_k_t = 0.0
+        elif self.step_phase == "PLACE":
+            # lower the triple; plant caps already clamped it flat.
+            self.step_k = self._step_approach(self.step_k, 0.0,
+                                              self.step_lift_slew_deg_s, dt)
+            self.step_splay_l = self._step_approach(
+                self.step_splay_l, self.step_splay_l_t, self.step_slew_deg_s,
+                dt)
+            self.step_splay_r = self._step_approach(
+                self.step_splay_r, self.step_splay_r_t, self.step_slew_deg_s,
+                dt)
+            if (self.step_k == 0.0
+                    and self.step_splay_l == self.step_splay_l_t
+                    and self.step_splay_r == self.step_splay_r_t):
+                # planted: fold the splay into (c1, c7) and lock in the
+                # widening, which then constrains every later pose.
+                self.step_c1 = self.step_c1 + self.step_splay_l
+                self.step_c7 = self.step_c7 - self.step_splay_r
+                self.step_splay_l = 0.0
+                self.step_splay_r = 0.0
+                self.step_w_m = STEP_SEP_LEVER_M * (
+                    math.sin(math.radians(self.step_c1))
+                    - math.sin(math.radians(self.step_c7)))
+                self.step_cm_ach = 100.0 * self.step_w_m
+                self.step_c1_t = self._step_symmetric_d1(self.step_w_m)
+                self.step_c7_t = -self.step_c1_t
+                self.step_phase = "RECENTRE"
+        elif self.step_phase == "RECENTRE":
+            # walk to the symmetric end pose (d1=+h, d7=-h).
+            # CoM centred; every pose on the curve, no sliding.
+            self.step_c1 = self._step_approach(
+                self.step_c1, self.step_c1_t, self.step_slew_deg_s, dt)
+            self.step_c7 = self._step_curve_c7(self.step_c1, self.step_w_m)
+            self.step_shift_deg = 0.5 * (self.step_c1 + self.step_c7)
+            if self.step_c1 == self.step_c1_t:
+                self.step_c7_t = self.step_c7
+                self.step_cm_ach = 100.0 * STEP_SEP_LEVER_M * (
+                    math.sin(math.radians(self.step_c1))
+                    - math.sin(math.radians(self.step_c7)))
+                self.step_phase = "DONE"
+        self._step_write()
+        self._step_detail(st, force=(self.step_phase != ph0))
+
+    def _legs_ascended(self, st):
+        """True when the measured leg joints (motors 0-11) are within
+        height_ascend_tol of the POLICY-MEASURED standing pose — a base-height
+        proxy that needs no FK.  shutdown() holds the policy live until this is
+        True (bounded by height_ascend_timeout_s) before the limp frame.
+
+        The reference is `height_stand_q`, built from config
+        `policy_stand_q_legs` (the measured fixed point, see _init_height_state)
+        — NOT the YAML default_angles, which the real policy misses by up to
+        0.44 rad (FINDING 2: the old predicate was unsatisfiable at standing)."""
+        if st is None:
+            return False
+        q = st["q"][0:12]
+        return bool(np.all(np.abs(q - self.height_stand_q[0:12])
+                           <= self.height_ascend_tol))
+
+    # --------------------------------------------------- additive SONIC lane
+    # additive: lane off and b == 0 is bit-identical to the GR00T-only
+    # path: same ndarray, same gains, same flow.
+    # no asserts; config reads use cfg.get so sparse configs degrade.
+
+    def _init_sonic_state(self):
+        """SONIC-lane state + tunables (spec §3, §6).  FORCES the lane disabled
+        when sonic_core failed to import: the lane must degrade to "absent",
+        never to "half-present"."""
+        self.sonic_lane_enabled = bool(self.cfg.get("sonic_lane_enabled", False))
+        if SC is None:
+            self.sonic_lane_enabled = False    # no tables, no lane
+        # state vars
+        self.sonic_mode = 'off'
+        self.sonic_armed = False
+        self.sonic_b = 0.0
+        self.sonic_target = None
+        self.sonic_last_rx = 0.0
+        self.sonic_rx = 0
+        self.sonic_rej = 0
+        self.sonic_seq = -1
+        self.sonic_warm = 0
+        self.sonic_last_good_t = 0.0
+        self.sonic_faulted = False
+        self.sonic_fault_cause = "none"
+        self.sonic_prev_blend = 0.0
+        self.sonic_has_frame = False
+        self.sonic_log_t = 0.0
+        self.sonic_overrun_head = 0
+        self.sonic_overrun_base = 0
+        self.sonic_kp_boot = None     # filled by fill_gains()
+        self.sonic_kd_boot = None
+        # revoke trigger needs a latched mode_machine.
+        self.sonic_mm_latch = None
+        # tunables, read through cfg.get with the defaults here.
+        self.sonic_stale_ms = float(self.cfg.get("sonic_stale_ms", 150))
+        self.sonic_entry_ramp_s = float(self.cfg.get("sonic_entry_ramp_s", 1.0))
+        self.sonic_handback_ramp_s = float(
+            self.cfg.get("sonic_handback_ramp_s", 0.5))
+        self.sonic_blend_max_step = float(
+            self.cfg.get("sonic_blend_max_step_rad", 0.10))
+        self.sonic_warmup_frames = int(self.cfg.get("sonic_warmup_frames", 100))
+        # stale_ms alone bounds the warmup window.
+        self.sonic_enable_tilt_deg = float(
+            self.cfg.get("sonic_enable_tilt_deg", 15.0))
+        self.sonic_tilt_fail_deg = float(
+            self.cfg.get("sonic_tilt_fail_deg", 22.0))
+        self.sonic_enable_tol_rad = float(
+            self.cfg.get("sonic_enable_tol_rad", 0.35))
+        self.sonic_rc_override_thresh = float(
+            self.cfg.get("sonic_rc_override_thresh", 0.1))
+        self.sonic_frame_step_max = float(
+            self.cfg.get("sonic_frame_step_max_rad", 0.35))
+        self.sonic_target_abs_max = float(
+            self.cfg.get("sonic_target_abs_max_rad", 3.0))
+        self.sonic_arm_mode = str(self.cfg.get("sonic_arm_mode", "park"))
+        self.sonic_max_overruns_per_s = float(
+            self.cfg.get("sonic_max_overruns_per_s", 5))
+        # gate probe: opt-in, '' = off, so no file, no dir, no reply change.
+        # forensics only: reads state and appends JSONL, never writes a
+        # gain, target or mode. Runs on the console thread, not the rt loop.
+        self.sonic_gate_probe_dir = str(
+            self.cfg.get("sonic_gate_probe_dir", ""))
+        self.sonic_gate_probe_max = int(
+            self.cfg.get("sonic_gate_probe_max", 512))
+        self.sonic_gate_probe_fh = None      # lazy open
+        self.sonic_gate_probe_path = None
+        self.sonic_gate_probe_n = 0
+        self.sonic_gate_dev = None
+        if self.sonic_lane_enabled:
+            self._sonic_log("lane enabled (mode=off, disarmed)")
+        else:
+            print(f"[sonic] lane disabled (cfg sonic_lane_enabled="
+                  f"{self.cfg.get('sonic_lane_enabled', False)}, "
+                  f"sonic_core={'ok' if SC is not None else 'MISSING'})",
+                  flush=True)
+
+    def _apply_sonic(self, parts, from_console):
+        """SONIC verb dispatch, shared by socket and console (the same lockstep
+        split as cmd_set/height).  Returns the reply line, never raises.
+
+        Arming is a HUMAN action: `sonic arm`, `sonic on` and `sonic reset` are
+        console-only and are refused on the socket (spec §2.2).  The satellite
+        can never arm itself, and no network/agent client can either.
+        """
+        if not self.sonic_lane_enabled:
+            return "ERROR:sonic lane disabled"
+        if len(parts) == 1:
+            return f"SONIC:status {self._sonic_status()}"
+        sub = parts[1]
+        if sub == "status":
+            return f"SONIC:status {self._sonic_status()}"
+        if sub == "arm":
+            if not from_console:
+                return "ERROR:sonic arm is console-only"
+            # arming does not clear a fault; the path is reset -> arm -> on.
+            self.sonic_armed = True
+            self._sonic_log(
+                "ARMED (console) — fault latched, `sonic reset` first"
+                if self.sonic_faulted else "ARMED (console)", force=True)
+            return "SONIC:armed"
+        if sub == "on":
+            if not from_console:
+                return "ERROR:sonic on is console-only"
+            # going live: all of these must hold
+            if not self.sonic_armed:
+                return "ERROR:sonic not armed"
+            if self.sonic_faulted:
+                return "ERROR:sonic faulted — sonic reset first"
+            if not self.sonic_has_frame:
+                return "ERROR:sonic no frame received"
+            # capture the enable-gate operand max|sonic_target - leg_target|
+            # once, here, above the warmup check: the frame-step gate can
+            # stall sonic_warm at 0/1, so a capture at the comparison
+            # would write an empty probe file.
+            self.sonic_gate_dev = None
+            if self.sonic_target is not None and self.leg_target is not None:
+                self.sonic_gate_dev = float(np.max(np.abs(
+                    np.asarray(self.sonic_target, dtype=np.float64)
+                    - np.asarray(self.leg_target, dtype=np.float64))))
+            self._sonic_gate_probe()
+            if self.sonic_warm < self.sonic_warmup_frames:
+                return (f"ERROR:sonic warmup {self.sonic_warm}/"
+                        f"{self.sonic_warmup_frames}")
+            # A dead stream freezes sonic_warm, so a stale count
+            # could enable the lane. Check freshness first.
+            # monotonic(), matching sonic_last_rx.
+            age = time.monotonic() - self.sonic_last_rx
+            if age > self.sonic_stale_ms / 1000.0:
+                return (f"ERROR:sonic stream stale ({age:.3f}s > "
+                        f"{self.sonic_stale_ms / 1000.0:.3f}s)")
+            st = self.lowstate
+            if st is not None and SC is not None:
+                if SC.tilt_deg(st["quat"]) > self.sonic_enable_tilt_deg:
+                    return "ERROR:sonic tilt too large to enable"
+            if self.sonic_target is None:
+                return "ERROR:sonic no target"
+            # the target exists here, so the stashed deviation is valid.
+            dev = self.sonic_gate_dev
+            if dev is not None:
+                if dev > self.sonic_enable_tol_rad:
+                    return f"ERROR:sonic target {dev:.3f} rad from legs"
+            self.sonic_mode = 'on'
+            self.sonic_mm_latch = st["mode_machine"] if st is not None else None
+            self.sonic_last_good_t = time.monotonic()
+            # arm park: slew to SONIC's arm default on the ramp.
+            # DEFAULT_ANGLES_MUJOCO[15:29] is motor order, no remap.
+            if (self.sonic_arm_mode == "park" and SC is not None
+                    and self.arm is not None):
+                with self._dispatch_lock:
+                    self.arm_tau[:] = 0.0
+                    self.arm.slew_to_vector(
+                        np.array(SC.DEFAULT_ANGLES_MUJOCO[15:29],
+                                 dtype=np.float32),
+                        time.perf_counter(), self.sonic_entry_ramp_s)
+            self._sonic_log(f"ON (b={self.sonic_b:.2f}) — SONIC owns legs",
+                            force=True)
+            return f"SONIC:on {self.sonic_b:.2f}"
+        if sub == "off":
+            # handback: b ramps to 0, seam restores boot gains.
+            # Not a fault; `sonic on` works without a reset.
+            self.sonic_mode = 'off'
+            self._sonic_log("OFF (operator handback) -> GR00T", force=True)
+            return "SONIC:off"
+        if sub == "reset":
+            if not from_console:
+                return "ERROR:sonic reset is console-only"
+            # handback first: order matters, because _sonic_revoke latches
+            # faulted=True, so the clear below must come after it and a
+            # mid-blend reset must not leave mode='on' with b > 0.
+            self._sonic_revoke("reset", force=True)
+            # drop the frame-step baseline: a reference stuck past
+            # sonic_frame_step_max_rad rejects every frame forever. It
+            # re-seeds on the next frame; the seam returns early while
+            # sonic_target is None.
+            self.sonic_target = None
+            self.sonic_faulted = False
+            self.sonic_fault_cause = "none"
+            self.sonic_armed = False
+            self.sonic_seq = -1
+            # lock: accept path does warm += 1 from the socket
+            # thread; a bare 0 can be lost to that read-modify-write.
+            with self._dispatch_lock:
+                self.sonic_warm = 0
+            self._sonic_log("RESET (fault cleared, disarmed, seq cleared, "
+                            "frame baseline dropped, handed back to GR00T)",
+                            force=True)
+            return "SONIC:reset"
+        return "ERROR:sonic arm|on|off|reset|status"
+
+    def _sonic_log(self, msg, force=False):
+        """Rate-limited (1 Hz) SONIC-lane log — no assert, no exception.
+        `force` bypasses the rate limit for state transitions that must always
+        be visible (arm/on/off/reset/revoke/handback), the height lane's rule."""
+        now = time.monotonic()
+        if force or now - self.sonic_log_t >= 1.0:
+            self.sonic_log_t = now
+            print(f"[sonic] {msg}")
+
