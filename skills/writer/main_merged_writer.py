@@ -1174,3 +1174,14 @@ class MergedWriter:
             return tgt
         return cur + (step if d > 0.0 else -step)
 
+    def _step_r_budget(self):
+        """The §2.3 P6 derived number: how much OUTWARD splay the R leg can
+        still take after paying for the NEGATIVE shift that unloads it —
+        (15 - 1 - margin)/|ratio| - |shift|.  For a shift >= 0 the R leg is not
+        the swing leg and the number is 0.0 (the value the spec's own example
+        prints).  A budget <= 0 means: at the R ankle's stop there is no room
+        left to widen, so `step go r` is refused.  DERIVED, never measured."""
+        if self.step_c7_t >= 0.0:
+            return 0.0
+        return (-self._step_cap_r()) - abs(self.step_c7_t)
+
