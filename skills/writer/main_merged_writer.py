@@ -2088,3 +2088,266 @@ class MergedWriter:
         return np.minimum(np.maximum(out, prev - self.sonic_blend_max_step),
                           prev + self.sonic_blend_max_step)
 
+    def _sonic_write_leg_gains(self, b):
+        """THE GAIN SWAP (spec §4.1 — the single highest-value correctness
+        point).  kp AND kd ramp with the SAME b from the fill_gains() boot
+        snapshot (which already carries waist_pitch_kd_bias) to
+        KP_MUJOCO[0:15]/KD_MUJOCO[0:15].  Shipping SONIC's setpoint under GR00T
+        gains is a different controller than the one that went green: knee kp
+        200 vs 99.098, waist-pitch kp 250 vs 28.501, and a NEGATIVE waist-pitch
+        kd.  At b == 0.0 this restores the snapshot bit-exactly (x*1.0 + y*0.0).
+        """
+        if SC is None or self.sonic_kp_boot is None or self.sonic_kd_boot is None:
+            return
+        kp = self.sonic_kp_boot * (1.0 - b) + SC.KP_MUJOCO[0:15] * b
+        kd = self.sonic_kd_boot * (1.0 - b) + SC.KD_MUJOCO[0:15] * b
+        for i in range(15):
+            self.lowcmd.motor_cmd[i].kp = float(kp[i])
+            self.lowcmd.motor_cmd[i].kd = float(kd[i])
+
+    def _sonic_revoke(self, cause, force=False):
+        """The ONE funnel for every abort trigger (spec §4.2/§4.3).  Returns
+        authority to the GR00T lane — never a HOLD, never a LIMP, and NEVER
+        request_shutdown: a 250 ms socket hiccup must not end in a zero-torque
+        limp mid-walk.
+
+        force=False: mode := off, the lane is marked faulted, and b ramps to 0
+                     at the handback rate (the seam restores the boot gains when
+                     it lands).  No auto-resurrection: a faulted lane needs
+                     `sonic reset` then `sonic arm` then `sonic on`, all
+                     console-only.
+        force=True:  b := 0 instantly and the boot gains are written NOW (estop
+                     and request_shutdown).  If b was already 0 the gains are
+                     already boot, so nothing is written and the off path stays
+                     untouched.
+        """
+        if not self.sonic_faulted:
+            self.sonic_faulted = True
+            self.sonic_fault_cause = str(cause)
+            self._sonic_log(f"REVOKE ({cause}) -> returning to GR00T",
+                            force=True)
+        self.sonic_mode = 'off'
+        self.sonic_armed = False
+        if force:
+            was_live = (self.sonic_b != 0.0)
+            self.sonic_b = 0.0
+            self.sonic_prev_blend = 0.0
+            if was_live:
+                self._sonic_write_leg_gains(0.0)
+
+    def _sonic_seam(self, t, st, cmd, rc_live, rc_norm):
+        """The ONLY control-flow change in the writer (spec §4).  Called at the
+        policy tick where `policy_target` was just computed.
+
+        The first two lines are the falsifiable definition of "additive": with
+        the lane off AND b == 0 this assigns the SAME OBJECT the policy
+        returned — no copy, no arithmetic, no gain write — so the shipped GR00T
+        path is bit-identical to the writer without this lane.
+        """
+        if self.sonic_mode == 'off' and self.sonic_b == 0.0:
+            self.leg_target = self.policy_target
+            return
+
+        # revoke checks
+        if self.sonic_mode == 'on':
+            cause = None
+            now = time.monotonic()
+            if now - self.sonic_last_rx > self.sonic_stale_ms / 1000.0:
+                cause = "stale frame"
+            if cause is None and st is not None and SC is not None:
+                if SC.tilt_deg(st["quat"]) > self.sonic_tilt_fail_deg:
+                    cause = "tilt"
+            if cause is None and rc_live and \
+                    rc_norm > self.sonic_rc_override_thresh:
+                cause = "rc override"
+            if cause is None and st is not None and \
+                    st["mode_machine"] != self.sonic_mm_latch:
+                cause = "mode_machine changed"
+            if cause is None and getattr(self.reader, "_frozen", False):
+                cause = "reader frozen"
+            # overrun window: head counts ticks, base holds
+            # _overruns at the start. One window = 1 s of ticks.
+            self.sonic_overrun_head += 1
+            window = max(int(self.hz / self.decimation), 1)
+            if self.sonic_overrun_head >= window:
+                if (self._overruns - self.sonic_overrun_base) > \
+                        self.sonic_max_overruns_per_s and cause is None:
+                    cause = "overrun rate"
+                self.sonic_overrun_base = self._overruns
+                self.sonic_overrun_head = 0
+            if cause is not None:
+                self._sonic_revoke(cause)
+
+        # continuous blend, no switch
+        b = self._sonic_blend_step(t)
+        if b <= 0.0:
+            if self.sonic_prev_blend != 0.0:
+                # handback done: boot gains back, off-path returns.
+                self._sonic_write_leg_gains(0.0)
+                self._sonic_log("handback complete — GR00T gains restored",
+                                force=True)
+            self.sonic_prev_blend = 0.0
+            self.leg_target = self.policy_target
+            return
+        if self.sonic_target is None:
+            # can't happen with mode on; fall back, don't raise.
+            self.leg_target = self.policy_target
+            return
+        self.sonic_prev_blend = b
+        raw = self.policy_target * (1.0 - b) + self.sonic_target * b
+        self.leg_target = self._sonic_step_clamp(raw)
+        self._sonic_write_leg_gains(b)
+        self.sonic_last_good_t = time.monotonic()
+
+    def console_command(self, line):
+        if not line:
+            return
+        parts = line.split()
+        verb = parts[0]
+        now = time.perf_counter()
+        if verb in ("tuck", "carry", "ready", "lift", "neutral", "home"):
+            pose = "CARRY_TUCK" if verb in ("tuck", "carry") else verb.upper()
+            with self._dispatch_lock:
+                self.arm.slew_to(pose, now)
+            print(f"[arm] slew -> {pose} ({self.arm._T:.1f} s)")
+        elif verb == "arm":
+            if len(parts) < 15:
+                print("[arm] arm needs 14 floats")
+                return
+            try:
+                target = np.array([float(x) for x in parts[1:15]], dtype=np.float32)
+            except ValueError:
+                print("[arm] arm needs 14 floats")
+                return
+            duration = None
+            if len(parts) >= 16:
+                try:
+                    duration = float(parts[15])
+                except ValueError:
+                    print("[arm] duration must be a float")
+                    return
+            with self._dispatch_lock:
+                self.arm.slew_to_vector(target, now, duration)
+            print(f"[arm] slew -> RAW ({self.arm._T:.1f} s)")
+        elif verb == "freeze":
+            with self._dispatch_lock:
+                self.arm.freeze(time.perf_counter())
+            print("[arm] slew frozen (holding current interpolated target)")
+        elif verb == "q":
+            st = self.lowstate
+            if st is None:
+                print("[arm] no lowstate yet")
+                return
+            print("[q] " + " ".join(f"{v:.4f}" for v in st["q"][15:29]))
+        elif verb == "armstate":
+            a = self.arm
+            print(f"[arm] state={a.state} active={1 if a._T > 0.0 else 0} "
+                  f"rem_T={a._T:.3f}")
+        elif verb == "hold_rc":
+            if len(parts) != 2 or parts[1] not in ("on", "off"):
+                print("[rc] hold_rc on|off")
+                return
+            self.rc_hold = (parts[1] == "on")
+            print(f"[rc] hold_rc={self.rc_hold} "
+                  f"({'sticks clamped (pick interlock)' if self.rc_hold else 'sticks live'})")
+        elif verb == "payload":
+            if len(parts) != 2 or parts[1] not in ("on", "off"):
+                print("[arm] payload on|off")
+                return
+            self.payload = (parts[1] == "on")
+            print(f"[arm] payload={self.payload} "
+                  f"({'shutdown will NOT release the arms' if self.payload else 'shutdown will release to NEUTRAL'})")
+        elif verb == "rc0":
+            self.rc.zero()
+            print("[rc] cmd zeroed")
+        elif verb == "cmd_set":
+            err = self._apply_cmd_set(parts)
+            if err:
+                print(f"[cmd] {err}")
+                return
+            print(f"[cmd] {self._cmd_auto_status()}")
+        elif verb == "height":
+            err = self._apply_height(parts)
+            if err:
+                print(f"[height] {err}")
+                return
+            print(f"[height] {self._height_status()}")
+        elif verb == "stance":
+            err = self._apply_stance(parts)
+            if err:
+                print(f"[stance] {err}")
+                return
+            print(f"[stance] {self._stance_status()}")
+        elif verb == "step":
+            err = self._apply_step(parts)
+            if err:
+                print(f"[step] {err}")
+                return
+            print(f"[step] {self._step_status()}")
+        elif verb == "sonic":
+            print(self._apply_sonic(parts, from_console=True))
+        elif verb == "estop":
+            # force-release SONIC (b := 0, GR00T gains).
+            # No shutdown: the failure policy is return to GR00T.
+            self._sonic_revoke("estop", force=True)
+            print("[estop] SONIC lane force-released -> GR00T gains restored")
+        elif verb == "simulate_fatal":
+            self._simulate_fatal = True
+            print("[fatal] SIMULATED FATAL armed — next loop tick raises")
+        elif verb in ("status", "?"):
+            self.print_status()
+        elif verb == "quit":
+            print("[console] quit requested")
+            self.request_shutdown("console quit")
+        else:
+            print("commands: tuck|carry ready lift neutral home | arm <14f> [dur] | "
+                  "freeze | q | armstate | hold_rc on|off | payload on/off | "
+                  "cmd_set off|vx vy omega [dur] | height <m> [dur] | "
+                  "height off | stance <deg> | stance off | "
+                  "step shift <deg> | step go l|r <cm> | step off | "
+                  "sonic arm|on|off|reset|status | estop | "
+                  "simulate_fatal | rc0 | status | quit")
+
+    def print_status(self):
+        st = self.lowstate
+        if st is None:
+            print("no lowstate yet")
+            return
+        key = self.policy.last_key if self.policy else "no-policy"
+        cmd = self.rc.cmd if self.rc else np.zeros(3)
+        print(f"[status] state={self.state} loop={self.loop_count} "
+              f"policy={key} ticks={self.policy_ticks} "
+              f"cmd=({cmd[0]:+.2f},{cmd[1]:+.2f},{cmd[2]:+.2f}) "
+              f"arm={self.arm.state} mode_machine={st['mode_machine']} "
+              f"payload={self.payload} hold={int(self.rc_hold)} "
+              f"{self._cmd_auto_status()} {self._height_status()} "
+              f"{self._stance_status()} {self._sonic_status()} {self._step_status()}")
+
+    # ------------------------------------------------------------ control
+
+    def request_shutdown(self, cause):
+        # SONIC first: b := 0 and the GR00T gains written immediately,
+        # so the shutdown tail never publishes SONIC gains.
+        self._sonic_revoke('shutdown', force=True)
+        self._shutdown = True
+        self._shutdown_cause = cause
+        self._shutting_down = True   # rc ignored
+        self.cmd_auto_active = False  # belt and braces
+        self.cmd_auto[:] = 0.0
+        # height: drop the latch on abort,
+        # so Phase-1 lifts legs.
+        self.height_active = False
+        self.height_target = self.height_stand
+        self.height_suspended = False   # stashed squat never outlives shutdown
+        # step: abort first and restore the boot encoding before the
+        # ascend, so Phase-1 measures the boot stance.
+        if self._stance_base_policy is not None:
+            if self.step_phase not in ("IDLE", "ABORT"):
+                self._abort_step("shutdown")
+            self._step_reset(force=False)
+        # stance: zeroing restores the boot encoding before the ascend, so
+        # the legs finish in the pose _legs_ascended measures rather than a
+        # barely legal splay.
+        if self._stance_base_policy is not None:
+            self._write_stance(0.0)
+
