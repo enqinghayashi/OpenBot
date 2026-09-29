@@ -1349,3 +1349,15 @@ class MergedWriter:
             self._step_log("off -> boot encoding restored (bit-exact)",
                            force=True)
 
+    def _abort_step(self, reason):
+        """Self-abort (a tilt, or a shutdown while in flight): the trajectory
+        stops, the encoding returns to BOOT, and the mandated line prints the
+        phase and shift it stopped in."""
+        phase = self.step_phase
+        shift = self.step_shift_deg
+        self._step_reset(force=False)
+        self.step_phase = "ABORT"
+        self.step_abort_reason = reason
+        self._step_log("ABORT %s phase=%s shift=%+.1f — relaxing to boot "
+                       "encoding" % (reason, phase, shift), force=True)
+
