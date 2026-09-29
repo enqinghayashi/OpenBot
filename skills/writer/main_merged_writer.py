@@ -1131,3 +1131,13 @@ class MergedWriter:
         except (KeyError, IndexError, TypeError, ValueError):
             return None, None
 
+    def _step_curve_c7(self, d1_deg, w_m):
+        """The closed-chain curve (§2.3 P5): with both feet planted the
+        widening W = 0.4955*(sin d1 - sin d7) is FIXED, so d7 is a function of
+        d1.  Only poses ON this curve keep both feet planted — any other pose
+        demands a foot SLIDE, which §3.1 proves is impossible (~20 N available
+        vs ~85-170 N needed).  DERIVED, and the most important safety rule in
+        the lane."""
+        s = math.sin(d1_deg * math.pi / 180.0) - w_m / STEP_SEP_LEVER_M
+        return math.degrees(math.asin(min(max(s, -1.0), 1.0)))
+
