@@ -1213,3 +1213,101 @@ class MergedWriter:
             cap = self.step_c7_t - self._step_cap_r()
         return max(0.0, min(raw, cap)), raw, cap
 
+    def _apply_step(self, parts):
+        """step parse+apply, shared by socket and console (the same lockstep
+        split that keeps stance/height/cmd_set identical at both sites).
+        Returns an error message or None on success:
+          step shift <deg>    same-sign hip-roll weight shift; clamped to the
+                              operator band, SHIPPED SHUT (band 0.0)
+          step go <l|r> <cm>  lift + place that foot; DONE = STARTED
+                              (completion is polled via `step status`)
+          step off            abort anything in flight, restore the BOOT
+                              encoding bit-exactly (the `stance off` property)
+          step status         no-op here; the caller prints the fragment
+
+        Every refusal is FAIL-CLOSED and names its reason (§6.2): a refusal
+        never writes an array, so the measured column does not move."""
+        if len(parts) >= 2 and parts[1] == "status":
+            return None
+        if self._stance_base_policy is None:
+            return "step unavailable: no policy (stage 0)"
+        if len(parts) == 2 and parts[1] == "off":
+            self._step_reset(force=True)
+            return None
+        if len(parts) == 3 and parts[1] == "shift":
+            try:
+                deg = float(parts[2])
+            except ValueError:
+                return "step needs a float"
+            if not np.isfinite(deg):
+                return "step value must be finite"
+            if self.stance_deg != 0.0:
+                return "step shift needs stance idle"
+            if self.step_go_pending or self.step_phase not in (
+                    "IDLE", "DONE", "SHIFT", "ABORT"):
+                return "step busy: %s" % self.step_phase
+            deg = min(max(deg, -self.step_shift_deg_max),
+                      self.step_shift_deg_max)
+            lo, hi = self._step_shift_limits()
+            deg = min(max(deg, lo), hi)   # ankle stop clamp
+            if deg != self.step_shift_target:
+                self.step_tau0 = None     # fresh baseline
+            self.step_shift_target = deg
+            self.step_c1_t = self._step_target_c1(self.step_w_m, deg)
+            self.step_c7_t = self._step_curve_c7(self.step_c1_t, self.step_w_m)
+            self.step_leg = ""
+            self.step_hold_t = None
+            self.step_phase = "SHIFT"
+            self._step_write()
+            return None
+        if len(parts) == 4 and parts[1] == "go":
+            leg = parts[2].lower()
+            try:
+                cm = float(parts[3])
+            except ValueError:
+                return "step needs a float"
+            if not np.isfinite(cm):
+                return "step value must be finite"
+            if leg not in ("l", "r"):
+                return "step go needs l|r"
+            if self.step_go_pending or self.step_phase not in ("IDLE", "DONE"):
+                return "step busy: %s" % self.step_phase
+            if self.payload:
+                return "step go refuses with payload set"
+            if self.step_shift_deg_max <= 0.0 or self.step_cm_max <= 0.0:
+                return ("step go refuses: band shut (step_shift_deg_max=%.1f "
+                        "step_cm_max=%.1f) — arm both in the live config"
+                        % (self.step_shift_deg_max, self.step_cm_max))
+            sgn = 1.0 if leg == "l" else -1.0
+            if sgn * self.step_shift_target < self.step_min_shift_deg:
+                return ("step go needs an installed shift >= %.1f deg "
+                        "(have %+.1f for leg %s)"
+                        % (self.step_min_shift_deg, self.step_shift_target,
+                           leg))
+            self.step_leg = leg
+            self.step_cm_req = min(max(cm, 0.0), self.step_cm_max)
+            tgt, raw, cap = self._step_splay_target(leg,
+                                                    self.step_cm_req * 0.01)
+            self._step_go_log()
+            if cap <= 0.0:
+                self.step_leg = ""
+                return ("step go %s refuses: no outward ankle budget left "
+                        "(commanded %.1f deg splay, cap %.2f deg); hold at "
+                        "the current separation" % (leg, raw, cap))
+            if leg == "l":
+                self.step_splay_l_t = tgt
+                self.step_splay_r_t = 0.0
+            else:
+                self.step_splay_r_t = tgt
+                self.step_splay_l_t = 0.0
+            self.step_k_t = min(self.step_clearance_cm
+                                / STEP_LIFT_DZ_CM_PER_DEG,
+                                self.step_knee_max_deg)
+            self.step_tau0 = None       # fresh baseline
+            self.step_hold_t = None
+            self.step_go_pending = True
+            self.step_phase = "SHIFT"
+            self._step_write()
+            return None
+        return "step off | step shift <deg> | step go l|r <cm> | step status"
+
