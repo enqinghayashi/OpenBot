@@ -86,3 +86,40 @@ class ObsBuilder:
                 - 2.0 * qw * np.cross(qvec, v)
                 + 2.0 * qvec * np.dot(qvec, v)).astype(np.float32)
 
+    def projected_gravity(self, quat_wxyz):
+        return self.quat_rotate_inverse(quat_wxyz, np.array([0.0, 0.0, -1.0]))
+
+    # --- frames ---
+
+    def build_frame(self, q, dq, quat_wxyz, gyro, cmd, prev_action=None):
+        """86-dim frame from lowstate slices + raw rc cmd. q/dq are 35-length
+        motor arrays (only [0:29] used)."""
+        f = self._frame
+        f[0:3] = np.asarray(cmd, dtype=np.float32) * self.cmd_scale
+        f[3] = self.height_cmd
+        f[4:7] = self.rpy_cmd
+        f[7:10] = np.asarray(gyro, dtype=np.float32) * self.ang_vel_scale
+        f[10:13] = self.projected_gravity(quat_wxyz)
+        f[13:42] = (np.asarray(q, dtype=np.float32)[0:NUM_DOF] - self.default_padded) \
+            * self.dof_pos_scale
+        f[42:71] = np.asarray(dq, dtype=np.float32)[0:NUM_DOF] * self.dof_vel_scale
+        f[71:86] = self.prev_action if prev_action is None else prev_action
+        return f
+
+    def push(self, q, dq, quat_wxyz, gyro, cmd, action):
+        """Append a new frame; returns the full 516-D obs, oldest-first.
+
+        `action` = the policy's PREVIOUS output (15-D), written to [71:86]
+        before the policy runs — reference feedback ordering.
+        """
+        self.prev_action = np.asarray(action, dtype=np.float32)
+        self.build_frame(q, dq, quat_wxyz, gyro, cmd, self.prev_action)
+        # shift left: newest lands at the END
+        # zeros till 6 pushes, ref deque
+        self.obs = np.roll(self.obs, -FRAME_DIM)
+        self.obs[-FRAME_DIM:] = self._frame
+        return self.obs
+
+    def reset(self):
+        self.obs[:] = 0.0
+        self.prev_action[:] = 0.0
