@@ -1185,3 +1185,31 @@ class MergedWriter:
             return 0.0
         return (-self._step_cap_r()) - abs(self.step_c7_t)
 
+    def _step_splay_target(self, leg, cm_m):
+        """Map a commanded widening <cm> to a hip-roll splay, then clamp it by
+        the PLANT caps (P4) — which are asymmetric for L and R and must NOT be
+        symmetrised.  Returns (clamped splay, raw splay, cap), degrees.
+
+        Lever law: the widening is 0.4955*(sin d1 - sin d7) m, so the swing
+        leg's target hip roll is asin(sin(held) +/- cm/0.4955) and the splay is
+        its difference from the held value.  (`held` is the TARGET of the
+        leg that stays planted, so a `go` issued before the shift has settled
+        is still planned against the settled shift.)  The spec's log template
+        also quotes this law as 86.5 cm; the two disagree by 1.746x and this
+        build uses the self-consistent 0.4955 m lever — see _step_detail."""
+        if leg == "l":
+            held = self.step_c7_t
+            want = math.degrees(math.asin(min(max(
+                math.sin(math.radians(held)) + cm_m / STEP_SEP_LEVER_M,
+                -1.0), 1.0)))
+            raw = want - held
+            cap = self._step_cap_l() - self.step_c1_t
+        else:
+            held = self.step_c1_t
+            want = math.degrees(math.asin(min(max(
+                math.sin(math.radians(held)) - cm_m / STEP_SEP_LEVER_M,
+                -1.0), 1.0)))
+            raw = held - want
+            cap = self.step_c7_t - self._step_cap_r()
+        return max(0.0, min(raw, cap)), raw, cap
+
