@@ -214,3 +214,7 @@ def main():
               f"PASS={r['pass']} FAIL={r['fail']})")
     print(f"\n{len(results) - len(bad)}/{len(results)} PINS_HOLD")
     return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
