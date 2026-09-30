@@ -2088,3 +2088,20 @@ class MergedWriter:
         return np.minimum(np.maximum(out, prev - self.sonic_blend_max_step),
                           prev + self.sonic_blend_max_step)
 
+    def _sonic_write_leg_gains(self, b):
+        """THE GAIN SWAP (spec §4.1 — the single highest-value correctness
+        point).  kp AND kd ramp with the SAME b from the fill_gains() boot
+        snapshot (which already carries waist_pitch_kd_bias) to
+        KP_MUJOCO[0:15]/KD_MUJOCO[0:15].  Shipping SONIC's setpoint under GR00T
+        gains is a different controller than the one that went green: knee kp
+        200 vs 99.098, waist-pitch kp 250 vs 28.501, and a NEGATIVE waist-pitch
+        kd.  At b == 0.0 this restores the snapshot bit-exactly (x*1.0 + y*0.0).
+        """
+        if SC is None or self.sonic_kp_boot is None or self.sonic_kd_boot is None:
+            return
+        kp = self.sonic_kp_boot * (1.0 - b) + SC.KP_MUJOCO[0:15] * b
+        kd = self.sonic_kd_boot * (1.0 - b) + SC.KD_MUJOCO[0:15] * b
+        for i in range(15):
+            self.lowcmd.motor_cmd[i].kp = float(kp[i])
+            self.lowcmd.motor_cmd[i].kd = float(kd[i])
+
