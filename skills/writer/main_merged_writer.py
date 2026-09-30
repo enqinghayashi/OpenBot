@@ -1691,3 +1691,75 @@ class MergedWriter:
     # path: same ndarray, same gains, same flow.
     # no asserts; config reads use cfg.get so sparse configs degrade.
 
+    def _init_sonic_state(self):
+        """SONIC-lane state + tunables (spec §3, §6).  FORCES the lane disabled
+        when sonic_core failed to import: the lane must degrade to "absent",
+        never to "half-present"."""
+        self.sonic_lane_enabled = bool(self.cfg.get("sonic_lane_enabled", False))
+        if SC is None:
+            self.sonic_lane_enabled = False    # no tables, no lane
+        # state vars
+        self.sonic_mode = 'off'
+        self.sonic_armed = False
+        self.sonic_b = 0.0
+        self.sonic_target = None
+        self.sonic_last_rx = 0.0
+        self.sonic_rx = 0
+        self.sonic_rej = 0
+        self.sonic_seq = -1
+        self.sonic_warm = 0
+        self.sonic_last_good_t = 0.0
+        self.sonic_faulted = False
+        self.sonic_fault_cause = "none"
+        self.sonic_prev_blend = 0.0
+        self.sonic_has_frame = False
+        self.sonic_log_t = 0.0
+        self.sonic_overrun_head = 0
+        self.sonic_overrun_base = 0
+        self.sonic_kp_boot = None     # filled by fill_gains()
+        self.sonic_kd_boot = None
+        # revoke trigger needs a latched mode_machine.
+        self.sonic_mm_latch = None
+        # tunables, read through cfg.get with the defaults here.
+        self.sonic_stale_ms = float(self.cfg.get("sonic_stale_ms", 150))
+        self.sonic_entry_ramp_s = float(self.cfg.get("sonic_entry_ramp_s", 1.0))
+        self.sonic_handback_ramp_s = float(
+            self.cfg.get("sonic_handback_ramp_s", 0.5))
+        self.sonic_blend_max_step = float(
+            self.cfg.get("sonic_blend_max_step_rad", 0.10))
+        self.sonic_warmup_frames = int(self.cfg.get("sonic_warmup_frames", 100))
+        # stale_ms alone bounds the warmup window.
+        self.sonic_enable_tilt_deg = float(
+            self.cfg.get("sonic_enable_tilt_deg", 15.0))
+        self.sonic_tilt_fail_deg = float(
+            self.cfg.get("sonic_tilt_fail_deg", 22.0))
+        self.sonic_enable_tol_rad = float(
+            self.cfg.get("sonic_enable_tol_rad", 0.35))
+        self.sonic_rc_override_thresh = float(
+            self.cfg.get("sonic_rc_override_thresh", 0.1))
+        self.sonic_frame_step_max = float(
+            self.cfg.get("sonic_frame_step_max_rad", 0.35))
+        self.sonic_target_abs_max = float(
+            self.cfg.get("sonic_target_abs_max_rad", 3.0))
+        self.sonic_arm_mode = str(self.cfg.get("sonic_arm_mode", "park"))
+        self.sonic_max_overruns_per_s = float(
+            self.cfg.get("sonic_max_overruns_per_s", 5))
+        # gate probe: opt-in, '' = off, so no file, no dir, no reply change.
+        # forensics only: reads state and appends JSONL, never writes a
+        # gain, target or mode. Runs on the console thread, not the rt loop.
+        self.sonic_gate_probe_dir = str(
+            self.cfg.get("sonic_gate_probe_dir", ""))
+        self.sonic_gate_probe_max = int(
+            self.cfg.get("sonic_gate_probe_max", 512))
+        self.sonic_gate_probe_fh = None      # lazy open
+        self.sonic_gate_probe_path = None
+        self.sonic_gate_probe_n = 0
+        self.sonic_gate_dev = None
+        if self.sonic_lane_enabled:
+            self._sonic_log("lane enabled (mode=off, disarmed)")
+        else:
+            print(f"[sonic] lane disabled (cfg sonic_lane_enabled="
+                  f"{self.cfg.get('sonic_lane_enabled', False)}, "
+                  f"sonic_core={'ok' if SC is not None else 'MISSING'})",
+                  flush=True)
+
