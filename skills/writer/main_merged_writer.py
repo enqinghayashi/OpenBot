@@ -1410,3 +1410,25 @@ class MergedWriter:
             % (self.step_dtau, bar, abs(self.step_dtau) / abs(self.step_tau0),
                self._step_n_swing(tau_l, tau_r)))
 
+    def _step_go_log(self):
+        """The §2.3 P6 / §4 derived lines: the mechanism's ceiling, the
+        requested widening, the R leg's outward budget and the prediction that
+        the balance policy absorbs part of every command (the sim's own
+        'stance 4' settled at 86% of command).  Fires on every `step go`,
+        including a refused one, so the refusal carries its number."""
+        ank = float("nan")
+        st = getattr(self, "lowstate", None)
+        m = self._step_meas(st) if st is not None else None
+        if m is not None:
+            ank = m["ank11"]
+        self._step_log(
+            "derived cap: this mechanism's max WIDENING ~%.1f cm on top of the "
+            "boot stance — i.e. a total ankle-to-ankle separation of ~52.2 cm "
+            "(sim, pinned model §2.1), NOT a %.1f cm total; requested %.1f cm "
+            "of widening; the balance policy may "
+            "absorb part of every command (sim 'stance 4' settled at 86%% of "
+            "command)." % (STEP_TWO_STEP_MAX_CM, STEP_TWO_STEP_MAX_CM,
+                           self.step_cm_req), force=True)
+        self._step_log("cap: R-leg outward budget %.2f deg (ankle %+.2f of 15)"
+                       % (self._step_r_budget(), ank), force=True)
+
