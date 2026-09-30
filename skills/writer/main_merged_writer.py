@@ -1919,3 +1919,118 @@ class MergedWriter:
         elif self.sonic_warm < self.sonic_warmup_frames:
             self.sonic_warm += 1         # saturates
 
+    def _sonic_gate_probe(self):
+        """FORENSIC capture of the `sonic on` ENABLE-GATE operand (spec §8.1
+        FINDING-8; operator directive 2026-09-12 "measure, then decide").
+
+        Appends ONE JSONL record per `sonic on` invocation that reaches the
+        gate head — armed, unfaulted, and at least one frame ever accepted.
+        That INCLUDES invocations the warmup / freshness / tilt / tolerance
+        checks are about to REFUSE, which is the point: at shipped constants
+        the warm counter can stall, so a capture placed at the tolerance
+        comparison never fires and the operator gets an empty file.
+
+        OPT-IN and OFF BY DEFAULT.  With sonic_gate_probe_dir == "" (the
+        shipped value) this returns at its first statement: no file, no
+        handle, no directory, no reply byte changed.  It is called ONLY from
+        the `sonic on` branch, which is console-only (§2.2), so this I/O is
+        console-thread and human-command-rate — never on the 250 Hz rt path.
+
+        WHICH REFUSAL FIRED is determined by the record's OWN captured fields,
+        with no duplicated gate logic to drift: warm < warmup_frames => the
+        warmup refusal; last_rx_age_ms > sonic_stale_ms => the freshness
+        refusal; tilt_deg > sonic_enable_tilt_deg => the tilt refusal;
+        have_target False => "sonic no target"; dev > tol => the tolerance
+        refusal.  The authoritative reply string is the console line printed
+        by console_command at the same instant; it is not stored here.
+
+        Degrades on every failure: no assert, never raises, and a failure can
+        neither change a reply nor touch lane state.  allow_nan=False is used
+        DELIBERATELY: the default (allow_nan=True) does NOT raise, it persists
+        the bare token NaN (measured), which is not valid RFC-8259 JSON and is
+        rejected by jq / pandas / any non-Python reader.  A non-serialisable
+        record is DROPPED and logged, never written as an unparseable line.
+        """
+        if not self.sonic_gate_probe_dir:
+            return
+        try:
+            if self.sonic_gate_probe_n >= self.sonic_gate_probe_max:
+                return
+            now = time.monotonic()
+            st = self.lowstate
+            tg = (None if self.sonic_target is None
+                  else np.asarray(self.sonic_target, dtype=np.float64))
+            lg = (None if self.leg_target is None
+                  else np.asarray(self.leg_target, dtype=np.float64))
+            diff = None if (tg is None or lg is None) else (tg - lg)
+            rec = {
+                "schema": 1,
+                "stage": "gate-head",
+                "pid": os.getpid(),
+                "run_t0": getattr(self, "t0", None),
+                "t_mono": now,
+                "t_wall": time.time(),
+                "dev": (None if self.sonic_gate_dev is None
+                        else float(self.sonic_gate_dev)),
+                "tol": float(self.sonic_enable_tol_rad),
+                "have_target": bool(tg is not None),
+                "sonic_target": None if tg is None else tg.tolist(),
+                "leg_target": None if lg is None else lg.tolist(),
+                "diff": None if diff is None else diff.tolist(),
+                "argmax": (None if diff is None
+                           else int(np.argmax(np.abs(diff)))),
+                "warm": int(self.sonic_warm),
+                "warmup_frames": int(self.sonic_warmup_frames),
+                "armed": bool(self.sonic_armed),
+                "mode": str(self.sonic_mode),
+                "b": float(self.sonic_b),
+                "faulted": bool(self.sonic_faulted),
+                "fault_cause": str(self.sonic_fault_cause),
+                "has_frame": bool(self.sonic_has_frame),
+                "seq": int(self.sonic_seq),
+                "rx": int(self.sonic_rx),
+                "rej": int(self.sonic_rej),
+                "last_rx_age_ms": (0.0 if self.sonic_last_rx <= 0.0 else
+                                   float((now - self.sonic_last_rx) * 1000.0)),
+                "tilt_deg": None,
+                "mode_machine": None,
+                "tick": None,
+                "gyro_max_abs": None,
+                "dq_leg_max_abs": None,
+            }
+            # settled-stand observables from the same lowstate the
+            # tilt gate reads: not tilting, not rotating, legs still.
+            # None, never 0.0: a default would fake a perfect settle.
+            try:
+                if st is not None:
+                    rec["mode_machine"] = int(st["mode_machine"])
+                    rec["tick"] = int(st["tick"])
+                    if SC is not None:
+                        rec["tilt_deg"] = float(SC.tilt_deg(st["quat"]))
+                    rec["gyro_max_abs"] = float(np.max(np.abs(
+                        np.asarray(st["gyro"], dtype=np.float64))))
+                    rec["dq_leg_max_abs"] = float(np.max(np.abs(
+                        np.asarray(st["dq"][0:15], dtype=np.float64))))
+            except Exception:
+                pass
+            if self.sonic_gate_probe_fh is None:
+                os.makedirs(self.sonic_gate_probe_dir, exist_ok=True)
+                self.sonic_gate_probe_path = os.path.join(
+                    self.sonic_gate_probe_dir,
+                    "sonic_gate_probe_%s_pid%d.jsonl" % (
+                        time.strftime("%Y%m%d_%H%M%S"), os.getpid()))
+                self.sonic_gate_probe_fh = open(
+                    self.sonic_gate_probe_path, "a", encoding="utf-8")
+            self.sonic_gate_probe_fh.write(
+                json.dumps(rec, allow_nan=False) + "\n")
+            self.sonic_gate_probe_fh.flush()
+            self.sonic_gate_probe_n += 1
+        except Exception:
+            # never touch the reply or lane state. Drop the handle
+            # so the next try reopens; log the lost row.
+            try:
+                self.sonic_gate_probe_fh = None
+                self._sonic_log("gate probe: record dropped")
+            except Exception:
+                pass
+
