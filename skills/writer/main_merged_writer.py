@@ -1502,3 +1502,34 @@ class MergedWriter:
                gain),
             force=True)
 
+    def _step_status(self):
+        """Inline status fragment, same shape as _stance_status.  The terminal
+        text names the OUTCOME (§1.4: `step go` returns DONE = STARTED and
+        completion is polled here).  Ends with the honesty suffix exactly once
+        — the fragment reports a body state (a phase and a shift), so §3 says
+        the suffix is not optional."""
+        ph = self.step_phase
+        nan = float("nan")
+        if ph == "IDLE":
+            frag = "step=IDLE shift=%+.1f" % self.step_shift_deg
+        elif ph == "SHIFT":
+            frag = "step=SHIFT(%.1f)" % self.step_shift_target
+        elif ph == "HOLD":
+            frag = "step=HOLD(unload dtau=%+.1f bar %.1f)" % (
+                self.step_dtau if self.step_dtau is not None else nan,
+                (self.step_unload_tau_x * abs(self.step_tau0)
+                 if self.step_tau0 is not None else nan))
+        elif ph == "LIFT":
+            frag = "step=LIFT(%s K=%.1f)" % (self.step_leg, self.step_k_t)
+        elif ph in ("PLACE", "RECENTRE"):
+            frag = "step=%s(%s %.2fcm)" % (ph, self.step_leg,
+                                           self.step_cm_req)
+        elif ph == "DONE":
+            frag = "step=DONE(%s %.2fcm shift=%+.1f)" % (
+                self.step_leg, self.step_cm_ach, self.step_shift_deg)
+        elif ph == "ABORT":
+            frag = "step=ABORT(%s)" % self.step_abort_reason
+        else:
+            frag = "step=%s" % ph
+        return "%s %s" % (frag, STEP_HONESTY_SUFFIX)
+
