@@ -1533,3 +1533,140 @@ class MergedWriter:
             frag = "step=%s" % ph
         return "%s %s" % (frag, STEP_HONESTY_SUFFIX)
 
+    def _step_advance(self, t, st):
+        """The step lane's tick hook (§1.3h) — called every 250 Hz tick from
+        `_tick`, immediately BEFORE the policy tick, so the encoding it writes
+        is the one the policy consumes in the SAME frame.
+
+        ADDITIVE: the first line returns unless a step verb has armed the lane
+        (phase IDLE/ABORT) or the boot snapshot is absent, so with the lane
+        untouched the byte path is the pre-step writer's.  Every exit is
+        fail-closed: no state, no motion, no exception."""
+        if self._stance_base_policy is None:
+            return
+        ph0 = self.step_phase
+        if ph0 in ("IDLE", "ABORT"):
+            return
+        meas = self._step_meas(st)
+        if meas is None:
+            return
+        # tilt abort: self-aborts to boot, never waits.
+        self.step_tilt = None
+        if SC is not None:
+            try:
+                self.step_tilt = float(SC.tilt_deg(st["quat"]))
+            except Exception:
+                self.step_tilt = None
+        if self.step_tilt is not None and self.step_tilt > self.step_tilt_deg:
+            self._abort_step("tilt %.1f" % self.step_tilt)
+            return
+        tau_l, tau_r = self._step_taus(st)
+        self.step_dtau = (tau_l - tau_r
+                          if (tau_l is not None and tau_r is not None)
+                          else None)
+        # baseline = the first tick, before any slew, so the unload gate
+        # compares against this run's own loading.
+        if self.step_tau0 is None:
+            if tau_l is not None and tau_r is not None:
+                self.step_tau0 = tau_l - tau_r
+                self.step_hold_t = None
+                self._step_log(
+                    "tau0 captured at P0: tauL=%+.3f tauR=%+.3f dtau0=%+.3f "
+                    "(the run's own baseline — the doc's 1.32 was under "
+                    "stance 4)" % (tau_l, tau_r, self.step_tau0), force=True)
+        dt = self.dt
+        if self.step_phase in ("SHIFT", "HOLD"):
+            # slew the shift in, hold until unload gate opens.
+            if self.step_w_m == 0.0:
+                self.step_c1 = self._step_approach(
+                    self.step_c1, self.step_c1_t, self.step_slew_deg_s, dt)
+                self.step_c7 = self._step_approach(
+                    self.step_c7, self.step_c7_t, self.step_slew_deg_s, dt)
+                settled = (self.step_c1 == self.step_c1_t
+                           and self.step_c7 == self.step_c7_t)
+            else:
+                self.step_c1 = self._step_approach(
+                    self.step_c1, self.step_c1_t, self.step_slew_deg_s, dt)
+                self.step_c7 = self._step_curve_c7(self.step_c1, self.step_w_m)
+                settled = (self.step_c1 == self.step_c1_t)
+            self.step_shift_deg = 0.5 * (self.step_c1 + self.step_c7)
+            if not self.step_go_pending:
+                if settled:
+                    self.step_phase = "IDLE"
+            else:
+                if settled:
+                    self.step_phase = "HOLD"
+                if self._step_gate_ok():
+                    if self.step_hold_t is None:
+                        self.step_hold_t = t
+                    if settled and (t - self.step_hold_t) >= self.step_hold_s:
+                        self.step_phase = "LIFT"
+                        self.step_k_t = min(
+                            self.step_clearance_cm / STEP_LIFT_DZ_CM_PER_DEG,
+                            self.step_knee_max_deg)
+                        self._step_log(
+                            "unload PROVEN: dtau=%+.3f (%.2fx)"
+                            % (self.step_dtau,
+                               abs(self.step_dtau) / abs(self.step_tau0)),
+                            force=True)
+                else:
+                    self.step_hold_t = None
+                    self._step_hold_log(tau_l, tau_r)
+        elif self.step_phase == "LIFT":
+            # lift the swing foot on the plane law.
+            # stance leg holds the shift
+            self.step_k = self._step_approach(
+                self.step_k, self.step_k_t, self.step_lift_slew_deg_s, dt)
+            self.step_splay_l = self._step_approach(
+                self.step_splay_l, self.step_splay_l_t, self.step_slew_deg_s,
+                dt)
+            self.step_splay_r = self._step_approach(
+                self.step_splay_r, self.step_splay_r_t, self.step_slew_deg_s,
+                dt)
+            if (self.step_k == self.step_k_t
+                    and self.step_splay_l == self.step_splay_l_t
+                    and self.step_splay_r == self.step_splay_r_t):
+                self.step_phase = "PLACE"
+                self.step_k_t = 0.0
+        elif self.step_phase == "PLACE":
+            # lower the triple; plant caps already clamped it flat.
+            self.step_k = self._step_approach(self.step_k, 0.0,
+                                              self.step_lift_slew_deg_s, dt)
+            self.step_splay_l = self._step_approach(
+                self.step_splay_l, self.step_splay_l_t, self.step_slew_deg_s,
+                dt)
+            self.step_splay_r = self._step_approach(
+                self.step_splay_r, self.step_splay_r_t, self.step_slew_deg_s,
+                dt)
+            if (self.step_k == 0.0
+                    and self.step_splay_l == self.step_splay_l_t
+                    and self.step_splay_r == self.step_splay_r_t):
+                # planted: fold the splay into (c1, c7) and lock in the
+                # widening, which then constrains every later pose.
+                self.step_c1 = self.step_c1 + self.step_splay_l
+                self.step_c7 = self.step_c7 - self.step_splay_r
+                self.step_splay_l = 0.0
+                self.step_splay_r = 0.0
+                self.step_w_m = STEP_SEP_LEVER_M * (
+                    math.sin(math.radians(self.step_c1))
+                    - math.sin(math.radians(self.step_c7)))
+                self.step_cm_ach = 100.0 * self.step_w_m
+                self.step_c1_t = self._step_symmetric_d1(self.step_w_m)
+                self.step_c7_t = -self.step_c1_t
+                self.step_phase = "RECENTRE"
+        elif self.step_phase == "RECENTRE":
+            # walk to the symmetric end pose (d1=+h, d7=-h).
+            # CoM centred; every pose on the curve, no sliding.
+            self.step_c1 = self._step_approach(
+                self.step_c1, self.step_c1_t, self.step_slew_deg_s, dt)
+            self.step_c7 = self._step_curve_c7(self.step_c1, self.step_w_m)
+            self.step_shift_deg = 0.5 * (self.step_c1 + self.step_c7)
+            if self.step_c1 == self.step_c1_t:
+                self.step_c7_t = self.step_c7
+                self.step_cm_ach = 100.0 * STEP_SEP_LEVER_M * (
+                    math.sin(math.radians(self.step_c1))
+                    - math.sin(math.radians(self.step_c7)))
+                self.step_phase = "DONE"
+        self._step_write()
+        self._step_detail(st, force=(self.step_phase != ph0))
+
