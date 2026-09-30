@@ -1670,3 +1670,24 @@ class MergedWriter:
         self._step_write()
         self._step_detail(st, force=(self.step_phase != ph0))
 
+    def _legs_ascended(self, st):
+        """True when the measured leg joints (motors 0-11) are within
+        height_ascend_tol of the POLICY-MEASURED standing pose — a base-height
+        proxy that needs no FK.  shutdown() holds the policy live until this is
+        True (bounded by height_ascend_timeout_s) before the limp frame.
+
+        The reference is `height_stand_q`, built from config
+        `policy_stand_q_legs` (the measured fixed point, see _init_height_state)
+        — NOT the YAML default_angles, which the real policy misses by up to
+        0.44 rad (FINDING 2: the old predicate was unsatisfiable at standing)."""
+        if st is None:
+            return False
+        q = st["q"][0:12]
+        return bool(np.all(np.abs(q - self.height_stand_q[0:12])
+                           <= self.height_ascend_tol))
+
+    # --------------------------------------------------- additive SONIC lane
+    # additive: lane off and b == 0 is bit-identical to the GR00T-only
+    # path: same ndarray, same gains, same flow.
+    # no asserts; config reads use cfg.get so sparse configs degrade.
+
