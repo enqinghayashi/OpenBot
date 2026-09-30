@@ -110,3 +110,79 @@ def quat_roll_pitch(q_wxyz):
     roll = float(np.arctan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y)))
     pitch = float(np.arcsin(np.clip(2.0 * (w * y - z * x), -1.0, 1.0)))
     return roll, pitch
+
+
+class Rig:
+    """The pinned scene + the real Balance policy + the writer's real PD."""
+
+    def __init__(self, xml, onnx_dir, cfg):
+        self.model = mujoco.MjModel.from_xml_path(xml)
+        self.data = mujoco.MjData(self.model)
+        self.sim_dt = self.model.opt.timestep
+        self.policy_every = max(1, int(round(0.02 / self.sim_dt)))
+
+        jnt = {self.model.joint(i).name: i for i in range(self.model.njnt)}
+        act = {self.model.actuator(i).name: i for i in range(self.model.nu)}
+        self.qid = np.zeros(15, dtype=int)
+        self.vid = np.zeros(15, dtype=int)
+        self.aid = np.full(15, -1, dtype=int)
+        for i, nm in enumerate(POLICY_JOINTS):
+            j = jnt[nm]
+            self.qid[i] = self.model.jnt_qposadr[j]
+            self.vid[i] = self.model.jnt_dofadr[j]
+            if nm in act:
+                self.aid[i] = act[nm]
+        if not np.all(self.aid >= 0):
+            raise RuntimeError("missing actuators for the 15 policy joints")
+
+        bid = {self.model.body(i).name: i for i in range(self.model.nbody)}
+        self.foot_bid = (bid["left_ankle_roll_link"], bid["right_ankle_roll_link"])
+        self.pelvis_bid = bid["pelvis"]
+
+        self.obs = ObsBuilder(cfg)
+        self.pol = PolicyRunner(cfg, onnx_dir)
+        self.kp = np.array(cfg["leg_kp"], dtype=np.float32)
+        self.kd = np.array(cfg["leg_kd"], dtype=np.float32)
+        self.defaults = np.array(cfg["default_angles"], dtype=np.float32)
+
+        self.arm_act = [i for i in range(self.model.nu) if i not in self.aid.tolist()]
+        self.arm_kp = np.full(len(self.arm_act), 100.0)
+        self.arm_kd = np.full(len(self.arm_act), 0.5)
+
+        # boot encodings the lane snapshots
+        # 2 separate copies
+        self.base_pol = self.pol.defaults.copy()
+        self.base_obs = self.obs.default_padded.copy()
+
+    # --- measuring the feet ----------------------------------------------
+    def separation(self):
+        """(world 3-D, pelvis-frame 3-D, pelvis-frame lateral dy) foot gap.
+
+        feet_dist.py measures in the PELVIS frame, so the pelvis-frame numbers
+        are the ones comparable with the operator's on-robot readings.
+        """
+        pl = self.data.xpos[self.foot_bid[0]].copy()
+        pr = self.data.xpos[self.foot_bid[1]].copy()
+        Rp = self.data.xmat[self.pelvis_bid].reshape(3, 3)
+        vl, vr = Rp.T @ pl, Rp.T @ pr
+        return (float(np.linalg.norm(pl - pr)),
+                float(np.linalg.norm(vl - vr)),
+                float(abs(vl[1] - vr[1])))
+
+    def hip_rolls(self):
+        q = self.data.qpos[self.qid]
+        return float(np.degrees(q[I_LHIPR])), float(np.degrees(q[I_RHIPR]))
+
+    def reset_run(self, start_height):
+        mujoco.mj_resetData(self.model, self.data)
+        d = self.data
+        d.qpos[3:7] = np.array([1.0, 0.0, 0.0, 0.0])
+        d.qpos[self.qid] = self.defaults
+        d.qpos[2] = start_height
+        mujoco.mj_forward(self.model, d)
+        self.obs.reset()
+        self.obs.height_cmd = start_height
+        self.obs.rpy_cmd = np.zeros(3, dtype=np.float32)
+        self.pol.action[:] = 0.0
+        self.pol.defaults = self.base_pol.copy()
+        self.obs.default_padded = self.base_obs.copy()
