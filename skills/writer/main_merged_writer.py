@@ -1397,3 +1397,16 @@ class MergedWriter:
                 msg = "%s %s" % (msg, STEP_HONESTY_SUFFIX)
             print("[step] %s" % msg)
 
+    def _step_hold_log(self, tau_l, tau_r):
+        """The §6.3 signature: the shift is commanded and the gate is NOT met,
+        so the lift is NOT licensed.  Rate-limited by _step_log."""
+        if self.step_tau0 is None or self.step_dtau is None \
+                or self.step_tau0 == 0.0:
+            return
+        bar = self.step_unload_tau_x * abs(self.step_tau0)
+        self._step_log(
+            "HOLD unload: dtau=%+.3f bar=%.3f (%.2fx) N_swing<=%.0fN — "
+            "lifting is NOT licensed"
+            % (self.step_dtau, bar, abs(self.step_dtau) / abs(self.step_tau0),
+               self._step_n_swing(tau_l, tau_r)))
+
