@@ -1386,3 +1386,14 @@ class MergedWriter:
             return n_r
         return min(n_l, n_r)
 
+    def _step_log(self, msg, force=False):
+        """Rate-limited (1 Hz) step log.  Every [step] body-state line goes
+        through here so the honesty suffix is appended in EXACTLY one place,
+        and exactly once per line (A12).  No assert, no exception."""
+        now = time.monotonic()
+        if force or now - self.step_log_t >= 1.0:
+            self.step_log_t = now
+            if not msg.endswith(STEP_HONESTY_SUFFIX):
+                msg = "%s %s" % (msg, STEP_HONESTY_SUFFIX)
+            print("[step] %s" % msg)
+
