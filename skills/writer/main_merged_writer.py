@@ -1432,3 +1432,73 @@ class MergedWriter:
         self._step_log("cap: R-leg outward budget %.2f deg (ankle %+.2f of 15)"
                        % (self._step_r_budget(), ank), force=True)
 
+    def _step_detail(self, st, force=False):
+        """The §4 instrumentation line — ONE line, rate-limited 1 Hz, forced on
+        every phase transition.  Commanded AND measured columns both appear:
+        the sim's own evidence is that the loop settles short of the command
+        (86% at 4 deg), so only the measured column is evidence.  Unavailable
+        measurements print as nan, never 0.0 — a default would make a missing
+        state look perfectly centred.
+
+        DERIVED fields (§4): dtau = tau[3] - tau[9]; N = |tau|/0.109; the CoM
+        travel is 0.6856 cm per degree of same-sign shift; pred_sep_gain is the
+        separation gain implied by the MEASURED hip rolls.  NOTE: §4's template
+        quotes that last law as `86.5*(sin d1 - sin d7)` cm, which disagrees
+        with the 0.4955 m lever used everywhere else in the spec (§0, §2.3
+        P4's own parenthetical, P5 and A9) by a factor of 1.746; this build
+        uses the self-consistent lever (100*0.4955 = 49.55), which is the only
+        value that reproduces the spec's own worked examples (+2.7 cm at a
+        1 deg margin, Annex A #9).  Flagged to the operator."""
+        now = time.monotonic()
+        if not force and now - self.step_log_t < 1.0:
+            return
+        self.step_log_t = now
+        nan = float("nan")
+        m = self._step_meas(st) or {}
+        h1 = m.get("hip1", nan)
+        h7 = m.get("hip7", nan)
+        a5 = m.get("ank5", nan)
+        a11 = m.get("ank11", nan)
+        tau_l, tau_r = self._step_taus(st)
+        n_l = abs(tau_l) / STEP_KNEE_LEVER_M if tau_l is not None else nan
+        n_r = abs(tau_r) / STEP_KNEE_LEVER_M if tau_r is not None else nan
+        base = self._stance_base_policy
+        if base is not None:
+            b1 = math.degrees(float(base[1]))
+            b7 = math.degrees(float(base[7]))
+            cmd1 = b1 + self.step_c1 + self.step_splay_l
+            cmd7 = b7 + self.step_c7 - self.step_splay_r
+            splay_l_meas = h1 - b1 - self.step_c1
+            splay_r_meas = b7 + self.step_c7 - h7
+        else:
+            cmd1 = cmd7 = splay_l_meas = splay_r_meas = nan
+        dtau = self.step_dtau if self.step_dtau is not None else nan
+        tau0 = self.step_tau0 if self.step_tau0 is not None else nan
+        bar = (self.step_unload_tau_x * abs(self.step_tau0)
+               if self.step_tau0 is not None else nan)
+        ratio = (abs(self.step_dtau) / abs(self.step_tau0)
+                 if (self.step_dtau is not None and self.step_tau0) else nan)
+        tilt = self.step_tilt if self.step_tilt is not None else nan
+        gain = 100.0 * STEP_SEP_LEVER_M * (
+            math.sin(math.radians(h1)) - math.sin(math.radians(h7)))
+        self._step_log(
+            "%s shift cmd=%+.1f meas_hip=%+.2f/%+.2f(dL=%+.2f) | "
+            "dtau=%+.3f tau0=%+.3f x=%.2f bar=%.3f | "
+            "tauL=%+.3f tauR=%+.3f N_L=%.0fN N_R=%.0fN N_swing<=%.1fN | "
+            "tilt=%.1f | "
+            "splay cmd=%.1f/%.1f meas=%.1f/%.1f ankle=%+.2f/%+.2f "
+            "margin=%.2f/%.2f | "
+            "cap: shift<=%.2f L<=%.2f R>=%.2f pred_sep_gain=%.2fcm"
+            % (self.step_phase, self.step_shift_deg, h1, h7,
+               h1 - cmd1 if base is not None else nan,
+               dtau, tau0, ratio, bar,
+               tau_l if tau_l is not None else nan,
+               tau_r if tau_r is not None else nan,
+               n_l, n_r, self._step_n_swing(tau_l, tau_r), tilt,
+               self.step_splay_l_t, self.step_splay_r_t,
+               splay_l_meas, splay_r_meas, a5, a11,
+               STEP_ANKLE_STOP_DEG - abs(a5), STEP_ANKLE_STOP_DEG - abs(a11),
+               self._step_shift_cap(), self._step_cap_l(), self._step_cap_r(),
+               gain),
+            force=True)
+
