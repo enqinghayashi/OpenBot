@@ -1763,3 +1763,116 @@ class MergedWriter:
                   f"sonic_core={'ok' if SC is not None else 'MISSING'})",
                   flush=True)
 
+    def _apply_sonic(self, parts, from_console):
+        """SONIC verb dispatch, shared by socket and console (the same lockstep
+        split as cmd_set/height).  Returns the reply line, never raises.
+
+        Arming is a HUMAN action: `sonic arm`, `sonic on` and `sonic reset` are
+        console-only and are refused on the socket (spec §2.2).  The satellite
+        can never arm itself, and no network/agent client can either.
+        """
+        if not self.sonic_lane_enabled:
+            return "ERROR:sonic lane disabled"
+        if len(parts) == 1:
+            return f"SONIC:status {self._sonic_status()}"
+        sub = parts[1]
+        if sub == "status":
+            return f"SONIC:status {self._sonic_status()}"
+        if sub == "arm":
+            if not from_console:
+                return "ERROR:sonic arm is console-only"
+            # arming does not clear a fault; the path is reset -> arm -> on.
+            self.sonic_armed = True
+            self._sonic_log(
+                "ARMED (console) — fault latched, `sonic reset` first"
+                if self.sonic_faulted else "ARMED (console)", force=True)
+            return "SONIC:armed"
+        if sub == "on":
+            if not from_console:
+                return "ERROR:sonic on is console-only"
+            # going live: all of these must hold
+            if not self.sonic_armed:
+                return "ERROR:sonic not armed"
+            if self.sonic_faulted:
+                return "ERROR:sonic faulted — sonic reset first"
+            if not self.sonic_has_frame:
+                return "ERROR:sonic no frame received"
+            # capture the enable-gate operand max|sonic_target - leg_target|
+            # once, here, above the warmup check: the frame-step gate can
+            # stall sonic_warm at 0/1, so a capture at the comparison
+            # would write an empty probe file.
+            self.sonic_gate_dev = None
+            if self.sonic_target is not None and self.leg_target is not None:
+                self.sonic_gate_dev = float(np.max(np.abs(
+                    np.asarray(self.sonic_target, dtype=np.float64)
+                    - np.asarray(self.leg_target, dtype=np.float64))))
+            self._sonic_gate_probe()
+            if self.sonic_warm < self.sonic_warmup_frames:
+                return (f"ERROR:sonic warmup {self.sonic_warm}/"
+                        f"{self.sonic_warmup_frames}")
+            # A dead stream freezes sonic_warm, so a stale count
+            # could enable the lane. Check freshness first.
+            # monotonic(), matching sonic_last_rx.
+            age = time.monotonic() - self.sonic_last_rx
+            if age > self.sonic_stale_ms / 1000.0:
+                return (f"ERROR:sonic stream stale ({age:.3f}s > "
+                        f"{self.sonic_stale_ms / 1000.0:.3f}s)")
+            st = self.lowstate
+            if st is not None and SC is not None:
+                if SC.tilt_deg(st["quat"]) > self.sonic_enable_tilt_deg:
+                    return "ERROR:sonic tilt too large to enable"
+            if self.sonic_target is None:
+                return "ERROR:sonic no target"
+            # the target exists here, so the stashed deviation is valid.
+            dev = self.sonic_gate_dev
+            if dev is not None:
+                if dev > self.sonic_enable_tol_rad:
+                    return f"ERROR:sonic target {dev:.3f} rad from legs"
+            self.sonic_mode = 'on'
+            self.sonic_mm_latch = st["mode_machine"] if st is not None else None
+            self.sonic_last_good_t = time.monotonic()
+            # arm park: slew to SONIC's arm default on the ramp.
+            # DEFAULT_ANGLES_MUJOCO[15:29] is motor order, no remap.
+            if (self.sonic_arm_mode == "park" and SC is not None
+                    and self.arm is not None):
+                with self._dispatch_lock:
+                    self.arm_tau[:] = 0.0
+                    self.arm.slew_to_vector(
+                        np.array(SC.DEFAULT_ANGLES_MUJOCO[15:29],
+                                 dtype=np.float32),
+                        time.perf_counter(), self.sonic_entry_ramp_s)
+            self._sonic_log(f"ON (b={self.sonic_b:.2f}) — SONIC owns legs",
+                            force=True)
+            return f"SONIC:on {self.sonic_b:.2f}"
+        if sub == "off":
+            # handback: b ramps to 0, seam restores boot gains.
+            # Not a fault; `sonic on` works without a reset.
+            self.sonic_mode = 'off'
+            self._sonic_log("OFF (operator handback) -> GR00T", force=True)
+            return "SONIC:off"
+        if sub == "reset":
+            if not from_console:
+                return "ERROR:sonic reset is console-only"
+            # handback first: order matters, because _sonic_revoke latches
+            # faulted=True, so the clear below must come after it and a
+            # mid-blend reset must not leave mode='on' with b > 0.
+            self._sonic_revoke("reset", force=True)
+            # drop the frame-step baseline: a reference stuck past
+            # sonic_frame_step_max_rad rejects every frame forever. It
+            # re-seeds on the next frame; the seam returns early while
+            # sonic_target is None.
+            self.sonic_target = None
+            self.sonic_faulted = False
+            self.sonic_fault_cause = "none"
+            self.sonic_armed = False
+            self.sonic_seq = -1
+            # lock: accept path does warm += 1 from the socket
+            # thread; a bare 0 can be lost to that read-modify-write.
+            with self._dispatch_lock:
+                self.sonic_warm = 0
+            self._sonic_log("RESET (fault cleared, disarmed, seq cleared, "
+                            "frame baseline dropped, handed back to GR00T)",
+                            force=True)
+            return "SONIC:reset"
+        return "ERROR:sonic arm|on|off|reset|status"
+
