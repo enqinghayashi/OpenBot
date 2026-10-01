@@ -2368,3 +2368,90 @@ class MergedWriter:
               f"hold={int(self.rc_hold)} {self._cmd_auto_status()} "
               f"{self._height_status()} {self._sonic_status()}")
 
+    def run(self):
+        print("=== C3 merged whole-body writer ===")
+        print(f"stage={self.args.stage} hz={self.hz} policy_dec={self.decimation} "
+              f"policy_enabled={self.policy_enabled} rc_enabled={self.rc_enabled}")
+        print("=== EXIT BEHAVIOR: ZeroCmd limp (mode 0x01, kp/kd=0, q=PosStopF) "
+              "then SelectMode(\"ai\") handoff — sport control restored, RC "
+              "ladder live (L1+B -> L2+UP -> R2+A). ===")
+
+        self.acquire_lock()
+        print(f"[lock] {self.cfg['lockfile']} held by pid {os.getpid()}")
+
+        if self.args.interface:
+            ChannelFactoryInitialize(0, self.args.interface)
+        else:
+            ChannelFactoryInitialize(0, self.cfg["interface"])
+        self.release_mode()
+
+        # state reader, first lowstate, capture pose
+        self.reader = StateReader(self.cfg)
+        self.lowstate = self.reader.wait_first(self.cfg["lowstate_wait_s"])
+        self.captured_q = self.lowstate["q"].copy()
+        print(f"[bring-up] first lowstate: tick={self.lowstate['tick']} "
+              f"mode_machine={self.lowstate['mode_machine']}")
+        print(f"[bring-up] captured q: legs {self.captured_q[0:6].round(3)} ... "
+              f"arms {self.captured_q[15:22].round(3)}")
+
+        self.init_lowcmd()
+        self.fill_gains()
+
+        # subsystems
+        self.arm = ArmGuard(self.cfg)
+        self.arm.capture(self.captured_q, 0.0)
+        self.arm_tau = np.zeros(14)   # arm gravity FF, set by socket verb
+        self.obs = ObsBuilder(self.cfg)
+        if self.policy_enabled:
+            self.policy = PolicyRunner(self.cfg, self.onnx_dir)
+            self.leg_target = self.policy.defaults.copy()
+            # policy_target feeds the SONIC seam; must exist first.
+            self.policy_target = self.leg_target.copy()
+            print(f"[policy] loaded {os.path.basename(self.onnx_dir)}")
+        else:
+            self.leg_target = self.captured_q[:15].copy()
+            self.policy_target = self.leg_target.copy()
+        # snapshot stance base after encodings exist,
+        # before any verb. No-op at stage 0.
+        self._capture_stance_base()
+        if self.rc_enabled:
+            self.rc = RCTarget(self.cfg)
+
+        # gate joint
+        self.gate_q = float(self.cfg["gate_q"])
+
+        self.gate_prompt()
+
+        # boot arm pose: slew to NEUTRAL, not hold capture.
+        # Same cosine slew, >= 1.5 s.
+        self.arm.slew_to("NEUTRAL", time.perf_counter())
+
+        # hand off to the loop; hook up signals
+        def _sig(signum, frame):
+            print(f"\n[signal] {signum} — shutdown")
+            self.request_shutdown(f"signal {signum}")
+        signal.signal(signal.SIGINT, _sig)
+        signal.signal(signal.SIGTERM, _sig)
+        self.start_console()
+        self.start_socket_server()
+
+        # write loop
+        self.state = "RUNNING"
+        self.t0 = time.perf_counter()
+        next_deadline = self.t0
+        try:
+            while not self._shutdown:
+                t = time.perf_counter()
+                self._tick(t)
+                next_deadline += self.dt
+                sleep = next_deadline - time.perf_counter()
+                if sleep > 0:
+                    time.sleep(sleep)
+                else:
+                    self._overruns += 1
+        except RuntimeError as e:
+            print(f"[fatal] {e}")
+            self.request_shutdown(f"runtime error: {e}")
+        finally:
+            self.shutdown()
+
