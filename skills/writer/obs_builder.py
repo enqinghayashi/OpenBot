@@ -25,3 +25,25 @@ FRAME_DIM = 86
 
 
 class ObsBuilder:
+    def __init__(self, cfg):
+        self.cmd_scale = np.array(cfg["cmd_scale"], dtype=np.float32)
+        self.ang_vel_scale = float(cfg["ang_vel_scale"])
+        self.dof_pos_scale = float(cfg["dof_pos_scale"])
+        self.dof_vel_scale = float(cfg["dof_vel_scale"])
+        self.height_cmd = float(cfg["height_cmd"])
+        # height band, clamped; missing keys -> height_cmd,
+        # so the setter can't move it (old-config fallback)
+        self.height_min = float(cfg.get("height_cmd_min", cfg["height_cmd"]))
+        self.height_max = float(cfg.get("height_cmd_max", cfg["height_cmd"]))
+        self.rpy_cmd = np.array(cfg["rpy_cmd"], dtype=np.float32)
+        self.history_len = int(cfg["obs_history_len"])
+
+        defaults = np.array(cfg["default_angles"], dtype=np.float32)  # 15: legs + waist
+        assert defaults.shape == (NUM_ACTIONS,)
+        self.default_padded = np.concatenate(
+            [defaults, np.zeros(NUM_DOF - NUM_ACTIONS, dtype=np.float32)])
+
+        self._frame = np.zeros(FRAME_DIM, dtype=np.float32)
+        self.obs = np.zeros(self.history_len * FRAME_DIM, dtype=np.float32)
+        self.prev_action = np.zeros(NUM_ACTIONS, dtype=np.float32)  # feeds obs[71:86]
+
