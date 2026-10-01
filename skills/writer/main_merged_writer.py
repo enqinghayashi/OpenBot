@@ -2308,3 +2308,20 @@ class MergedWriter:
                   "sonic arm|on|off|reset|status | estop | "
                   "simulate_fatal | rc0 | status | quit")
 
+    def print_status(self):
+        st = self.lowstate
+        if st is None:
+            print("no lowstate yet")
+            return
+        key = self.policy.last_key if self.policy else "no-policy"
+        cmd = self.rc.cmd if self.rc else np.zeros(3)
+        print(f"[status] state={self.state} loop={self.loop_count} "
+              f"policy={key} ticks={self.policy_ticks} "
+              f"cmd=({cmd[0]:+.2f},{cmd[1]:+.2f},{cmd[2]:+.2f}) "
+              f"arm={self.arm.state} mode_machine={st['mode_machine']} "
+              f"payload={self.payload} hold={int(self.rc_hold)} "
+              f"{self._cmd_auto_status()} {self._height_status()} "
+              f"{self._stance_status()} {self._sonic_status()} {self._step_status()}")
+
+    # ------------------------------------------------------------ control
+
