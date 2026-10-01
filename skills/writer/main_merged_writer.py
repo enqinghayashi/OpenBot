@@ -2351,3 +2351,20 @@ class MergedWriter:
         if self._stance_base_policy is not None:
             self._write_stance(0.0)
 
+    def _status_line(self):
+        if self.loop_count % (self.hz * 1) != 0:
+            return
+        st = self.lowstate
+        if st is None:
+            return
+        key = self.policy.last_key if self.policy else "hold"
+        cmd = self.rc.cmd if self.rc else np.zeros(3)
+        print(f"[t={time.perf_counter()-self.t0:6.1f}] {key} "
+              f"cmd=({cmd[0]:+.2f},{cmd[1]:+.2f},{cmd[2]:+.2f}) "
+              f"arm={self.arm.state} mode={st['mode_machine']} "
+              f"Tmax={st['max_temp']:.0f}C "
+              f"poll_to={self.reader.timeout_count} "
+              f"overruns={self._overruns} drops={self._dropped} "
+              f"hold={int(self.rc_hold)} {self._cmd_auto_status()} "
+              f"{self._height_status()} {self._sonic_status()}")
+
