@@ -64,3 +64,36 @@ DEX3_JOINT_NAMES = {
 DEX3_JOINTS = [0, 1, 2, 3, 4, 5, 6]
 
 
+def finger_joint_names(side):
+    """The 7 joint names of one hand in XML declaration order."""
+    return [f"{side}_hand_{f}_joint" for f in FINGER_ORDER]
+
+
+FINGER_JOINT_NAMES = finger_joint_names("left") + finger_joint_names("right")
+
+
+def preset_to_joint_map(side, preset):
+    """Turn a grip_server {motor_id: q} preset into {joint_name: q}.
+
+    The ONLY legal mapping.  Uses DEX3_JOINT_NAMES so a preset index lands on
+    the joint it actually names (right 3 == index_0, left 3 == middle_0).
+    """
+    return {f"{side}_hand_{DEX3_JOINT_NAMES[side][jid]}_joint": float(preset[jid])
+            for jid in DEX3_JOINTS}
+
+
+# --- model lookups, everything by NAME ---------------------------------------
+def has_joint(model, name):
+    """True iff the model declares a joint with this name.
+
+    model.joint(name) RAISES KeyError for an undeclared name in MuJoCo 3.11
+    (it does not return a sentinel), so existence must be tested by scanning.
+    """
+    return any(model.joint(i).name == name for i in range(model.njnt))
+
+
+def joint_id(model, name):
+    i = model.joint(name).id
+    if i < 0:
+        raise KeyError(f"joint {name!r} not in model")
+    return i
