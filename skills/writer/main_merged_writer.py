@@ -2455,3 +2455,154 @@ class MergedWriter:
         finally:
             self.shutdown()
 
+    def _tick(self, t):
+        # loop_count advances here, not in the main loop, because
+        # shutdown's Phase-1 calls _tick from its settle loop; a counter
+        # frozen there would strand the policy. Once per tick either way.
+        self.loop_count += 1
+        if self._simulate_fatal:
+            # one-shot: fires once then clears, so a latched flag cannot
+            # re-raise inside shutdown's settle loop.
+            self._simulate_fatal = False
+            raise RuntimeError("SIMULATED FATAL (test hook)")
+        st = self.reader.poll()
+        if st is not None:
+            self.lowstate = st
+            # dropped ticks (motor-service rate)
+            if self.prev_tick is not None:
+                gap = st["tick"] - self.prev_tick
+                if gap > 1:
+                    self._dropped += gap - 1
+            self.prev_tick = st["tick"]
+
+        if self.lowstate is None:
+            return  # not armed yet
+
+        st = self.lowstate
+        q, dq = st["q"], st["dq"]
+
+        # rc_hold (pick interlock) or shutdown zeroes every source, the
+        # pick stationary guarantee. Otherwise latched cmd_auto, else live
+        # RC ([vx, vy, omega]). cmd_auto expiry still stops a dead adapter.
+        if self.cmd_auto_active and time.monotonic() >= self.cmd_auto_deadline:
+            self.cmd_auto_active = False
+            self.cmd_auto[:] = 0.0
+        # height watchdog, same shape as cmd_auto's.
+        # Recovery is height_stand, never zero.
+        if self.height_active and time.monotonic() >= self.height_deadline:
+            self.height_active = False
+            self.height_target = self.height_stand
+            self._height_log("watchdog expiry -> standing")
+        if self._shutting_down or self.rc_hold:
+            cmd = self.rc_cmd_zero          # all sources dead
+            rc_live = False
+        elif self.cmd_auto_active:
+            cmd = self.cmd_auto             # RC skipped
+            rc_live = False
+        elif self.rc:
+            cmd = self.rc.update(st["wireless_remote"])
+            rc_live = True
+        else:
+            cmd = self.rc_cmd_zero
+            rc_live = False
+
+        # height rc override/suspend. rc_hold forces rc_live False, so the
+        # suspend cannot fire and a stick push cannot abort a squat. The
+        # pick engine owns rc_hold; a hard-killed engine leaves the clamp on
+        # and only `hold_rc off` clears it.
+        # suspend is a pause: target and original deadline return, resuming
+        # at half the override threshold; a deadline that expired while
+        # suspended stays dead.
+        if not (self._shutting_down or self._shutdown):
+            rc_norm = float(np.linalg.norm(cmd)) if rc_live else 0.0
+            if (self.height_active and rc_live
+                    and rc_norm >= self.height_rc_override):
+                self.height_suspended = True
+                self.height_suspend_target = self.height_target
+                self.height_suspend_deadline = self.height_deadline
+                self.height_active = False
+                self.height_target = self.height_stand
+                self._height_log(
+                    f"rc override (|rc|={rc_norm:.2f} >= "
+                    f"{self.height_rc_override:.2f}) — squat SUSPENDED, "
+                    f"reference -> standing {self.height_stand:.2f}; resumes "
+                    f"when the sticks are neutral before the hold deadline",
+                    force=True)
+            elif (self.height_suspended
+                  and (not rc_live or rc_norm <= self.height_rc_resume)):
+                if time.monotonic() < self.height_suspend_deadline:
+                    self.height_target = self.height_suspend_target
+                    self.height_deadline = self.height_suspend_deadline
+                    self.height_active = True
+                    self._height_log(
+                        f"sticks neutral — squat RESUMED -> "
+                        f"{self.height_target:.2f} "
+                        f"({max(self.height_deadline - time.monotonic(), 0.0):.1f}s "
+                        f"left in the hold)", force=True)
+                else:
+                    self._height_log(
+                        "sticks neutral — the hold deadline expired while "
+                        "suspended: squat CANCELLED (re-issue 'height <m>')",
+                        force=True)
+                self.height_suspended = False
+
+        # height: rate-limited so the reference can't step,
+        # then obs f[3]
+        hstep = self.height_slew_rate * self.dt
+        if self.height_ref < self.height_target:
+            self.height_ref = min(self.height_ref + hstep, self.height_target)
+        elif self.height_ref > self.height_target:
+            self.height_ref = max(self.height_ref - hstep, self.height_target)
+        if self.obs is not None:
+            self.obs.set_height(self.height_ref)
+            # step lane advances here, before infer, in the same frame.
+            # Writes policy.defaults / obs.default_padded.
+            self._step_advance(t, st)
+
+        # policy tick
+        if self.policy is not None and self.loop_count % self.decimation == 0:
+            obs = self.obs.push(q, dq, st["quat"], st["gyro"], cmd, self.policy.action)
+            self.policy_target = self.policy.infer(obs, cmd)
+            # SONIC seam: the only control-flow change. Off with b == 0
+            # returns the same object, unchanged.
+            rc_norm = float(np.linalg.norm(cmd)) if rc_live else 0.0
+            self._sonic_seam(t, st, cmd, rc_live, rc_norm)
+            self.policy_ticks += 1
+            if self.verbose and self.policy_ticks % 50 == 0:
+                print(f"[policy] {self.policy.last_key} "
+                      f"target {self.leg_target[0:3].round(3)}")
+
+        # coupling ramp: captured q -> target, 0.12 s
+        ramp_t = min((t - self.t0) / self.ramp_s, 1.0) if self.t0 else 1.0
+
+        # arms: 250 Hz cosine slew, independent of policy tick
+        arm_target = self.arm.tick(t)
+
+        # build motor_cmd
+        lc = self.lowcmd
+        lc.mode_machine = st["mode_machine"]          # echo it back
+        lc.mode_pr = 0
+        for i in range(15):
+            lc.motor_cmd[i].q = self.captured_q[i] + \
+                (self.leg_target[i] - self.captured_q[i]) * ramp_t
+            lc.motor_cmd[i].dq = 0.0
+            lc.motor_cmd[i].tau = 0.0
+        for j, i in enumerate(range(15, 29)):
+            lc.motor_cmd[i].q = arm_target[j]
+            lc.motor_cmd[i].dq = 0.0
+            lc.motor_cmd[i].tau = self.arm_tau[j]   # gravity FF
+        lc.motor_cmd[29].q = self.gate_q
+        lc.motor_cmd[29].dq = 0.0
+        lc.motor_cmd[29].tau = 0.0
+        for i in range(30, 35):
+            lc.motor_cmd[i].q = self.captured_q[i]    # hold captured q
+            lc.motor_cmd[i].dq = 0.0
+            lc.motor_cmd[i].tau = 0.0
+
+        lc.crc = self.crc.Crc(lc)
+        self.lowcmd_publisher.Write(lc)
+
+        self._status_line()
+
+    # ------------------------------------------------------------ shutdown
+
