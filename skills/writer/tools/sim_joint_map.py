@@ -121,3 +121,55 @@ def arm_actuator_ids(model):
 def finger_actuator_ids(model, side=None):
     names = finger_joint_names(side) if side else FINGER_JOINT_NAMES
     return np.array([actuator_id(model, n) for n in names], dtype=int)
+
+
+def policy_actuator_ids(model):
+    return np.array([actuator_id(model, n) for n in POLICY_JOINTS], dtype=int)
+
+
+def qposadr_vec(model, names):
+    return np.array([qposadr(model, n) for n in names], dtype=int)
+
+
+def dofadr_vec(model, names):
+    return np.array([dofadr(model, n) for n in names], dtype=int)
+
+
+# --- the post-unlock fingerprint (our silent-index-shift tripwire) ------------
+EXPECTED_QPOSADR = {
+    "left_wrist_yaw_joint": 28,
+    "left_hand_thumb_0_joint": 29,
+    "left_hand_index_1_joint": 35,
+    "right_shoulder_pitch_joint": 36,
+    "right_wrist_yaw_joint": 42,
+    "right_hand_thumb_0_joint": 43,
+    "right_hand_index_1_joint": 49,
+}
+
+
+def assert_fingerprint(model, box_joint="payload_box_joint"):
+    """Assert the unlocked index fingerprint; NAME the offending joint."""
+    bad = []
+    for name, want in EXPECTED_QPOSADR.items():
+        if not has_joint(model, name):
+            bad.append(f"{name}: joint is ABSENT from the model — this model is "
+                       "NOT unlocked (the 14 hand joints were never activated)")
+            continue
+        got = qposadr(model, name)
+        if got != want:
+            bad.append(f"{name}: qposadr {got}, expected {want}")
+    # post-unlock arms are NOT contiguous: left_wrist_yaw 28,
+    # then right_shoulder_pitch 36. +1 gap = hand joints never went in
+    lwy = qposadr(model, "left_wrist_yaw_joint")
+    rsp = qposadr(model, "right_shoulder_pitch_joint")
+    if rsp == lwy + 1:
+        bad.append("right_shoulder_pitch_joint is at left_wrist_yaw_joint + 1 "
+                   f"({rsp} == {lwy} + 1): the 7 left-hand joints were NOT "
+                   "inserted — this model is NOT unlocked")
+    if has_joint(model, box_joint):
+        bq = qposadr(model, box_joint)
+        if bq != model.nq - 7:
+            bad.append(f"{box_joint}: qposadr {bq}, expected nq-7 = {model.nq - 7}")
+    if bad:
+        raise AssertionError("index fingerprint FAILED:\n  - " + "\n  - ".join(bad))
+    return True
