@@ -97,3 +97,27 @@ def joint_id(model, name):
     if i < 0:
         raise KeyError(f"joint {name!r} not in model")
     return i
+
+
+def qposadr(model, name):
+    return int(model.jnt_qposadr[joint_id(model, name)])
+
+
+def dofadr(model, name):
+    return int(model.jnt_dofadr[joint_id(model, name)])
+
+
+def actuator_id(model, name):
+    i = model.actuator(name).id
+    if i < 0:
+        raise KeyError(f"actuator {name!r} not in model")
+    return i
+
+
+def arm_actuator_ids(model):
+    return np.array([actuator_id(model, n) for n in ARM_JOINT_NAMES], dtype=int)
+
+
+def finger_actuator_ids(model, side=None):
+    names = finger_joint_names(side) if side else FINGER_JOINT_NAMES
+    return np.array([actuator_id(model, n) for n in names], dtype=int)
