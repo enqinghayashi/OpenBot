@@ -2105,3 +2105,33 @@ class MergedWriter:
             self.lowcmd.motor_cmd[i].kp = float(kp[i])
             self.lowcmd.motor_cmd[i].kd = float(kd[i])
 
+    def _sonic_revoke(self, cause, force=False):
+        """The ONE funnel for every abort trigger (spec §4.2/§4.3).  Returns
+        authority to the GR00T lane — never a HOLD, never a LIMP, and NEVER
+        request_shutdown: a 250 ms socket hiccup must not end in a zero-torque
+        limp mid-walk.
+
+        force=False: mode := off, the lane is marked faulted, and b ramps to 0
+                     at the handback rate (the seam restores the boot gains when
+                     it lands).  No auto-resurrection: a faulted lane needs
+                     `sonic reset` then `sonic arm` then `sonic on`, all
+                     console-only.
+        force=True:  b := 0 instantly and the boot gains are written NOW (estop
+                     and request_shutdown).  If b was already 0 the gains are
+                     already boot, so nothing is written and the off path stays
+                     untouched.
+        """
+        if not self.sonic_faulted:
+            self.sonic_faulted = True
+            self.sonic_fault_cause = str(cause)
+            self._sonic_log(f"REVOKE ({cause}) -> returning to GR00T",
+                            force=True)
+        self.sonic_mode = 'off'
+        self.sonic_armed = False
+        if force:
+            was_live = (self.sonic_b != 0.0)
+            self.sonic_b = 0.0
+            self.sonic_prev_blend = 0.0
+            if was_live:
+                self._sonic_write_leg_gains(0.0)
+
