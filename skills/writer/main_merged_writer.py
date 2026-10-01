@@ -2722,3 +2722,31 @@ class MergedWriter:
             print("[handoff] WARN: sport mode not restored — run "
                   "SelectMode('ai') manually")
 
+    def _shutdown_tick(self, t):
+        """Shutdown continuation: same as _tick but policy keeps last targets
+        (no infer), arms keep slewing."""
+        st = self.lowstate
+        if st is None:
+            return
+        q, dq = st["q"], st["dq"]
+        arm_target = self.arm.tick(t)
+        lc = self.lowcmd
+        lc.mode_machine = st["mode_machine"]
+        lc.mode_pr = 0
+        for i in range(15):
+            lc.motor_cmd[i].q = self.leg_target[i]     # no ramp
+            lc.motor_cmd[i].dq = 0.0
+            lc.motor_cmd[i].tau = 0.0
+        for j, i in enumerate(range(15, 29)):
+            lc.motor_cmd[i].q = arm_target[j]
+            lc.motor_cmd[i].dq = 0.0
+            lc.motor_cmd[i].tau = self.arm_tau[j]   # gravity FF
+        lc.motor_cmd[29].q = self.gate_q
+        lc.motor_cmd[29].dq = 0.0
+        lc.motor_cmd[29].tau = 0.0
+        for i in range(30, 35):
+            lc.motor_cmd[i].q = self.captured_q[i]
+            lc.motor_cmd[i].dq = 0.0
+            lc.motor_cmd[i].tau = 0.0
+        lc.crc = self.crc.Crc(lc)
+        self.lowcmd_publisher.Write(lc)
