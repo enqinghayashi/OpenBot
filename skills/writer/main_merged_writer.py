@@ -2606,3 +2606,119 @@ class MergedWriter:
 
     # ------------------------------------------------------------ shutdown
 
+    def shutdown(self):
+        print(f"\n=== SHUTDOWN (cause: {self._shutdown_cause}) ===")
+        if self.reader is not None:
+            # from here the crash threshold does not apply: a re-raise
+            # inside shutdown would kill the process mid-tail, with motors
+            # uncontrolled and a stale lockfile. Warn only.
+            self.reader.suppress_crash = True
+        if self.rc:
+            self.rc.zero()
+        self.cmd_auto_active = False   # belt and braces
+        self.cmd_auto[:] = 0.0
+        # height: force the reference to standing. Phase-1
+        # slews leg_target up while the ascend loop waits.
+        self.height_active = False
+        self.height_target = self.height_stand
+        self.height_suspended = False   # stashed squat never outlives shutdown
+        # Phase 1: normal loop, policy live, rc zeroed, arms
+        # to NEUTRAL unless payload. >= 1 s settle, 5 s cap.
+        shutdown_t0 = time.perf_counter()
+        if not self.payload:
+            self.arm.slew_to("NEUTRAL", time.perf_counter())
+        if self.arm._T > 0.0:
+            deadline = min(max(shutdown_t0 + 1.0, self.arm._t0 + self.arm._T),
+                           shutdown_t0 + 5.0)
+        else:
+            deadline = shutdown_t0 + 1.0
+        # ascend before release: a limp crouched robot collapses.
+        # Phase-2 pins the last target, Phase-3 sets kp/kd=0,
+        # so stretch Phase-1 to height_ascend_timeout_s
+        # (under 5 s). Bounded, so it never hangs the tail.
+        needs_ascend = (abs(self.height_ref - self.height_stand)
+                        > self.height_stand_eps
+                        or not self._legs_ascended(self.lowstate))
+        if needs_ascend:
+            deadline = max(deadline,
+                           min(shutdown_t0 + self.height_ascend_timeout,
+                               shutdown_t0 + 5.0))
+        while time.perf_counter() < deadline:
+            # try_poll, not poll: a persistent oversized gap must not abort
+            # shutdown, or ZeroCmd, the lockfile removal and the handoff
+            # are all skipped.
+            st = self.reader.try_poll()
+            if st is not None:
+                self.lowstate = st
+            try:
+                self._tick(time.perf_counter())
+            except Exception as e:
+                # a raise in Phase-1's _tick must never abort shutdown: the
+                # ascend depends on this loop, and a KeyError here would skip
+                # ZeroCmd.
+                print(f"[shutdown] Phase-1 tick raised ({e}) — continuing")
+            # leave once arms settled, legs near standing, height
+            # ref up, but never before the >= 1 s settle.
+            arm_done = (self.arm._T <= 0.0
+                        or time.perf_counter() >= self.arm._t0 + self.arm._T)
+            if (time.perf_counter() - shutdown_t0 >= 1.0
+                    and arm_done
+                    and self.height_ref >= self.height_stand
+                    - self.height_stand_eps
+                    and self._legs_ascended(self.lowstate)):
+                break
+            kb_safe_sleep(self.dt)
+        if self.payload:
+            print("[shutdown] PAYLOAD FLAG SET — arms NOT released (holding tuck)")
+
+        # legs hold 1 s at the last targets (post-ascend: standing)
+        t_end = time.perf_counter() + 1.0
+        while time.perf_counter() < t_end:
+            st = self.reader.try_poll()
+            if st is not None:
+                self.lowstate = st
+            self._shutdown_tick(time.perf_counter())
+            kb_safe_sleep(self.dt)
+
+        # ZeroCmd: weak motors, position/velocity stop sentinels
+        lc = self.lowcmd
+        for i in range(35):
+            lc.motor_cmd[i].mode = MODE_ENABLE
+            lc.motor_cmd[i].kp = 0.0
+            lc.motor_cmd[i].kd = 0.0
+            lc.motor_cmd[i].q = PosStopF
+            lc.motor_cmd[i].dq = VelStopF
+            lc.motor_cmd[i].tau = 0.0
+        for _ in range(5):
+            lc.crc = self.crc.Crc(lc)
+            self.lowcmd_publisher.Write(lc)
+            time.sleep(0.02)
+
+        try:
+            os.remove(self.cfg["lockfile"])
+        except OSError:
+            pass
+        print("=== SHUTDOWN COMPLETE — motor slots are limp (mode 0x01, kp/kd=0) ===")
+        # handoff: the RC ladder (L1+B -> L2+UP -> R2+A) stays inert while
+        # the switcher is released, so SelectMode must run first.
+        print("=== Handoff to sport control: SelectMode(\"ai\") ... ===")
+        for attempt in range(1, 4):
+            try:
+                msc = MotionSwitcherClient()
+                msc.SetTimeout(5.0)
+                msc.Init()
+                msc.SelectMode("ai")
+                status, result = msc.CheckMode()
+                name = result.get("name", "") if isinstance(result, dict) else result
+                print(f"[handoff] attempt {attempt}: CheckMode -> {result}")
+                if name == "ai":
+                    print("[handoff] sport control restored — RC ladder live "
+                          "(L1+B -> L2+UP -> R2+A)")
+                    break
+            except Exception as e:
+                print(f"[handoff] attempt {attempt} failed: {e}")
+            time.sleep(1.0)
+        else:
+            print("[handoff] WARN: sport mode not restored — run "
+                  "SelectMode('ai') manually")
+
