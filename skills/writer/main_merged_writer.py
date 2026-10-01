@@ -2325,3 +2325,29 @@ class MergedWriter:
 
     # ------------------------------------------------------------ control
 
+    def request_shutdown(self, cause):
+        # SONIC first: b := 0 and the GR00T gains written immediately,
+        # so the shutdown tail never publishes SONIC gains.
+        self._sonic_revoke('shutdown', force=True)
+        self._shutdown = True
+        self._shutdown_cause = cause
+        self._shutting_down = True   # rc ignored
+        self.cmd_auto_active = False  # belt and braces
+        self.cmd_auto[:] = 0.0
+        # height: drop the latch on abort,
+        # so Phase-1 lifts legs.
+        self.height_active = False
+        self.height_target = self.height_stand
+        self.height_suspended = False   # stashed squat never outlives shutdown
+        # step: abort first and restore the boot encoding before the
+        # ascend, so Phase-1 measures the boot stance.
+        if self._stance_base_policy is not None:
+            if self.step_phase not in ("IDLE", "ABORT"):
+                self._abort_step("shutdown")
+            self._step_reset(force=False)
+        # stance: zeroing restores the boot encoding before the ascend, so
+        # the legs finish in the pose _legs_ascended measures rather than a
+        # barely legal splay.
+        if self._stance_base_policy is not None:
+            self._write_stance(0.0)
+
