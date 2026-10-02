@@ -278,3 +278,46 @@ def _waist(q35, mode_machine, motor_mode):
     if not math.isfinite(v):
         return None
     return (v, "measured")
+
+
+def _safe(fn, *args):
+    try:
+        return fn(*args)
+    except Exception:  # noqa: BLE001 -- a bad input just leaves its keys out, it never raises
+        return None
+
+
+def _r5(x):
+    """Round to 5 decimals; '+ 0.0' turns -0.0 into 0.0."""
+    return round(float(x), 5) + 0.0
+
+
+def _put(out, key, value):
+    if value is None:
+        return
+    value = float(value)
+    if math.isfinite(value):
+        out[key] = _r5(value)
+
+
+def torso_pose(q35, quat_wxyz, mode_machine, motor_mode):
+    """Measured torso pose from one lowstate.  Returns a dict; see the module docstring."""
+    u = _safe(_up_in_pelvis, quat_wxyz)
+    legs = _safe(_leg_angles, q35)
+    z = None
+    if u is not None and legs is not None:
+        z = _safe(_torso_height, legs, u)
+    pitch = None
+    roll = None
+    if u is not None:
+        pitch = _safe(_pitch_of, u)
+        roll = _safe(_roll_of, u)
+    waist = _safe(_waist, q35, mode_machine, motor_mode)
+    out = {}
+    _put(out, "torso_z", z)
+    _put(out, "pitch", pitch)
+    _put(out, "roll", roll)
+    if waist is not None and math.isfinite(waist[0]):
+        out["waist_pitch"] = _r5(waist[0])
+        out["waist_src"] = waist[1]
+    return out
