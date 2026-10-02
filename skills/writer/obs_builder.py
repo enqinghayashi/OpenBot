@@ -106,3 +106,17 @@ class ObsBuilder:
         f[71:86] = self.prev_action if prev_action is None else prev_action
         return f
 
+    def push(self, q, dq, quat_wxyz, gyro, cmd, action):
+        """Append a new frame; returns the full 516-D obs, oldest-first.
+
+        `action` = the policy's PREVIOUS output (15-D), written to [71:86]
+        before the policy runs — reference feedback ordering.
+        """
+        self.prev_action = np.asarray(action, dtype=np.float32)
+        self.build_frame(q, dq, quat_wxyz, gyro, cmd, self.prev_action)
+        # shift left: newest lands at the END
+        # zeros till 6 pushes, ref deque
+        self.obs = np.roll(self.obs, -FRAME_DIM)
+        self.obs[-FRAME_DIM:] = self._frame
+        return self.obs
+
