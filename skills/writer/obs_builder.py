@@ -70,3 +70,19 @@ class ObsBuilder:
 
     # --- isaac/legged-gym helpers ---
 
+    @staticmethod
+    def quat_rotate_inverse(q_wxyz, v):
+        """Rotate vector v into the body frame: q^-1 (0,v) q. q = (w,x,y,z)."""
+        q = np.asarray(q_wxyz, dtype=np.float64)
+        norm = float(np.linalg.norm(q))
+        if norm < 1e-9:
+            qw, qx, qy, qz = 1.0, 0.0, 0.0, 0.0
+        else:
+            qw, qx, qy, qz = q / norm
+        qvec = np.array([qx, qy, qz])
+        v = np.asarray(v, dtype=np.float64)
+        # a-b+c: v(2w^2-1) - 2w(qvec x v) + 2(qvec.v)qvec
+        return (v * (2.0 * qw * qw - 1.0)
+                - 2.0 * qw * np.cross(qvec, v)
+                + 2.0 * qvec * np.dot(qvec, v)).astype(np.float32)
+
