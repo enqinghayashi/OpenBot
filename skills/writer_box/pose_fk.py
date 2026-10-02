@@ -175,3 +175,60 @@ def _quat_to_mat(w, x, y, z):
 def _prep(chain):
     return tuple((np.array(off, dtype=np.float64), _quat_to_mat(*quat), ax)
                  for off, quat, ax in chain)
+
+
+_CHAIN_L = _prep(_LEG_L)
+_CHAIN_R = _prep(_LEG_R)
+_S_FOOT = np.array(_FOOT_SPHERES, dtype=np.float64)
+_P_TORSO = np.array(_TORSO_IN_PELVIS, dtype=np.float64)
+
+
+def _rot(axis, a):
+    """Rotation by angle a about the principal axis (0=x, 1=y, 2=z), right-handed."""
+    c = math.cos(a)
+    s = math.sin(a)
+    if axis == _AX_X:
+        return np.array([[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]])
+    if axis == _AX_Y:
+        return np.array([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]])
+    return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+
+
+def _lowest_sole_z(chain, q6, u):
+    """Lowest sphere-centre height of one foot, in the world frame up to the pelvis' own height.
+
+    z of a pelvis-frame point p is u . p (u = world-up in the pelvis frame); the pelvis height is
+    common to every point and cancels in torso_z.
+    """
+    rot = np.eye(3)
+    pos = np.zeros(3)
+    for k in range(6):
+        off, rfix, ax = chain[k]
+        pos = pos + rot.dot(off)
+        rot = rot.dot(rfix).dot(_rot(ax, float(q6[k])))
+    zc = float(u.dot(pos)) + _S_FOOT.dot(u.dot(rot))
+    return float(zc.min())
+
+
+def _up_in_pelvis(quat_wxyz):
+    """World-up expressed in the pelvis frame, from the (w, x, y, z) quaternion, or None."""
+    q = np.asarray(quat_wxyz, dtype=np.float64)
+    if q.shape != (4,) or not np.isfinite(q).all():
+        return None
+    n = math.sqrt(float(q.dot(q)))
+    if not n >= _MIN_QUAT_NORM:
+        return None
+    w, x, y, z = (q / n).tolist()
+    return (2.0 * (x * z - w * y),
+            2.0 * (y * z + w * x),
+            1.0 - 2.0 * (x * x + y * y))
+
+
+def _leg_angles(q35):
+    q = np.asarray(q35, dtype=np.float64)
+    if q.ndim != 1 or q.shape[0] < 12:
+        return None
+    legs = q[0:12]
+    if not np.isfinite(legs).all():
+        return None
+    return legs
