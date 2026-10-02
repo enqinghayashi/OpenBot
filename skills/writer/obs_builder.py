@@ -47,3 +47,26 @@ class ObsBuilder:
         self.obs = np.zeros(self.history_len * FRAME_DIM, dtype=np.float32)
         self.prev_action = np.zeros(NUM_ACTIONS, dtype=np.float32)  # feeds obs[71:86]
 
+    def set_height(self, value):
+        """Runtime height-reference setter — clamped, allocation-free.
+
+        Called on the writer's 250 Hz loop immediately before the policy push,
+        so it does nothing but compare-and-assign: no numpy allocation, no
+        logging, and above all NO assert.  An AssertionError raised here would
+        bypass the writer's RuntimeError-only hot-path handlers and abort the
+        crash-safe shutdown tail (the known incident class) — the band is a
+        clamp, never an assert.
+
+        `not (x >= lo)` also maps NaN to the floor, and +/-inf to the nearest
+        bound, so a non-finite reference can never poison obs frame f[3].
+        The band is the configured safe range; rate limiting (height_slew_rate)
+        is the caller's job — this setter only clamps.
+        """
+        if not (value >= self.height_min):
+            value = self.height_min
+        elif not (value <= self.height_max):
+            value = self.height_max
+        self.height_cmd = value
+
+    # --- isaac/legged-gym helpers ---
+
