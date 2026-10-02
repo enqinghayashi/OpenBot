@@ -120,3 +120,6 @@ class ObsBuilder:
         self.obs[-FRAME_DIM:] = self._frame
         return self.obs
 
+    def reset(self):
+        self.obs[:] = 0.0
+        self.prev_action[:] = 0.0
