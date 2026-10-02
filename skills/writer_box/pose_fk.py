@@ -232,3 +232,49 @@ def _leg_angles(q35):
     if not np.isfinite(legs).all():
         return None
     return legs
+
+
+def _torso_height(legs, u):
+    uv = np.array(u, dtype=np.float64)
+    lowest = min(_lowest_sole_z(_CHAIN_L, legs[0:6], uv),
+                 _lowest_sole_z(_CHAIN_R, legs[6:12], uv))
+    return float(uv.dot(_P_TORSO)) - lowest + _SOLE_RADIUS
+
+
+def _pitch_of(u):
+    return math.asin(max(-1.0, min(1.0, -u[0])))
+
+
+def _roll_of(u):
+    return math.atan2(u[1], u[2])
+
+
+def _as_int(x):
+    if x is None or isinstance(x, bool):
+        return None
+    if not isinstance(x, numbers.Real):
+        return None
+    f = float(x)
+    if not math.isfinite(f) or f != int(f):
+        return None
+    return int(f)
+
+
+def _waist(q35, mode_machine, motor_mode):
+    """(waist_pitch, waist_src) or None.  See the module docstring, `waist rule`."""
+    mm = _as_int(mode_machine)
+    if mm is None:
+        return None
+    if mm == _MODE_LOCK_WAIST:
+        # mechanical constant, not a measurement
+        return (0.0, "locked")
+    mot = np.asarray(motor_mode)
+    if mot.ndim != 1 or mot.shape[0] < 15 or int(mot[14]) == 0:
+        return None
+    q = np.asarray(q35, dtype=np.float64)
+    if q.ndim != 1 or q.shape[0] < 15:
+        return None
+    v = float(q[14])
+    if not math.isfinite(v):
+        return None
+    return (v, "measured")
