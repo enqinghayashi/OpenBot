@@ -102,3 +102,128 @@ EDITS = (
 
 class Refused(Exception):
     pass
+
+
+def md5(b):
+    return hashlib.md5(b).hexdigest()
+
+
+def _lowest_level(src_text):
+    """Lowest of (3,6),(3,7),(3,8) that `src_text` parses at, or None."""
+    for fv in ((3, 6), (3, 7), (3, 8)):
+        try:
+            ast.parse(src_text, feature_version=fv)
+            return fv
+        except SyntaxError:
+            continue
+    return None
+
+
+def derive(box_bytes, fk_bytes, expect_md5=None):
+    """-> (writer_bytes, fk_bytes).  Raises Refused; writes nothing."""
+    expect = BOX_MD5 if expect_md5 is None else expect_md5
+    got = md5(box_bytes)
+    if got != expect:
+        raise Refused("the input writer md5 is %s, not the box writer %s" % (got, expect))
+    out = box_bytes
+    for label, anchor, insertion in EDITS:
+        n = out.count(anchor)
+        if n != 1:
+            raise Refused("anchor for %s occurs %d times (want exactly 1): %r"
+                          % (label, n, anchor))
+        try:
+            ins = insertion.encode("ascii")
+        except UnicodeEncodeError:
+            raise Refused("the insertion for %s is not ASCII" % label)
+        out = out.replace(anchor, b"\n" + ins + anchor[1:])
+    want_len = len(box_bytes) + sum(len(i.encode("ascii")) for _, _, i in EDITS)
+    if len(out) != want_len:
+        raise Refused("derived length %d != box length + insertions %d" % (len(out), want_len))
+    try:
+        box_text = box_bytes.decode("utf-8")
+        out_text = out.decode("utf-8")
+        fk_text = fk_bytes.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise Refused("not valid UTF-8: %s" % e)
+    level = _lowest_level(box_text)
+    if level is None or _lowest_level(out_text) != level:
+        raise Refused("the derived writer does not parse at the box writer's feature level %r"
+                      % (level,))
+    try:
+        fk_tree = ast.parse(fk_text, feature_version=(3, 8))
+    except SyntaxError as e:
+        raise Refused("pose_fk.py does not parse under feature_version (3, 8): %s" % e)
+    mods = set()
+    names = set()
+    for node in ast.walk(fk_tree):
+        if isinstance(node, ast.Import):
+            mods.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            mods.add((node.module or "").split(".")[0])
+        elif isinstance(node, ast.FunctionDef):
+            names.add(node.name)
+    if not mods <= {"math", "numbers", "numpy"}:
+        raise Refused("pose_fk.py imports %s; only math, numbers, numpy are allowed"
+                      % sorted(mods))
+    if "torso_pose" not in names:
+        raise Refused("pose_fk.py defines no torso_pose")
+    for what, text in (("the derived writer", out_text), ("pose_fk.py", fk_text)):
+        m = FORBIDDEN.search(text)
+        if m:
+            raise Refused("%s contains the forbidden token %r" % (what, m.group(0)))
+    return out, fk_bytes
+
+
+def _read(path):
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+def _write_atomic(path, data):
+    tmp = path + ".tmp_build"
+    with open(tmp, "wb") as fh:
+        fh.write(data)
+    os.replace(tmp, path)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--box-writer", default=DEFAULT_BOX)
+    ap.add_argument("--pose-fk", default=DEFAULT_FK)
+    ap.add_argument("--out-dir", default=DEFAULT_OUT)
+    ap.add_argument("--check", action="store_true",
+                    help="rebuild in memory; exit 1 if the written files differ; write nothing")
+    args = ap.parse_args(argv)
+    try:
+        writer, fk = derive(_read(args.box_writer), _read(args.pose_fk), expect_md5=BOX_MD5)
+    except Refused as e:
+        sys.stderr.write("REFUSED: %s\n" % e)
+        return 2
+    except OSError as e:
+        sys.stderr.write("REFUSED: cannot read an input: %s\n" % e)
+        return 2
+    out_w = os.path.join(args.out_dir, OUT_WRITER)
+    out_f = os.path.join(args.out_dir, OUT_FK)
+    if args.check:
+        bad = []
+        for path, want in ((out_w, writer), (out_f, fk)):
+            try:
+                have = _read(path)
+            except OSError:
+                bad.append("%s missing" % path)
+                continue
+            if have != want:
+                bad.append("%s differs (on disk %s, rebuilt %s)" % (path, md5(have), md5(want)))
+        if bad:
+            for b in bad:
+                print("CHECK FAILED: %s" % b)
+            return 1
+        print("CHECK OK %s %s" % (md5(writer), out_w))
+        print("CHECK OK %s %s" % (md5(fk), out_f))
+        return 0
+    os.makedirs(args.out_dir, exist_ok=True)
+    _write_atomic(out_w, writer)
+    _write_atomic(out_f, fk)
+    print("WROTE %s %s (%d lines)" % (md5(writer), out_w, writer.count(b"\n")))
+    print("WROTE %s %s (%d lines)" % (md5(fk), out_f, fk.count(b"\n")))
+    return 0
