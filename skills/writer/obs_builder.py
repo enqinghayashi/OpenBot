@@ -86,3 +86,8 @@ class ObsBuilder:
                 - 2.0 * qw * np.cross(qvec, v)
                 + 2.0 * qvec * np.dot(qvec, v)).astype(np.float32)
 
+    def projected_gravity(self, quat_wxyz):
+        return self.quat_rotate_inverse(quat_wxyz, np.array([0.0, 0.0, -1.0]))
+
+    # --- frames ---
+
