@@ -91,3 +91,18 @@ class ObsBuilder:
 
     # --- frames ---
 
+    def build_frame(self, q, dq, quat_wxyz, gyro, cmd, prev_action=None):
+        """86-dim frame from lowstate slices + raw rc cmd. q/dq are 35-length
+        motor arrays (only [0:29] used)."""
+        f = self._frame
+        f[0:3] = np.asarray(cmd, dtype=np.float32) * self.cmd_scale
+        f[3] = self.height_cmd
+        f[4:7] = self.rpy_cmd
+        f[7:10] = np.asarray(gyro, dtype=np.float32) * self.ang_vel_scale
+        f[10:13] = self.projected_gravity(quat_wxyz)
+        f[13:42] = (np.asarray(q, dtype=np.float32)[0:NUM_DOF] - self.default_padded) \
+            * self.dof_pos_scale
+        f[42:71] = np.asarray(dq, dtype=np.float32)[0:NUM_DOF] * self.dof_vel_scale
+        f[71:86] = self.prev_action if prev_action is None else prev_action
+        return f
+
