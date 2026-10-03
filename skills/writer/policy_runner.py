@@ -41,3 +41,11 @@ class PolicyRunner:
             else "walk"
         return self.last_key
 
+    def infer(self, obs, cmd):
+        """Run the gated policy on a 516-D obs. Returns 15-D target q."""
+        key = self.gate(cmd)
+        out = self._sessions[key].run(
+            [self._out_name], {self._in_name: np.asarray(obs, dtype=np.float32)[None]})[0]
+        self.action = np.asarray(out[0], dtype=np.float32)  # 15-D
+        self.target_q = self.action * self.action_scale + self.defaults
+        return self.target_q
