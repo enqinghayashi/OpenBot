@@ -35,3 +35,9 @@ class PolicyRunner:
         self.last_key = "balance"
         self.target_q = self.defaults.copy()
 
+    def gate(self, cmd):
+        """Balance if raw cmd norm < threshold, else Walk."""
+        self.last_key = "balance" if float(np.linalg.norm(cmd)) < self.gate_norm \
+            else "walk"
+        return self.last_key
+
