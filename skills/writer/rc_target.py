@@ -18,3 +18,15 @@ STICK_NAMES = ("lx", "ly", "rx", "ry")
 
 
 class RCTarget:
+    def __init__(self, cfg):
+        self.joy = Joystick()
+        self.mapping = cfg["rc_mapping"]   # {"vx": "-ly", "vy": "lx", "omega": "rx"}
+        self.scale = {
+            "vx": float(cfg["rc_scale_vx"]),
+            "vy": float(cfg["rc_scale_vy"]),
+            "omega": float(cfg["rc_scale_omega"]),
+        }
+        self.timeout = float(cfg["rc_inactivity_timeout"])
+        self.last_active = time.perf_counter()
+        self.cmd = np.zeros(3, dtype=np.float32)
+
