@@ -48,3 +48,6 @@ class RCTarget:
             self.cmd[i] = (-val if neg else val) * self.scale[name]
         return self.cmd
 
+    def zero(self):
+        self.cmd[:] = 0.0
+        return self.cmd
