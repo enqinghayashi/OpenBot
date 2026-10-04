@@ -30,3 +30,21 @@ class RCTarget:
         self.last_active = time.perf_counter()
         self.cmd = np.zeros(3, dtype=np.float32)
 
+    def update(self, wireless_remote):
+        """Decode one lowstate wireless_remote (40 x uint8). Returns cmd (3,)."""
+        self.joy.extract(wireless_remote)
+
+        # any stick out of deadzone = activity
+        if any(abs(getattr(self.joy, n).data) > 0.05 for n in STICK_NAMES):
+            self.last_active = time.perf_counter()
+        elif time.perf_counter() - self.last_active > self.timeout:
+            self.cmd[:] = 0.0
+            return self.cmd
+
+        for i, name in enumerate(("vx", "vy", "omega")):
+            src = self.mapping[name]
+            neg = src.startswith("-")
+            val = getattr(self.joy, src.lstrip("-")).data
+            self.cmd[i] = (-val if neg else val) * self.scale[name]
+        return self.cmd
+
