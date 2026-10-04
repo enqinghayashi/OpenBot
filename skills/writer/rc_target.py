@@ -17,3 +17,4 @@ from unitree_sdk2py.utils.joystick import Joystick
 STICK_NAMES = ("lx", "ly", "rx", "ry")
 
 
+class RCTarget:
