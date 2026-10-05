@@ -687,3 +687,266 @@ def _rest_cost(candidate: Dict[str, Any], usage: Optional[Dict[str, Any]],
     cost = (usage["input_tokens"] * input_rate
             + usage["output_tokens"] * output_rate) / 1000.0
     return cost
+
+
+# ---------------------------------------------------------------------------
+# realtime runner
+# client and websockets imported lazily
+# ---------------------------------------------------------------------------
+
+
+def _realtime_run(candidate: Dict[str, Any], scene: Dict[str, Any],
+                  image: Optional[Dict[str, Any]], prices: Dict[str, Any],
+                  timeout_s: float, stub_base: Optional[str],
+                  audio_wav: Optional[str],
+                  media_override: Optional[str]) -> Dict[str, Any]:
+    """One Realtime decision turn.  LIVE-VERIFIED 2026-09-02 from the
+    laptop against api.openai.com (gpt-realtime-2.1-mini): wss connect,
+    session config, image attach and tool call all confirmed on the wire.
+    The earlier "not live-verifiable, py_compile-checked only" note was
+    what hid a NameError here — `prices` was referenced in the async core
+    but never passed to it, so a SUCCESSFUL turn was recorded as a failed
+    run (status flipped ok -> error by the generic handler).  py_compile
+    cannot catch a free-variable NameError; only a real call can."""
+    from voice.adapters import flatten_specs  # lazy import
+    from voice.realtime import RealtimeAuthError, RealtimeClient  # lazy import
+
+    base = stub_base or candidate["base_url"]
+    if stub_base:
+        # stub-gateway seam: realtime only speaks
+        # ws(s), so normalize the http(s) probe URL.
+        # REST keeps the http URL.
+        base = base.replace("http://", "ws://", 1).replace("https://", "wss://", 1)
+    record: Dict[str, Any] = {
+        "run": None, "scene": scene["id"], "status": "error",
+        "ttft_s": None, "e2e_s": None, "cost_usd": None,
+        "usage": None, "tool_call": None, "vision_qa": None,
+        "answer": None, "note": "",
+    }
+    try:
+        asyncio.run(_realtime_async_run(
+            candidate, scene, image, prices, timeout_s, base, audio_wav,
+            media_override, record, flatten_specs, RealtimeClient,
+            RealtimeAuthError))
+    except asyncio.TimeoutError:
+        record["status"] = "timeout"
+        record["note"] = "realtime turn exceeded the per-run bound"
+    except RealtimeAuthError as exc:
+        record["status"] = "auth_error"
+        record["note"] = str(exc)[:300]
+    except Exception as exc:  # noqa: BLE001 - any lane failure is a failed run
+        record["status"] = "error"
+        record["note"] = str(exc)[:300]
+    return record
+
+
+async def _realtime_async_run(candidate, scene, image, prices, timeout_s, base,
+                              audio_wav, media_override, record,
+                              flatten_specs, RealtimeClient,
+                              RealtimeAuthError):  # noqa: E999 (py3.9+)
+    """The async core of one realtime run: one client, one connect, one
+    decision turn (tool continuations capped), response.done usage
+    captured from the wire."""
+    client = RealtimeClient(
+        base_url=base,
+        model=candidate["model"],
+        api_key=os.environ.get(candidate["key_env"], ""),
+        tools=flatten_specs([TOOL_SPEC]),
+    )
+    done = asyncio.Event()
+    opened = asyncio.Event()
+    usage_accum: List[Dict[str, Any]] = []
+    status = {"value": "completed"}
+    first_output_ts: List[Optional[float]] = [None]
+    tool_items: List[Dict[str, Any]] = []
+    scored_args: List[Dict[str, Any]] = []
+    prose: List[str] = []
+    last_prose_ts: List[Optional[float]] = [None]
+
+    def on_open(name: str, payload: Any) -> None:
+        opened.set()
+
+    def on_done(name: str, payload: Any) -> None:
+        response = payload.get("response") or {}
+        status["value"] = str(response.get("status") or "completed")
+        usage = response.get("usage")
+        if isinstance(usage, dict):
+            usage_accum.append(usage)
+        done.set()
+
+    def on_output_item(name: str, payload: Any) -> None:
+        if first_output_ts[0] is None:
+            first_output_ts[0] = time.monotonic()
+        item = payload.get("item") or {}
+        if item.get("type") == "function_call":
+            tool_items.append(item)
+        elif item.get("type") == "message":
+            content = item.get("content") or []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text = str(part.get("text") or "").strip()
+                    if text:
+                        prose.append(text)
+                        last_prose_ts[0] = time.monotonic()
+
+    def on_audio_delta(name: str, payload: Any) -> None:
+        if first_output_ts[0] is None:
+            first_output_ts[0] = time.monotonic()
+
+    def on_error(name: str, payload: Any) -> None:
+        message = str(payload.get("message") or "")
+        status["value"] = "error:" + message[:200]
+
+    client.on_event("open", on_open)
+    client.on_event("response.done", on_done)
+    client.on_event("response.output_item.done", on_output_item)
+    client.on_event("response.audio.delta", on_audio_delta)
+    client.on_event("response.output_audio.delta", on_audio_delta)
+    client.on_event("error", on_error)
+
+    loop_task = asyncio.ensure_future(client.run_forever())
+    task_done = asyncio.Event()
+
+    def _on_task_done(_task: asyncio.Future) -> None:
+        task_done.set()
+
+    loop_task.add_done_callback(_on_task_done)
+    t0 = time.monotonic()
+    try:
+        # race the open event against the connect task: an immediate
+        # rejection (401/402/403/404) must show in ms, not after the whole
+        # handshake bound (that one is for the retry ladder).
+        open_wait = asyncio.ensure_future(opened.wait())
+        done_wait = asyncio.ensure_future(task_done.wait())
+        finished, _ = await asyncio.wait(
+            {open_wait, done_wait}, return_when=asyncio.FIRST_COMPLETED,
+            timeout=REALTIME_CONNECT_S)
+        if done_wait in finished and not open_wait.done():
+            exc = loop_task.exception()
+            if exc is not None:
+                raise exc
+            record["status"] = "error"
+            record["note"] = "realtime connect task ended before the socket opened"
+            return
+        if not open_wait.done():
+            record["status"] = "connect_error"
+            record["note"] = ("realtime socket never opened within the "
+                              "%ds open bound" % REALTIME_CONNECT_S)
+            return
+        # ---- the actual decision turn ----------------------------------------
+        if audio_wav:
+            await client.send_audio(_wav_pcm16(audio_wav))
+        elif image is not None and not candidate["veto"]:
+            await client.send_image(image["b64"])
+        if not audio_wav:
+            await client.send_input_text(scene["prompt"])
+        await client.create_response()
+        await asyncio.wait_for(done.wait(), timeout=timeout_s)
+        # ---- tool continuations, same bound as the deployed turn -----
+        for _ in range(MAX_TOOL_CONTINUATIONS):
+            if not tool_items:
+                break
+            item = tool_items.pop(0)
+            call = _parse_realtime_call(item)
+            if call is None:
+                record["tool_call"] = "parse_fail"
+                continue
+            name, call_id, args = call
+            if name not in VALID_TOOL_NAMES or not isinstance(args, dict):
+                record["tool_call"] = "parse_fail"
+                continue
+            if not all(key in args for key in REQUIRED_TOOL_ARGS):
+                record["tool_call"] = "veto"
+            else:
+                if record["tool_call"] in (None, "no_call"):
+                    record["tool_call"] = "ok"
+                # keep the accepted call's fields: vision-QA scores
+                # them, and the prompt asks for the colour there so
+                # prose is usually empty.
+                scored_args.append(args)
+            done.clear()
+            await client.send_function_call_output(
+                call_id, json.dumps({"ok": True}))
+            await client.create_response()
+            await asyncio.wait_for(done.wait(), timeout=timeout_s)
+        record["e2e_s"] = time.monotonic() - t0
+        if first_output_ts[0] is not None:
+            record["ttft_s"] = first_output_ts[0] - t0
+        if status["value"].startswith("error:"):
+            record["status"] = "error"
+            record["note"] = status["value"]
+            return
+        if status["value"] == "failed":
+            # wire terminal state (status 'failed'): the model rejected
+            # the turn. still a failed run, still in the denominator.
+            record["status"] = "error"
+            record["note"] = "response.status == 'failed' on the wire"
+            return
+        if not usage_accum:
+            # no usage on the wire: the honest 'Not reported' state.
+            record["status"] = "ok"
+            record["note"] += "usage Not reported on the wire; "
+            return
+        record["status"] = "ok"
+        usage = _sum_realtime_usage(usage_accum)
+        record["usage"] = usage
+        record["cost_usd"] = _realtime_cost(candidate, usage, prices)
+        if record["tool_call"] is None:
+            record["tool_call"] = "no_call"
+        answer = " ".join(prose).strip() or None
+        record["answer"] = answer
+        if candidate["veto"]:
+            record["vision_qa"] = None
+        else:
+            lowered = _vision_scored_text(
+                scored_args[0] if scored_args else None, answer)
+            record["vision_qa"] = int(
+                any(token.lower() in lowered for token in scene["expected"]))
+    except asyncio.TimeoutError:
+        record["status"] = "timeout"
+        record["note"] = "realtime turn exceeded the per-run bound"
+    finally:
+        try:
+            await client.close()
+        except Exception:  # noqa: BLE001 - teardown must not raise
+            pass
+        loop_task.cancel()
+        try:
+            await loop_task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
+
+
+def _parse_realtime_call(item: Dict[str, Any]):
+    """A realtime function_call item -> (name, call_id, args) or None."""
+    name = item.get("name")
+    call_id = item.get("call_id")
+    raw_args = item.get("arguments")
+    if not isinstance(name, str) or not isinstance(raw_args, str):
+        return None
+    try:
+        args = json.loads(raw_args)
+    except ValueError:
+        return None
+    if not isinstance(args, dict):
+        return None
+    return name, str(call_id or ""), args
+
+
+def _wav_pcm16(path: str) -> bytes:
+    """Strip a WAV header -> PCM16 mono payload (24 kHz expected).  The
+    mic pump's byte stream is what the realtime lane uploads; a WAV file
+    is the deterministic stand-in."""
+    with open(path, "rb") as fh:
+        data = fh.read()
+    if not data.startswith(b"RIFF") or data[8:12] != b"WAVE":
+        raise ValueError("not a WAV file: %s" % path)
+    # find the 'data' chunk
+    pos = 12
+    while pos + 8 <= len(data):
+        cid = data[pos:pos + 4]
+        size = struct.unpack("<I", data[pos + 4:pos + 8])[0]
+        if cid == b"data":
+            return data[pos + 8: pos + 8 + size]
+        pos += 8 + size + (size & 1)
+    raise ValueError("WAV has no data chunk: %s" % path)
