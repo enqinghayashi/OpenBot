@@ -950,3 +950,128 @@ def _wav_pcm16(path: str) -> bytes:
             return data[pos + 8: pos + 8 + size]
         pos += 8 + size + (size & 1)
     raise ValueError("WAV has no data chunk: %s" % path)
+
+
+def _sum_realtime_usage(usage_accum: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Aggregate the response.done usage payloads of the turn's
+    responses.  The audio/text splits are read from ``*_token_details``
+    exactly as the wire reports them."""
+    totals = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+              "image_tokens": None, "text_input_tokens": None,
+              "audio_input_tokens": None, "text_output_tokens": None,
+              "audio_output_tokens": None, "cached_tokens": None,
+              "entries": 0}
+    for usage in usage_accum:
+        totals["entries"] += 1
+        totals["input_tokens"] += int(usage.get("input_tokens") or 0)
+        totals["output_tokens"] += int(usage.get("output_tokens") or 0)
+        totals["total_tokens"] += int(usage.get("total_tokens") or 0)
+        details = usage.get("input_token_details")
+        if isinstance(details, dict):
+            _accum(totals, "audio_input_tokens", details.get("audio_tokens"))
+            _accum(totals, "text_input_tokens", details.get("text_tokens"))
+            _accum(totals, "cached_tokens", details.get("cached_tokens"))
+        details_out = usage.get("output_token_details")
+        if isinstance(details_out, dict):
+            _accum(totals, "audio_output_tokens", details_out.get("audio_tokens"))
+            _accum(totals, "text_output_tokens", details_out.get("text_tokens"))
+    return totals
+
+
+def _realtime_cost(candidate: Dict[str, Any], usage: Dict[str, Any],
+                   prices: Dict[str, Any]) -> Optional[float]:
+    """$/turn from realtime usage (audio/text token splits × the recorded
+    audio/text rates).  None (honest 'Not reported') when the price entry
+    is unverified or the needed split/rate is absent — never a guessed
+    number."""
+    entry = prices.get(candidate["model"])
+    if not isinstance(entry, dict) or not entry.get("verified"):
+        return None
+    audio_in = _price(entry, "audio_input_per_1k")
+    audio_out = _price(entry, "audio_output_per_1k")
+    text_in = _price(entry, "text_input_per_1k")
+    text_out = _price(entry, "text_output_per_1k")
+    has_splits = (usage["audio_input_tokens"] is not None
+                  and usage["text_input_tokens"] is not None
+                  and usage["audio_output_tokens"] is not None
+                  and usage["text_output_tokens"] is not None)
+    if has_splits:
+        if None in (audio_in, audio_out, text_in, text_out):
+            return None
+        cost = (usage["text_input_tokens"] * text_in
+                + usage["audio_input_tokens"] * audio_in
+                + usage["text_output_tokens"] * text_out
+                + usage["audio_output_tokens"] * audio_out) / 1000.0
+        return cost
+    # no audio/text split on the wire: only a
+    # flat rate could price it, and none is
+    # recorded -> 'Not reported'.
+    return None
+
+
+# ---------------------------------------------------------------------------
+# config-seam check (profile-delta)
+# ---------------------------------------------------------------------------
+
+
+def _check_config_seam(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate the candidate's profile-delta against the real loader:
+    the deploy pin (brain.lane + model) must LOAD.  Degrades to
+    'Not reported' outside the repo (lazy import — --list never gets
+    here)."""
+    try:
+        from brain.config_loader import load as _cfg_load  # lazy import
+    except Exception as exc:  # noqa: BLE001
+        return {"checked": False, "ok": None,
+                "note": "config_loader unimportable: %s" % exc}
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cfg_path = os.path.join(repo_root, "config.yaml")
+    if not os.path.isfile(cfg_path):
+        return {"checked": False, "ok": None,
+                "note": "config.yaml not found at %s — run from the repo" % cfg_path}
+    # deployed profile per lane: rest/transcript uses the cloud profile,
+    # realtime uses the voice profile.
+    profile = "voice" if candidate["lane"] == "realtime" else "cloud"
+    try:
+        cfg = _cfg_load(cfg_path, profile=profile,
+                        overrides=candidate["profile_delta"])
+    except Exception as exc:  # noqa: BLE001
+        return {"checked": True, "ok": False,
+                "note": "profile-delta rejected by config_loader (%s): %s"
+                        % (profile, exc)}
+    if candidate["lane"] == "realtime":
+        ok = cfg.realtime.model == candidate["model"]
+        note = "realtime.model == %r" % cfg.realtime.model
+    else:
+        ok = cfg.rest.model == candidate["model"]
+        note = "rest.model == %r" % cfg.rest.model
+    return {"checked": True, "ok": ok, "note": note}
+
+
+def _check_budget_parity() -> Dict[str, Any]:
+    """B5 honesty pin: the bench must rank with the SAME completion budget
+    the deployed transcript lane ships (config.cloud.yaml
+    rest.max_tokens).  #120 measured 16/20 truncation of deepseek-vision
+    (a 512-token reference skeleton + reasoning) at the 256 ceiling — the
+    re-run above is at REST_MAX_TOKENS, so a shipped config that reverts
+    to 256 would silently rank a different game.  Degrades to 'Not
+    reported' outside the repo, same as _check_config_seam."""
+    try:
+        from brain.config_loader import load as _cfg_load  # lazy import
+    except Exception as exc:  # noqa: BLE001
+        return {"checked": False, "ok": None,
+                "note": "config_loader unimportable: %s" % exc}
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cfg_path = os.path.join(repo_root, "config.yaml")
+    if not os.path.isfile(cfg_path):
+        return {"checked": False, "ok": None,
+                "note": "config.yaml not found at %s — run from the repo"
+                        % cfg_path}
+    try:
+        cfg = _cfg_load(cfg_path, profile="cloud")
+    except Exception as exc:  # noqa: BLE001
+        return {"checked": True, "ok": False,
+                "note": "cloud profile rejected by config_loader: %s" % exc}
+    shipped = getattr(cfg.rest, "max_tokens", None)
+    return {"checked": True, "ok": shipped == REST_MAX_TOKENS,
+            "note": "rest.max_tokens == %r (config.cloud.yaml)" % shipped}
