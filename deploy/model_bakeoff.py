@@ -1075,3 +1075,200 @@ def _check_budget_parity() -> Dict[str, Any]:
     shipped = getattr(cfg.rest, "max_tokens", None)
     return {"checked": True, "ok": shipped == REST_MAX_TOKENS,
             "note": "rest.max_tokens == %r (config.cloud.yaml)" % shipped}
+
+
+# ---------------------------------------------------------------------------
+# runner plumbing
+# ---------------------------------------------------------------------------
+
+
+def _run_one_candidate(candidate: Dict[str, Any], runs: int, timeout: float,
+                       prices: Dict[str, Any], prices_path: str,
+                       stub_base: Optional[str], image_dir: Optional[str],
+                       audio_wav: Optional[str]) -> Dict[str, Any]:
+    """N runs of one candidate.  Every attempted run gets a row; a failed
+    run is COUNTED in the reliability denominator, never retried into
+    success."""
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)  # so lazy brain/voice imports resolve
+
+    runs_out: List[Dict[str, Any]] = []
+    for i in range(runs):
+        scene = SCENES[i % len(SCENES)]
+        image = scene_image(scene, image_dir) if image_dir else scene_image(scene, None)
+        if candidate["lane"] == "realtime":
+            record = _realtime_run(candidate, scene, image, prices, timeout,
+                                   stub_base, audio_wav, None)
+        else:
+            record = _rest_run(candidate, scene, image, prices, timeout,
+                               stub_base, None)
+        record["run"] = i
+        runs_out.append(record)
+
+    return _summarize(candidate, runs_out, prices, prices_path, stub_base)
+
+
+def _summarize(candidate, runs_out, prices, prices_path,
+               stub_base) -> Dict[str, Any]:
+    ok = [r for r in runs_out if r["status"] == "ok"]
+    failed = [r for r in runs_out if r["status"] != "ok"]
+    fail_reasons: Dict[str, int] = {}
+    for r in failed:
+        fail_reasons[r["status"]] = fail_reasons.get(r["status"], 0) + 1
+
+    ttft = [r["ttft_s"] for r in ok if r["ttft_s"] is not None]
+    e2e = [r["e2e_s"] for r in ok if r["e2e_s"] is not None]
+    costs = [r["cost_usd"] for r in ok if r["cost_usd"] is not None]
+    tool_ok = sum(1 for r in ok if r["tool_call"] == "ok")
+    tool_no_call = sum(1 for r in ok if r["tool_call"] == "no_call")
+    tool_failed = sum(1 for r in ok if r["tool_call"] not in ("ok", "no_call", None))
+    vision_measured = [r for r in ok if r["vision_qa"] is not None]
+    vision_correct = sum(1 for r in vision_measured if r["vision_qa"] == 1)
+
+    usage_agg: Dict[str, Any] = {}
+    for r in ok:
+        usage = r.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        for key in ("input_tokens", "output_tokens", "total_tokens"):
+            usage_agg[key] = usage_agg.get(key, 0) + int(usage.get(key) or 0)
+        for key in ("image_tokens", "text_input_tokens", "audio_input_tokens",
+                    "text_output_tokens", "audio_output_tokens", "cached_tokens"):
+            value = usage.get(key)
+            if value is not None:
+                usage_agg[key] = usage_agg.get(key, 0) + int(value)
+
+    entry = prices.get(candidate["model"])
+    price_state = {
+        "path": prices_path,
+        "verified": bool(isinstance(entry, dict) and entry.get("verified")),
+    }
+
+    summary: Dict[str, Any] = {
+        "candidate": candidate["id"],
+        "model": candidate["model"],
+        "lane": candidate["lane"],
+        "wire": candidate["wire"],
+        "key_env": candidate["key_env"],
+        "veto": candidate["veto"],
+        "baseline": candidate["baseline"],
+        "note": candidate["note"],
+        "stub_gateway": stub_base if stub_base else None,
+        "runs_requested": len(runs_out),
+        "runs_total": len(runs_out),
+        "runs_succeeded": len(ok),
+        "runs_failed": len(failed),
+        "fail_reasons": fail_reasons,
+        "rate_limits": fail_reasons.get("rate_limit", 0),
+        # REST: 0 by construction (urllib is one-shot, no reconnect code).
+        # realtime: the retry ladder (1,2,4,8,8,8,8,8 s) is internal to the
+        # client and nothing public observes it, so a count would be guesswork.
+        "reconnects": (0 if candidate["lane"] == "rest" else NOT_REPORTED),
+        "ttft_s": {"measured_on": len(ttft), "of": len(ok),
+                   "avg": _fmt(_mean(ttft)), "p95": _fmt(_p95(ttft))},
+        "e2e_s": {"measured_on": len(e2e), "of": len(ok),
+                  "avg": _fmt(_mean(e2e)), "p95": _fmt(_p95(e2e))},
+        "cost_per_turn_usd": _fmt(_mean(costs)),
+        "cost_per_turn_p95_usd": _fmt(_p95(costs)),
+        "cost_measured_on": len(costs),
+        "cost_of": len(ok),
+        "cost_basis_tokens": usage_agg,
+        "tool_call": {"ok": tool_ok, "failed": tool_failed,
+                      "no_call": tool_no_call, "of": len(ok)},
+        "vision_qa_accuracy": (
+            _fmt(_mean([float(r["vision_qa"]) for r in vision_measured]))
+            if vision_measured else NOT_REPORTED),
+        "vision_qa": {"correct": vision_correct, "measured": len(vision_measured),
+                      "of": len(ok)},
+        "config_seam": _check_config_seam(candidate),
+        "budget_parity": _check_budget_parity(),
+        "prices": price_state,
+        "runs": runs_out,
+    }
+    if candidate["veto"]:
+        summary["vision_qa_not_reported_reason"] = (
+            "veto-flagged text-only candidate (no image part on this wire): "
+            + candidate["veto"])
+    if summary["cost_per_turn_usd"] == NOT_REPORTED:
+        summary["cost_not_reported_reason"] = (
+            "no verified per-token rate recorded for %r in %s (recorded "
+            "2026-08-31) — re-verify day-of against the provider price "
+            "page and fill the entry (docs/BAKEOFF.md re-verify "
+            "instruction)" % (candidate["model"], prices_path))
+    if not ttft:
+        summary["ttft_s"]["avg"] = NOT_REPORTED
+        summary["ttft_s"]["p95"] = NOT_REPORTED
+        summary["ttft_not_reported_reason"] = "no successful runs measured"
+    if not e2e:
+        summary["e2e_s"]["avg"] = NOT_REPORTED
+        summary["e2e_s"]["p95"] = NOT_REPORTED
+        summary["e2e_not_reported_reason"] = "no successful runs measured"
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def _print_manifest(fmt: str) -> int:
+    rows = [CANDIDATES[key] for key in sorted(CANDIDATES)]
+    if fmt == "json":
+        json.dump(rows, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return 0
+    if fmt == "csv":
+        out = io.StringIO()
+        writer = csv.writer(out)
+        writer.writerow(["id", "lane", "wire", "model", "key_env",
+                         "veto", "baseline", "note"])
+        for c in rows:
+            writer.writerow([c["id"], c["lane"], c["wire"], c["model"],
+                             c["key_env"], c["veto"], str(c["baseline"]),
+                             c["note"]])
+        sys.stdout.write(out.getvalue())
+        return 0
+    width = max(len(c["id"]) for c in rows) + 2
+    print("OpenBot v4 model bake-off — 11-candidate manifest "
+          "(plan section 6; %d rows)" % len(rows))
+    print("=" * 118)
+    for c in rows:
+        veto = ("VETO: " + c["veto"]) if c["veto"] else "vision-capable"
+        flag = " [BASELINE]" if c["baseline"] else ""
+        print("%-*s %-8s %-17s %-24s %s%s" % (
+            width, c["id"], c["lane"], c["wire"], c["key_env"], veto, flag))
+        print("%*s %s" % (width, "", c["note"]))
+    print("=" * 118)
+    print("key env vars are read from the environment at run time — "
+          "never printed, never passed in args")
+    return 0
+
+
+def _write_output(summary: Dict[str, Any], out_path: str, fmt: str) -> None:
+    if fmt == "json":
+        with open(out_path, "w", encoding="utf-8") as fh:
+            json.dump(summary, fh, indent=2)
+            fh.write("\n")
+    else:
+        with open(out_path, "w", encoding="utf-8", newline="") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(["run", "scene", "status", "ttft_s", "e2e_s",
+                             "cost_usd", "tool_call", "vision_qa", "answer",
+                             "note"])
+            for r in summary["runs"]:
+                writer.writerow([
+                    r["run"], r["scene"], r["status"],
+                    _fmt(r["ttft_s"], " s") if r["ttft_s"] is not None
+                        else NOT_REPORTED,
+                    _fmt(r["e2e_s"], " s") if r["e2e_s"] is not None
+                        else NOT_REPORTED,
+                    _fmt(r["cost_usd"]) if r["cost_usd"] is not None
+                        else NOT_REPORTED,
+                    r["tool_call"] if r["tool_call"] is not None
+                        else NOT_REPORTED,
+                    r["vision_qa"] if r["vision_qa"] is not None
+                        else NOT_REPORTED,
+                    r["answer"] if r["answer"] is not None else NOT_REPORTED,
+                    r["note"].strip(),
+                ])
