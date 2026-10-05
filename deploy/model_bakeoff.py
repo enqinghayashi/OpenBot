@@ -406,3 +406,46 @@ def scene_image(scene: Dict[str, Any], image_dir: Optional[str]) -> Dict[str, An
 # ---------------------------------------------------------------------------
 
 
+def _p95(values: List[float]) -> Optional[float]:
+    """The 95th percentile: sorted rank ceil(0.95*n) (1-based), i.e. the
+    largest value for n <= 20.  Documented definition — thesis-grade."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    idx = max(0, int(math.ceil(0.95 * len(ordered))) - 1)
+    return ordered[idx]
+
+
+def _mean(values: List[float]) -> Optional[float]:
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _fmt(value: Optional[float], unit: str = "") -> Any:
+    """A measured number or the literal 'Not reported'."""
+    if value is None:
+        return NOT_REPORTED
+    return "{:.6f}{}".format(value, unit)
+
+
+# ---------------------------------------------------------------------------
+# REST runner
+# clients imported lazily inside the runner
+# ---------------------------------------------------------------------------
+
+
+def _transport_factory():
+    """The documented ``_transport`` seam wrapper: perform the client's
+    urllib POST and capture the raw response body (usage lives there).
+    A FRESH wrapper per run keeps usage attribution exact (a hung run's
+    late body can never leak into a later run's span)."""
+    captured: List[bytes] = []
+
+    def transport(request: Any, timeout: float) -> bytes:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            body = resp.read()
+        captured.append(body)
+        return body
+
+    return transport, captured
