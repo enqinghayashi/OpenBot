@@ -1272,3 +1272,172 @@ def _write_output(summary: Dict[str, Any], out_path: str, fmt: str) -> None:
                     r["answer"] if r["answer"] is not None else NOT_REPORTED,
                     r["note"].strip(),
                 ])
+
+
+def _print_summary(summary: Dict[str, Any]) -> None:
+    c = summary["candidate"]
+    print("")
+    print("candidate %s (%s lane, wire %s)%s" % (
+        c, summary["lane"], summary["wire"],
+        " — stub gateway " + summary["stub_gateway"] if summary["stub_gateway"]
+        else ""))
+    print("  runs: %d total = %d succeeded + %d failed "
+          "(fail reasons: %s; rate limits %d; reconnects %s)" % (
+              summary["runs_total"], summary["runs_succeeded"],
+              summary["runs_failed"],
+              summary["fail_reasons"] or "{}",
+              summary["rate_limits"], summary["reconnects"]))
+    ttft = summary["ttft_s"]
+    e2e = summary["e2e_s"]
+    print("  TTFT:  avg %s, p95 %s (measured on %d/%d runs)"
+          % (ttft["avg"], ttft["p95"], ttft["measured_on"], ttft["of"]))
+    print("  E2E:   avg %s, p95 %s (measured on %d/%d runs)"
+          % (e2e["avg"], e2e["p95"], e2e["measured_on"], e2e["of"]))
+    print("  cost/turn: avg %s USD, p95 %s USD (measured on %d/%d runs; "
+          "token basis %s)" % (
+              summary["cost_per_turn_usd"], summary["cost_per_turn_p95_usd"],
+              summary["cost_measured_on"], summary["cost_of"],
+              json.dumps(summary["cost_basis_tokens"])))
+    tc = summary["tool_call"]
+    print("  tool-call correctness: %d ok / %d failed / %d no-call (of %d)"
+          % (tc["ok"], tc["failed"], tc["no_call"], tc["of"]))
+    print("  vision-QA accuracy: %s (%d/%d measured)" % (
+        summary["vision_qa_accuracy"],
+        summary["vision_qa"]["correct"], summary["vision_qa"]["measured"]))
+    seam = summary["config_seam"]
+    if seam.get("checked"):
+        print("  config seam (profile-delta): %s — %s" % (
+            "ok" if seam.get("ok") else "REJECTED", seam.get("note", "")))
+    else:
+        print("  config seam: %s (%s)" % (NOT_REPORTED, seam.get("note", "")))
+    parity = summary.get("budget_parity", {})
+    if parity.get("checked"):
+        print("  budget parity (bench == shipped): %s — %s" % (
+            "ok" if parity.get("ok") else "MISMATCH",
+            parity.get("note", "")))
+    else:
+        print("  budget parity: %s (%s)" % (
+            NOT_REPORTED, parity.get("note", "")))
+    if summary["cost_per_turn_usd"] == NOT_REPORTED:
+        print("  NOTE: %s" % summary.get("cost_not_reported_reason", ""))
+    if summary.get("veto"):
+        print("  NOTE: veto-flagged — %s" % summary.get(
+            "vision_qa_not_reported_reason", summary["veto"]))
+
+
+def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="model_bakeoff.py",
+        description="OpenBot v4 model bake-off harness (plan section 6): "
+                    "measures every vision-capable candidate across both "
+                    "brain lanes on the same fixed scene set and tool "
+                    "protocol, ranked by $/turn at equal-or-better "
+                    "accuracy.  Honesty law: usage/timing read from the "
+                    "wire, prices from deploy/prices.json, failed runs "
+                    "counted in the reliability denominator.",
+    )
+    parser.add_argument("--list", action="store_true",
+                        help="print the 11-candidate manifest and exit "
+                             "(zero dependencies)")
+    parser.add_argument("--candidate", default=None,
+                        help="candidate id from --list, or 'all'")
+    parser.add_argument("--runs", type=int, default=DEFAULT_RUNS,
+                        help="runs per candidate (default %d)" % DEFAULT_RUNS)
+    parser.add_argument("--timeout", type=float, default=None,
+                        help="per-run bound in seconds (default: lane "
+                             "default — rest 120, realtime 60)")
+    parser.add_argument("--out", default=None,
+                        help="results file (.json or .csv by extension)")
+    parser.add_argument("--format", choices=("json", "csv"), default=None,
+                        help="output format (default: by --out extension, "
+                             "else json)")
+    parser.add_argument("--prices", default=None,
+                        help="price sidecar path (default: deploy/prices.json)")
+    parser.add_argument("--stub-gateway", default=None,
+                        help="dev/probe seam: override the REST base_url "
+                             "(also BAKEOFF_STUB_GATEWAY env); echoed in "
+                             "output, never a secret")
+    parser.add_argument("--image-dir", default=None,
+                        help="real scene photos (scene-a.jpg ... scene-e.jpg); "
+                             "default: deterministic synthetic images")
+    parser.add_argument("--audio", default=None,
+                        help="realtime lane: PCM16 24 kHz mono WAV to "
+                             "upload instead of text input")
+    args = parser.parse_args(argv)
+    if args.list and args.candidate:
+        parser.error("--list and --candidate are mutually exclusive")
+    if args.candidate is None and not args.list:
+        parser.error("either --list or --candidate <id|all> is required")
+    if args.runs < 1:
+        parser.error("--runs must be >= 1")
+    if args.timeout is not None and args.timeout <= 0:
+        parser.error("--timeout must be > 0")
+    return args
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    args = _parse_args(argv)
+    if args.list:
+        fmt = args.format or "table"
+        return _print_manifest(fmt)
+
+    stub_base = args.stub_gateway or os.environ.get("BAKEOFF_STUB_GATEWAY") or None
+    if args.format is None:
+        fmt = "csv" if (args.out or "").endswith(".csv") else "json"
+    else:
+        fmt = args.format
+    if args.out is None:
+        parser = argparse.ArgumentParser()
+        parser.error("--out is required when running a candidate")
+        return 2
+    if fmt not in ("json", "csv"):
+        sys.stderr.write("model_bakeoff: unsupported format %r\n" % fmt)
+        return 1
+
+    prices_path = args.prices or default_prices_path()
+    try:
+        prices = load_prices(prices_path)
+    except (OSError, ValueError) as exc:
+        sys.stderr.write("model_bakeoff: REFUSAL: prices sidecar failed: %s\n" % exc)
+        return 2
+
+    if args.candidate == "all":
+        ids = sorted(CANDIDATES)
+    else:
+        if args.candidate not in CANDIDATES:
+            sys.stderr.write(
+                "model_bakeoff: REFUSAL: unknown candidate %r (see --list)\n"
+                % args.candidate)
+            return 2
+        ids = [args.candidate]
+
+    results: List[Dict[str, Any]] = []
+    for cid in ids:
+        candidate = CANDIDATES[cid]
+        timeout = args.timeout or (
+            REALTIME_TIMEOUT_S if candidate["lane"] == "realtime"
+            else REST_TIMEOUT_S)
+        summary = _run_one_candidate(candidate, args.runs, timeout, prices,
+                                     prices_path, stub_base, args.image_dir,
+                                     args.audio)
+        _print_summary(summary)
+        results.append(summary)
+
+    if len(results) == 1:
+        document = results[0]
+    else:
+        document = {"candidates": results, "count": len(results)}
+
+    try:
+        _write_output(document, args.out, fmt)
+    except OSError as exc:
+        sys.stderr.write("model_bakeoff: could not write %s: %s\n"
+                         % (args.out, exc))
+        return 1
+    sys.stdout.write("model_bakeoff: wrote %s (%s, %d runs per candidate)\n"
+                     % (args.out, fmt, args.runs))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
