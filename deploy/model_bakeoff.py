@@ -449,3 +449,241 @@ def _transport_factory():
         return body
 
     return transport, captured
+
+
+def _vision_scored_text(tool_args: Optional[Dict[str, Any]],
+                        prose: Optional[str]) -> str:
+    """The text vision-QA is scored against: the tool call's reported
+    fields FIRST, prose second.
+
+    LIVE-VERIFIED 2026-09-02: every SCENES prompt says "Call report_scene
+    with the <object>'s color", so a well-behaved model puts the colour in
+    the call ARGUMENTS and returns no prose at all.  Scoring prose alone
+    (the pre-fix behaviour) therefore recorded 0/N vision accuracy for a
+    model that answered perfectly, while a model that ignored the
+    instruction and rambled would have scored 1/N -- the metric was
+    inverted against correct tool-calling behaviour.  Both lanes share
+    this one definition so they cannot drift apart.
+    """
+    parts: List[str] = []
+    if isinstance(tool_args, dict):
+        for key in REQUIRED_TOOL_ARGS:          # = ["object", "color"]
+            value = tool_args.get(key)
+            if isinstance(value, str):
+                parts.append(value)
+    if prose:
+        parts.append(prose)
+    return " ".join(parts).lower()
+
+
+def _rest_run(candidate: Dict[str, Any], scene: Dict[str, Any],
+              image: Optional[Dict[str, Any]], prices: Dict[str, Any],
+              timeout_s: float, stub_base: Optional[str],
+              media_override: Optional[str]) -> Dict[str, Any]:
+    """One REST decision turn (one chat call, fresh client — the
+    deployed transcript lane's per-turn unit)."""
+    from brain.agent.llm_cloud import (  # lazy: --list needs zero deps
+        AnthropicMessagesClient,
+        ChatTransportError,
+        CloudLLMClient,
+    )
+
+    base = stub_base or candidate["base_url"]
+    key_env = candidate["key_env"]
+    transport, captured = _transport_factory()
+    common = dict(model=candidate["model"], api_key_env=key_env,
+                  timeout_s=timeout_s, _transport=transport)
+    if candidate["wire"] == "anthropic-native":
+        client = AnthropicMessagesClient(base_url=base, **common)
+    else:
+        # same shape as the deployed lane:
+        # skeleton tools and prose fallback.
+        client = CloudLLMClient(base_url=base, tool_mode="skeleton",
+                                prose_fallback=True, temperature=0.2,
+                                max_tokens=REST_MAX_TOKENS,
+                                enable_thinking=False,
+                                **common)
+
+    messages = [
+        {"role": "system", "content": "You are a scene-analysis agent. "
+                                      "Answer the scene question and call "
+                                      "report_scene."},
+        {"role": "user", "content": scene["prompt"]},
+    ]
+    # veto rows are measured text-only, with no image on their wire.
+    attach_image = image if (image is not None and not candidate["veto"]) else None
+    media_type = (media_override or attach_image["media"]
+                  if attach_image else "image/jpeg")
+    record: Dict[str, Any] = {
+        "run": None, "scene": scene["id"], "status": "error",
+        "ttft_s": None, "e2e_s": None, "cost_usd": None,
+        "usage": None, "tool_call": None, "vision_qa": None,
+        "answer": None, "note": "",
+    }
+    t0 = time.monotonic()
+    try:
+        result = client.chat(messages, [TOOL_SPEC],
+                             image_jpeg_b64=(attach_image["b64"] if attach_image else None),
+                             image_media_type=media_type)
+    except ChatTransportError as exc:
+        message = str(exc)
+        if re.search(r"\b429\b|rate.limit", message, re.I):
+            status = "rate_limit"
+        elif (re.search(r"timed out|timeout", message, re.I)
+              or isinstance(exc.__cause__, TimeoutError)):
+            # urllib timeout fired: socket.timeout is an OSError, so it
+            # arrives wrapped in URLError -> ChatTransportError. still a
+            # per-run timeout, still counted.
+            status = "timeout"
+        else:
+            status = "transport_error"
+        record["status"] = status
+        record["note"] = message[:300]
+        record["e2e_s"] = time.monotonic() - t0
+        return record
+    except Exception as exc:  # noqa: BLE001 - any client failure is a failed run
+        message = str(exc)
+        # client-side timeout can slip past the wrap.
+        # same classification.
+        if re.search(r"timed out|timeout", message, re.I) or isinstance(
+                exc, TimeoutError):
+            record["status"] = "timeout"
+        else:
+            record["status"] = "error"
+        record["note"] = message[:300]
+        record["e2e_s"] = time.monotonic() - t0
+        return record
+    record["e2e_s"] = time.monotonic() - t0
+    # no streaming on this lane: TTFT is the whole round trip.
+    record["ttft_s"] = record["e2e_s"]
+
+    if result.dropped:
+        record["status"] = "dropped"
+        record["note"] = "single-flight drop (another call in flight)"
+        return record
+    if not result.text and not result.tool_calls:
+        # empty response is never fine. truncated = completion budget ran
+        # out; not truncated = the model returned nothing.
+        record["status"] = "empty_response"
+        record["note"] = (
+            "the model returned neither prose nor a tool call"
+            + (" (truncated: completion budget ran out)" if result.truncated
+               else " (not truncated)")
+        )
+        return record
+    record["status"] = "ok"
+
+    # ---- usage: straight from the raw bodies this run's POSTs produced ----
+    usage_bodies = [json.loads(b) for b in captured]
+    usage = _sum_rest_usage(usage_bodies)
+    record["usage"] = usage
+    record["cost_usd"] = _rest_cost(candidate, usage, prices)
+
+    # ---- tool-call correctness: well-formed and runs with no retry/veto ----
+    calls = result.tool_calls or []
+    if not calls:
+        record["tool_call"] = "no_call"
+        record["note"] += "no tool call; "
+    else:
+        call = calls[0]
+        args = call.arguments if isinstance(call.arguments, dict) else {}
+        well_formed = (call.name in VALID_TOOL_NAMES
+                       and isinstance(call.arguments, dict))
+        schema_ok = all(key in args for key in REQUIRED_TOOL_ARGS)
+        if not well_formed:
+            record["tool_call"] = "parse_fail"
+            record["note"] += "malformed tool call (name/args); "
+        elif not schema_ok:
+            record["tool_call"] = "veto"
+            record["note"] += "tool call vetoed (missing required args); "
+        else:
+            # a run with no retry and no veto:
+            # the call counts as executed.
+            record["tool_call"] = "ok"
+            record["note"] += "tool call executed; "
+
+    # ---- vision-QA accuracy on the fixed scene ----------------------------
+    answer = (result.text or "").strip() or None
+    record["answer"] = answer
+    if candidate["veto"]:
+        # unmeasurable: no image on this wire
+        record["vision_qa"] = None
+    else:
+        first_args = None
+        if calls and isinstance(calls[0].arguments, dict):
+            first_args = calls[0].arguments
+        lowered = _vision_scored_text(first_args, answer)
+        record["vision_qa"] = int(
+            any(token.lower() in lowered for token in scene["expected"])
+        )
+    return record
+
+
+def _sum_rest_usage(bodies: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Aggregate usage over the run's response bodies (an internal retry
+    POST is still a billed part of the turn).  None when NO body carried
+    usage — the honest 'Not reported' state (llm_cloud.py exposes no
+    usage of its own; absent wire usage is absent, never guessed)."""
+    totals = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+              "image_tokens": None, "text_input_tokens": None,
+              "audio_input_tokens": None, "text_output_tokens": None,
+              "audio_output_tokens": None, "cached_tokens": None,
+              "entries": 0}
+    any_usage = False
+    for body in bodies:
+        usage = body.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        any_usage = True
+        totals["entries"] += 1
+        # two wire dialects: prompt_tokens / completion_tokens
+        # (OpenAI-compat) vs input_tokens / output_tokens (Anthropic).
+        # read both, assume nothing.
+        totals["input_tokens"] += int(
+            usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+        totals["output_tokens"] += int(
+            usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+        totals["total_tokens"] += int(usage.get("total_tokens") or 0)
+        details = usage.get("prompt_tokens_details")
+        if isinstance(details, dict):
+            _accum(totals, "image_tokens", details.get("image_tokens"))
+            _accum(totals, "cached_tokens", details.get("cached_tokens"))
+            _accum(totals, "audio_input_tokens", details.get("audio_tokens"))
+            _accum(totals, "text_input_tokens", details.get("text_tokens"))
+        details_out = usage.get("completion_tokens_details")
+        if isinstance(details_out, dict):
+            _accum(totals, "audio_output_tokens", details_out.get("audio_tokens"))
+            _accum(totals, "text_output_tokens", details_out.get("text_tokens"))
+    if not any_usage:
+        return None
+    return totals
+
+
+def _accum(totals: Dict[str, Any], key: str, value: Any) -> None:
+    if value is None:
+        return
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return
+    totals[key] = n if totals[key] is None else totals[key] + n
+
+
+def _rest_cost(candidate: Dict[str, Any], usage: Optional[Dict[str, Any]],
+               prices: Dict[str, Any]) -> Optional[float]:
+    """$/turn from REAL usage × the recorded sidecar rates.  None (the
+    honest 'Not reported') when usage is absent or the price entry is
+    unverified — a number computed from an unverified price would be a
+    fabrication."""
+    if usage is None:
+        return None
+    entry = prices.get(candidate["model"])
+    if not isinstance(entry, dict) or not entry.get("verified"):
+        return None
+    input_rate = _price(entry, "input_per_1k")
+    output_rate = _price(entry, "output_per_1k")
+    if input_rate is None or output_rate is None:
+        return None
+    cost = (usage["input_tokens"] * input_rate
+            + usage["output_tokens"] * output_rate) / 1000.0
+    return cost
