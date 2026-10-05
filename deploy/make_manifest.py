@@ -181,3 +181,109 @@ def _safe_rel_target(rel: str, repo_root: str) -> str:
     if os.path.isabs(rel):
         raise ValueError("absolute push-set path must not occur: %r" % rel)
     return norm
+
+
+def _apply_target_override(rel: str) -> str:
+    """Map a walked repo-relative path through _TARGET_OVERRIDES.
+
+    Applied BEFORE sorting so the emitted ordering is by FINAL target path.
+    The override only rewrites a prefix; the result still flows through
+    _safe_rel_target and push_stuart.sh's independent '..'/absolute re-check,
+    so a non-identity target cannot escape the remote root any more than an
+    identity one could.
+    """
+    for src, dst in _TARGET_OVERRIDES.items():
+        if rel.startswith(src):
+            return dst + rel[len(src):]
+    return rel
+
+
+def build(repo_root: str) -> Dict[str, object]:
+    """Build the manifest dict (deterministic file ordering)."""
+    entries = _walk_push_set(repo_root)
+    for e in entries:
+        e["rel"] = _apply_target_override(e["rel"])
+    files: List[Dict[str, object]] = []
+    for e in sorted(entries, key=lambda d: d["rel"]):
+        abs_path = e["abs"]
+        rel = _safe_rel_target(e["rel"], repo_root)
+        size = os.path.getsize(abs_path)
+        md5 = md5_of(abs_path)
+        kind = "py" if rel.endswith(".py") else "other"
+        files.append(
+            {
+                "file_path": os.path.abspath(abs_path),
+                "size": size,
+                "md5": md5,
+                "relative_target_path": rel,
+                "kind": kind,
+            }
+        )
+    # stamp comes from content, not
+    # the wall clock: newest mtime
+    # across the walked files (UTC,
+    # seconds). unchanged tree =
+    # BYTE-idempotent; a clock stamp
+    # would jiggle the bytes.
+    newest_mtime = max(os.path.getmtime(e["abs"]) for e in entries)
+    generated_at = datetime.fromtimestamp(newest_mtime, timezone.utc).isoformat(
+        timespec="seconds"
+    )
+    return {
+        "schema": 1,
+        "generated_at": generated_at,
+        "source_root": os.path.abspath(repo_root),
+        "remote_root": REMOTE_ROOT,
+        "push_set": list(PUSH_SET),
+        "deployed_name_map": (
+            "identity under remote_root=%s (skills/docs/README.md deploy map + "
+            "skills/docs/DEPLOY_PROTOCOL.md step 2)" % REMOTE_ROOT
+        ),
+        "files": files,
+    }
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="make_manifest.py",
+        description="Build deploy/manifest.json for the B6 staged push to Stuart.",
+    )
+    parser.add_argument(
+        "--repo-root",
+        default=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        help="OpenBot repo root (default: parent of deploy/)",
+    )
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="output manifest path (default: <repo-root>/deploy/manifest.json)",
+    )
+    args = parser.parse_args(argv)
+
+    repo_root = os.path.abspath(args.repo_root)
+    if not os.path.isdir(repo_root):
+        sys.stderr.write("make_manifest: repo root not a directory: %s\n" % repo_root)
+        return 1
+    try:
+        manifest = build(repo_root)
+    except (OSError, ValueError, FileNotFoundError) as exc:
+        sys.stderr.write("make_manifest: ERROR: %s\n" % exc)
+        return 1
+
+    out = args.out or os.path.join(repo_root, "deploy", "manifest.json")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(out, "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh, indent=2, sort_keys=False)
+        fh.write("\n")
+
+    n_py = sum(1 for f in manifest["files"] if f["kind"] == "py")
+    n_other = len(manifest["files"]) - n_py
+    sys.stdout.write(
+        "make_manifest: wrote %s (%d files: %d py, %d other; remote_root %s)\n"
+        % (out, len(manifest["files"]), n_py, n_other, REMOTE_ROOT)
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
