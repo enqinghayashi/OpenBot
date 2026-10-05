@@ -358,3 +358,51 @@ def _price(entry: Dict[str, Any], key: str) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# synthetic scene image
+# PNG built from zlib/struct only
+# ---------------------------------------------------------------------------
+
+
+def _solid_png(rgb: tuple, size: int = 48) -> bytes:
+    """A solid-color PNG (pure stdlib zlib/struct) — the deterministic
+    dev/probe image; the hardware run uses real camera photos."""
+    row = b"\x00" + bytes(rgb) * size
+    raw = row * size
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        body = tag + data
+        return (struct.pack(">I", len(data)) + body
+                + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF))
+
+    ihdr = struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", ihdr)
+            + chunk(b"IDAT", zlib.compress(raw))
+            + chunk(b"IEND", b""))
+
+
+def scene_image(scene: Dict[str, Any], image_dir: Optional[str]) -> Dict[str, Any]:
+    """(jpeg_b64, media_type, is_synthetic) for one scene.  --image-dir
+    photos win (scene-a.jpg ... scene-e.jpg / .jpeg); otherwise the
+    synthetic solid-color PNG of the scene's expected color."""
+    if image_dir:
+        for ext in (".jpg", ".jpeg", ".png"):
+            candidate = os.path.join(image_dir, scene["id"] + ext)
+            if os.path.isfile(candidate):
+                with open(candidate, "rb") as fh:
+                    raw = fh.read()
+                media = "image/png" if ext == ".png" else "image/jpeg"
+                return {"b64": base64.b64encode(raw).decode("ascii"),
+                        "media": media, "synthetic": False}
+    return {"b64": base64.b64encode(_solid_png(scene["synthetic_rgb"])).decode("ascii"),
+            "media": "image/png", "synthetic": True}
+
+
+# ---------------------------------------------------------------------------
+# stats helpers
+# ---------------------------------------------------------------------------
+
+
