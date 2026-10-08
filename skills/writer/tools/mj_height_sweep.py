@@ -122,3 +122,20 @@ I_RKNEE, I_RANKP = 9, 10
 DEFAULT_LADDER = [0.74, 0.70, 0.65, 0.60, 0.55, 0.50, 0.45, 0.40, 0.35, 0.30]
 
 
+def band_rungs(lo, hi, stand, step=0.05):
+    """Descending rungs spanning the writer's deployed band [lo, hi].
+
+    Steps down from hi by `step`, always includes lo and the nominal standing
+    height when it lies inside the band.  Every returned rung is inside
+    [lo, hi] — the same interval obs_builder.set_height / the writer clamps to,
+    so no rung here can exercise a height the deployed writer could not.
+    """
+    rungs = []
+    h = hi
+    while h > lo + 1e-9:
+        rungs.append(round(h, 3))
+        h -= step
+    rungs.append(round(lo, 3))
+    if lo - 1e-9 <= stand <= hi + 1e-9:
+        rungs.append(round(stand, 3))
+    return sorted({r for r in rungs}, reverse=True)
