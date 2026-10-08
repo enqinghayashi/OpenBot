@@ -19,3 +19,6 @@ from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
 NUM_MOTORS = 35  # LowState_/LowCmd_ length (hg IDL)
 
 
+class StateReader:
+    """Owns the rt/lowstate subscriber; poll() returns a state dict or None."""
+
