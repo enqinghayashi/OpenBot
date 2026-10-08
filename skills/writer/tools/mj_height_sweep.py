@@ -139,3 +139,5 @@ def band_rungs(lo, hi, stand, step=0.05):
     if lo - 1e-9 <= stand <= hi + 1e-9:
         rungs.append(round(stand, 3))
     return sorted({r for r in rungs}, reverse=True)
+
+
