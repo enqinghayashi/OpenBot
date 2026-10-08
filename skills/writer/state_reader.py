@@ -47,3 +47,27 @@ class StateReader:
                 return self._unpack(msg)
         raise RuntimeError(f"no lowstate within {timeout_s} s")
 
+    def poll(self):
+        """One non-blocking poll. Returns state dict, or None on poll timeout.
+
+        Raises RuntimeError if the inter-message gap exceeds the crash threshold.
+        """
+        msg = self._sub.Read(self._timeout)
+        self.poll_count += 1
+        now = time.perf_counter()
+        if msg is None:
+            self.timeout_count += 1
+            if self._last_t is not None:
+                gap_ms = (now - self._last_t) * 1000.0
+                if gap_ms > self._gap_crash_ms and not self.suppress_crash:
+                    raise RuntimeError(
+                        f"LOWSTATE GAP {gap_ms:.0f} ms > crash {self._gap_crash_ms:.0f} ms")
+                if gap_ms > self._gap_freeze_ms and not self._frozen:
+                    self._frozen = True
+                    print(f"[watchdog] lowstate gap {gap_ms:.0f} ms > "
+                          f"{self._gap_freeze_ms:.0f} ms (freeze, holding last cmd)")
+            return None
+        self._last_t = now
+        self._frozen = False
+        return self._unpack(msg)
+
