@@ -151,3 +151,11 @@ def _win_median(ts, zs, t_a, t_b):
     return float(np.median(zs[sel])) if bool(sel.any()) else float("nan")
 
 
+def _win_max(ts, zs, t_a, t_b):
+    """Peak z over [t_a, t_b]; NaN if the window is empty."""
+    ts = np.asarray(ts)
+    zs = np.asarray(zs)
+    if ts.size == 0:
+        return float("nan")
+    sel = (ts >= t_a) & (ts <= t_b)
+    return float(zs[sel].max()) if bool(sel.any()) else float("nan")
