@@ -141,3 +141,11 @@ def band_rungs(lo, hi, stand, step=0.05):
     return sorted({r for r in rungs}, reverse=True)
 
 
+def _win_median(ts, zs, t_a, t_b):
+    """Median z over [t_a, t_b]; NaN if the window is empty (a truncated trace)."""
+    ts = np.asarray(ts)
+    zs = np.asarray(zs)
+    if ts.size == 0:
+        return float("nan")
+    sel = (ts >= t_a) & (ts <= t_b)
+    return float(np.median(zs[sel])) if bool(sel.any()) else float("nan")
