@@ -71,3 +71,18 @@ class StateReader:
         self._frozen = False
         return self._unpack(msg)
 
+    def try_poll(self):
+        """poll() that never raises — for shutdown loops.
+
+        A crash-threshold gap must not abort shutdown mid-flight (C2 incident
+        2026-08-25: the unguarded poll() in shutdown() re-raised LOWSTATE GAP,
+        so the process died before ZeroCmd / lockfile removal / SelectMode('ai'),
+        leaving the motors uncontrolled and a stale lockfile). Logs and returns
+        None instead; the caller decides the safety action.
+        """
+        try:
+            return self.poll()
+        except RuntimeError as e:
+            print(f"[reader] try_poll swallowed: {e}")
+            return None
+
