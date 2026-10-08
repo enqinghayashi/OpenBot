@@ -22,3 +22,18 @@ NUM_MOTORS = 35  # LowState_/LowCmd_ length (hg IDL)
 class StateReader:
     """Owns the rt/lowstate subscriber; poll() returns a state dict or None."""
 
+    def __init__(self, cfg):
+        self._sub = ChannelSubscriber("rt/lowstate", LowState_)
+        self._sub.Init()
+        self._timeout = cfg["lowstate_timeout_ms"] / 1000.0  # SDK wants seconds
+        self._gap_freeze_ms = float(cfg["watchdog_gap_ms"])
+        self._gap_crash_ms = float(cfg["watchdog_crash_ms"])
+        self._last_t = None
+        self._frozen = False
+        self.poll_count = 0
+        self.timeout_count = 0
+        # set first in shutdown(): no crash raise past here
+        # (a raise killed it mid-shutdown: uncontrolled motors,
+        # stale lockfile). poll() only warns
+        self.suppress_crash = False
+
