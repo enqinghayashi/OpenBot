@@ -86,3 +86,33 @@ class StateReader:
             print(f"[reader] try_poll swallowed: {e}")
             return None
 
+    @staticmethod
+    def _unpack(msg):
+        """Extract the slices the writer + obs need. Motor order = G1JointIndex."""
+        q = np.zeros(NUM_MOTORS, dtype=np.float32)
+        dq = np.zeros(NUM_MOTORS, dtype=np.float32)
+        tau = np.zeros(NUM_MOTORS, dtype=np.float32)
+        mode = np.zeros(NUM_MOTORS, dtype=np.int32)
+        temp = np.zeros(NUM_MOTORS, dtype=np.float32)
+        for i in range(NUM_MOTORS):
+            ms = msg.motor_state[i]
+            q[i] = ms.q
+            dq[i] = ms.dq
+            tau[i] = ms.tau_est
+            mode[i] = ms.mode
+            temp[i] = float(np.max(ms.temperature))  # int16[2] -> hottest
+        return {
+            "q": q,
+            "dq": dq,
+            "tau": tau,
+            "motor_mode": mode,
+            "quat": np.array([msg.imu_state.quaternion[i] for i in range(4)],
+                             dtype=np.float32),       # wxyz
+            "gyro": np.array(msg.imu_state.gyroscope, dtype=np.float32),  # xyz, rad/s
+            "accel": np.array(msg.imu_state.accelerometer, dtype=np.float32),
+            "mode_machine": int(msg.mode_machine),
+            "mode_pr": int(msg.mode_pr),
+            "wireless_remote": list(msg.wireless_remote),  # 40 uint8 joystick
+            "tick": int(msg.tick),
+            "max_temp": float(np.max(temp)),              # deg C, gantry overtemp gate
+        }
