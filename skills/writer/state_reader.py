@@ -37,3 +37,13 @@ class StateReader:
         # stale lockfile). poll() only warns
         self.suppress_crash = False
 
+    def wait_first(self, timeout_s):
+        """Block until the first lowstate arrives (bring-up). Raises on timeout."""
+        t0 = time.perf_counter()
+        while time.perf_counter() - t0 < timeout_s:
+            msg = self._sub.Read()  # blocking read ok: only consumer
+            if msg is not None:
+                self._last_t = time.perf_counter()
+                return self._unpack(msg)
+        raise RuntimeError(f"no lowstate within {timeout_s} s")
+
