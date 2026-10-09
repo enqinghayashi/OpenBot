@@ -159,3 +159,5 @@ def _win_max(ts, zs, t_a, t_b):
         return float("nan")
     sel = (ts >= t_a) & (ts <= t_b)
     return float(zs[sel].max()) if bool(sel.any()) else float("nan")
+
+
