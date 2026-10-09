@@ -170,3 +170,7 @@ def main():
     print("mj_policy_check", "GREEN" if ok else "FAILED",
           "(stand 0.74 m, walk 0.2-0.3 m/s)" if ok else "")
     sys.exit(0 if ok else 1)
+
+
+if __name__ == "__main__":
+    main()
