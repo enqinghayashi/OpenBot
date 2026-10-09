@@ -872,3 +872,7 @@ def main():
               "MUJOCO_GL=egl python3 tools/mj_height_sweep.py --mode ramped "
               f"--out {args.out}   |   or replay the .npz qpos with mujoco.Renderer")
     sys.exit(0 if ok else 1)
+
+
+if __name__ == "__main__":
+    main()
