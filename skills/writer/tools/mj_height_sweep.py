@@ -169,3 +169,5 @@ def _first_at_or_above(ts, zs, thr, t_from=0.0):
         return float("nan")
     sel = np.flatnonzero((ts >= t_from) & (zs >= thr))
     return float(ts[int(sel[0])]) if sel.size else float("nan")
+
+
