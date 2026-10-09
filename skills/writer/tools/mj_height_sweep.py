@@ -161,3 +161,11 @@ def _win_max(ts, zs, t_a, t_b):
     return float(zs[sel].max()) if bool(sel.any()) else float("nan")
 
 
+def _first_at_or_above(ts, zs, thr, t_from=0.0):
+    """First t >= t_from with z >= thr; NaN if never reached (truncated trace)."""
+    ts = np.asarray(ts)
+    zs = np.asarray(zs)
+    if ts.size == 0:
+        return float("nan")
+    sel = np.flatnonzero((ts >= t_from) & (zs >= thr))
+    return float(ts[int(sel[0])]) if sel.size else float("nan")
