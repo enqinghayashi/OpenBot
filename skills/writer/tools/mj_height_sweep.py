@@ -171,3 +171,13 @@ def _first_at_or_above(ts, zs, thr, t_from=0.0):
     return float(ts[int(sel[0])]) if sel.size else float("nan")
 
 
+def quat_roll_pitch(q):
+    """roll, pitch (rad) from quat wxyz — magnitude only, for the tilt gate."""
+    w, x, y, z = (float(v) for v in q)
+    n = (w * w + x * x + y * y + z * z) ** 0.5
+    if n < 1e-9:
+        return 0.0, 0.0
+    w, x, y, z = w / n, x / n, y / n, z / n
+    roll = float(np.arctan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y)))
+    pitch = float(np.arcsin(np.clip(2.0 * (w * y - z * x), -1.0, 1.0)))
+    return roll, pitch
