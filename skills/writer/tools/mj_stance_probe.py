@@ -110,3 +110,5 @@ def quat_roll_pitch(q_wxyz):
     roll = float(np.arctan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y)))
     pitch = float(np.arcsin(np.clip(2.0 * (w * y - z * x), -1.0, 1.0)))
     return roll, pitch
+
+
