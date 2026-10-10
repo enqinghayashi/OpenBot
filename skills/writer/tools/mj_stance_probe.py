@@ -169,3 +169,7 @@ class Rig:
                 float(np.linalg.norm(vl - vr)),
                 float(abs(vl[1] - vr[1])))
 
+    def hip_rolls(self):
+        q = self.data.qpos[self.qid]
+        return float(np.degrees(q[I_LHIPR])), float(np.degrees(q[I_RHIPR]))
+
