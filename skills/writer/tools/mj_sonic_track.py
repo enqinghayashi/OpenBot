@@ -396,3 +396,7 @@ def main():
     # CI reads process status
     ok = a_stands and b_stands and c_stands and c_advanced
     return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
