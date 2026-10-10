@@ -155,3 +155,17 @@ class Rig:
         self.base_obs = self.obs.default_padded.copy()
 
     # --- measuring the feet ----------------------------------------------
+    def separation(self):
+        """(world 3-D, pelvis-frame 3-D, pelvis-frame lateral dy) foot gap.
+
+        feet_dist.py measures in the PELVIS frame, so the pelvis-frame numbers
+        are the ones comparable with the operator's on-robot readings.
+        """
+        pl = self.data.xpos[self.foot_bid[0]].copy()
+        pr = self.data.xpos[self.foot_bid[1]].copy()
+        Rp = self.data.xmat[self.pelvis_bid].reshape(3, 3)
+        vl, vr = Rp.T @ pl, Rp.T @ pr
+        return (float(np.linalg.norm(pl - pr)),
+                float(np.linalg.norm(vl - vr)),
+                float(abs(vl[1] - vr[1])))
+
