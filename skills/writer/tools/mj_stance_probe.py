@@ -186,3 +186,5 @@ class Rig:
         self.pol.action[:] = 0.0
         self.pol.defaults = self.base_pol.copy()
         self.obs.default_padded = self.base_obs.copy()
+
+
