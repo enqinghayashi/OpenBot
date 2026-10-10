@@ -173,3 +173,16 @@ class Rig:
         q = self.data.qpos[self.qid]
         return float(np.degrees(q[I_LHIPR])), float(np.degrees(q[I_RHIPR]))
 
+    def reset_run(self, start_height):
+        mujoco.mj_resetData(self.model, self.data)
+        d = self.data
+        d.qpos[3:7] = np.array([1.0, 0.0, 0.0, 0.0])
+        d.qpos[self.qid] = self.defaults
+        d.qpos[2] = start_height
+        mujoco.mj_forward(self.model, d)
+        self.obs.reset()
+        self.obs.height_cmd = start_height
+        self.obs.rpy_cmd = np.zeros(3, dtype=np.float32)
+        self.pol.action[:] = 0.0
+        self.pol.defaults = self.base_pol.copy()
+        self.obs.default_padded = self.base_obs.copy()
