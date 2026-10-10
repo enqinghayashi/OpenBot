@@ -105,3 +105,8 @@ FALL_DROP = 0.12     # z < start-0.12 m = collapse (mj_height_sweep)
 MAX_TILT = 0.6       # rad; past squat lean, under topple
 
 
+def quat_roll_pitch(q_wxyz):
+    w, x, y, z = q_wxyz
+    roll = float(np.arctan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y)))
+    pitch = float(np.arcsin(np.clip(2.0 * (w * y - z * x), -1.0, 1.0)))
+    return roll, pitch
