@@ -115,3 +115,43 @@ def quat_roll_pitch(q_wxyz):
 class Rig:
     """The pinned scene + the real Balance policy + the writer's real PD."""
 
+    def __init__(self, xml, onnx_dir, cfg):
+        self.model = mujoco.MjModel.from_xml_path(xml)
+        self.data = mujoco.MjData(self.model)
+        self.sim_dt = self.model.opt.timestep
+        self.policy_every = max(1, int(round(0.02 / self.sim_dt)))
+
+        jnt = {self.model.joint(i).name: i for i in range(self.model.njnt)}
+        act = {self.model.actuator(i).name: i for i in range(self.model.nu)}
+        self.qid = np.zeros(15, dtype=int)
+        self.vid = np.zeros(15, dtype=int)
+        self.aid = np.full(15, -1, dtype=int)
+        for i, nm in enumerate(POLICY_JOINTS):
+            j = jnt[nm]
+            self.qid[i] = self.model.jnt_qposadr[j]
+            self.vid[i] = self.model.jnt_dofadr[j]
+            if nm in act:
+                self.aid[i] = act[nm]
+        if not np.all(self.aid >= 0):
+            raise RuntimeError("missing actuators for the 15 policy joints")
+
+        bid = {self.model.body(i).name: i for i in range(self.model.nbody)}
+        self.foot_bid = (bid["left_ankle_roll_link"], bid["right_ankle_roll_link"])
+        self.pelvis_bid = bid["pelvis"]
+
+        self.obs = ObsBuilder(cfg)
+        self.pol = PolicyRunner(cfg, onnx_dir)
+        self.kp = np.array(cfg["leg_kp"], dtype=np.float32)
+        self.kd = np.array(cfg["leg_kd"], dtype=np.float32)
+        self.defaults = np.array(cfg["default_angles"], dtype=np.float32)
+
+        self.arm_act = [i for i in range(self.model.nu) if i not in self.aid.tolist()]
+        self.arm_kp = np.full(len(self.arm_act), 100.0)
+        self.arm_kd = np.full(len(self.arm_act), 0.5)
+
+        # boot encodings the lane snapshots
+        # 2 separate copies
+        self.base_pol = self.pol.defaults.copy()
+        self.base_obs = self.obs.default_padded.copy()
+
+    # --- measuring the feet ----------------------------------------------
