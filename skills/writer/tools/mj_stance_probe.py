@@ -188,3 +188,16 @@ class Rig:
         self.obs.default_padded = self.base_obs.copy()
 
 
+def stance_delta(deg):
+    """The writer's exact delta vectors for a `stance <deg>` command."""
+    rad = np.radians(deg)
+    hip = rad
+    ank = ANKLE_RATIO * rad
+    d_pol = np.zeros(15, dtype=np.float32)
+    d_pol[I_LHIPR] = +hip
+    d_pol[I_RHIPR] = -hip
+    d_pol[I_LANKR] = +ank
+    d_pol[I_RANKR] = -ank
+    d_obs = np.zeros(29, dtype=np.float32)
+    d_obs[0:15] = d_pol
+    return d_pol, d_obs
