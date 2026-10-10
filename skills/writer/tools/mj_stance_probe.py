@@ -112,3 +112,6 @@ def quat_roll_pitch(q_wxyz):
     return roll, pitch
 
 
+class Rig:
+    """The pinned scene + the real Balance policy + the writer's real PD."""
+
