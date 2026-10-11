@@ -463,3 +463,7 @@ def main():
                   f, indent=1)
     print(f"\nwrote {os.path.join(args.out, 'metrics_stance_probe.json')}")
     return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
