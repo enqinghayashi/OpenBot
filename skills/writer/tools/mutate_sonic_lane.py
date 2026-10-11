@@ -32,3 +32,13 @@ CFG = "writer/config/merge_config.yaml"
 TEST = "writer/tools/test_writer_sonic_lane.py"
 
 
+def md5_tree(root):
+    h = hashlib.md5()
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+        for fn in sorted(filenames):
+            p = os.path.join(dirpath, fn)
+            h.update(os.path.relpath(p, root).encode())
+            with open(p, "rb") as fh:
+                h.update(hashlib.md5(fh.read()).digest())
+    return h.hexdigest()
