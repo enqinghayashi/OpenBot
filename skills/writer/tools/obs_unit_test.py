@@ -31,3 +31,5 @@ def check(name, ok, detail=""):
     print(f"[{tag}] {name}" + (f"  ({detail})" if detail else ""))
     if not ok:
         FAILS.append(name)
+
+
