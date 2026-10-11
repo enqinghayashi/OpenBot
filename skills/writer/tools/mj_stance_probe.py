@@ -342,3 +342,124 @@ PREDICTION = {
 }
 
 
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--xml", default=os.environ.get("MERGE_MUJOCO_XML", XML_DEFAULT))
+    ap.add_argument("--onnx-dir", default=os.path.join(PKG, "policy"))
+    ap.add_argument("--mode", nargs="+", default=["all"])
+    ap.add_argument("--deg", type=float, default=4.0,
+                    help="splay commanded, degrees (the value the operator sent)")
+    ap.add_argument("--tau-max", type=float, default=18.0, help="N.m torque cap")
+    ap.add_argument("--servo-kp", type=float, default=200.0, help="N.m/rad")
+    ap.add_argument("--settle-s", type=float, default=2.0)
+    ap.add_argument("--probe-s", type=float, default=4.0)
+    ap.add_argument("--post-s", type=float, default=3.0)
+    ap.add_argument("--rpy-val", type=float, default=0.15, help="rad, roll command")
+    ap.add_argument("--out", default=os.path.join(HERE, "out_stance_probe"))
+    args = ap.parse_args()
+
+    with open(CFG) as f:
+        cfg = yaml.safe_load(f)
+    os.makedirs(args.out, exist_ok=True)
+
+    modes = (list(PREDICTION) if args.mode == ["all"] else args.mode)
+    bad = [m for m in modes if m not in PREDICTION]
+    if bad:
+        ap.error(f"unknown mode(s): {bad}")
+
+    rig = Rig(args.xml, args.onnx_dir, cfg)
+    zg = float(cfg["default_angles"][3])
+    print("=" * 78)
+    print("PINNED SCENE + REAL ONNX BALANCE POLICY + THE WRITER'S REAL PD")
+    print(f"  scene {args.xml}")
+    print(f"  sim_dt={rig.sim_dt}  policy {1.0/(rig.policy_every*rig.sim_dt):.0f} Hz")
+    print(f"  leg_kp[hip_roll]={rig.kp[1]:.0f} N.m/rad   N.m per {args.deg} deg = "
+          f"{rig.kp[1]*np.radians(args.deg):.2f}")
+    print(f"  action_scale={cfg['action_scale']}  dof_pos_scale={cfg['dof_pos_scale']}"
+          f"  -> a default_angles shift of d is cancelled by the obs term -d*s")
+    print(f"  knee default {zg:+.3f} rad; phases settle {args.settle_s}s / "
+          f"probe {args.probe_s}s / post {args.post_s}s")
+    print("=" * 78)
+
+    rows = []
+    for m in modes:
+        print()
+        print(f"--- {m} " + "-" * (70 - len(m)))
+        print(f"  PRE-REGISTERED PREDICTION: {PREDICTION[m]}")
+        r = run_mode(rig, m, args.deg, args.tau_max, args.servo_kp,
+                     args.settle_s, args.probe_s, args.post_s, args.rpy_val)
+        rows.append(r)
+        if r.get("sep_settle") is None:
+            print(f"  FELL before any sample: {r['why']}")
+            continue
+        print(f"  separation (pelvis frame, ankle-to-ankle)")
+        print(f"    at settle end : {r['sep_settle']*100:7.2f} cm")
+        print(f"    at probe end  : {r['sep_probe']*100:7.2f} cm   "
+              f"(d = {r['d_probe']*100:+6.2f} cm)")
+        print(f"    at post end   : {r['sep_post']*100:7.2f} cm   "
+              f"(d = {r['d_post']*100:+6.2f} cm)")
+        print(f"    drift after the mechanism was removed: "
+              f"{r['drift_after']*100:+6.2f} cm")
+        print(f"    peak {r['sep_peak']*100:.2f} cm   min {r['sep_min']*100:.2f} cm")
+        print(f"  hip roll (deg)  L {r['hipL_settle']:+.2f} -> {r['hipL_probe']:+.2f} "
+              f"-> {r['hipL_post']:+.2f}   |   R {r['hipR_settle']:+.2f} -> "
+              f"{r['hipR_probe']:+.2f} -> {r['hipR_post']:+.2f}")
+        print(f"  fell: {'YES -- ' + r['why'] if r['fell'] else 'no'}")
+
+    print()
+    print("=" * 78)
+    # control not flat: +0.76 cm / 7 s
+    # grade against CONTROL, never zero
+    # baseline alone moves +0.8 cm
+    # first run: rpy-roll +0.77 -> NO-OP,
+    # tau +1.54 -> success on +0.76
+    ctl = next((r for r in rows if r["mode"] == "control"
+                and r.get("sep_settle") is not None), None)
+    c_post = ctl["d_post"] if ctl else 0.0
+    c_drift = ctl["drift_after"] if ctl else 0.0
+    print(f"SUMMARY  (commanded {args.deg:+.1f} deg splay; predictions are above)")
+    if ctl:
+        print(f"  CONTROL baseline: d_post {c_post*100:+.2f} cm, drift "
+              f"{c_drift*100:+.2f} cm -- every mode is graded AGAINST this, "
+              f"never against zero")
+    print(f"  {'mode':<13} {'d_probe':>9} {'d_post':>9} {'vs_ctrl':>9} "
+          f"{'drift_after':>12} {'hold?':>6}  fell")
+    verdict = {}
+    for r in rows:
+        if r.get("sep_settle") is None:
+            print(f"  {r['mode']:<13} {'--':>9} {'--':>9} {'--':>9} {'--':>12} "
+                  f"{'--':>6}  YES")
+            verdict[r["mode"]] = "FELL"
+            continue
+        vs_ctrl = r["d_post"] - c_post
+        moved = abs(vs_ctrl) > 0.01               # >1 cm over control
+        held = abs(r["drift_after"] - c_drift) < 0.01
+        print(f"  {r['mode']:<13} {r['d_probe']*100:+8.2f} {r['d_post']*100:+8.2f} "
+              f"{vs_ctrl*100:+8.2f} {r['drift_after']*100:+11.2f} "
+              f"{'YES' if held else 'NO':>6}  {'YES' if r['fell'] else 'no'}")
+        if r["mode"] == "control":
+            verdict[r["mode"]] = "BASELINE"
+        else:
+            verdict[r["mode"]] = ("SPLAYS-AND-HOLDS" if (moved and held)
+                                  else "MOVES-BUT-DRIFTS" if moved
+                                  else "NO-OP")
+
+    print()
+    print("  verdicts (control-referenced), against the registered predictions:")
+    for m in modes:
+        v = verdict.get(m, "?")
+        print(f"    {m:<13} -> {v}")
+
+    with open(os.path.join(args.out, "metrics_stance_probe.json"), "w") as f:
+        json.dump({"mode": modes, "deg": args.deg, "tau_max": args.tau_max,
+                   "servo_kp": args.servo_kp, "rows": rows,
+                   "verdict": verdict,
+                   "claim_scope": (
+                       "PINNED MuJoCo scene + the real deployed ONNX Balance "
+                       "policy + the writer's real leg_kp/leg_kd PD.  This is a "
+                       "SIMULATION, not the robot.  A mode is a SUCCESS only if "
+                       "it moves the separation AND the move survives the "
+                       "mechanism being removed.")},
+                  f, indent=1)
+    print(f"\nwrote {os.path.join(args.out, 'metrics_stance_probe.json')}")
+    return 0
