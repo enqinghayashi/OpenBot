@@ -44,3 +44,12 @@ def md5_tree(root):
     return h.hexdigest()
 
 
+def apply_mut(path, old, new):
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    n = src.count(old)
+    if n != 1:
+        raise SystemExit(f"ANCHOR ERROR in {os.path.basename(path)}: "
+                         f"expected 1 occurrence, found {n}\n--- anchor ---\n{old}")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(src.replace(old, new, 1))
