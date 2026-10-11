@@ -203,3 +203,130 @@ def stance_delta(deg):
     return d_pol, d_obs
 
 
+def run_mode(rig, mode, deg, tau_max, servo_kp, t_settle, t_probe, t_post,
+             rpy_val):
+    """settle -> probe (mechanism ON) -> post (mechanism OFF). -> result dict"""
+    r = rig
+    start_height = 0.74
+    r.reset_run(start_height)
+
+    ramp_t = 1.0                       # ramp long done
+    z0 = None
+    d_pol, d_obs = stance_delta(deg)
+    applied = False
+    tau_on = False
+    hold_ref = None                    # hip roll at start
+
+    dt = r.sim_dt
+    total = t_settle + t_probe + t_post
+    n = int(round(total / dt))
+    sep_t, sep_lat, hipL_t, hipR_t, t_t = ([] for _ in range(5))
+    fell, why = False, ""
+    prev = np.zeros(15, dtype=np.float32)
+
+    for step in range(n):
+        t = step * dt
+        phase = ("settle" if t < t_settle
+                 else "probe" if t < t_settle + t_probe else "post")
+
+        # ---- mechanism ON at probe boundary
+        # writer does same
+        if phase != "settle" and not applied:
+            applied = True
+            if mode == "shift-both":
+                r.pol.defaults = r.base_pol + d_pol
+                r.obs.default_padded = r.base_obs + d_obs
+            elif mode == "shift-policy":
+                r.pol.defaults = r.base_pol + d_pol
+            elif mode == "shift-obs":
+                r.obs.default_padded = r.base_obs + d_obs
+            elif mode == "tau":
+                tau_on = True
+                hold_ref = np.array(r.data.qpos[r.qid])[[I_LHIPR, I_RHIPR]]
+            elif mode == "rpy-roll":
+                r.obs.rpy_cmd = np.array([rpy_val, 0.0, 0.0], dtype=np.float32)
+        # ---- OFF at the post boundary
+        if phase == "post" and tau_on:
+            tau_on = False
+        if phase == "post" and mode in ("shift-both", "shift-policy", "shift-obs"):
+            r.pol.defaults = r.base_pol.copy()
+            r.obs.default_padded = r.base_obs.copy()
+        if phase == "post" and mode == "rpy-roll":
+            r.obs.rpy_cmd = np.zeros(3, dtype=np.float32)
+
+        if step % r.policy_every == 0:
+            q29 = r.data.qpos[7:36].astype(np.float32)
+            dq29 = r.data.qvel[6:35].astype(np.float32)
+            quat = r.data.qpos[3:7].astype(np.float32)
+            gyro = r.data.qvel[3:6].astype(np.float32)
+            o = r.obs.push(q29, dq29, quat, gyro, (0.0, 0.0, 0.0), prev)
+            target = r.pol.infer(o, (0.0, 0.0, 0.0))
+            prev = r.pol.action.copy()
+        else:
+            target = r.pol.target_q
+
+        q = r.data.qpos[r.qid]
+        dq = r.data.qvel[r.vid]
+        ctrl = r.kp * (target - q) - r.kd * dq
+
+        # ---- torque servo
+        # on the measured hip roll
+        if mode == "tau" and tau_on:
+            wantL = hold_ref[0] + np.radians(deg)
+            wantR = hold_ref[1] - np.radians(deg)
+            errL = wantL - r.data.qpos[r.qid[I_LHIPR]]
+            errR = wantR - r.data.qpos[r.qid[I_RHIPR]]
+            ctrl[I_LHIPR] += float(np.clip(servo_kp * errL, -tau_max, tau_max))
+            ctrl[I_RHIPR] += float(np.clip(servo_kp * errR, -tau_max, tau_max))
+
+        r.data.ctrl[r.aid] = ctrl
+        qa = r.data.qpos[7:36][15:]
+        dqa = r.data.qvel[6:35][15:]
+        r.data.ctrl[r.arm_act] = r.arm_kp * (0.0 - qa) - r.arm_kd * dqa
+        mujoco.mj_step(r.model, r.data)
+
+        zw = float(r.data.qpos[2])
+        roll, pitch = quat_roll_pitch(r.data.qpos[3:7])
+        if z0 is None and t >= t_settle * 0.5:
+            z0 = zw
+        if z0 is not None and (zw < z0 - FALL_DROP or max(abs(roll), abs(pitch)) > MAX_TILT):
+            fell, why = True, (f"z {zw:.3f} (start {z0:.3f})" if zw < z0 - FALL_DROP
+                               else f"tilt {max(abs(roll), abs(pitch)):.3f} rad")
+            break
+
+        sepw, sepp, lat = r.separation()
+        hl, hr = r.hip_rolls()
+        t_t.append(t); sep_t.append(sepp); sep_lat.append(lat)
+        hipL_t.append(hl); hipR_t.append(hr)
+
+    if not sep_t:
+        return {"mode": mode, "fell": True, "why": why,
+                "sep_settle": None, "sep_probe": None, "sep_post": None}
+
+    def at(tt, arr):
+        i = int(np.argmin(np.abs(np.array(t_t) - tt)))
+        return float(arr[i])
+
+    out = {
+        "mode": mode,
+        "deg": deg,
+        "fell": fell, "why": why,
+        "sep_settle": at(t_settle - 0.02, sep_t),
+        "sep_probe": at(t_settle + t_probe - 0.02, sep_t),
+        "sep_post": at(total - 0.02, sep_t),
+        "lat_settle": at(t_settle - 0.02, sep_lat),
+        "lat_probe": at(t_settle + t_probe - 0.02, sep_lat),
+        "lat_post": at(total - 0.02, sep_lat),
+        "hipL_settle": at(t_settle - 0.02, hipL_t),
+        "hipL_probe": at(t_settle + t_probe - 0.02, hipL_t),
+        "hipL_post": at(total - 0.02, hipL_t),
+        "hipR_settle": at(t_settle - 0.02, hipR_t),
+        "hipR_probe": at(t_settle + t_probe - 0.02, hipR_t),
+        "hipR_post": at(total - 0.02, hipR_t),
+        "sep_peak": float(np.max(sep_t)),
+        "sep_min": float(np.min(sep_t)),
+    }
+    out["d_probe"] = out["sep_probe"] - out["sep_settle"]
+    out["d_post"] = out["sep_post"] - out["sep_settle"]
+    out["drift_after"] = out["sep_post"] - out["sep_probe"]
+    return out
