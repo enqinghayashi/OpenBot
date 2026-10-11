@@ -188,3 +188,29 @@ ROWS = [
 ]
 
 
+def main():
+    only = sys.argv[1:] or None
+    before = md5_tree(SRC)
+    print(f"real tree md5 before: {before}")
+    results = []
+    for name, muts, pins in ROWS:
+        if only and not any(o in name for o in only):
+            continue
+        r = run_row(name, muts, pins)
+        results.append(r)
+        print(f"\n=== {name}: rc={r['rc']} PASS={r['pass']} FAIL={r['fail']} "
+              f"-> {r['verdict']}")
+        for t, f in r["pins"]:
+            print(f"      pin[{f}] {t[:78]}")
+        if r.get("detail"):
+            print(f"      detail: {r['detail']}")
+    after = md5_tree(SRC)
+    print(f"\nreal tree md5 after:  {after}")
+    print(f"real_tree_untouched: {before == after}")
+    print("\n--- verdicts ---")
+    bad = [r for r in results if r["verdict"] != "PINS_HOLD"]
+    for r in results:
+        print(f"  {r['verdict']:<28} {r['name']} (rc={r['rc']} "
+              f"PASS={r['pass']} FAIL={r['fail']})")
+    print(f"\n{len(results) - len(bad)}/{len(results)} PINS_HOLD")
+    return 1 if bad else 0
