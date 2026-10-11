@@ -330,3 +330,15 @@ def run_mode(rig, mode, deg, tau_max, servo_kp, t_settle, t_probe, t_post,
     out["d_post"] = out["sep_post"] - out["sep_settle"]
     out["drift_after"] = out["sep_post"] - out["sep_probe"]
     return out
+
+
+PREDICTION = {
+    "control":      "d_sep ~ 0 (baseline)",
+    "shift-both":   "d_sep ~ 0 -- the shipped mechanism is a structural NO-OP",
+    "shift-policy": "creeps OUTWARD and does not settle (constant-torque chase)",
+    "shift-obs":    "creeps INWARD and does not settle (constant-torque chase)",
+    "tau":          "splays during the pulse, then HOLDS (drift_after ~ 0)",
+    "rpy-roll":     "measurement only -- the f[4:7] channel is live (0.0285 rad)",
+}
+
+
