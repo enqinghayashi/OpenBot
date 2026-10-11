@@ -26,3 +26,8 @@ CFG = os.path.join(PKG, "config", "merge_config.yaml")
 FAILS = []
 
 
+def check(name, ok, detail=""):
+    tag = "PASS" if ok else "FAIL"
+    print(f"[{tag}] {name}" + (f"  ({detail})" if detail else ""))
+    if not ok:
+        FAILS.append(name)
