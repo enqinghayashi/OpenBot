@@ -53,3 +53,5 @@ def apply_mut(path, old, new):
                          f"expected 1 occurrence, found {n}\n--- anchor ---\n{old}")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(src.replace(old, new, 1))
+
+
