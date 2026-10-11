@@ -201,3 +201,5 @@ def stance_delta(deg):
     d_obs = np.zeros(29, dtype=np.float32)
     d_obs[0:15] = d_pol
     return d_pol, d_obs
+
+
