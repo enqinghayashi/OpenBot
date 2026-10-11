@@ -42,3 +42,5 @@ def md5_tree(root):
             with open(p, "rb") as fh:
                 h.update(hashlib.md5(fh.read()).digest())
     return h.hexdigest()
+
+
