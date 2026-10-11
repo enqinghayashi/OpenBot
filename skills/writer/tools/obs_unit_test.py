@@ -132,3 +132,7 @@ def main():
         sys.exit(1)
     print("obs_unit_test GREEN (all checks passed)")
     sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
