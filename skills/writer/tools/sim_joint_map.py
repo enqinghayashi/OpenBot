@@ -64,3 +64,6 @@ DEX3_JOINT_NAMES = {
 DEX3_JOINTS = [0, 1, 2, 3, 4, 5, 6]
 
 
+def finger_joint_names(side):
+    """The 7 joint names of one hand in XML declaration order."""
+    return [f"{side}_hand_{f}_joint" for f in FINGER_ORDER]
