@@ -83,3 +83,10 @@ def preset_to_joint_map(side, preset):
 
 
 # --- model lookups, everything by NAME ---------------------------------------
+def has_joint(model, name):
+    """True iff the model declares a joint with this name.
+
+    model.joint(name) RAISES KeyError for an undeclared name in MuJoCo 3.11
+    (it does not return a sentinel), so existence must be tested by scanning.
+    """
+    return any(model.joint(i).name == name for i in range(model.njnt))
