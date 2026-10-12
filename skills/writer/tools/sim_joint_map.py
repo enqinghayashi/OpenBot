@@ -92,3 +92,8 @@ def has_joint(model, name):
     return any(model.joint(i).name == name for i in range(model.njnt))
 
 
+def joint_id(model, name):
+    i = model.joint(name).id
+    if i < 0:
+        raise KeyError(f"joint {name!r} not in model")
+    return i
