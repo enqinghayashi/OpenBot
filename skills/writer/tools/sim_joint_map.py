@@ -90,3 +90,5 @@ def has_joint(model, name):
     (it does not return a sentinel), so existence must be tested by scanning.
     """
     return any(model.joint(i).name == name for i in range(model.njnt))
+
+
