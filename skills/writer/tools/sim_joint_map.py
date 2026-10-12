@@ -80,3 +80,6 @@ def preset_to_joint_map(side, preset):
     """
     return {f"{side}_hand_{DEX3_JOINT_NAMES[side][jid]}_joint": float(preset[jid])
             for jid in DEX3_JOINTS}
+
+
+# --- model lookups, everything by NAME ---------------------------------------
