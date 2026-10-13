@@ -114,3 +114,5 @@ def actuator_id(model, name):
     return i
 
 
+def arm_actuator_ids(model):
+    return np.array([actuator_id(model, n) for n in ARM_JOINT_NAMES], dtype=int)
