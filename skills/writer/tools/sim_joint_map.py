@@ -123,3 +123,5 @@ def finger_actuator_ids(model, side=None):
     return np.array([actuator_id(model, n) for n in names], dtype=int)
 
 
+def policy_actuator_ids(model):
+    return np.array([actuator_id(model, n) for n in POLICY_JOINTS], dtype=int)
