@@ -133,3 +133,17 @@ def qposadr_vec(model, names):
 
 def dofadr_vec(model, names):
     return np.array([dofadr(model, n) for n in names], dtype=int)
+
+
+# --- the post-unlock fingerprint (our silent-index-shift tripwire) ------------
+EXPECTED_QPOSADR = {
+    "left_wrist_yaw_joint": 28,
+    "left_hand_thumb_0_joint": 29,
+    "left_hand_index_1_joint": 35,
+    "right_shoulder_pitch_joint": 36,
+    "right_wrist_yaw_joint": 42,
+    "right_hand_thumb_0_joint": 43,
+    "right_hand_index_1_joint": 49,
+}
+
+
