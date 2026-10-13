@@ -127,3 +127,5 @@ def policy_actuator_ids(model):
     return np.array([actuator_id(model, n) for n in POLICY_JOINTS], dtype=int)
 
 
+def qposadr_vec(model, names):
+    return np.array([qposadr(model, n) for n in names], dtype=int)
