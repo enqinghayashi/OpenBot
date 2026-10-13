@@ -107,3 +107,8 @@ def dofadr(model, name):
     return int(model.jnt_dofadr[joint_id(model, name)])
 
 
+def actuator_id(model, name):
+    i = model.actuator(name).id
+    if i < 0:
+        raise KeyError(f"actuator {name!r} not in model")
+    return i
