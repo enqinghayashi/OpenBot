@@ -105,3 +105,5 @@ def qposadr(model, name):
 
 def dofadr(model, name):
     return int(model.jnt_dofadr[joint_id(model, name)])
+
+
