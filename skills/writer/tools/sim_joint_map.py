@@ -101,3 +101,5 @@ def joint_id(model, name):
 
 def qposadr(model, name):
     return int(model.jnt_qposadr[joint_id(model, name)])
+
+
