@@ -129,3 +129,5 @@ def policy_actuator_ids(model):
 
 def qposadr_vec(model, names):
     return np.array([qposadr(model, n) for n in names], dtype=int)
+
+
