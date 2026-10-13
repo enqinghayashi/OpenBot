@@ -121,3 +121,5 @@ def arm_actuator_ids(model):
 def finger_actuator_ids(model, side=None):
     names = finger_joint_names(side) if side else FINGER_JOINT_NAMES
     return np.array([actuator_id(model, n) for n in names], dtype=int)
+
+
