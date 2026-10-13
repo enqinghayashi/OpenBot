@@ -131,3 +131,5 @@ def qposadr_vec(model, names):
     return np.array([qposadr(model, n) for n in names], dtype=int)
 
 
+def dofadr_vec(model, names):
+    return np.array([dofadr(model, n) for n in names], dtype=int)
