@@ -56,3 +56,5 @@ def run(pol, obs, q, dq, quat, gyro, cmd, n=12):
         frame = obs.push(q, dq, quat, gyro, cmd, pol.action)
         pol.infer(frame, cmd)
     return pol.target_q.copy()
+
+
