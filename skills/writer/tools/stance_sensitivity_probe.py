@@ -148,3 +148,7 @@ def main():
     print("  shift-both hip-roll delta clearly non-zero         ->")
     print("      the mechanism is live in the real classes; the robot-side")
     print("      break needs the --verbose leg_target read.")
+
+
+if __name__ == "__main__":
+    main()
