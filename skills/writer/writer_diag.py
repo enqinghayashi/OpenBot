@@ -23,3 +23,5 @@ def read_stat(pid):
         return {"state": s[0], "cpu": int(s[11]) + int(s[12])}
     except (OSError, IndexError, ValueError):
         return None
+
+
