@@ -50,3 +50,9 @@ ANK_RATIO = -0.85
 IDX = {1: +D, 7: -D, 5: +ANK_RATIO * D, 11: -ANK_RATIO * D}
 
 
+def run(pol, obs, q, dq, quat, gyro, cmd, n=12):
+    """Push n ticks on the CURRENT arrays; return target_q at the end."""
+    for _ in range(n):
+        frame = obs.push(q, dq, quat, gyro, cmd, pol.action)
+        pol.infer(frame, cmd)
+    return pol.target_q.copy()
