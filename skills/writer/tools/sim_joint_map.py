@@ -147,3 +147,29 @@ EXPECTED_QPOSADR = {
 }
 
 
+def assert_fingerprint(model, box_joint="payload_box_joint"):
+    """Assert the unlocked index fingerprint; NAME the offending joint."""
+    bad = []
+    for name, want in EXPECTED_QPOSADR.items():
+        if not has_joint(model, name):
+            bad.append(f"{name}: joint is ABSENT from the model — this model is "
+                       "NOT unlocked (the 14 hand joints were never activated)")
+            continue
+        got = qposadr(model, name)
+        if got != want:
+            bad.append(f"{name}: qposadr {got}, expected {want}")
+    # post-unlock arms are NOT contiguous: left_wrist_yaw 28,
+    # then right_shoulder_pitch 36. +1 gap = hand joints never went in
+    lwy = qposadr(model, "left_wrist_yaw_joint")
+    rsp = qposadr(model, "right_shoulder_pitch_joint")
+    if rsp == lwy + 1:
+        bad.append("right_shoulder_pitch_joint is at left_wrist_yaw_joint + 1 "
+                   f"({rsp} == {lwy} + 1): the 7 left-hand joints were NOT "
+                   "inserted — this model is NOT unlocked")
+    if has_joint(model, box_joint):
+        bq = qposadr(model, box_joint)
+        if bq != model.nq - 7:
+            bad.append(f"{box_joint}: qposadr {bq}, expected nq-7 = {model.nq - 7}")
+    if bad:
+        raise AssertionError("index fingerprint FAILED:\n  - " + "\n  - ".join(bad))
+    return True
