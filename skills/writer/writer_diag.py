@@ -25,3 +25,18 @@ def read_stat(pid):
         return None
 
 
+def read_threads(pid):
+    """[(tid, state, cpu_ticks)] per thread — identifies the starving thread."""
+    rows = []
+    try:
+        tids = os.listdir(f"/proc/{pid}/task")
+    except OSError:
+        return rows
+    for t in tids:
+        try:
+            with open(f"/proc/{pid}/task/{t}/stat") as f:
+                s = f.read().rsplit(")", 1)[1].split()
+            rows.append((t, s[0], int(s[11]) + int(s[12])))
+        except (OSError, IndexError, ValueError):
+            pass
+    return rows
