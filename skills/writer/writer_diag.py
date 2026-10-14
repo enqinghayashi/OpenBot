@@ -15,3 +15,11 @@ import sys
 import time
 
 
+def read_stat(pid):
+    """Whole-process cpu ticks from /proc/<pid>/stat (aggregates all threads)."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            s = f.read().rsplit(")", 1)[1].split()
+        return {"state": s[0], "cpu": int(s[11]) + int(s[12])}
+    except (OSError, IndexError, ValueError):
+        return None
