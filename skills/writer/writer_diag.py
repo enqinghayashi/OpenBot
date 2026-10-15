@@ -42,3 +42,13 @@ def read_threads(pid):
     return rows
 
 
+def read_io(pid):
+    out = {}
+    try:
+        with open(f"/proc/{pid}/io") as f:
+            for line in f:
+                k, _, v = line.partition(":")
+                out[k.strip()] = int(v)
+    except OSError:
+        pass
+    return out
