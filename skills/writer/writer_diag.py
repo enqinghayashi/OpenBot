@@ -65,3 +65,9 @@ def read_rss(pid):
     return "?"
 
 
+def cpu_total():
+    try:
+        with open("/proc/stat") as f:
+            return sum(int(x) for x in f.readline().split()[1:])
+    except (OSError, ValueError):
+        return None
