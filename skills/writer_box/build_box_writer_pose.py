@@ -106,3 +106,5 @@ class Refused(Exception):
 
 def md5(b):
     return hashlib.md5(b).hexdigest()
+
+
