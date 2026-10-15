@@ -54,3 +54,12 @@ def read_io(pid):
     return out
 
 
+def read_rss(pid):
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return line.split()[1]  # this one's in kB
+    except OSError:
+        pass
+    return "?"
