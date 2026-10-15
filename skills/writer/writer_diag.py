@@ -134,3 +134,7 @@ def main():
             log.flush()
             prev, prev_total, prev_threads, prev_io = cur, now_total, \
                 dict((t, c) for t, s, c in threads), io
+
+
+if __name__ == "__main__":
+    sys.exit(main())
