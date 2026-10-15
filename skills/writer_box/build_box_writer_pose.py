@@ -108,3 +108,12 @@ def md5(b):
     return hashlib.md5(b).hexdigest()
 
 
+def _lowest_level(src_text):
+    """Lowest of (3,6),(3,7),(3,8) that `src_text` parses at, or None."""
+    for fv in ((3, 6), (3, 7), (3, 8)):
+        try:
+            ast.parse(src_text, feature_version=fv)
+            return fv
+        except SyntaxError:
+            continue
+    return None
