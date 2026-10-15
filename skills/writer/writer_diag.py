@@ -73,3 +73,9 @@ def cpu_total():
         return None
 
 
+def loadavg():
+    try:
+        with open("/proc/loadavg") as f:
+            return " ".join(f.read().split()[:3])
+    except OSError:
+        return "? ? ?"
