@@ -71,3 +71,5 @@ def cpu_total():
             return sum(int(x) for x in f.readline().split()[1:])
     except (OSError, ValueError):
         return None
+
+
