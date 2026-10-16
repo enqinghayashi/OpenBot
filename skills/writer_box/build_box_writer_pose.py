@@ -227,3 +227,7 @@ def main(argv=None):
     print("WROTE %s %s (%d lines)" % (md5(writer), out_w, writer.count(b"\n")))
     print("WROTE %s %s (%d lines)" % (md5(fk), out_f, fk.count(b"\n")))
     return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
