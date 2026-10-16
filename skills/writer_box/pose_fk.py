@@ -162,3 +162,11 @@ _MODE_LOCK_WAIST = 6          # g1_29dof_lock_waist_rev_1_0; measured, see docst
 _MIN_QUAT_NORM = 1e-6
 
 
+def _quat_to_mat(w, x, y, z):
+    n = math.sqrt(w * w + x * x + y * y + z * z)
+    w, x, y, z = w / n, x / n, y / n, z / n
+    return np.array([
+        [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - w * z), 2.0 * (x * z + w * y)],
+        [2.0 * (x * y + w * z), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - w * x)],
+        [2.0 * (x * z - w * y), 2.0 * (y * z + w * x), 1.0 - 2.0 * (x * x + y * y)],
+    ])
