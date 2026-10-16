@@ -186,3 +186,44 @@ def _write_atomic(path, data):
     os.replace(tmp, path)
 
 
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--box-writer", default=DEFAULT_BOX)
+    ap.add_argument("--pose-fk", default=DEFAULT_FK)
+    ap.add_argument("--out-dir", default=DEFAULT_OUT)
+    ap.add_argument("--check", action="store_true",
+                    help="rebuild in memory; exit 1 if the written files differ; write nothing")
+    args = ap.parse_args(argv)
+    try:
+        writer, fk = derive(_read(args.box_writer), _read(args.pose_fk), expect_md5=BOX_MD5)
+    except Refused as e:
+        sys.stderr.write("REFUSED: %s\n" % e)
+        return 2
+    except OSError as e:
+        sys.stderr.write("REFUSED: cannot read an input: %s\n" % e)
+        return 2
+    out_w = os.path.join(args.out_dir, OUT_WRITER)
+    out_f = os.path.join(args.out_dir, OUT_FK)
+    if args.check:
+        bad = []
+        for path, want in ((out_w, writer), (out_f, fk)):
+            try:
+                have = _read(path)
+            except OSError:
+                bad.append("%s missing" % path)
+                continue
+            if have != want:
+                bad.append("%s differs (on disk %s, rebuilt %s)" % (path, md5(have), md5(want)))
+        if bad:
+            for b in bad:
+                print("CHECK FAILED: %s" % b)
+            return 1
+        print("CHECK OK %s %s" % (md5(writer), out_w))
+        print("CHECK OK %s %s" % (md5(fk), out_f))
+        return 0
+    os.makedirs(args.out_dir, exist_ok=True)
+    _write_atomic(out_w, writer)
+    _write_atomic(out_f, fk)
+    print("WROTE %s %s (%d lines)" % (md5(writer), out_w, writer.count(b"\n")))
+    print("WROTE %s %s (%d lines)" % (md5(fk), out_f, fk.count(b"\n")))
+    return 0
