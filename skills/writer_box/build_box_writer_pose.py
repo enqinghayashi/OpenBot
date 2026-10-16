@@ -179,3 +179,8 @@ def _read(path):
         return fh.read()
 
 
+def _write_atomic(path, data):
+    tmp = path + ".tmp_build"
+    with open(tmp, "wb") as fh:
+        fh.write(data)
+    os.replace(tmp, path)
