@@ -119,3 +119,56 @@ def _lowest_level(src_text):
     return None
 
 
+def derive(box_bytes, fk_bytes, expect_md5=None):
+    """-> (writer_bytes, fk_bytes).  Raises Refused; writes nothing."""
+    expect = BOX_MD5 if expect_md5 is None else expect_md5
+    got = md5(box_bytes)
+    if got != expect:
+        raise Refused("the input writer md5 is %s, not the box writer %s" % (got, expect))
+    out = box_bytes
+    for label, anchor, insertion in EDITS:
+        n = out.count(anchor)
+        if n != 1:
+            raise Refused("anchor for %s occurs %d times (want exactly 1): %r"
+                          % (label, n, anchor))
+        try:
+            ins = insertion.encode("ascii")
+        except UnicodeEncodeError:
+            raise Refused("the insertion for %s is not ASCII" % label)
+        out = out.replace(anchor, b"\n" + ins + anchor[1:])
+    want_len = len(box_bytes) + sum(len(i.encode("ascii")) for _, _, i in EDITS)
+    if len(out) != want_len:
+        raise Refused("derived length %d != box length + insertions %d" % (len(out), want_len))
+    try:
+        box_text = box_bytes.decode("utf-8")
+        out_text = out.decode("utf-8")
+        fk_text = fk_bytes.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise Refused("not valid UTF-8: %s" % e)
+    level = _lowest_level(box_text)
+    if level is None or _lowest_level(out_text) != level:
+        raise Refused("the derived writer does not parse at the box writer's feature level %r"
+                      % (level,))
+    try:
+        fk_tree = ast.parse(fk_text, feature_version=(3, 8))
+    except SyntaxError as e:
+        raise Refused("pose_fk.py does not parse under feature_version (3, 8): %s" % e)
+    mods = set()
+    names = set()
+    for node in ast.walk(fk_tree):
+        if isinstance(node, ast.Import):
+            mods.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            mods.add((node.module or "").split(".")[0])
+        elif isinstance(node, ast.FunctionDef):
+            names.add(node.name)
+    if not mods <= {"math", "numbers", "numpy"}:
+        raise Refused("pose_fk.py imports %s; only math, numbers, numpy are allowed"
+                      % sorted(mods))
+    if "torso_pose" not in names:
+        raise Refused("pose_fk.py defines no torso_pose")
+    for what, text in (("the derived writer", out_text), ("pose_fk.py", fk_text)):
+        m = FORBIDDEN.search(text)
+        if m:
+            raise Refused("%s contains the forbidden token %r" % (what, m.group(0)))
+    return out, fk_bytes
