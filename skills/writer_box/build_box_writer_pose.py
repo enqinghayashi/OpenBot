@@ -184,3 +184,5 @@ def _write_atomic(path, data):
     with open(tmp, "wb") as fh:
         fh.write(data)
     os.replace(tmp, path)
+
+
