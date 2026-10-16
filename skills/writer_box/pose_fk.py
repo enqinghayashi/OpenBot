@@ -172,3 +172,6 @@ def _quat_to_mat(w, x, y, z):
     ])
 
 
+def _prep(chain):
+    return tuple((np.array(off, dtype=np.float64), _quat_to_mat(*quat), ax)
+                 for off, quat, ax in chain)
