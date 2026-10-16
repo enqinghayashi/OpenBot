@@ -175,3 +175,11 @@ def _quat_to_mat(w, x, y, z):
 def _prep(chain):
     return tuple((np.array(off, dtype=np.float64), _quat_to_mat(*quat), ax)
                  for off, quat, ax in chain)
+
+
+_CHAIN_L = _prep(_LEG_L)
+_CHAIN_R = _prep(_LEG_R)
+_S_FOOT = np.array(_FOOT_SPHERES, dtype=np.float64)
+_P_TORSO = np.array(_TORSO_IN_PELVIS, dtype=np.float64)
+
+
