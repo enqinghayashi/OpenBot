@@ -183,3 +183,12 @@ _S_FOOT = np.array(_FOOT_SPHERES, dtype=np.float64)
 _P_TORSO = np.array(_TORSO_IN_PELVIS, dtype=np.float64)
 
 
+def _rot(axis, a):
+    """Rotation by angle a about the principal axis (0=x, 1=y, 2=z), right-handed."""
+    c = math.cos(a)
+    s = math.sin(a)
+    if axis == _AX_X:
+        return np.array([[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]])
+    if axis == _AX_Y:
+        return np.array([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]])
+    return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
