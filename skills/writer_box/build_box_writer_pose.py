@@ -174,3 +174,6 @@ def derive(box_bytes, fk_bytes, expect_md5=None):
     return out, fk_bytes
 
 
+def _read(path):
+    with open(path, "rb") as fh:
+        return fh.read()
