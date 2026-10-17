@@ -208,3 +208,5 @@ def _lowest_sole_z(chain, q6, u):
         rot = rot.dot(rfix).dot(_rot(ax, float(q6[k])))
     zc = float(u.dot(pos)) + _S_FOOT.dot(u.dot(rot))
     return float(zc.min())
+
+
