@@ -224,3 +224,11 @@ def _up_in_pelvis(quat_wxyz):
             1.0 - 2.0 * (x * x + y * y))
 
 
+def _leg_angles(q35):
+    q = np.asarray(q35, dtype=np.float64)
+    if q.ndim != 1 or q.shape[0] < 12:
+        return None
+    legs = q[0:12]
+    if not np.isfinite(legs).all():
+        return None
+    return legs
