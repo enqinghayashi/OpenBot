@@ -234,3 +234,8 @@ def _leg_angles(q35):
     return legs
 
 
+def _torso_height(legs, u):
+    uv = np.array(u, dtype=np.float64)
+    lowest = min(_lowest_sole_z(_CHAIN_L, legs[0:6], uv),
+                 _lowest_sole_z(_CHAIN_R, legs[6:12], uv))
+    return float(uv.dot(_P_TORSO)) - lowest + _SOLE_RADIUS
