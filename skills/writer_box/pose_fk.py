@@ -210,3 +210,15 @@ def _lowest_sole_z(chain, q6, u):
     return float(zc.min())
 
 
+def _up_in_pelvis(quat_wxyz):
+    """World-up expressed in the pelvis frame, from the (w, x, y, z) quaternion, or None."""
+    q = np.asarray(quat_wxyz, dtype=np.float64)
+    if q.shape != (4,) or not np.isfinite(q).all():
+        return None
+    n = math.sqrt(float(q.dot(q)))
+    if not n >= _MIN_QUAT_NORM:
+        return None
+    w, x, y, z = (q / n).tolist()
+    return (2.0 * (x * z - w * y),
+            2.0 * (y * z + w * x),
+            1.0 - 2.0 * (x * x + y * y))
