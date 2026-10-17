@@ -194,3 +194,17 @@ def _rot(axis, a):
     return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
 
 
+def _lowest_sole_z(chain, q6, u):
+    """Lowest sphere-centre height of one foot, in the world frame up to the pelvis' own height.
+
+    z of a pelvis-frame point p is u . p (u = world-up in the pelvis frame); the pelvis height is
+    common to every point and cancels in torso_z.
+    """
+    rot = np.eye(3)
+    pos = np.zeros(3)
+    for k in range(6):
+        off, rfix, ax = chain[k]
+        pos = pos + rot.dot(off)
+        rot = rot.dot(rfix).dot(_rot(ax, float(q6[k])))
+    zc = float(u.dot(pos)) + _S_FOOT.dot(u.dot(rot))
+    return float(zc.min())
