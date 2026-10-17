@@ -241,3 +241,5 @@ def _torso_height(legs, u):
     return float(uv.dot(_P_TORSO)) - lowest + _SOLE_RADIUS
 
 
+def _pitch_of(u):
+    return math.asin(max(-1.0, min(1.0, -u[0])))
