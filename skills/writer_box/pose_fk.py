@@ -247,3 +247,5 @@ def _pitch_of(u):
 
 def _roll_of(u):
     return math.atan2(u[1], u[2])
+
+
