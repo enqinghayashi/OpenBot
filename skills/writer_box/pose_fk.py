@@ -245,3 +245,5 @@ def _pitch_of(u):
     return math.asin(max(-1.0, min(1.0, -u[0])))
 
 
+def _roll_of(u):
+    return math.atan2(u[1], u[2])
