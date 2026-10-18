@@ -287,3 +287,6 @@ def _safe(fn, *args):
         return None
 
 
+def _r5(x):
+    """Round to 5 decimals; '+ 0.0' turns -0.0 into 0.0."""
+    return round(float(x), 5) + 0.0
