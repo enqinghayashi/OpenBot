@@ -249,3 +249,12 @@ def _roll_of(u):
     return math.atan2(u[1], u[2])
 
 
+def _as_int(x):
+    if x is None or isinstance(x, bool):
+        return None
+    if not isinstance(x, numbers.Real):
+        return None
+    f = float(x)
+    if not math.isfinite(f) or f != int(f):
+        return None
+    return int(f)
