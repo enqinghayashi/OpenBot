@@ -292,3 +292,9 @@ def _r5(x):
     return round(float(x), 5) + 0.0
 
 
+def _put(out, key, value):
+    if value is None:
+        return
+    value = float(value)
+    if math.isfinite(value):
+        out[key] = _r5(value)
