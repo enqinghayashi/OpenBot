@@ -285,3 +285,5 @@ def _safe(fn, *args):
         return fn(*args)
     except Exception:  # noqa: BLE001 -- a bad input just leaves its keys out, it never raises
         return None
+
+
