@@ -280,3 +280,8 @@ def _waist(q35, mode_machine, motor_mode):
     return (v, "measured")
 
 
+def _safe(fn, *args):
+    try:
+        return fn(*args)
+    except Exception:  # noqa: BLE001 -- a bad input just leaves its keys out, it never raises
+        return None
