@@ -181,3 +181,5 @@ def _safe_rel_target(rel: str, repo_root: str) -> str:
     if os.path.isabs(rel):
         raise ValueError("absolute push-set path must not occur: %r" % rel)
     return norm
+
+
