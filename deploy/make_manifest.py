@@ -183,3 +183,16 @@ def _safe_rel_target(rel: str, repo_root: str) -> str:
     return norm
 
 
+def _apply_target_override(rel: str) -> str:
+    """Map a walked repo-relative path through _TARGET_OVERRIDES.
+
+    Applied BEFORE sorting so the emitted ordering is by FINAL target path.
+    The override only rewrites a prefix; the result still flows through
+    _safe_rel_target and push_stuart.sh's independent '..'/absolute re-check,
+    so a non-identity target cannot escape the remote root any more than an
+    identity one could.
+    """
+    for src, dst in _TARGET_OVERRIDES.items():
+        if rel.startswith(src):
+            return dst + rel[len(src):]
+    return rel
