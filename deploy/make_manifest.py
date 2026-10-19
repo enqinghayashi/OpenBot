@@ -243,3 +243,43 @@ def build(repo_root: str) -> Dict[str, object]:
     }
 
 
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="make_manifest.py",
+        description="Build deploy/manifest.json for the B6 staged push to Stuart.",
+    )
+    parser.add_argument(
+        "--repo-root",
+        default=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        help="OpenBot repo root (default: parent of deploy/)",
+    )
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="output manifest path (default: <repo-root>/deploy/manifest.json)",
+    )
+    args = parser.parse_args(argv)
+
+    repo_root = os.path.abspath(args.repo_root)
+    if not os.path.isdir(repo_root):
+        sys.stderr.write("make_manifest: repo root not a directory: %s\n" % repo_root)
+        return 1
+    try:
+        manifest = build(repo_root)
+    except (OSError, ValueError, FileNotFoundError) as exc:
+        sys.stderr.write("make_manifest: ERROR: %s\n" % exc)
+        return 1
+
+    out = args.out or os.path.join(repo_root, "deploy", "manifest.json")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(out, "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh, indent=2, sort_keys=False)
+        fh.write("\n")
+
+    n_py = sum(1 for f in manifest["files"] if f["kind"] == "py")
+    n_other = len(manifest["files"]) - n_py
+    sys.stdout.write(
+        "make_manifest: wrote %s (%d files: %d py, %d other; remote_root %s)\n"
+        % (out, len(manifest["files"]), n_py, n_other, REMOTE_ROOT)
+    )
+    return 0
