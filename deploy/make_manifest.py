@@ -134,3 +134,32 @@ def md5_of(path: str) -> str:
     return h.hexdigest()
 
 
+def _walk_push_set(repo_root: str) -> List[Dict[str, object]]:
+    """Collect the push-set members as (abs path, repo-relative path) dicts.
+
+    Skips __pycache__ / .git and *.pyc / *.pyo.  Deterministic: the caller
+    sorts the returned list.
+    """
+    entries: List[Dict[str, object]] = []
+    for member in PUSH_SET:
+        abs_member = os.path.join(repo_root, member)
+        if not os.path.exists(abs_member):
+            raise FileNotFoundError(
+                "push-set member missing: %s (repo root %s)" % (abs_member, repo_root)
+            )
+        if os.path.isfile(abs_member):
+            entries.append({"abs": abs_member, "rel": member})
+            continue
+        if not os.path.isdir(abs_member):
+            raise ValueError("push-set member is neither file nor dir: %s" % abs_member)
+        for dirpath, dirnames, filenames in os.walk(abs_member):
+            dirnames[:] = sorted(
+                d for d in dirnames if d not in _EXCLUDED_DIRS
+            )
+            for name in sorted(filenames):
+                if name.endswith(_EXCLUDED_SUFFIXES):
+                    continue
+                abs_path = os.path.join(dirpath, name)
+                rel_path = os.path.relpath(abs_path, repo_root)
+                entries.append({"abs": abs_path, "rel": rel_path})
+    return entries
