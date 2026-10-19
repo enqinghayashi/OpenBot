@@ -165,3 +165,19 @@ def _walk_push_set(repo_root: str) -> List[Dict[str, object]]:
     return entries
 
 
+def _safe_rel_target(rel: str, repo_root: str) -> str:
+    """Normalize to a remote-root-relative POSIX path and refuse escapes.
+
+    The deployed-name map is identity, so a safe path is simply the
+    repo-relative path in POSIX form — but we still verify it can never
+    escape the remote root (defense in depth).  push_stuart.sh and
+    D0_preflight.sh independently enforce the same rule in shell (any '..'
+    path component or absolute start is refused there too), so this check
+    is not the only gate.
+    """
+    norm = os.path.normpath(rel).replace(os.sep, "/")
+    if norm.startswith("/") or norm == ".." or norm.startswith("../") or ".." in norm.split("/"):
+        raise ValueError("unsafe relative_target_path: %r" % rel)
+    if os.path.isabs(rel):
+        raise ValueError("absolute push-set path must not occur: %r" % rel)
+    return norm
