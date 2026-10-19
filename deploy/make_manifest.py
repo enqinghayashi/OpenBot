@@ -198,3 +198,46 @@ def _apply_target_override(rel: str) -> str:
     return rel
 
 
+def build(repo_root: str) -> Dict[str, object]:
+    """Build the manifest dict (deterministic file ordering)."""
+    entries = _walk_push_set(repo_root)
+    for e in entries:
+        e["rel"] = _apply_target_override(e["rel"])
+    files: List[Dict[str, object]] = []
+    for e in sorted(entries, key=lambda d: d["rel"]):
+        abs_path = e["abs"]
+        rel = _safe_rel_target(e["rel"], repo_root)
+        size = os.path.getsize(abs_path)
+        md5 = md5_of(abs_path)
+        kind = "py" if rel.endswith(".py") else "other"
+        files.append(
+            {
+                "file_path": os.path.abspath(abs_path),
+                "size": size,
+                "md5": md5,
+                "relative_target_path": rel,
+                "kind": kind,
+            }
+        )
+    # stamp comes from content, not
+    # the wall clock: newest mtime
+    # across the walked files (UTC,
+    # seconds). unchanged tree =
+    # BYTE-idempotent; a clock stamp
+    # would jiggle the bytes.
+    newest_mtime = max(os.path.getmtime(e["abs"]) for e in entries)
+    generated_at = datetime.fromtimestamp(newest_mtime, timezone.utc).isoformat(
+        timespec="seconds"
+    )
+    return {
+        "schema": 1,
+        "generated_at": generated_at,
+        "source_root": os.path.abspath(repo_root),
+        "remote_root": REMOTE_ROOT,
+        "push_set": list(PUSH_SET),
+        "deployed_name_map": (
+            "identity under remote_root=%s (skills/docs/README.md deploy map + "
+            "skills/docs/DEPLOY_PROTOCOL.md step 2)" % REMOTE_ROOT
+        ),
+        "files": files,
+    }
