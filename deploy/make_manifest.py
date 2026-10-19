@@ -122,3 +122,13 @@ _MD5_CHUNK = 1024 * 1024
 _TARGET_OVERRIDES = {"skills/sonic/": "sonic/"}
 
 
+def md5_of(path: str) -> str:
+    """Chunked md5 (deterministic regardless of memory layout)."""
+    h = hashlib.md5()
+    with open(path, "rb") as fh:
+        while True:
+            chunk = fh.read(_MD5_CHUNK)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
