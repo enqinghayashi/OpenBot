@@ -283,3 +283,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         % (out, len(manifest["files"]), n_py, n_other, REMOTE_ROOT)
     )
     return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
