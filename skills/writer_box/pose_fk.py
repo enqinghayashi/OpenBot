@@ -300,3 +300,24 @@ def _put(out, key, value):
         out[key] = _r5(value)
 
 
+def torso_pose(q35, quat_wxyz, mode_machine, motor_mode):
+    """Measured torso pose from one lowstate.  Returns a dict; see the module docstring."""
+    u = _safe(_up_in_pelvis, quat_wxyz)
+    legs = _safe(_leg_angles, q35)
+    z = None
+    if u is not None and legs is not None:
+        z = _safe(_torso_height, legs, u)
+    pitch = None
+    roll = None
+    if u is not None:
+        pitch = _safe(_pitch_of, u)
+        roll = _safe(_roll_of, u)
+    waist = _safe(_waist, q35, mode_machine, motor_mode)
+    out = {}
+    _put(out, "torso_z", z)
+    _put(out, "pitch", pitch)
+    _put(out, "roll", roll)
+    if waist is not None and math.isfinite(waist[0]):
+        out["waist_pitch"] = _r5(waist[0])
+        out["waist_src"] = waist[1]
+    return out
