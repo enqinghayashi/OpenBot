@@ -399,3 +399,10 @@ def scene_image(scene: Dict[str, Any], image_dir: Optional[str]) -> Dict[str, An
                         "media": media, "synthetic": False}
     return {"b64": base64.b64encode(_solid_png(scene["synthetic_rgb"])).decode("ascii"),
             "media": "image/png", "synthetic": True}
+
+
+# ---------------------------------------------------------------------------
+# stats helpers
+# ---------------------------------------------------------------------------
+
+
