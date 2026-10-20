@@ -358,3 +358,11 @@ def _price(entry: Dict[str, Any], key: str) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# synthetic scene image
+# PNG built from zlib/struct only
+# ---------------------------------------------------------------------------
+
+
