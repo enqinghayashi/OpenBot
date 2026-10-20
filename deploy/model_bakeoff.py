@@ -347,3 +347,5 @@ def load_prices(path: str) -> Dict[str, Any]:
         if not isinstance(entry, dict):
             raise ValueError("prices entry %r must be an object" % key)
     return models
+
+
