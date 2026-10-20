@@ -384,3 +384,18 @@ def _solid_png(rgb: tuple, size: int = 48) -> bytes:
             + chunk(b"IEND", b""))
 
 
+def scene_image(scene: Dict[str, Any], image_dir: Optional[str]) -> Dict[str, Any]:
+    """(jpeg_b64, media_type, is_synthetic) for one scene.  --image-dir
+    photos win (scene-a.jpg ... scene-e.jpg / .jpeg); otherwise the
+    synthetic solid-color PNG of the scene's expected color."""
+    if image_dir:
+        for ext in (".jpg", ".jpeg", ".png"):
+            candidate = os.path.join(image_dir, scene["id"] + ext)
+            if os.path.isfile(candidate):
+                with open(candidate, "rb") as fh:
+                    raw = fh.read()
+                media = "image/png" if ext == ".png" else "image/jpeg"
+                return {"b64": base64.b64encode(raw).decode("ascii"),
+                        "media": media, "synthetic": False}
+    return {"b64": base64.b64encode(_solid_png(scene["synthetic_rgb"])).decode("ascii"),
+            "media": "image/png", "synthetic": True}
