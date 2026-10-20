@@ -382,3 +382,5 @@ def _solid_png(rgb: tuple, size: int = 48) -> bytes:
             + chunk(b"IHDR", ihdr)
             + chunk(b"IDAT", zlib.compress(raw))
             + chunk(b"IEND", b""))
+
+
