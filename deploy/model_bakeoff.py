@@ -366,3 +366,19 @@ def _price(entry: Dict[str, Any], key: str) -> Optional[float]:
 # ---------------------------------------------------------------------------
 
 
+def _solid_png(rgb: tuple, size: int = 48) -> bytes:
+    """A solid-color PNG (pure stdlib zlib/struct) — the deterministic
+    dev/probe image; the hardware run uses real camera photos."""
+    row = b"\x00" + bytes(rgb) * size
+    raw = row * size
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        body = tag + data
+        return (struct.pack(">I", len(data)) + body
+                + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF))
+
+    ihdr = struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", ihdr)
+            + chunk(b"IDAT", zlib.compress(raw))
+            + chunk(b"IEND", b""))
