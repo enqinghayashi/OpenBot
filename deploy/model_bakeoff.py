@@ -332,3 +332,5 @@ NOT_REPORTED = "Not reported"
 
 def default_prices_path() -> str:
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "prices.json")
+
+
