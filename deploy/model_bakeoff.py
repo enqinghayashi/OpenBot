@@ -334,3 +334,16 @@ def default_prices_path() -> str:
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "prices.json")
 
 
+def load_prices(path: str) -> Dict[str, Any]:
+    """Load the prices sidecar (plain JSON).  Raises ValueError on a
+    malformed file (loud build — a corrupted price table must never
+    silently produce numbers)."""
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+    models = data.get("models")
+    if not isinstance(models, dict):
+        raise ValueError("prices file %r has no 'models' mapping" % path)
+    for key, entry in models.items():
+        if not isinstance(entry, dict):
+            raise ValueError("prices entry %r must be an object" % key)
+    return models
