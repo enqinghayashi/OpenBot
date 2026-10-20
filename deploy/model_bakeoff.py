@@ -349,3 +349,12 @@ def load_prices(path: str) -> Dict[str, Any]:
     return models
 
 
+def _price(entry: Dict[str, Any], key: str) -> Optional[float]:
+    """A price entry field, or None when absent/null (never coerced)."""
+    value = entry.get(key)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
