@@ -113,3 +113,29 @@ WIRE_BASE_URLS: Dict[str, str] = {
 }
 
 
+def _candidate(
+    cid: str,
+    model: str,
+    lane: str,
+    wire: str,
+    key_env: str,
+    profile_delta: Dict[str, Any],
+    note: str,
+    veto: str = "",
+    baseline: bool = False,
+) -> Dict[str, Any]:
+    """One matrix row.  ``profile_delta`` is the config_loader overrides
+    the harness validates the candidate's deploy pin with (the
+    config-seam check in run mode)."""
+    return {
+        "id": cid,
+        "model": model,
+        "lane": lane,
+        "wire": wire,
+        "base_url": WIRE_BASE_URLS[wire],
+        "key_env": key_env,
+        "profile_delta": profile_delta,
+        "note": note,
+        "veto": veto,  # '' = image-capable; otherwise the veto reason
+        "baseline": baseline,  # the default the ranking compares against
+    }
