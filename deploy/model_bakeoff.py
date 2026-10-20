@@ -416,3 +416,7 @@ def _p95(values: List[float]) -> Optional[float]:
     return ordered[idx]
 
 
+def _mean(values: List[float]) -> Optional[float]:
+    if not values:
+        return None
+    return sum(values) / len(values)
