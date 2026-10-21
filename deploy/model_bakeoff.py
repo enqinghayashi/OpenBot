@@ -659,3 +659,11 @@ def _sum_rest_usage(bodies: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     return totals
 
 
+def _accum(totals: Dict[str, Any], key: str, value: Any) -> None:
+    if value is None:
+        return
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return
+    totals[key] = n if totals[key] is None else totals[key] + n
