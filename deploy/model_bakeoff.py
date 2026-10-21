@@ -427,3 +427,11 @@ def _fmt(value: Optional[float], unit: str = "") -> Any:
     if value is None:
         return NOT_REPORTED
     return "{:.6f}{}".format(value, unit)
+
+
+# ---------------------------------------------------------------------------
+# REST runner
+# clients imported lazily inside the runner
+# ---------------------------------------------------------------------------
+
+
