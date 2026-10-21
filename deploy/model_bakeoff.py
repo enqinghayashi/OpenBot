@@ -451,3 +451,26 @@ def _transport_factory():
     return transport, captured
 
 
+def _vision_scored_text(tool_args: Optional[Dict[str, Any]],
+                        prose: Optional[str]) -> str:
+    """The text vision-QA is scored against: the tool call's reported
+    fields FIRST, prose second.
+
+    LIVE-VERIFIED 2026-09-02: every SCENES prompt says "Call report_scene
+    with the <object>'s color", so a well-behaved model puts the colour in
+    the call ARGUMENTS and returns no prose at all.  Scoring prose alone
+    (the pre-fix behaviour) therefore recorded 0/N vision accuracy for a
+    model that answered perfectly, while a model that ignored the
+    instruction and rambled would have scored 1/N -- the metric was
+    inverted against correct tool-calling behaviour.  Both lanes share
+    this one definition so they cannot drift apart.
+    """
+    parts: List[str] = []
+    if isinstance(tool_args, dict):
+        for key in REQUIRED_TOOL_ARGS:          # = ["object", "color"]
+            value = tool_args.get(key)
+            if isinstance(value, str):
+                parts.append(value)
+    if prose:
+        parts.append(prose)
+    return " ".join(parts).lower()
