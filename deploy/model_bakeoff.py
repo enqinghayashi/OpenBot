@@ -435,3 +435,17 @@ def _fmt(value: Optional[float], unit: str = "") -> Any:
 # ---------------------------------------------------------------------------
 
 
+def _transport_factory():
+    """The documented ``_transport`` seam wrapper: perform the client's
+    urllib POST and capture the raw response body (usage lives there).
+    A FRESH wrapper per run keeps usage attribution exact (a hung run's
+    late body can never leak into a later run's span)."""
+    captured: List[bytes] = []
+
+    def transport(request: Any, timeout: float) -> bytes:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            body = resp.read()
+        captured.append(body)
+        return body
+
+    return transport, captured
