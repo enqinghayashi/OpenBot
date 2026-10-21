@@ -657,3 +657,5 @@ def _sum_rest_usage(bodies: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not any_usage:
         return None
     return totals
+
+
