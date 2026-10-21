@@ -687,3 +687,11 @@ def _rest_cost(candidate: Dict[str, Any], usage: Optional[Dict[str, Any]],
     cost = (usage["input_tokens"] * input_rate
             + usage["output_tokens"] * output_rate) / 1000.0
     return cost
+
+
+# ---------------------------------------------------------------------------
+# realtime runner
+# client and websockets imported lazily
+# ---------------------------------------------------------------------------
+
+
