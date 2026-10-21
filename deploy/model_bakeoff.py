@@ -619,3 +619,41 @@ def _rest_run(candidate: Dict[str, Any], scene: Dict[str, Any],
     return record
 
 
+def _sum_rest_usage(bodies: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Aggregate usage over the run's response bodies (an internal retry
+    POST is still a billed part of the turn).  None when NO body carried
+    usage — the honest 'Not reported' state (llm_cloud.py exposes no
+    usage of its own; absent wire usage is absent, never guessed)."""
+    totals = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+              "image_tokens": None, "text_input_tokens": None,
+              "audio_input_tokens": None, "text_output_tokens": None,
+              "audio_output_tokens": None, "cached_tokens": None,
+              "entries": 0}
+    any_usage = False
+    for body in bodies:
+        usage = body.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        any_usage = True
+        totals["entries"] += 1
+        # two wire dialects: prompt_tokens / completion_tokens
+        # (OpenAI-compat) vs input_tokens / output_tokens (Anthropic).
+        # read both, assume nothing.
+        totals["input_tokens"] += int(
+            usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+        totals["output_tokens"] += int(
+            usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+        totals["total_tokens"] += int(usage.get("total_tokens") or 0)
+        details = usage.get("prompt_tokens_details")
+        if isinstance(details, dict):
+            _accum(totals, "image_tokens", details.get("image_tokens"))
+            _accum(totals, "cached_tokens", details.get("cached_tokens"))
+            _accum(totals, "audio_input_tokens", details.get("audio_tokens"))
+            _accum(totals, "text_input_tokens", details.get("text_tokens"))
+        details_out = usage.get("completion_tokens_details")
+        if isinstance(details_out, dict):
+            _accum(totals, "audio_output_tokens", details_out.get("audio_tokens"))
+            _accum(totals, "text_output_tokens", details_out.get("text_tokens"))
+    if not any_usage:
+        return None
+    return totals
