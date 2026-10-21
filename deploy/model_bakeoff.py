@@ -422,3 +422,8 @@ def _mean(values: List[float]) -> Optional[float]:
     return sum(values) / len(values)
 
 
+def _fmt(value: Optional[float], unit: str = "") -> Any:
+    """A measured number or the literal 'Not reported'."""
+    if value is None:
+        return NOT_REPORTED
+    return "{:.6f}{}".format(value, unit)
