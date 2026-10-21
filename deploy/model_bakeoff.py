@@ -667,3 +667,5 @@ def _accum(totals: Dict[str, Any], key: str, value: Any) -> None:
     except (TypeError, ValueError):
         return
     totals[key] = n if totals[key] is None else totals[key] + n
+
+
