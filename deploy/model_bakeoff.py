@@ -474,3 +474,5 @@ def _vision_scored_text(tool_args: Optional[Dict[str, Any]],
     if prose:
         parts.append(prose)
     return " ".join(parts).lower()
+
+
