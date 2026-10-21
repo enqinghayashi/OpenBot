@@ -669,3 +669,21 @@ def _accum(totals: Dict[str, Any], key: str, value: Any) -> None:
     totals[key] = n if totals[key] is None else totals[key] + n
 
 
+def _rest_cost(candidate: Dict[str, Any], usage: Optional[Dict[str, Any]],
+               prices: Dict[str, Any]) -> Optional[float]:
+    """$/turn from REAL usage × the recorded sidecar rates.  None (the
+    honest 'Not reported') when usage is absent or the price entry is
+    unverified — a number computed from an unverified price would be a
+    fabrication."""
+    if usage is None:
+        return None
+    entry = prices.get(candidate["model"])
+    if not isinstance(entry, dict) or not entry.get("verified"):
+        return None
+    input_rate = _price(entry, "input_per_1k")
+    output_rate = _price(entry, "output_per_1k")
+    if input_rate is None or output_rate is None:
+        return None
+    cost = (usage["input_tokens"] * input_rate
+            + usage["output_tokens"] * output_rate) / 1000.0
+    return cost
