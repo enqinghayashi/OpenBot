@@ -476,3 +476,144 @@ def _vision_scored_text(tool_args: Optional[Dict[str, Any]],
     return " ".join(parts).lower()
 
 
+def _rest_run(candidate: Dict[str, Any], scene: Dict[str, Any],
+              image: Optional[Dict[str, Any]], prices: Dict[str, Any],
+              timeout_s: float, stub_base: Optional[str],
+              media_override: Optional[str]) -> Dict[str, Any]:
+    """One REST decision turn (one chat call, fresh client — the
+    deployed transcript lane's per-turn unit)."""
+    from brain.agent.llm_cloud import (  # lazy: --list needs zero deps
+        AnthropicMessagesClient,
+        ChatTransportError,
+        CloudLLMClient,
+    )
+
+    base = stub_base or candidate["base_url"]
+    key_env = candidate["key_env"]
+    transport, captured = _transport_factory()
+    common = dict(model=candidate["model"], api_key_env=key_env,
+                  timeout_s=timeout_s, _transport=transport)
+    if candidate["wire"] == "anthropic-native":
+        client = AnthropicMessagesClient(base_url=base, **common)
+    else:
+        # same shape as the deployed lane:
+        # skeleton tools and prose fallback.
+        client = CloudLLMClient(base_url=base, tool_mode="skeleton",
+                                prose_fallback=True, temperature=0.2,
+                                max_tokens=REST_MAX_TOKENS,
+                                enable_thinking=False,
+                                **common)
+
+    messages = [
+        {"role": "system", "content": "You are a scene-analysis agent. "
+                                      "Answer the scene question and call "
+                                      "report_scene."},
+        {"role": "user", "content": scene["prompt"]},
+    ]
+    # veto rows are measured text-only, with no image on their wire.
+    attach_image = image if (image is not None and not candidate["veto"]) else None
+    media_type = (media_override or attach_image["media"]
+                  if attach_image else "image/jpeg")
+    record: Dict[str, Any] = {
+        "run": None, "scene": scene["id"], "status": "error",
+        "ttft_s": None, "e2e_s": None, "cost_usd": None,
+        "usage": None, "tool_call": None, "vision_qa": None,
+        "answer": None, "note": "",
+    }
+    t0 = time.monotonic()
+    try:
+        result = client.chat(messages, [TOOL_SPEC],
+                             image_jpeg_b64=(attach_image["b64"] if attach_image else None),
+                             image_media_type=media_type)
+    except ChatTransportError as exc:
+        message = str(exc)
+        if re.search(r"\b429\b|rate.limit", message, re.I):
+            status = "rate_limit"
+        elif (re.search(r"timed out|timeout", message, re.I)
+              or isinstance(exc.__cause__, TimeoutError)):
+            # urllib timeout fired: socket.timeout is an OSError, so it
+            # arrives wrapped in URLError -> ChatTransportError. still a
+            # per-run timeout, still counted.
+            status = "timeout"
+        else:
+            status = "transport_error"
+        record["status"] = status
+        record["note"] = message[:300]
+        record["e2e_s"] = time.monotonic() - t0
+        return record
+    except Exception as exc:  # noqa: BLE001 - any client failure is a failed run
+        message = str(exc)
+        # client-side timeout can slip past the wrap.
+        # same classification.
+        if re.search(r"timed out|timeout", message, re.I) or isinstance(
+                exc, TimeoutError):
+            record["status"] = "timeout"
+        else:
+            record["status"] = "error"
+        record["note"] = message[:300]
+        record["e2e_s"] = time.monotonic() - t0
+        return record
+    record["e2e_s"] = time.monotonic() - t0
+    # no streaming on this lane: TTFT is the whole round trip.
+    record["ttft_s"] = record["e2e_s"]
+
+    if result.dropped:
+        record["status"] = "dropped"
+        record["note"] = "single-flight drop (another call in flight)"
+        return record
+    if not result.text and not result.tool_calls:
+        # empty response is never fine. truncated = completion budget ran
+        # out; not truncated = the model returned nothing.
+        record["status"] = "empty_response"
+        record["note"] = (
+            "the model returned neither prose nor a tool call"
+            + (" (truncated: completion budget ran out)" if result.truncated
+               else " (not truncated)")
+        )
+        return record
+    record["status"] = "ok"
+
+    # ---- usage: straight from the raw bodies this run's POSTs produced ----
+    usage_bodies = [json.loads(b) for b in captured]
+    usage = _sum_rest_usage(usage_bodies)
+    record["usage"] = usage
+    record["cost_usd"] = _rest_cost(candidate, usage, prices)
+
+    # ---- tool-call correctness: well-formed and runs with no retry/veto ----
+    calls = result.tool_calls or []
+    if not calls:
+        record["tool_call"] = "no_call"
+        record["note"] += "no tool call; "
+    else:
+        call = calls[0]
+        args = call.arguments if isinstance(call.arguments, dict) else {}
+        well_formed = (call.name in VALID_TOOL_NAMES
+                       and isinstance(call.arguments, dict))
+        schema_ok = all(key in args for key in REQUIRED_TOOL_ARGS)
+        if not well_formed:
+            record["tool_call"] = "parse_fail"
+            record["note"] += "malformed tool call (name/args); "
+        elif not schema_ok:
+            record["tool_call"] = "veto"
+            record["note"] += "tool call vetoed (missing required args); "
+        else:
+            # a run with no retry and no veto:
+            # the call counts as executed.
+            record["tool_call"] = "ok"
+            record["note"] += "tool call executed; "
+
+    # ---- vision-QA accuracy on the fixed scene ----------------------------
+    answer = (result.text or "").strip() or None
+    record["answer"] = answer
+    if candidate["veto"]:
+        # unmeasurable: no image on this wire
+        record["vision_qa"] = None
+    else:
+        first_args = None
+        if calls and isinstance(calls[0].arguments, dict):
+            first_args = calls[0].arguments
+        lowered = _vision_scored_text(first_args, answer)
+        record["vision_qa"] = int(
+            any(token.lower() in lowered for token in scene["expected"])
+        )
+    return record
