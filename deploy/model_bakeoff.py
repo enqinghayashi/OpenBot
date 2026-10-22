@@ -695,3 +695,46 @@ def _rest_cost(candidate: Dict[str, Any], usage: Optional[Dict[str, Any]],
 # ---------------------------------------------------------------------------
 
 
+def _realtime_run(candidate: Dict[str, Any], scene: Dict[str, Any],
+                  image: Optional[Dict[str, Any]], prices: Dict[str, Any],
+                  timeout_s: float, stub_base: Optional[str],
+                  audio_wav: Optional[str],
+                  media_override: Optional[str]) -> Dict[str, Any]:
+    """One Realtime decision turn.  LIVE-VERIFIED 2026-09-02 from the
+    laptop against api.openai.com (gpt-realtime-2.1-mini): wss connect,
+    session config, image attach and tool call all confirmed on the wire.
+    The earlier "not live-verifiable, py_compile-checked only" note was
+    what hid a NameError here — `prices` was referenced in the async core
+    but never passed to it, so a SUCCESSFUL turn was recorded as a failed
+    run (status flipped ok -> error by the generic handler).  py_compile
+    cannot catch a free-variable NameError; only a real call can."""
+    from voice.adapters import flatten_specs  # lazy import
+    from voice.realtime import RealtimeAuthError, RealtimeClient  # lazy import
+
+    base = stub_base or candidate["base_url"]
+    if stub_base:
+        # stub-gateway seam: realtime only speaks
+        # ws(s), so normalize the http(s) probe URL.
+        # REST keeps the http URL.
+        base = base.replace("http://", "ws://", 1).replace("https://", "wss://", 1)
+    record: Dict[str, Any] = {
+        "run": None, "scene": scene["id"], "status": "error",
+        "ttft_s": None, "e2e_s": None, "cost_usd": None,
+        "usage": None, "tool_call": None, "vision_qa": None,
+        "answer": None, "note": "",
+    }
+    try:
+        asyncio.run(_realtime_async_run(
+            candidate, scene, image, prices, timeout_s, base, audio_wav,
+            media_override, record, flatten_specs, RealtimeClient,
+            RealtimeAuthError))
+    except asyncio.TimeoutError:
+        record["status"] = "timeout"
+        record["note"] = "realtime turn exceeded the per-run bound"
+    except RealtimeAuthError as exc:
+        record["status"] = "auth_error"
+        record["note"] = str(exc)[:300]
+    except Exception as exc:  # noqa: BLE001 - any lane failure is a failed run
+        record["status"] = "error"
+        record["note"] = str(exc)[:300]
+    return record
