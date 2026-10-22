@@ -915,3 +915,5 @@ async def _realtime_async_run(candidate, scene, image, prices, timeout_s, base,
             await loop_task
         except (asyncio.CancelledError, Exception):  # noqa: BLE001
             pass
+
+
