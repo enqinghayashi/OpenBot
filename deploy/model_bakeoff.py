@@ -917,3 +917,17 @@ async def _realtime_async_run(candidate, scene, image, prices, timeout_s, base,
             pass
 
 
+def _parse_realtime_call(item: Dict[str, Any]):
+    """A realtime function_call item -> (name, call_id, args) or None."""
+    name = item.get("name")
+    call_id = item.get("call_id")
+    raw_args = item.get("arguments")
+    if not isinstance(name, str) or not isinstance(raw_args, str):
+        return None
+    try:
+        args = json.loads(raw_args)
+    except ValueError:
+        return None
+    if not isinstance(args, dict):
+        return None
+    return name, str(call_id or ""), args
