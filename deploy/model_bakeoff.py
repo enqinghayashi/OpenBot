@@ -978,3 +978,32 @@ def _sum_realtime_usage(usage_accum: List[Dict[str, Any]]) -> Dict[str, Any]:
     return totals
 
 
+def _realtime_cost(candidate: Dict[str, Any], usage: Dict[str, Any],
+                   prices: Dict[str, Any]) -> Optional[float]:
+    """$/turn from realtime usage (audio/text token splits × the recorded
+    audio/text rates).  None (honest 'Not reported') when the price entry
+    is unverified or the needed split/rate is absent — never a guessed
+    number."""
+    entry = prices.get(candidate["model"])
+    if not isinstance(entry, dict) or not entry.get("verified"):
+        return None
+    audio_in = _price(entry, "audio_input_per_1k")
+    audio_out = _price(entry, "audio_output_per_1k")
+    text_in = _price(entry, "text_input_per_1k")
+    text_out = _price(entry, "text_output_per_1k")
+    has_splits = (usage["audio_input_tokens"] is not None
+                  and usage["text_input_tokens"] is not None
+                  and usage["audio_output_tokens"] is not None
+                  and usage["text_output_tokens"] is not None)
+    if has_splits:
+        if None in (audio_in, audio_out, text_in, text_out):
+            return None
+        cost = (usage["text_input_tokens"] * text_in
+                + usage["audio_input_tokens"] * audio_in
+                + usage["text_output_tokens"] * text_out
+                + usage["audio_output_tokens"] * audio_out) / 1000.0
+        return cost
+    # no audio/text split on the wire: only a
+    # flat rate could price it, and none is
+    # recorded -> 'Not reported'.
+    return None
