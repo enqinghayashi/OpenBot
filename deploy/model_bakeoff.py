@@ -1046,3 +1046,5 @@ def _check_config_seam(candidate: Dict[str, Any]) -> Dict[str, Any]:
         ok = cfg.rest.model == candidate["model"]
         note = "rest.model == %r" % cfg.rest.model
     return {"checked": True, "ok": ok, "note": note}
+
+
