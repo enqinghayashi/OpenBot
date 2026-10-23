@@ -952,3 +952,27 @@ def _wav_pcm16(path: str) -> bytes:
     raise ValueError("WAV has no data chunk: %s" % path)
 
 
+def _sum_realtime_usage(usage_accum: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Aggregate the response.done usage payloads of the turn's
+    responses.  The audio/text splits are read from ``*_token_details``
+    exactly as the wire reports them."""
+    totals = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+              "image_tokens": None, "text_input_tokens": None,
+              "audio_input_tokens": None, "text_output_tokens": None,
+              "audio_output_tokens": None, "cached_tokens": None,
+              "entries": 0}
+    for usage in usage_accum:
+        totals["entries"] += 1
+        totals["input_tokens"] += int(usage.get("input_tokens") or 0)
+        totals["output_tokens"] += int(usage.get("output_tokens") or 0)
+        totals["total_tokens"] += int(usage.get("total_tokens") or 0)
+        details = usage.get("input_token_details")
+        if isinstance(details, dict):
+            _accum(totals, "audio_input_tokens", details.get("audio_tokens"))
+            _accum(totals, "text_input_tokens", details.get("text_tokens"))
+            _accum(totals, "cached_tokens", details.get("cached_tokens"))
+        details_out = usage.get("output_token_details")
+        if isinstance(details_out, dict):
+            _accum(totals, "audio_output_tokens", details_out.get("audio_tokens"))
+            _accum(totals, "text_output_tokens", details_out.get("text_tokens"))
+    return totals
