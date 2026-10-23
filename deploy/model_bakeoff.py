@@ -933,3 +933,20 @@ def _parse_realtime_call(item: Dict[str, Any]):
     return name, str(call_id or ""), args
 
 
+def _wav_pcm16(path: str) -> bytes:
+    """Strip a WAV header -> PCM16 mono payload (24 kHz expected).  The
+    mic pump's byte stream is what the realtime lane uploads; a WAV file
+    is the deterministic stand-in."""
+    with open(path, "rb") as fh:
+        data = fh.read()
+    if not data.startswith(b"RIFF") or data[8:12] != b"WAVE":
+        raise ValueError("not a WAV file: %s" % path)
+    # find the 'data' chunk
+    pos = 12
+    while pos + 8 <= len(data):
+        cid = data[pos:pos + 4]
+        size = struct.unpack("<I", data[pos + 4:pos + 8])[0]
+        if cid == b"data":
+            return data[pos + 8: pos + 8 + size]
+        pos += 8 + size + (size & 1)
+    raise ValueError("WAV has no data chunk: %s" % path)
