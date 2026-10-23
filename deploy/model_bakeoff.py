@@ -1007,3 +1007,10 @@ def _realtime_cost(candidate: Dict[str, Any], usage: Dict[str, Any],
     # flat rate could price it, and none is
     # recorded -> 'Not reported'.
     return None
+
+
+# ---------------------------------------------------------------------------
+# config-seam check (profile-delta)
+# ---------------------------------------------------------------------------
+
+
