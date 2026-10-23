@@ -1014,3 +1014,35 @@ def _realtime_cost(candidate: Dict[str, Any], usage: Dict[str, Any],
 # ---------------------------------------------------------------------------
 
 
+def _check_config_seam(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate the candidate's profile-delta against the real loader:
+    the deploy pin (brain.lane + model) must LOAD.  Degrades to
+    'Not reported' outside the repo (lazy import — --list never gets
+    here)."""
+    try:
+        from brain.config_loader import load as _cfg_load  # lazy import
+    except Exception as exc:  # noqa: BLE001
+        return {"checked": False, "ok": None,
+                "note": "config_loader unimportable: %s" % exc}
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cfg_path = os.path.join(repo_root, "config.yaml")
+    if not os.path.isfile(cfg_path):
+        return {"checked": False, "ok": None,
+                "note": "config.yaml not found at %s — run from the repo" % cfg_path}
+    # deployed profile per lane: rest/transcript uses the cloud profile,
+    # realtime uses the voice profile.
+    profile = "voice" if candidate["lane"] == "realtime" else "cloud"
+    try:
+        cfg = _cfg_load(cfg_path, profile=profile,
+                        overrides=candidate["profile_delta"])
+    except Exception as exc:  # noqa: BLE001
+        return {"checked": True, "ok": False,
+                "note": "profile-delta rejected by config_loader (%s): %s"
+                        % (profile, exc)}
+    if candidate["lane"] == "realtime":
+        ok = cfg.realtime.model == candidate["model"]
+        note = "realtime.model == %r" % cfg.realtime.model
+    else:
+        ok = cfg.rest.model == candidate["model"]
+        note = "rest.model == %r" % cfg.rest.model
+    return {"checked": True, "ok": ok, "note": note}
