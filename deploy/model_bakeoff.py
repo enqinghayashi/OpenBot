@@ -976,3 +976,5 @@ def _sum_realtime_usage(usage_accum: List[Dict[str, Any]]) -> Dict[str, Any]:
             _accum(totals, "audio_output_tokens", details_out.get("audio_tokens"))
             _accum(totals, "text_output_tokens", details_out.get("text_tokens"))
     return totals
+
+
