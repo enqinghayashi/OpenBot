@@ -1075,3 +1075,10 @@ def _check_budget_parity() -> Dict[str, Any]:
     shipped = getattr(cfg.rest, "max_tokens", None)
     return {"checked": True, "ok": shipped == REST_MAX_TOKENS,
             "note": "rest.max_tokens == %r (config.cloud.yaml)" % shipped}
+
+
+# ---------------------------------------------------------------------------
+# runner plumbing
+# ---------------------------------------------------------------------------
+
+
