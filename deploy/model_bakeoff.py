@@ -1107,3 +1107,5 @@ def _run_one_candidate(candidate: Dict[str, Any], runs: int, timeout: float,
         runs_out.append(record)
 
     return _summarize(candidate, runs_out, prices, prices_path, stub_base)
+
+
