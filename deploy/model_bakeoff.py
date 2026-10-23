@@ -1048,3 +1048,30 @@ def _check_config_seam(candidate: Dict[str, Any]) -> Dict[str, Any]:
     return {"checked": True, "ok": ok, "note": note}
 
 
+def _check_budget_parity() -> Dict[str, Any]:
+    """B5 honesty pin: the bench must rank with the SAME completion budget
+    the deployed transcript lane ships (config.cloud.yaml
+    rest.max_tokens).  #120 measured 16/20 truncation of deepseek-vision
+    (a 512-token reference skeleton + reasoning) at the 256 ceiling — the
+    re-run above is at REST_MAX_TOKENS, so a shipped config that reverts
+    to 256 would silently rank a different game.  Degrades to 'Not
+    reported' outside the repo, same as _check_config_seam."""
+    try:
+        from brain.config_loader import load as _cfg_load  # lazy import
+    except Exception as exc:  # noqa: BLE001
+        return {"checked": False, "ok": None,
+                "note": "config_loader unimportable: %s" % exc}
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cfg_path = os.path.join(repo_root, "config.yaml")
+    if not os.path.isfile(cfg_path):
+        return {"checked": False, "ok": None,
+                "note": "config.yaml not found at %s — run from the repo"
+                        % cfg_path}
+    try:
+        cfg = _cfg_load(cfg_path, profile="cloud")
+    except Exception as exc:  # noqa: BLE001
+        return {"checked": True, "ok": False,
+                "note": "cloud profile rejected by config_loader: %s" % exc}
+    shipped = getattr(cfg.rest, "max_tokens", None)
+    return {"checked": True, "ok": shipped == REST_MAX_TOKENS,
+            "note": "rest.max_tokens == %r (config.cloud.yaml)" % shipped}
