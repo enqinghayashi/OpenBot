@@ -1082,3 +1082,28 @@ def _check_budget_parity() -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _run_one_candidate(candidate: Dict[str, Any], runs: int, timeout: float,
+                       prices: Dict[str, Any], prices_path: str,
+                       stub_base: Optional[str], image_dir: Optional[str],
+                       audio_wav: Optional[str]) -> Dict[str, Any]:
+    """N runs of one candidate.  Every attempted run gets a row; a failed
+    run is COUNTED in the reliability denominator, never retried into
+    success."""
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)  # so lazy brain/voice imports resolve
+
+    runs_out: List[Dict[str, Any]] = []
+    for i in range(runs):
+        scene = SCENES[i % len(SCENES)]
+        image = scene_image(scene, image_dir) if image_dir else scene_image(scene, None)
+        if candidate["lane"] == "realtime":
+            record = _realtime_run(candidate, scene, image, prices, timeout,
+                                   stub_base, audio_wav, None)
+        else:
+            record = _rest_run(candidate, scene, image, prices, timeout,
+                               stub_base, None)
+        record["run"] = i
+        runs_out.append(record)
+
+    return _summarize(candidate, runs_out, prices, prices_path, stub_base)
