@@ -1245,3 +1245,30 @@ def _print_manifest(fmt: str) -> int:
     return 0
 
 
+def _write_output(summary: Dict[str, Any], out_path: str, fmt: str) -> None:
+    if fmt == "json":
+        with open(out_path, "w", encoding="utf-8") as fh:
+            json.dump(summary, fh, indent=2)
+            fh.write("\n")
+    else:
+        with open(out_path, "w", encoding="utf-8", newline="") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(["run", "scene", "status", "ttft_s", "e2e_s",
+                             "cost_usd", "tool_call", "vision_qa", "answer",
+                             "note"])
+            for r in summary["runs"]:
+                writer.writerow([
+                    r["run"], r["scene"], r["status"],
+                    _fmt(r["ttft_s"], " s") if r["ttft_s"] is not None
+                        else NOT_REPORTED,
+                    _fmt(r["e2e_s"], " s") if r["e2e_s"] is not None
+                        else NOT_REPORTED,
+                    _fmt(r["cost_usd"]) if r["cost_usd"] is not None
+                        else NOT_REPORTED,
+                    r["tool_call"] if r["tool_call"] is not None
+                        else NOT_REPORTED,
+                    r["vision_qa"] if r["vision_qa"] is not None
+                        else NOT_REPORTED,
+                    r["answer"] if r["answer"] is not None else NOT_REPORTED,
+                    r["note"].strip(),
+                ])
