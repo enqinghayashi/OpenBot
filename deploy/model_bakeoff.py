@@ -1243,3 +1243,5 @@ def _print_manifest(fmt: str) -> int:
     print("key env vars are read from the environment at run time — "
           "never printed, never passed in args")
     return 0
+
+
