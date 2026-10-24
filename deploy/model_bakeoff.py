@@ -1109,3 +1109,99 @@ def _run_one_candidate(candidate: Dict[str, Any], runs: int, timeout: float,
     return _summarize(candidate, runs_out, prices, prices_path, stub_base)
 
 
+def _summarize(candidate, runs_out, prices, prices_path,
+               stub_base) -> Dict[str, Any]:
+    ok = [r for r in runs_out if r["status"] == "ok"]
+    failed = [r for r in runs_out if r["status"] != "ok"]
+    fail_reasons: Dict[str, int] = {}
+    for r in failed:
+        fail_reasons[r["status"]] = fail_reasons.get(r["status"], 0) + 1
+
+    ttft = [r["ttft_s"] for r in ok if r["ttft_s"] is not None]
+    e2e = [r["e2e_s"] for r in ok if r["e2e_s"] is not None]
+    costs = [r["cost_usd"] for r in ok if r["cost_usd"] is not None]
+    tool_ok = sum(1 for r in ok if r["tool_call"] == "ok")
+    tool_no_call = sum(1 for r in ok if r["tool_call"] == "no_call")
+    tool_failed = sum(1 for r in ok if r["tool_call"] not in ("ok", "no_call", None))
+    vision_measured = [r for r in ok if r["vision_qa"] is not None]
+    vision_correct = sum(1 for r in vision_measured if r["vision_qa"] == 1)
+
+    usage_agg: Dict[str, Any] = {}
+    for r in ok:
+        usage = r.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        for key in ("input_tokens", "output_tokens", "total_tokens"):
+            usage_agg[key] = usage_agg.get(key, 0) + int(usage.get(key) or 0)
+        for key in ("image_tokens", "text_input_tokens", "audio_input_tokens",
+                    "text_output_tokens", "audio_output_tokens", "cached_tokens"):
+            value = usage.get(key)
+            if value is not None:
+                usage_agg[key] = usage_agg.get(key, 0) + int(value)
+
+    entry = prices.get(candidate["model"])
+    price_state = {
+        "path": prices_path,
+        "verified": bool(isinstance(entry, dict) and entry.get("verified")),
+    }
+
+    summary: Dict[str, Any] = {
+        "candidate": candidate["id"],
+        "model": candidate["model"],
+        "lane": candidate["lane"],
+        "wire": candidate["wire"],
+        "key_env": candidate["key_env"],
+        "veto": candidate["veto"],
+        "baseline": candidate["baseline"],
+        "note": candidate["note"],
+        "stub_gateway": stub_base if stub_base else None,
+        "runs_requested": len(runs_out),
+        "runs_total": len(runs_out),
+        "runs_succeeded": len(ok),
+        "runs_failed": len(failed),
+        "fail_reasons": fail_reasons,
+        "rate_limits": fail_reasons.get("rate_limit", 0),
+        # REST: 0 by construction (urllib is one-shot, no reconnect code).
+        # realtime: the retry ladder (1,2,4,8,8,8,8,8 s) is internal to the
+        # client and nothing public observes it, so a count would be guesswork.
+        "reconnects": (0 if candidate["lane"] == "rest" else NOT_REPORTED),
+        "ttft_s": {"measured_on": len(ttft), "of": len(ok),
+                   "avg": _fmt(_mean(ttft)), "p95": _fmt(_p95(ttft))},
+        "e2e_s": {"measured_on": len(e2e), "of": len(ok),
+                  "avg": _fmt(_mean(e2e)), "p95": _fmt(_p95(e2e))},
+        "cost_per_turn_usd": _fmt(_mean(costs)),
+        "cost_per_turn_p95_usd": _fmt(_p95(costs)),
+        "cost_measured_on": len(costs),
+        "cost_of": len(ok),
+        "cost_basis_tokens": usage_agg,
+        "tool_call": {"ok": tool_ok, "failed": tool_failed,
+                      "no_call": tool_no_call, "of": len(ok)},
+        "vision_qa_accuracy": (
+            _fmt(_mean([float(r["vision_qa"]) for r in vision_measured]))
+            if vision_measured else NOT_REPORTED),
+        "vision_qa": {"correct": vision_correct, "measured": len(vision_measured),
+                      "of": len(ok)},
+        "config_seam": _check_config_seam(candidate),
+        "budget_parity": _check_budget_parity(),
+        "prices": price_state,
+        "runs": runs_out,
+    }
+    if candidate["veto"]:
+        summary["vision_qa_not_reported_reason"] = (
+            "veto-flagged text-only candidate (no image part on this wire): "
+            + candidate["veto"])
+    if summary["cost_per_turn_usd"] == NOT_REPORTED:
+        summary["cost_not_reported_reason"] = (
+            "no verified per-token rate recorded for %r in %s (recorded "
+            "2026-08-31) — re-verify day-of against the provider price "
+            "page and fill the entry (docs/BAKEOFF.md re-verify "
+            "instruction)" % (candidate["model"], prices_path))
+    if not ttft:
+        summary["ttft_s"]["avg"] = NOT_REPORTED
+        summary["ttft_s"]["p95"] = NOT_REPORTED
+        summary["ttft_not_reported_reason"] = "no successful runs measured"
+    if not e2e:
+        summary["e2e_s"]["avg"] = NOT_REPORTED
+        summary["e2e_s"]["p95"] = NOT_REPORTED
+        summary["e2e_not_reported_reason"] = "no successful runs measured"
+    return summary
