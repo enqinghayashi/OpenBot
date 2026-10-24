@@ -1212,3 +1212,34 @@ def _summarize(candidate, runs_out, prices, prices_path,
 # ---------------------------------------------------------------------------
 
 
+def _print_manifest(fmt: str) -> int:
+    rows = [CANDIDATES[key] for key in sorted(CANDIDATES)]
+    if fmt == "json":
+        json.dump(rows, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return 0
+    if fmt == "csv":
+        out = io.StringIO()
+        writer = csv.writer(out)
+        writer.writerow(["id", "lane", "wire", "model", "key_env",
+                         "veto", "baseline", "note"])
+        for c in rows:
+            writer.writerow([c["id"], c["lane"], c["wire"], c["model"],
+                             c["key_env"], c["veto"], str(c["baseline"]),
+                             c["note"]])
+        sys.stdout.write(out.getvalue())
+        return 0
+    width = max(len(c["id"]) for c in rows) + 2
+    print("OpenBot v4 model bake-off — 11-candidate manifest "
+          "(plan section 6; %d rows)" % len(rows))
+    print("=" * 118)
+    for c in rows:
+        veto = ("VETO: " + c["veto"]) if c["veto"] else "vision-capable"
+        flag = " [BASELINE]" if c["baseline"] else ""
+        print("%-*s %-8s %-17s %-24s %s%s" % (
+            width, c["id"], c["lane"], c["wire"], c["key_env"], veto, flag))
+        print("%*s %s" % (width, "", c["note"]))
+    print("=" * 118)
+    print("key env vars are read from the environment at run time — "
+          "never printed, never passed in args")
+    return 0
