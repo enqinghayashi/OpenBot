@@ -1205,3 +1205,10 @@ def _summarize(candidate, runs_out, prices, prices_path,
         summary["e2e_s"]["p95"] = NOT_REPORTED
         summary["e2e_not_reported_reason"] = "no successful runs measured"
     return summary
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
