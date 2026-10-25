@@ -1,109 +1,244 @@
-# OpenBot
+<h1 align="center">OpenBot: An Embodied LLM Agent for the Unitree G1 Humanoid</h1>
 
-Control stack for the **Unitree G1** humanoid robot. A local, tool-calling LLM **brain** directs a deterministic
-**skill lane** through a **gateway**: voice in; walking, pick-and-place, perception and whole-body motion out.
-The model selects tools and arguments — motion itself is produced entirely by the deterministic lane: no learned
-action policy in the control loop, and no cloud services.
+<p align="center"><b>A harness for embodied language agents.</b><br>
+Deterministic skills · a typed tool interface · verdicts that come from measurement, not from hope.</p>
 
-## Architecture
+<p align="center"><em>Final-year engineering research project · 2026</em></p>
+
+---
+
+Say *"hey Stuart, get me a bottle of water"*. The robot turns, walks, looks, picks, walks back and hands it
+over — or it refuses and tells you why. A cloud language model decides **what** to do; a deterministic skill
+layer decides **how**; and every skill reports **whether it actually worked**, measured rather than assumed.
+
+No task-specific manipulation policy is trained for the final system. That is the point: the interesting object
+here is not the policy, it is the substrate a policy could be trained against — a harness on which three learned
+agents (a skill forger, a skill caller and a call reviewer) can later be post-trained. That post-training is
+future work, out of reach here for compute, data and hardware-time reasons; see
+[the roadmap](#what-comes-next-post-training-the-three-agents).
+
+## The numbers
+
+| | |
+|---|---|
+| Scored spoken trials | **45** across four successive releases |
+| Completed, or correctly refused | **32 / 45** — Wilson 95 % CI **0.57 – 0.82** |
+| Chained pick-and-place | **17 / 26** overall · **15 / 17** across the last three releases |
+| Container chains on the final release | **3 / 3** completed |
+| Spoken stop → motion halted | **5 – 19 ms** after the gateway receives it |
+| Median first response | **~1 s** |
+| False-success skill verdicts in trial review | **0** |
+| Simulation grasp acquisitions | **99 / 100** with lift under ±1 cm noise |
+
+## Why this exists
+
+Two ways to make a humanoid manipulate, both unsatisfying.
+
+**Learn it end-to-end.** A visuomotor policy that maps pixels to joints needs enormous demonstration data, and
+when it fails it cannot tell you why. We spent a full phase of this project proving that point to ourselves.
+
+**Script it.** A hand-written stack of motions is verifiable and safe, but it cannot be steered by a person
+speaking English, and it cannot generalise past its branches.
+
+The third position is the one this project takes: **make the robot a harness a model can drive, measure and
+improve against.** Skills become typed tools with preconditions and postconditions; each returns a verdict
+derived from a measurement; refusal becomes a first-class outcome with a reason; and the whole stack runs in a
+MuJoCo twin with the same interfaces, so a candidate policy can be exercised without touching hardware.
+
+## What we tried first, and what it taught us
+
+Part 1 of the project was the conventional bet: a **108 M-parameter conditional U-Net diffusion policy**, trained
+on **2,160 scripted demonstrations (1.42 M samples)**, across **9 policy variants**, **50 hyperparameter
+settings** and **14 training runs**.
+
+It produced **2,089 evaluation trials and a 0 % lift rate.**
+
+The post-mortem is the most useful result of that phase: the policies were exploiting **proprioceptive
+shortcuts** — the robot's own joint state predicted success in training without the policy ever learning to use
+the object. Joint-space reinforcement learning converged to a hovering optimum with **0 % contact**; `mjx` ran
+out of memory on an 8 GB laptop GPU. A parallel effort to generate motions directly from the model was rejected on
+measured latency: the local 4B model managed under 4 tokens/s, 75–85 s per decision.
+
+That is why the final system puts the model at the **task level** and keeps motion deterministic. The model
+selects; the harness executes and verifies.
+
+## The harness
+
+Four layers, each with exactly one job.
 
 ```
-        voice / text input
-                │
-        ┌───────▼────────┐
-        │     brain      │   LLM tool-calling loop, tool contract,
-        │                │   verifier, scene graph
-        └───────┬────────┘
-                │  tool calls (JSON)
-        ┌───────▼────────┐
-        │    gateway     │   schema / strict-vocabulary checks,
-        │                │   safety gates, motion routing
-        └───────┬────────┘
-                │
-     ┌──────────┼───────────────┬────────────────┐
-     ▼          ▼               ▼                ▼
- ┌────────┐ ┌──────────┐ ┌────────────┐ ┌────────────────┐
- │ writer │ │   arm    │ │ locomotion │ │   perception   │
- │whole-  │ │ grip +   │ │ walk FSM,  │ │ YOLO/SEG +     │
- │body    │ │ pick &   │ │ hunt law,  │ │ TensorRT,      │
- │motion  │ │ place    │ │ odometry   │ │ depth projector│
- └────────┘ └──────────┘ └────────────┘ └────────────────┘
-                Unitree G1 hardware
+                 voice  ·  "hey Stuart, get me a bottle of water"
+                   │
+        ┌──────────▼───────────┐
+        │  1  speech-to-speech │   cloud agent: hears, answers, emits tool calls
+        └──────────┬───────────┘
+                   │  typed calls, JSON schema, strict vocabulary
+        ┌──────────▼───────────┐
+        │  2  tool gateway     │   validates, gates, routes, holds the interlocks
+        └──────────┬───────────┘
+                   │
+        ┌──────────▼───────────┐
+        │  3  deterministic    │   localise · pick · place · walk · descend · stop
+        │      skills          │   each returns a measurement, never an assumption
+        └──────────┬───────────┘
+                   │
+        ┌──────────▼───────────┐
+        │  4  whole-body       │   one writer, 35 slots at 250 Hz
+        │      controller      │   GR00T Balance + Walk at 50 Hz inside that loop
+        └──────────┬───────────┘
+                   │
+             Unitree G1 "Stuart"
 ```
+
+### What a verdict looks like
+
+Success is not "the command was sent". For a grasp, the evidence is the **closure-block margin**: how far the
+fingers stop short of the close preset. Measured on the robot, an **empty hand reads 0.038 rad** while a hand
+**holding an object reads 0.828 – 1.256 rad**, and the verifier's tolerance is **0.06 rad**. Tactile pressure
+never reached an evidence threshold on an empty hand versus thirteen objects, so it is retained only as
+corroboration.
+
+The same pattern repeats across the library:
+
+- **Pick** solves the reach before any motor command and refuses above a **0.15 m IK residual**; it checks the
+  planned path against the body and the tucked left hand, and refuses any target crossing the midline.
+- **Walk** stops on a measured range and reports `REACHED` only from its own state machine.
+- **Place** verifies release, and the report is explicit that release is not containment.
+
+### Design principles
+
+1. **The model plans; it never moves.** Every motion comes from a deterministic skill.
+2. **Every skill verifies itself.** Reach, closure, grasp, arrival and release each produce a measurement.
+3. **Refusal is an outcome, not an error.** Out of reach, hand full, object lost — the robot says which.
+4. **Safety sits outside the model.** Interlocks and watchdogs bound motion independently; spoken stop bypasses
+   the language model entirely and halted reaching **5–19 ms** after the gateway received it.
+5. **Simulation before hardware.** A MuJoCo twin of the G1 — with **seven model defects corrected** — validates
+   motion first.
+
+## Engineering notes
+
+- **Depth on the robot.** The RealSense D435i is read through a direct **V4L2 Z16** pipeline rather than the
+  vendor stack, which removed a layer that could not be kept in sync with the control loop.
+- **Vision at 30 Hz.** YOLO11n-seg runs as a TensorRT engine on the Orin NX; the open-vocabulary YOLOE variant
+  uses a text-embedding bank with per-target filtering.
+- **The 250 Hz jitter.** Arm command latency was traced to **DDS/GIL starvation** from high-rate subscribers
+  inside the same interpreter; removing those listeners fixed a jitter that no amount of tuning had touched.
+- **One writer.** A single process owns all body motors: 35 slots at **250 Hz**, with the balance and walking
+  policy executed every fifth tick (**50 Hz**); the hand server runs separately at 20 Hz.
+- **Grasp without crushing.** Radius-based stand-off (object radius plus **5 cm**), bounded adaptive closure and
+  torque-aware limits keep the motors out of a latch.
+- **Test discipline.** The first stack carried a **309-test** suite; the final tree holds over a hundred test files
+  and more than a thousand test functions, sixteen integration scenarios with a simulated body, and mutation
+  campaigns that killed all their mutants.
 
 ## Demo videos
 
-All recordings are attached to the [demos release](https://github.com/enqinghayashi/OpenBot/releases/tag/demos-v1).
-The multi-view demos, first person (eyes / map / trace) and third person:
+Each preview is a 2x2 grid captured at the same instant: **third person** (top left), the robot's own
+**eyes** (top right), the **map** (bottom left) and the **trace** of what the planner believed (bottom right).
+The line under each heading is what was said to the robot. Full-length recordings, with every first-person
+stream, are in the [demos release](https://github.com/enqinghayashi/OpenBot/releases/tag/demos-v1).
 
-| Task | First person | Third person |
-|---|---|---|
-| Fetch a bottle of water | [eyes](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__get_me_a_bottle_of_water_1st_POV__eyes_GOODtrimmed.mp4), [map](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__get_me_a_bottle_of_water_1st_POV__map_GOODtrimmed.mp4), [trace](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__get_me_a_bottle_of_water_1st_POV__trace_GOODtrimmed.mp4) | [get me a bottle of water 3rd POVBottle](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__get_me_a_bottle_of_water_3rd_POVBottle.mp4), [full scene](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__get_me_a_bottle_of_water_full_scene_3rd_POV.mp4) |
-| Pick closest cup, stop, pick farthest | [eyes](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_closestCUP_STOP_pick_farthestCUP_1st_POV__eyes_GOODtrim.mp4), [map](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_closestCUP_STOP_pick_farthestCUP_1st_POV__map.mp4), [trace](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_closestCUP_STOP_pick_farthestCUP_1st_POV__trace_GOODtrim.mp4) | [pick closestCUP STOP pick farthestCUP 3rd POV](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_closestCUP_STOP_pick_farthestCUP_3rd_POV.mp4) |
-| Pick the cup closest to the bottle | [eyes](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_CUP%28OUTof3CUPs%29_closest_toBottle_1st_POV__eyes_GOODtrim.mp4), [map](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_CUP%28OUTof3CUPs%29_closest_toBottle_1st_POV__map.mp4), [trace](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_CUP%28OUTof3CUPs%29_closest_toBottle_1st_POV__trace_GOODtrim.mp4) | [pick CUP(OUTof3CUPs) closest toBottle 3rd POV](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_CUP%28OUTof3CUPs%29_closest_toBottle_3rd_POV.mp4) |
-| Pick the cyan cup of three | [eyes](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_cyan%28green%29_coloured_cup%28OUTof3Cups%29_1st_POV__eyes_GOODtrim.mp4), [map](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_cyan%28green%29_coloured_cup%28OUTof3Cups%29_1st_POV__map.mp4), [trace + verdict](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_cyan%28green%29_coloured_cup%28OUTof3Cups%29_1st_POV__trace_GOODtrim_plus_verdict.mp4) | [pick cyan(green) coloured cup(OUTof3Cups) 3rd POV](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_cyan%28green%29_coloured_cup%28OUTof3Cups%29_3rd_POV.mp4) |
-| Pick and place bottle to bottle | [eyes](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_place_bottle_to_bottle_1st_POV__eyes_GOODtrim.mp4), [map](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_place_bottle_to_bottle_1st_POV__map.mp4), [trace](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_place_bottle_to_bottle_1st_POV__trace_GOODtrim.mp4) | [pick place bottle to bottle 3rd POV](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_place_bottle_to_bottle_3rd_POV.mp4) |
-| Pick red cup, stop, pick green | [eyes](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_redCUP_stop_pick_greenCUP_OUTof3Cups_1st_POV__eyes_GOODtrim.mp4), [map](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_redCUP_stop_pick_greenCUP_OUTof3Cups_1st_POV__map.mp4), [trace](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_redCUP_stop_pick_greenCUP_OUTof3Cups_1st_POV__trace_GOODtrim.mp4) | [pick redCUP stop pick greenCUP OUTof3Cups 3rd POV](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_redCUP_stop_pick_greenCUP_OUTof3Cups_3rd_POV.mp4) |
-| Pick up an apple | [eyes](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_up_apple_1st_POV__eyes_GOODtrim.mp4), [map](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_up_apple_1st_POV__map.mp4), [trace](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_up_apple_1st_POV__trace_GOODtrim.mp4) | [pick up apple 3rd POV](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_up_apple_3rd_POV.mp4) |
-| Transport a bottle to the bin | [eyes](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__transport_bottle_to_bin_1st_POV__eyes_GOODtrim.mp4), [map](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__transport_bottle_to_bin_1st_POV__map_GOODtrim.mp4), [trace](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__transport_bottle_to_bin_1st_POV__trace_GOODtrim.mp4) | [transport bottle to bin 3rd POVBin](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__transport_bottle_to_bin_3rd_POVBin.mp4), [transport bottle to bin 3rd POVTable](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__transport_bottle_to_bin_3rd_POVTable.mp4) |
+### Fetch a bottle of water
 
-Standalone: [transporting banana to bowl in another lower workspace](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__transporting_banana_to_bowl_in_another_lower_workspace.mp4), [transporting banana to bowl in another lower workspace](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/transporting_banana_to_bowl_in_another_lower_workspace.mp4).
+> "Can you go get me a bottle of water?"
 
-## Repository layout
+![Fetch a bottle of water](media/demos/01_fetch_bottle.gif)
 
-```
-OpenBot/
-├── brain/              harness layer: agent loop, tool contract, verifier, scene graph, LLM clients
-├── gateway/            brain <-> skills bridge (rclpy, Python 3.8), descent/container logic
-├── voice/              voice app (realtime + cascade), mic/speaker, keyword spotting, echo gate
-├── skills/             the deterministic skill lane
-│   ├── writer/         whole-body merged writer (35 slots, 250 Hz), GR00T policies, MuJoCo model + meshes
-│   ├── arm/            grip server, pick/place engines, grasp geometry, hand-state lane
-│   ├── perception/     YOLO/SEG + TensorRT nodes, depth projector, pointcloud, operator viewers
-│   ├── locomotion/     walk-node FSM, hunt law, command daemon
-│   ├── odom/           odometry + detection gate
-│   ├── coordination/   pick–walk coordinator, arrival relay/announce
-│   ├── sonic/          SONIC motion core
-│   ├── helpers/        pre-start checks, pose utilities
-│   ├── launchers/      stack launch scripts
-│   ├── config/         CycloneDDS configurations, environment setup
-├── robot/              byte-exact copies of the files that run on the deployed robot
-├── deploy/             manifest tool and model bake-off harness
-└── config*.yaml        runtime profiles (see Configuration)
-```
+[Full recording](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__get_me_a_bottle_of_water_3rd_POVBottle.mp4)
+
+### Pick the closest cup, stop, pick the farthest
+
+> "Pick the closest cup."  ·  "Stop."  ·  "Pick the farthest cup."
+
+![Pick the closest cup, stop, pick the farthest](media/demos/02_closest_stop_farthest.gif)
+
+[Full recording](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_closestCUP_STOP_pick_farthestCUP_3rd_POV.mp4)
+
+### Pick the cup closest to the bottle
+
+> "Pick the cup closest to the bottle."
+
+![Pick the cup closest to the bottle](media/demos/03_cup_closest_to_bottle.gif)
+
+[Full recording](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_CUP%28OUTof3CUPs%29_closest_toBottle_3rd_POV.mp4)
+
+### Pick the cyan cup of three
+
+> "Pick the cyan cup."
+
+![Pick the cyan cup of three](media/demos/04_cyan_cup.gif)
+
+[Full recording](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_cyan%28green%29_coloured_cup%28OUTof3Cups%29_3rd_POV.mp4)
+
+### Pick and place bottle to bottle
+
+> "Pick up the bottle and put it next to the other bottle."
+
+![Pick and place bottle to bottle](media/demos/05_bottle_to_bottle.gif)
+
+[Full recording](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_place_bottle_to_bottle_3rd_POV.mp4)
+
+### Pick red cup, stop, pick green
+
+> "Pick up the red cup."  ·  "Stop."  ·  "Pick up the green cup."
+
+![Pick red cup, stop, pick green](media/demos/06_red_then_green.gif)
+
+[Full recording](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_redCUP_stop_pick_greenCUP_OUTof3Cups_3rd_POV.mp4)
+
+### Pick up an apple
+
+> "Pick up the apple."
+
+![Pick up an apple](media/demos/07_apple.gif)
+
+[Full recording](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_up_apple_3rd_POV.mp4)
+
+### Transport a bottle to the bin
+
+> "Bring the bottle to the bin."
+
+![Transport a bottle to the bin](media/demos/08_bottle_to_bin.gif)
+
+[Full recording](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__transport_bottle_to_bin_3rd_POVBin.mp4)
+
+### Banana transport
+
+> "Pick up the banana and put it in the bowl."
+
+![Banana transport](media/demos/09_banana_transport.gif)
+
+[Full recording](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__transporting_banana_to_bowl_in_another_lower_workspace.mp4)
 
 ## Runtime interfaces
 
-- **Writer socket** `/tmp/merged_writer.sock` — `cmd_set vx vy omega [dur]` (walk), pose verbs, `arm <14f>`, `q`,
-  `armstate`, `hold_rc on|off`, `freeze`, `status`, `quit`.
-  Precedence: `hold_rc|shutdown > cmd_auto > RC`.
-- **Grip socket** `/tmp/grip_server.sock` — `open|close [side]`, `close_adaptive`, `state [side]`
-  (verification signal; the grip server does not auto-verify).
+- **Writer socket** `/tmp/merged_writer.sock` — `cmd_set vx vy omega [dur]`, pose verbs, `arm <14f>`, `q`,
+  `armstate`, `hold_rc on|off`, `freeze`, `status`, `quit`. Precedence: `hold_rc|shutdown > cmd_auto > RC`.
+- **Grip socket** `/tmp/grip_server.sock` — `open|close [side]`, `close_adaptive`, `state [side]`.
 - **Engine socket** `/tmp/pick_engine.sock` — `pick x y z [n] [orient] [height]`, `place` / `place_left`,
-  `drop` (release-only), `open|close_both`. One engine instance per pick lane; the gateway attaches so a place
-  continues from the pose the pick left. Pick targets are tabletop objects.
-- **Walk topics** — `/walk_target`, `/walk_go`, `/walk_status`; `REACHED` is the only verification signal.
-- **Detections** `/object_detections_body` — event-driven; silence means an empty scene.
+  `drop`, `open|close_both`. One engine per pick lane; the gateway attaches so a place continues from the pose
+  the pick left.
+- **Walk topics** `/walk_target`, `/walk_go`, `/walk_status`; `REACHED` is the only arrival signal.
+- **Detections** `/object_detections_body` — event driven; silence means an empty scene.
 
 ## Configuration
 
-- `config*.yaml` — runtime profiles: `config.yaml` (default), `config.voice.yaml`, `config.offline.yaml`,
-  `config.cloud.yaml`, `config.stuart.yaml`, `config.stuart-cuda.yaml`.
-- On the robot, `config.yaml` carries device-specific values and is maintained in place rather than overwritten
-  from the development copy.
+`config.yaml` is the base profile; `config.voice.yaml`, `config.offline.yaml`, `config.cloud.yaml`,
+`config.stuart.yaml` and `config.stuart-cuda.yaml` layer on top. On the robot, `config.yaml` carries
+device-specific values and is maintained in place rather than overwritten from a development copy.
 
 ## Requirements
 
-- Python 3.8 on the robot runtime (`rclpy`); current Python for laptop-side tooling.
-- CycloneDDS on the robot and the companion machine (configurations in `skills/config/`).
+- Python 3.8 on the robot (`rclpy`); current Python for laptop tooling.
+- CycloneDDS on robot and companion machine (configurations in `skills/config/`).
 - TensorRT on the on-board Jetson for the vision models.
-- MuJoCo for the simulation and verification tooling.
+- MuJoCo for simulation and motion validation.
 - Unitree SDK2 for the locomotion lane.
 
 ## Deploying to the robot
 
-The stack runs on the robot's on-board computer. Choose any directory there as the deploy root; the examples
-below use three shell variables:
+The stack runs on the robot's on-board computer. Choose any directory there as the deploy root; the examples use
+three shell variables:
 
 ```bash
 ROBOT=unitree@<robot-address>                                # ssh target
@@ -116,20 +251,17 @@ ROBOT_PYTHON=/home/unitree/miniconda3/envs/tv/bin/python3    # interpreter the s
 *Manifest push* — `config.yaml`, `config.cloud.yaml`, `config.voice.yaml`, `config.offline.yaml`, `brain/`,
 `gateway/`, `voice/`.
 
-*Skills lane* — copied by hand into the deploy root, because it is not part of the manifest:
-`tabletop_pick_place_engine.py`, `pick_engine_v3.py`, `grip_server.py`, `pick_node.py`, `walk_node.py`,
-`walk_lock.py`, `yolo_node.py`, `depth_projector_node.py`, `openbot_camera_node.py`, `main_merged_writer.py`,
-`pick_walk_coordinator.py`, `arrival_relay.py`, `restore_arm_pose.py`, `fsm_check.py`, plus the launchers from
-`skills/launchers/` and `setup_openbot.sh` from `skills/config/`.
+*Skills lane* — copied by hand into the deploy root: `tabletop_pick_place_engine.py`, `pick_engine_v3.py`,
+`grip_server.py`, `pick_node.py`, `walk_node.py`, `walk_lock.py`, `yolo_node.py`, `depth_projector_node.py`,
+`openbot_camera_node.py`, `main_merged_writer.py`, `pick_walk_coordinator.py`, `arrival_relay.py`,
+`restore_arm_pose.py`, `fsm_check.py`, the launchers from `skills/launchers/`, and `setup_openbot.sh` from
+`skills/config/`.
 
 **Step 1 — build the manifest**
 
 ```bash
 python3 deploy/make_manifest.py
-python3 -c "import json;d=json.load(open('deploy/manifest.json'));print(len(d['files']),'files')"
 ```
-
-The manifest records each file's local md5 and its target path, and is the input to the copy step.
 
 **Step 2 — copy each file**
 
@@ -151,24 +283,21 @@ timeout 15 sshpass -p "$ROBOT_PASS" ssh -o StrictHostKeyChecking=no \
    $ROBOT_PYTHON -m py_compile $ROBOT_ROOT/$REL"
 ```
 
-All three must pass: the remote md5 equals `$LAPTOP_MD5`, the null-byte count is `0`, and `py_compile` succeeds
-with the interpreter the stack actually uses. Any mismatch means a corrupted transfer — copy again and re-verify
-before restarting anything.
+All three must pass: the remote md5 matches, the null-byte count is `0`, and `py_compile` succeeds with the
+interpreter the stack uses. A mismatch means a corrupted transfer — copy again and re-verify before restarting.
 
 ## Running on the robot
 
-Three terminals, started in this order. Every terminal sources the robot's environment file first; the gateway
-additionally needs a clean shell so it picks up the robot's DDS configuration rather than a desktop one.
+Three terminals, started in this order.
 
-**Terminal 1 — the stack (writer + perception/pick chain)**
+**Terminal 1 — the stack**
 
 ```bash
 source "$ROBOT_ROOT/setup_openbot.sh"
 cd "$ROBOT_ROOT" && bash launch_openbot_stack.sh
 ```
 
-This starts the merged writer and then the perception + pick-engine chain. Wait until both report ready before
-starting the gateway.
+Starts the merged writer, then the perception and pick-engine chain. Wait for both before starting the gateway.
 
 **Terminal 2 — gateway**
 
@@ -183,18 +312,66 @@ sys.exit(main(['--config', 'config.yaml']))" 2>&1 \
   | tee /tmp/pick_walk_logs/gateway.log
 ```
 
-The gateway must stay attached to its terminal: the ask/confirm path reads its stdin, and a detached gateway
-times out after 20 s.
+The gateway must stay attached: the ask/confirm path reads its stdin, and a detached gateway times out after 20 s.
 
-**Terminal 3 — voice app (the gateway's tools client)**
+**Terminal 3 — voice app**
 
 ```bash
 source "$ROBOT_ROOT/setup_openbot.sh"
 cd "$ROBOT_ROOT" && bash voice/run_voice.sh
 ```
 
-The cloud lane needs its API key exported before this terminal starts; the offline lane does not.
+Logs land in `/tmp/pick_walk_logs/`. To stop, send `quit` to the writer socket and stop the voice app.
 
-Logs land in `/tmp/pick_walk_logs/` (`writer.log`, `gateway.log`, `grip.log`, `camera.log`). To stop, send
-`quit` to the writer socket (`/tmp/merged_writer.sock`) and stop the voice app; the launchers exit when their
-foreground process exits.
+## Evaluation and limits
+
+The numbers above come from a pre-registered protocol of **45 scored spoken trials across four releases**, not
+from a single frozen configuration. Read them with these bounds:
+
+- Small samples, and the release changed during the protocol.
+- Compliance with the task-specific time limits was **not** independently rescored.
+- One container chain lacked a recorded landing; the place verifier establishes **release, not containment**.
+- Early releases produced false failures; later ones produced no false successes in the review.
+- Hand-full refusal succeeded in only one of three trials, and recorded motor temperatures exceeded the pause
+  threshold.
+- Several constants were set by judgement rather than optimisation: the 0.55 m walk stop gate, the 0.35 voice
+  confidence floor, the 5 cm stand-off margin, the 0.06 rad closure tolerance, the 0.30 m self-zone and the 2 s
+  freshness budget.
+
+Open work: evaluation on one frozen release, containment verification, registered depth, state preservation
+across cloud failover, active thermal protection, bimanual skills, odometry and gateway authentication.
+
+## What comes next: post-training the three agents
+
+The harness is deliberately model-agnostic. Its end state — the reason it is a harness rather than a demo — is an
+agent *trained against* it, not merely driving it. Three models would close the loop.
+
+**1. The skill-forging agent.** Given a capability gap ("the hand cannot reach a bottle lying on the floor"), it
+proposes a new skill against the typed interface, runs it in the MuJoCo twin, reads the verification verdict and
+iterates until the postcondition holds. The twin and the measurement-based verdict are what make the loop
+self-checking: a candidate that merely *looks* right still fails its postcondition, so plausible motion cannot
+pass for success.
+
+**2. The invoking agent.** It learns to drive the harness the way a competent operator does — decomposing a
+spoken request, ordering calls, retrying after a measured failure, recovering from a refusal, asking the person a
+question when the request is ambiguous, and stopping when the evidence says stop. Today a general-purpose cloud
+agent does this zero-shot under prompt constraints. The trained version would learn the calling convention a
+prompt cannot teach: when to re-perceive, when to re-plan, when to give up.
+
+**3. The reviewing agent.** It learns to audit the invoking agent's calls *before* they reach the gateway —
+rejecting calls whose preconditions cannot hold, whose geometry is infeasible, or whose ordering leaves the robot
+in a bad state. This moves verification from a post-hoc verdict to a pre-flight check, and is the closest analogue
+to an experienced operator reading a plan and saying "no, that will collide".
+
+Trained together they form a closed improvement loop: the forger extends the library, the invoker learns to use
+it, the reviewer keeps both honest against the body's constraints.
+
+**Why it is not in this repository.** Reaching that point needs post-training compute and data a final-year
+project did not have: rollouts at scale on the twin, a reward or preference signal built on the verification
+verdicts, and enough hardware time to validate candidate skills on the robot. The harness was built first,
+deliberately, because it is the part that makes a training signal trustworthy. The three-agent loop is the next
+project, not a missing feature.
+
+## Background
+
+Final-year engineering research project, 2026. Supervisor: Professor Thomas Bräunl.
