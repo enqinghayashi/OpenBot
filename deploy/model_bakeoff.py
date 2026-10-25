@@ -1274,3 +1274,52 @@ def _write_output(summary: Dict[str, Any], out_path: str, fmt: str) -> None:
                 ])
 
 
+def _print_summary(summary: Dict[str, Any]) -> None:
+    c = summary["candidate"]
+    print("")
+    print("candidate %s (%s lane, wire %s)%s" % (
+        c, summary["lane"], summary["wire"],
+        " — stub gateway " + summary["stub_gateway"] if summary["stub_gateway"]
+        else ""))
+    print("  runs: %d total = %d succeeded + %d failed "
+          "(fail reasons: %s; rate limits %d; reconnects %s)" % (
+              summary["runs_total"], summary["runs_succeeded"],
+              summary["runs_failed"],
+              summary["fail_reasons"] or "{}",
+              summary["rate_limits"], summary["reconnects"]))
+    ttft = summary["ttft_s"]
+    e2e = summary["e2e_s"]
+    print("  TTFT:  avg %s, p95 %s (measured on %d/%d runs)"
+          % (ttft["avg"], ttft["p95"], ttft["measured_on"], ttft["of"]))
+    print("  E2E:   avg %s, p95 %s (measured on %d/%d runs)"
+          % (e2e["avg"], e2e["p95"], e2e["measured_on"], e2e["of"]))
+    print("  cost/turn: avg %s USD, p95 %s USD (measured on %d/%d runs; "
+          "token basis %s)" % (
+              summary["cost_per_turn_usd"], summary["cost_per_turn_p95_usd"],
+              summary["cost_measured_on"], summary["cost_of"],
+              json.dumps(summary["cost_basis_tokens"])))
+    tc = summary["tool_call"]
+    print("  tool-call correctness: %d ok / %d failed / %d no-call (of %d)"
+          % (tc["ok"], tc["failed"], tc["no_call"], tc["of"]))
+    print("  vision-QA accuracy: %s (%d/%d measured)" % (
+        summary["vision_qa_accuracy"],
+        summary["vision_qa"]["correct"], summary["vision_qa"]["measured"]))
+    seam = summary["config_seam"]
+    if seam.get("checked"):
+        print("  config seam (profile-delta): %s — %s" % (
+            "ok" if seam.get("ok") else "REJECTED", seam.get("note", "")))
+    else:
+        print("  config seam: %s (%s)" % (NOT_REPORTED, seam.get("note", "")))
+    parity = summary.get("budget_parity", {})
+    if parity.get("checked"):
+        print("  budget parity (bench == shipped): %s — %s" % (
+            "ok" if parity.get("ok") else "MISMATCH",
+            parity.get("note", "")))
+    else:
+        print("  budget parity: %s (%s)" % (
+            NOT_REPORTED, parity.get("note", "")))
+    if summary["cost_per_turn_usd"] == NOT_REPORTED:
+        print("  NOTE: %s" % summary.get("cost_not_reported_reason", ""))
+    if summary.get("veto"):
+        print("  NOTE: veto-flagged — %s" % summary.get(
+            "vision_qa_not_reported_reason", summary["veto"]))
