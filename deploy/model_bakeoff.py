@@ -1375,3 +1375,65 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     return args
 
 
+def main(argv: Optional[List[str]] = None) -> int:
+    args = _parse_args(argv)
+    if args.list:
+        fmt = args.format or "table"
+        return _print_manifest(fmt)
+
+    stub_base = args.stub_gateway or os.environ.get("BAKEOFF_STUB_GATEWAY") or None
+    if args.format is None:
+        fmt = "csv" if (args.out or "").endswith(".csv") else "json"
+    else:
+        fmt = args.format
+    if args.out is None:
+        parser = argparse.ArgumentParser()
+        parser.error("--out is required when running a candidate")
+        return 2
+    if fmt not in ("json", "csv"):
+        sys.stderr.write("model_bakeoff: unsupported format %r\n" % fmt)
+        return 1
+
+    prices_path = args.prices or default_prices_path()
+    try:
+        prices = load_prices(prices_path)
+    except (OSError, ValueError) as exc:
+        sys.stderr.write("model_bakeoff: REFUSAL: prices sidecar failed: %s\n" % exc)
+        return 2
+
+    if args.candidate == "all":
+        ids = sorted(CANDIDATES)
+    else:
+        if args.candidate not in CANDIDATES:
+            sys.stderr.write(
+                "model_bakeoff: REFUSAL: unknown candidate %r (see --list)\n"
+                % args.candidate)
+            return 2
+        ids = [args.candidate]
+
+    results: List[Dict[str, Any]] = []
+    for cid in ids:
+        candidate = CANDIDATES[cid]
+        timeout = args.timeout or (
+            REALTIME_TIMEOUT_S if candidate["lane"] == "realtime"
+            else REST_TIMEOUT_S)
+        summary = _run_one_candidate(candidate, args.runs, timeout, prices,
+                                     prices_path, stub_base, args.image_dir,
+                                     args.audio)
+        _print_summary(summary)
+        results.append(summary)
+
+    if len(results) == 1:
+        document = results[0]
+    else:
+        document = {"candidates": results, "count": len(results)}
+
+    try:
+        _write_output(document, args.out, fmt)
+    except OSError as exc:
+        sys.stderr.write("model_bakeoff: could not write %s: %s\n"
+                         % (args.out, exc))
+        return 1
+    sys.stdout.write("model_bakeoff: wrote %s (%s, %d runs per candidate)\n"
+                     % (args.out, fmt, args.runs))
+    return 0
