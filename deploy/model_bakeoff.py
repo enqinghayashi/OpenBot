@@ -1325,3 +1325,51 @@ def _print_summary(summary: Dict[str, Any]) -> None:
             "vision_qa_not_reported_reason", summary["veto"]))
 
 
+def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="model_bakeoff.py",
+        description="OpenBot v4 model bake-off harness (plan section 6): "
+                    "measures every vision-capable candidate across both "
+                    "brain lanes on the same fixed scene set and tool "
+                    "protocol, ranked by $/turn at equal-or-better "
+                    "accuracy.  Honesty law: usage/timing read from the "
+                    "wire, prices from deploy/prices.json, failed runs "
+                    "counted in the reliability denominator.",
+    )
+    parser.add_argument("--list", action="store_true",
+                        help="print the 11-candidate manifest and exit "
+                             "(zero dependencies)")
+    parser.add_argument("--candidate", default=None,
+                        help="candidate id from --list, or 'all'")
+    parser.add_argument("--runs", type=int, default=DEFAULT_RUNS,
+                        help="runs per candidate (default %d)" % DEFAULT_RUNS)
+    parser.add_argument("--timeout", type=float, default=None,
+                        help="per-run bound in seconds (default: lane "
+                             "default — rest 120, realtime 60)")
+    parser.add_argument("--out", default=None,
+                        help="results file (.json or .csv by extension)")
+    parser.add_argument("--format", choices=("json", "csv"), default=None,
+                        help="output format (default: by --out extension, "
+                             "else json)")
+    parser.add_argument("--prices", default=None,
+                        help="price sidecar path (default: deploy/prices.json)")
+    parser.add_argument("--stub-gateway", default=None,
+                        help="dev/probe seam: override the REST base_url "
+                             "(also BAKEOFF_STUB_GATEWAY env); echoed in "
+                             "output, never a secret")
+    parser.add_argument("--image-dir", default=None,
+                        help="real scene photos (scene-a.jpg ... scene-e.jpg); "
+                             "default: deterministic synthetic images")
+    parser.add_argument("--audio", default=None,
+                        help="realtime lane: PCM16 24 kHz mono WAV to "
+                             "upload instead of text input")
+    args = parser.parse_args(argv)
+    if args.list and args.candidate:
+        parser.error("--list and --candidate are mutually exclusive")
+    if args.candidate is None and not args.list:
+        parser.error("either --list or --candidate <id|all> is required")
+    if args.runs < 1:
+        parser.error("--runs must be >= 1")
+    if args.timeout is not None and args.timeout <= 0:
+        parser.error("--timeout must be > 0")
+    return args
