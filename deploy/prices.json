@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "recorded": "2026-08-31",
+  "reverified": "2026-09-03",
+  "currency": "USD",
+  "unit": "per 1000 tokens",
+  "note": "Prices recorded 2026-08-31 from the Plan-B R4 ladder (docs/PLAN_B.md price table, lines 117-126) and the config pins re-verified 2026-09-03 against the provider price pages (developers.openai.com/api/docs/pricing, api-docs.deepseek.com/quick_start/pricing, ai.google.dev/gemini-api/docs/pricing). This file is the ONLY price source deploy/model_bakeoff.py reads (the harness embeds no prices). Entries with \"verified\": false have NO recorded per-token rate in the repo (only per-decision estimates are recorded) — the harness reports cost as 'Not reported' for them until the operator RE-VERIFIES against the provider price pages day-of and fills the rates (docs/BAKEOFF.md, re-verify instruction). Note: a \"cached\" input rate is listed in some notes — the schema has no cached-input field, the cached cost is not modeled.",
+  "models": {
+    "claude-haiku-4-5-20251001": {
+      "input_per_1k": 0.001,
+      "output_per_1k": 0.005,
+      "verified": true,
+      "note": "PLAN_B.md: $1/$5 per 1M (input/output); images billed at the input rate (144 tok/image at OUR 424x240 frame, ceil(w/28)*ceil(h/28); the older 1036 figure was a ~1MP frame, not ours); ~$0.005/decision; Start tier 1000 RPM / 2M ITPM"
+    },
+    "claude-sonnet-5": {
+      "input_per_1k": 0.002,
+      "output_per_1k": 0.01,
+      "verified": true,
+      "note": "PLAN_B.md price table: $2/$10 per 1M, pricing FAQ 'permanent' ('Sept increase will not occur'); same image tokenization as Haiku 4.5"
+    },
+    "gemini-3.7-flash": {
+      "input_per_1k": 0.00075,
+      "output_per_1k": 0.00375,
+      "verified": true,
+      "note": "Re-verified 2026-09-03 (ai.google.dev/gemini-api/docs/pricing, Standard paid tier): input $0.75/1M through 2026-12-31 ($1.50 from 2027-01-01), output incl. thinking tokens $3.75/1M ($7.50 from 2027-01-01) — INTRO pricing, doubles 2027-01-01; 258 tok image at OUR 424x240 frame (one 768px tile; the older 516 figure was a two-tile frame, not ours); ~$0.0034/decision; 256K context"
+    },
+    "gpt-5.4-mini": {
+      "input_per_1k": 0.00075,
+      "output_per_1k": 0.0045,
+      "verified": true,
+      "note": "Re-verified 2026-09-03 (developers.openai.com/api/docs/pricing): input $0.75/1M, cached $0.075/1M, output $4.50/1M — standard pricing; image billing 135 tok at OUR 424x240 frame, ceil(w/32)*ceil(h/32)*1.2 (the older 1229 figure was a ~1MP frame, not ours); the PLAN_B ~$0.0033/decision figure is superseded by these rates"
+    },
+    "gpt-5.6-luna": {
+      "input_per_1k": 0.0002,
+      "output_per_1k": 0.0012,
+      "verified": true,
+      "note": "Re-verified 2026-09-03 (same page): SHORT context — input $0.20/1M, cached $0.02/1M, cache writes $0.25/1M, output $1.20/1M (LONG context — input $0.40/1M, cached $0.04/1M, cache writes $0.50/1M, output $1.80/1M; the harness run measures short-context text, where these numbers apply); 135 image tokens at 424x240 (ceil(424/32)*ceil(240/32)*1.2)"
+    },
+    "gpt-realtime-2.1-mini": {
+      "audio_input_per_1k": 0.01,
+      "audio_output_per_1k": 0.02,
+      "text_input_per_1k": 0.0006,
+      "text_output_per_1k": 0.0024,
+      "verified": true,
+      "note": "Re-verified 2026-09-03 (same page; the page states realtime-language prices per 1M tokens): audio in $10/1M, audio out $20/1M, text in $0.60/1M, text out $2.40/1M, image in $0.80/1M — the ranking baseline id"
+    },
+    "gpt-realtime-2.1": {
+      "audio_input_per_1k": 0.032,
+      "audio_output_per_1k": 0.064,
+      "text_input_per_1k": 0.004,
+      "text_output_per_1k": 0.024,
+      "verified": true,
+      "note": "Re-verified 2026-09-03 (same page, per 1M tokens): audio in $32/1M, audio out $64/1M, text in $4/1M, text out $24/1M, image in $5/1M"
+    },
+    "gpt-realtime-1.5": {
+      "audio_input_per_1k": 0.032,
+      "audio_output_per_1k": 0.064,
+      "text_input_per_1k": 0.004,
+      "text_output_per_1k": 0.016,
+      "verified": true,
+      "note": "Re-verified 2026-09-03 (same page, per 1M tokens): audio in $32/1M, audio out $64/1M, text in $4/1M, text out $16/1M, image in $5/1M"
+    },
+    "deepseek-v4-flash-vision-exp": {
+      "input_per_1k": 0.00044,
+      "output_per_1k": 0.00132,
+      "verified": true,
+      "note": "Re-verified 2026-09-03 (api-docs.deepseek.com/quick_start/pricing; the page states the SAME ladder for deepseek-v4-flash and its multimodal id): STANDARD (peak) cache-MISS input $0.44/1M, output $1.32/1M; CACHE-HIT input $0.014/1M (peak); off-peak rates are HALF the peak rates (input cache-miss $0.22/1M, output $0.66/1M, cache-hit $0.007/1M); images 'converted into tokens based on their dimensions and billed as input tokens'; the recorded rates are the STANDARD (peak) ones — cost cells may over-estimate inside the off-peak window; the PLAN_B ~$0.0008/$0.0017 per-decision figures were measured on the TEXT-ONLY plain id (2026-09-01) and are NOT used here; thinking ON by default (doubles output); veto LIFTED 2026-09-02 (operator)"
+    },
+    "qwen3.7-plus": {
+      "input_per_1k": null,
+      "output_per_1k": null,
+      "verified": false,
+      "note": "No price recorded in the repo; CN-native veto for thesis scene images — measured text-only + marked; not in the 2026-09-03 bench scope (operator decision)"
+    }
+  }
+}
