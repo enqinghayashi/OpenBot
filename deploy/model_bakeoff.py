@@ -1323,3 +1323,5 @@ def _print_summary(summary: Dict[str, Any]) -> None:
     if summary.get("veto"):
         print("  NOTE: veto-flagged — %s" % summary.get(
             "vision_qa_not_reported_reason", summary["veto"]))
+
+
