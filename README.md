@@ -47,20 +47,34 @@ MuJoCo twin with the same interfaces, so a candidate policy can be exercised wit
 
 ## What we tried first, and what it taught us
 
-Part 1 of the project was the conventional bet: a **108 M-parameter conditional U-Net diffusion policy**, trained
-on **2,160 scripted demonstrations (1.42 M samples)**, across **9 policy variants**, **50 hyperparameter
-settings** and **14 training runs**.
+Part 1 was the conventional bet: a **108 M-parameter conditional U-Net diffusion policy** trained on
+**2,160 scripted demonstrations (1.42 M samples)**, across **9 policy variants**, **50 hyperparameter settings**
+and **14 training runs**.
 
-It produced **2,089 evaluation trials and a 0 % lift rate.**
+The demonstrations came from a collection setup that was **not the room the robot actually works in** — partly
+public data, partly scripted demonstrations. We knew that, so we tried to buy back the difference the usual way:
+augmentation, noise and a wider mix of sources.
+It did not survive contact with the real scene. On the robot the policy did not complete the task, and across
+**2,089 evaluation trials the lift rate was 0 %**.
 
-The post-mortem is the most useful result of that phase: the policies were exploiting **proprioceptive
-shortcuts** — the robot's own joint state predicted success in training without the policy ever learning to use
-the object. Joint-space reinforcement learning converged to a hovering optimum with **0 % contact**; `mjx` ran
-out of memory on an 8 GB laptop GPU. A parallel effort to generate motions directly from the model was rejected on
-measured latency: the local 4B model managed under 4 tokens/s, 75–85 s per decision.
+The post-mortem named two failures that were happening at once:
 
-That is why the final system puts the model at the **task level** and keeps motion deterministic. The model
-selects; the harness executes and verifies.
+- **A domain gap that augmentation cannot close.** Widening the data does not make a policy robust to a camera
+  pose, a table height, a lighting condition or a set of objects it has never seen — it only makes the training
+  distribution wider. When the deployment scene differs structurally from the collection scene, the policy has
+  no reason to transfer, and no way to notice that it has not.
+- **A proprioceptive shortcut.** The policies were reading their own joint state as a proxy for success: in
+  training, that state predicted the label without the policy ever learning to use the object. A policy that can
+  satisfy its loss this way looks trained and behaves blindly.
+
+Joint-space reinforcement learning converged to a hovering optimum with **0 % contact**; `mjx` ran out of memory
+on an 8 GB laptop GPU. Generating motions directly from the model was rejected on measured latency: the local 4B
+model managed under 4 tokens/s, 75–85 s per decision.
+
+The lesson is not "learning does not work". It is that a policy which cannot say *why* it failed gives you
+nothing to debug, and a policy trained off-distribution cannot be trusted to generalise into a room it has never
+seen. That is why the final system puts the model at the **task level**, keeps motion deterministic, and makes
+every skill report a verdict that can be checked.
 
 ## The harness
 
@@ -133,16 +147,15 @@ The same pattern repeats across the library:
 
 ## Demo videos
 
-Each preview is a 2x2 grid captured at the same instant: **third person** (top left), the robot's own
+Each recording is a 2x2 grid captured from the same run: **third person** (top left), the robot's own
 **eyes** (top right), the **map** (bottom left) and the **trace** of what the planner believed (bottom right).
-The line under each heading is what was said to the robot. Full-length recordings, with every first-person
-stream, are in the [demos release](https://github.com/enqinghayashi/OpenBot/releases/tag/demos-v1).
+The line above each video is what was said to the robot.
 
 ### Fetch a bottle of water
 
 > "Can you go get me a bottle of water?"
 
-![Fetch a bottle of water](media/demos/01_fetch_bottle.gif)
+https://github.com/user-attachments/assets/f6764f5c-ef31-4619-b22c-f82881fda42b
 
 [Full recording](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__get_me_a_bottle_of_water_3rd_POVBottle.mp4)
 
@@ -150,7 +163,7 @@ stream, are in the [demos release](https://github.com/enqinghayashi/OpenBot/rele
 
 > "Pick the closest cup."  ·  "Stop."  ·  "Pick the farthest cup."
 
-![Pick the closest cup, stop, pick the farthest](media/demos/02_closest_stop_farthest.gif)
+https://github.com/user-attachments/assets/9d4d92ff-0f09-4ffc-8f26-b57e1ecb0e62
 
 [Full recording](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_closestCUP_STOP_pick_farthestCUP_3rd_POV.mp4)
 
@@ -158,7 +171,7 @@ stream, are in the [demos release](https://github.com/enqinghayashi/OpenBot/rele
 
 > "Pick the cup closest to the bottle."
 
-![Pick the cup closest to the bottle](media/demos/03_cup_closest_to_bottle.gif)
+https://github.com/user-attachments/assets/abe8a86f-24c4-4112-847f-e3e413ce4ab5
 
 [Full recording](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_CUP%28OUTof3CUPs%29_closest_toBottle_3rd_POV.mp4)
 
@@ -166,7 +179,7 @@ stream, are in the [demos release](https://github.com/enqinghayashi/OpenBot/rele
 
 > "Pick the cyan cup."
 
-![Pick the cyan cup of three](media/demos/04_cyan_cup.gif)
+https://github.com/user-attachments/assets/e8d2e216-bcb5-4987-ade3-3233d5963dce
 
 [Full recording](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_cyan%28green%29_coloured_cup%28OUTof3Cups%29_3rd_POV.mp4)
 
@@ -174,7 +187,7 @@ stream, are in the [demos release](https://github.com/enqinghayashi/OpenBot/rele
 
 > "Pick up the bottle and put it next to the other bottle."
 
-![Pick and place bottle to bottle](media/demos/05_bottle_to_bottle.gif)
+https://github.com/user-attachments/assets/754ba5f9-b774-41a8-af57-fcc6da3e6032
 
 [Full recording](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_place_bottle_to_bottle_3rd_POV.mp4)
 
@@ -182,7 +195,7 @@ stream, are in the [demos release](https://github.com/enqinghayashi/OpenBot/rele
 
 > "Pick up the red cup."  ·  "Stop."  ·  "Pick up the green cup."
 
-![Pick red cup, stop, pick green](media/demos/06_red_then_green.gif)
+https://github.com/user-attachments/assets/c6ec8527-4168-491c-ba7b-6781a9e89106
 
 [Full recording](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_redCUP_stop_pick_greenCUP_OUTof3Cups_3rd_POV.mp4)
 
@@ -190,23 +203,23 @@ stream, are in the [demos release](https://github.com/enqinghayashi/OpenBot/rele
 
 > "Pick up the apple."
 
-![Pick up an apple](media/demos/07_apple.gif)
+https://github.com/user-attachments/assets/83281a3f-dde7-4074-925b-c9b7aecb45ae
 
 [Full recording](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__pick_up_apple_3rd_POV.mp4)
 
 ### Transport a bottle to the bin
 
-> "Bring the bottle to the bin."
+> "Put that bottle in the bin."
 
-![Transport a bottle to the bin](media/demos/08_bottle_to_bin.gif)
+https://github.com/user-attachments/assets/37ba5d07-881f-492c-b4ca-99b39ee58db7
 
 [Full recording](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__transport_bottle_to_bin_3rd_POVBin.mp4)
 
 ### Banana transport
 
-> "Pick up the banana and put it in the bowl."
+> "Pick up the banana and find a bowl to put in."
 
-![Banana transport](media/demos/09_banana_transport.gif)
+https://github.com/user-attachments/assets/83999446-343d-4ecc-98bb-db3195b23640
 
 [Full recording](https://github.com/enqinghayashi/OpenBot/releases/download/demos-v1/ppt-demos__transporting_banana_to_bowl_in_another_lower_workspace.mp4)
 
